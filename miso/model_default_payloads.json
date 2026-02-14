@@ -10,7 +10,7 @@
     "instructions": "",
     "max_output_tokens": 4096,
     "truncation": "auto",
-    "store": true,
+    "store": false,
     "include": [],
     "reasoning": {
       "effort": "medium"
@@ -20,7 +20,7 @@
     "instructions": "",
     "max_output_tokens": 4096,
     "truncation": "auto",
-    "store": true,
+    "store": false,
     "include": [],
     "reasoning": {
       "effort": "medium"

@@ -55,6 +55,7 @@ class ProviderTurnResult:
     final_text: str = ""
     response_id: str | None = None
     reasoning_items: list[dict[str, Any]] | None = None
+    consumed_tokens: int = 0
 
 class agent:
     def __init__(self):
@@ -67,6 +68,7 @@ class agent:
         self.toolkit = base_toolkit()
         self.last_response_id: str | None = None
         self.last_reasoning_items: list[dict[str, Any]] = []
+        self.last_consumed_tokens: int = 0
 
     def _load_default_payloads(self, path: str | Path) -> dict[str, dict[str, Any]]:
         file_path = Path(path)
@@ -131,6 +133,7 @@ class agent:
         next_previous_response_id = previous_response_id if supports_prev else None
         next_openai_input = copy.deepcopy(seed_messages)
         self.last_reasoning_items = []
+        total_consumed_tokens = 0
 
         self._emit(callback, "run_started", run_id, iteration=0, provider=self.provider, model=self.model)
 
@@ -156,6 +159,7 @@ class agent:
             if self.provider == "openai":
                 next_previous_response_id = turn.response_id
                 self.last_response_id = turn.response_id
+            total_consumed_tokens += max(0, int(turn.consumed_tokens or 0))
 
             if turn.reasoning_items:
                 self.last_reasoning_items = copy.deepcopy(turn.reasoning_items)
@@ -179,11 +183,12 @@ class agent:
                 )
 
                 if should_observe and tool_messages:
-                    observation = self._observe_tool_batch(
+                    observation, observe_consumed_tokens = self._observe_tool_batch(
                         full_messages=conversation,
                         tool_messages=tool_messages,
                         payload=payload,
                     )
+                    total_consumed_tokens += max(0, int(observe_consumed_tokens or 0))
                     if observation:
                         self._inject_observation(tool_messages[-1], observation)
                         self._emit(
@@ -214,10 +219,14 @@ class agent:
                 content=final_text,
             )
             self._emit(callback, "run_completed", run_id, iteration=iteration)
-            return conversation
+            bundle = {"consumed_tokens": total_consumed_tokens}
+            self.last_consumed_tokens = total_consumed_tokens
+            return conversation, bundle
 
         self._emit(callback, "run_max_iterations", run_id, iteration=max_loops)
-        return conversation
+        bundle = {"consumed_tokens": total_consumed_tokens}
+        self.last_consumed_tokens = total_consumed_tokens
+        return conversation, bundle
 
     def _emit(
         self,
@@ -367,6 +376,7 @@ class agent:
 
         outputs = getattr(completed_response, "output", None) or []
         response_id = getattr(completed_response, "id", None)
+        consumed_tokens = self._extract_openai_consumed_tokens(getattr(completed_response, "usage", None))
 
         assistant_messages: list[dict[str, Any]] = []
         tool_calls: list[ToolCall] = []
@@ -416,6 +426,7 @@ class agent:
             final_text="".join(final_text_parts).strip(),
             response_id=response_id,
             reasoning_items=reasoning_items or None,
+            consumed_tokens=consumed_tokens,
         )
 
     def _ollama_fetch_once(
@@ -457,6 +468,8 @@ class agent:
             request_body["format"] = response_format.to_ollama()
 
         collected_chunks: list[str] = []
+        latest_prompt_eval_count = 0
+        latest_eval_count = 0
 
         with httpx.stream("POST", "http://localhost:11434/api/chat", json=request_body, timeout=None) as response:
             if response.status_code >= 400:
@@ -471,6 +484,10 @@ class agent:
                 data = json.loads(line)
                 if data.get("error"):
                     raise ValueError(f"error: {data['error']} ( agent -> _ollama_fetch_once )")
+                if isinstance(data.get("prompt_eval_count"), int):
+                    latest_prompt_eval_count = data["prompt_eval_count"]
+                if isinstance(data.get("eval_count"), int):
+                    latest_eval_count = data["eval_count"]
 
                 message = data.get("message") or {}
                 delta = message.get("content", "") or message.get("thinking", "")
@@ -512,6 +529,7 @@ class agent:
                         assistant_messages=[assistant_message],
                         tool_calls=tool_calls,
                         final_text="",
+                        consumed_tokens=latest_prompt_eval_count + latest_eval_count,
                     )
 
                 if data.get("done", False):
@@ -520,6 +538,7 @@ class agent:
                         assistant_messages=[{"role": "assistant", "content": full_message}],
                         tool_calls=[],
                         final_text=full_message,
+                        consumed_tokens=latest_prompt_eval_count + latest_eval_count,
                     )
 
         raise ValueError("error: unexpected termination of ollama stream. ( agent -> _ollama_fetch_once )")
@@ -586,7 +605,7 @@ class agent:
         full_messages: list[dict[str, Any]],
         tool_messages: list[dict[str, Any]],
         payload: dict[str, Any],
-    ) -> str:
+    ) -> tuple[str, int]:
         observe_messages = self._build_observation_messages(full_messages, tool_messages)
         observe_payload = self._build_observation_payload(payload)
 
@@ -604,9 +623,9 @@ class agent:
         )
 
         if observe_turn.final_text:
-            return observe_turn.final_text.strip()
+            return observe_turn.final_text.strip(), int(observe_turn.consumed_tokens or 0)
 
-        return self._last_assistant_text(observe_turn.assistant_messages).strip()
+        return self._last_assistant_text(observe_turn.assistant_messages).strip(), int(observe_turn.consumed_tokens or 0)
 
     def _build_observation_messages(
         self,
@@ -684,6 +703,21 @@ class agent:
         if hasattr(obj, "to_dict"):
             return obj.to_dict()
         return {"value": str(obj)}
+
+    def _extract_openai_consumed_tokens(self, usage: Any) -> int:
+        if usage is None:
+            return 0
+
+        usage_dict = self._as_dict(usage)
+        total_tokens = usage_dict.get("total_tokens")
+        if isinstance(total_tokens, int):
+            return max(0, total_tokens)
+
+        input_tokens = usage_dict.get("input_tokens")
+        output_tokens = usage_dict.get("output_tokens")
+        if isinstance(input_tokens, int) and isinstance(output_tokens, int):
+            return max(0, input_tokens + output_tokens)
+        return 0
 
     def _last_assistant_text(self, messages: list[dict[str, Any]]) -> str:
         for msg in reversed(messages):

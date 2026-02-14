@@ -24,6 +24,7 @@ def test_openai_smoke():
     agent.model = model
 
     messages = [{"role": "user", "content": "Reply with OK only."}]
-    result = agent.run(messages=messages, payload={"max_output_tokens": 32}, max_iterations=1)
+    messages_out, bundle = agent.run(messages=messages, payload={"max_output_tokens": 32}, max_iterations=1)
 
-    assert _last_assistant_text(result) != ""
+    assert _last_assistant_text(messages_out) != ""
+    assert isinstance(bundle.get("consumed_tokens"), int)

@@ -49,6 +49,7 @@ def test_ollama_smoke():
     agent.model = model
 
     messages = [{"role": "user", "content": "只回复 OK"}]
-    result = agent.run(messages=messages, payload={"num_predict": 32}, verbose=False)
+    messages_out, bundle = agent.run(messages=messages, payload={"num_predict": 32}, verbose=False)
 
-    assert _last_assistant_text(result) != ""
+    assert _last_assistant_text(messages_out) != ""
+    assert isinstance(bundle.get("consumed_tokens"), int)

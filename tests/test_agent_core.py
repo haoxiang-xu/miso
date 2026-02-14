@@ -24,6 +24,7 @@ def test_observation_injected_into_last_tool_message_and_callback_events():
                 assistant_messages=[{"role": "assistant", "content": "检查通过，继续下一步。"}],
                 tool_calls=[],
                 final_text="检查通过，继续下一步。",
+                consumed_tokens=4,
             )
 
         state["turn"] += 1
@@ -45,25 +46,28 @@ def test_observation_injected_into_last_tool_message_and_callback_events():
                     ToolCall(call_id="call_2", name="plain_tool", arguments={}),
                 ],
                 final_text="",
+                consumed_tokens=10,
             )
 
         return ProviderTurnResult(
             assistant_messages=[{"role": "assistant", "content": "done"}],
             tool_calls=[],
             final_text="done",
+            consumed_tokens=7,
         )
 
     agent._fetch_once = fake_fetch_once
 
     events = []
-    result = agent.run(
+    messages, bundle = agent.run(
         messages=[{"role": "user", "content": "start"}],
         callback=events.append,
         max_iterations=3,
     )
 
-    tool_messages = [msg for msg in result if isinstance(msg, dict) and msg.get("role") == "tool"]
+    tool_messages = [msg for msg in messages if isinstance(msg, dict) and msg.get("role") == "tool"]
     assert len(tool_messages) == 2
+    assert bundle["consumed_tokens"] == 21
 
     last_tool_payload = json.loads(tool_messages[-1]["content"])
     assert last_tool_payload["observation"] == "检查通过，继续下一步。"
@@ -100,14 +104,15 @@ def test_response_format_parses_last_assistant_message():
         },
     )
 
-    result = agent.run(
+    messages, bundle = agent.run(
         messages=[{"role": "user", "content": "give me json"}],
         response_format=fmt,
         max_iterations=1,
     )
 
-    last_assistant = [msg for msg in result if msg.get("role") == "assistant"][-1]
+    last_assistant = [msg for msg in messages if msg.get("role") == "assistant"][-1]
     assert json.loads(last_assistant["content"]) == {"answer": "ok"}
+    assert bundle["consumed_tokens"] == 0
 
 
 def test_merged_payload_overrides_only_known_default_keys():
@@ -164,6 +169,7 @@ def test_openai_run_threads_previous_response_id_across_iterations():
                 tool_calls=[ToolCall(call_id="call_1", name="missing_tool", arguments={})],
                 final_text="",
                 response_id="resp_1",
+                consumed_tokens=11,
             )
 
         return ProviderTurnResult(
@@ -171,11 +177,12 @@ def test_openai_run_threads_previous_response_id_across_iterations():
             tool_calls=[],
             final_text="done",
             response_id="resp_2",
+            consumed_tokens=7,
         )
 
     agent._fetch_once = fake_fetch_once
 
-    result = agent.run(
+    messages, bundle = agent.run(
         messages=[{"role": "user", "content": "start"}],
         previous_response_id="prev_0",
         max_iterations=3,
@@ -186,7 +193,8 @@ def test_openai_run_threads_previous_response_id_across_iterations():
     assert len(seen_messages[1]) == 1
     assert seen_messages[1][0].get("type") == "function_call_output"
     assert agent.last_response_id == "resp_2"
-    assert [msg for msg in result if msg.get("role") == "assistant"][-1]["content"] == "done"
+    assert [msg for msg in messages if msg.get("role") == "assistant"][-1]["content"] == "done"
+    assert bundle["consumed_tokens"] == 18
 
 
 def test_openai_run_emits_reasoning_event_and_tracks_reasoning_items():
@@ -207,12 +215,13 @@ def test_openai_run_emits_reasoning_event_and_tracks_reasoning_items():
                     ],
                 }
             ],
+            consumed_tokens=9,
         )
 
     agent._fetch_once = fake_fetch_once
 
     events = []
-    agent.run(
+    _, bundle = agent.run(
         messages=[{"role": "user", "content": "start"}],
         callback=events.append,
         max_iterations=1,
@@ -223,6 +232,7 @@ def test_openai_run_emits_reasoning_event_and_tracks_reasoning_items():
     assert reasoning_events[0]["response_id"] == "resp_reasoning"
     assert agent.last_response_id == "resp_reasoning"
     assert len(agent.last_reasoning_items) == 1
+    assert bundle["consumed_tokens"] == 9
 
 
 def test_merged_payload_respects_model_capability_allowed_payload_keys():

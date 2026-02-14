@@ -90,10 +90,11 @@ agent.model = "gpt-4.1"
 agent.openai_api_key = "YOUR_OPENAI_API_KEY"
 
 messages = [{"role": "user", "content": "Reply with OK only."}]
-result = agent.run(messages=messages, payload={"max_output_tokens": 32}, max_iterations=1)
+messages_out, bundle = agent.run(messages=messages, payload={"max_output_tokens": 32}, max_iterations=1)
 
-last_assistant = [m for m in result if m.get("role") == "assistant"][-1]
+last_assistant = [m for m in messages_out if m.get("role") == "assistant"][-1]
 print(last_assistant["content"])
+print(bundle["consumed_tokens"])
 ```
 
 ### 2) Ollama provider
@@ -106,8 +107,9 @@ agent.provider = "ollama"
 agent.model = "deepseek-r1:14b"
 
 messages = [{"role": "user", "content": "只回复 OK"}]
-result = agent.run(messages=messages, payload={"num_predict": 32}, max_iterations=1)
-print([m for m in result if m.get("role") == "assistant"][-1]["content"])
+messages_out, bundle = agent.run(messages=messages, payload={"num_predict": 32}, max_iterations=1)
+print([m for m in messages_out if m.get("role") == "assistant"][-1]["content"])
+print(bundle["consumed_tokens"])
 ```
 
 ### 3) Register your own tools
@@ -137,18 +139,19 @@ agent.provider = "openai"
 agent.model = "gpt-5"
 agent.openai_api_key = "YOUR_OPENAI_API_KEY"
 
-result = agent.run(
+messages_out, bundle = agent.run(
     messages=[{"role": "user", "content": "Analyze and answer briefly."}],
     payload={
         "reasoning": {"effort": "medium"},
         "include": ["reasoning.encrypted_content"],
-        "store": True,
+        "store": False,
     },
     max_iterations=1,
 )
 
 print("last response id:", agent.last_response_id)
 print("reasoning blocks:", len(agent.last_reasoning_items))
+print("consumed_tokens:", bundle["consumed_tokens"])
 ```
 
 ---
@@ -175,9 +178,10 @@ agent.provider = "openai"
 agent.openai_api_key = "YOUR_OPENAI_API_KEY"
 
 messages = [{"role": "user", "content": 'Return JSON: {"answer":"ok"}'}]
-result = agent.run(messages=messages, response_format=fmt, max_iterations=1)
+messages_out, bundle = agent.run(messages=messages, response_format=fmt, max_iterations=1)
 
-print([m for m in result if m.get("role") == "assistant"][-1]["content"])
+print([m for m in messages_out if m.get("role") == "assistant"][-1]["content"])
+print(bundle["consumed_tokens"])
 ```
 
 `response_format` will parse and normalize the last assistant message according to the schema.
@@ -206,7 +210,8 @@ def on_event(evt: dict):
     if evt["type"] in ("tool_call", "tool_result", "final_message"):
         print(evt["type"], evt.get("tool_name"), evt.get("content", ""))
 
-result = agent.run(messages=messages, callback=on_event)
+messages_out, bundle = agent.run(messages=messages, callback=on_event)
+print(bundle["consumed_tokens"])
 ```
 
 ---
