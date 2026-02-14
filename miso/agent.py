@@ -61,7 +61,7 @@ class agent:
     def __init__(self):
         self.openai_api_key = None
         self.provider = "openai"
-        self.model = "gpt-4.1"
+        self.model = "gpt-5"
         self.max_iterations = 6
         self.default_payload = self._load_default_payloads(DEFAULT_PAYLOADS_FILE)
         self.model_capabilities = self._load_model_capabilities(MODEL_CAPABILITIES_FILE)
