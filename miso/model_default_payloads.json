@@ -6,6 +6,26 @@
     "max_output_tokens": 2048,
     "truncation": "auto"
   },
+  "gpt-5": {
+    "instructions": "",
+    "max_output_tokens": 4096,
+    "truncation": "auto",
+    "store": true,
+    "include": [],
+    "reasoning": {
+      "effort": "medium"
+    }
+  },
+  "gpt-5-codex": {
+    "instructions": "",
+    "max_output_tokens": 4096,
+    "truncation": "auto",
+    "store": true,
+    "include": [],
+    "reasoning": {
+      "effort": "medium"
+    }
+  },
   "deepseek-r1:14b": {
     "num_predict": 2048,
     "temperature": 0.7,

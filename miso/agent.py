@@ -40,6 +40,7 @@ Rules:
 OBSERVATION_RECENT_MESSAGES = 6
 OBSERVATION_MAX_OUTPUT_TOKENS = 512
 DEFAULT_PAYLOADS_FILE = Path(__file__).with_name("model_default_payloads.json")
+MODEL_CAPABILITIES_FILE = Path(__file__).with_name("model_capabilities.json")
 
 @dataclass
 class ToolCall:
@@ -52,6 +53,8 @@ class ProviderTurnResult:
     assistant_messages: list[dict[str, Any]]
     tool_calls: list[ToolCall]
     final_text: str = ""
+    response_id: str | None = None
+    reasoning_items: list[dict[str, Any]] | None = None
 
 class agent:
     def __init__(self):
@@ -60,7 +63,10 @@ class agent:
         self.model = "gpt-4.1"
         self.max_iterations = 6
         self.default_payload = self._load_default_payloads(DEFAULT_PAYLOADS_FILE)
+        self.model_capabilities = self._load_model_capabilities(MODEL_CAPABILITIES_FILE)
         self.toolkit = base_toolkit()
+        self.last_response_id: str | None = None
+        self.last_reasoning_items: list[dict[str, Any]] = []
 
     def _load_default_payloads(self, path: str | Path) -> dict[str, dict[str, Any]]:
         file_path = Path(path)
@@ -81,6 +87,31 @@ class agent:
                 parsed[model_name] = payload
         return parsed
 
+    def _load_model_capabilities(self, path: str | Path) -> dict[str, dict[str, Any]]:
+        file_path = Path(path)
+        if not file_path.exists():
+            return {}
+
+        try:
+            raw = json.loads(file_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+        if not isinstance(raw, dict):
+            return {}
+
+        parsed: dict[str, dict[str, Any]] = {}
+        for model_name, capabilities in raw.items():
+            if isinstance(model_name, str) and isinstance(capabilities, dict):
+                parsed[model_name] = capabilities
+        return parsed
+
+    def _model_capability(self, key: str, default: Any = None) -> Any:
+        model_caps = self.model_capabilities.get(self.model, {})
+        if not isinstance(model_caps, dict):
+            return default
+        return model_caps.get(key, default)
+
     def run(
         self,
         messages,
@@ -89,19 +120,29 @@ class agent:
         callback: Callable[[dict[str, Any]], None] | None = None,
         verbose: bool = False,
         max_iterations: int | None = None,
+        previous_response_id: str | None = None,
     ):
         run_id = str(uuid.uuid4())
-        conversation = copy.deepcopy(list(messages or []))
+        seed_messages = copy.deepcopy(list(messages or []))
+        conversation = copy.deepcopy(seed_messages)
         payload = dict(payload or {})
         max_loops = max_iterations or self.max_iterations
+        supports_prev = bool(self._model_capability("supports_previous_response_id", True))
+        next_previous_response_id = previous_response_id if supports_prev else None
+        next_openai_input = copy.deepcopy(seed_messages)
+        self.last_reasoning_items = []
 
         self._emit(callback, "run_started", run_id, iteration=0, provider=self.provider, model=self.model)
 
         for iteration in range(max_loops):
             self._emit(callback, "iteration_started", run_id, iteration=iteration)
+            request_messages = conversation
+            if self.provider == "openai":
+                # With previous_response_id, OpenAI expects incremental input for each next turn.
+                request_messages = next_openai_input
 
             turn = self._fetch_once(
-                messages=conversation,
+                messages=request_messages,
                 payload=payload,
                 response_format=response_format,
                 callback=callback,
@@ -110,7 +151,22 @@ class agent:
                 iteration=iteration,
                 toolkit=self.toolkit,
                 emit_stream=True,
+                previous_response_id=next_previous_response_id if self.provider == "openai" else None,
             )
+            if self.provider == "openai":
+                next_previous_response_id = turn.response_id
+                self.last_response_id = turn.response_id
+
+            if turn.reasoning_items:
+                self.last_reasoning_items = copy.deepcopy(turn.reasoning_items)
+                self._emit(
+                    callback,
+                    "reasoning",
+                    run_id,
+                    iteration=iteration,
+                    response_id=turn.response_id,
+                    reasoning_items=turn.reasoning_items,
+                )
 
             conversation.extend(turn.assistant_messages)
 
@@ -139,6 +195,12 @@ class agent:
                         )
 
                 conversation.extend(tool_messages)
+                if self.provider == "openai":
+                    # Continue the same response chain with tool outputs only.
+                    if next_previous_response_id:
+                        next_openai_input = copy.deepcopy(tool_messages)
+                    else:
+                        next_openai_input = copy.deepcopy(conversation)
                 self._emit(callback, "iteration_completed", run_id, iteration=iteration, has_tool_calls=True)
                 continue
 
@@ -189,6 +251,7 @@ class agent:
         iteration: int,
         toolkit: base_toolkit,
         emit_stream: bool,
+        previous_response_id: str | None = None,
     ) -> ProviderTurnResult:
         if self.provider == "openai":
             return self._openai_fetch_once(
@@ -201,6 +264,7 @@ class agent:
                 iteration=iteration,
                 toolkit=toolkit,
                 emit_stream=emit_stream,
+                previous_response_id=previous_response_id,
             )
         if self.provider == "ollama":
             return self._ollama_fetch_once(
@@ -226,6 +290,11 @@ class agent:
             if key in user_payload:
                 defaults[key] = user_payload[key]
 
+        allowed_keys = self._model_capability("allowed_payload_keys", None)
+        if isinstance(allowed_keys, list) and allowed_keys:
+            allowed_key_set = {key for key in allowed_keys if isinstance(key, str)}
+            defaults = {key: value for key, value in defaults.items() if key in allowed_key_set}
+
         return defaults
 
     def _openai_fetch_once(
@@ -240,6 +309,7 @@ class agent:
         iteration: int,
         toolkit: base_toolkit,
         emit_stream: bool,
+        previous_response_id: str | None = None,
     ) -> ProviderTurnResult:
         if not self.openai_api_key:
             raise ValueError("error: openai_api_key is required for openai provider")
@@ -252,9 +322,12 @@ class agent:
             **request_payload,
             "stream": True,
         }
+        if previous_response_id:
+            request_kwargs["previous_response_id"] = previous_response_id
 
         tools_json = toolkit.to_json()
-        if tools_json:
+        supports_tools = bool(self._model_capability("supports_tools", True))
+        if tools_json and supports_tools:
             request_kwargs["tools"] = tools_json
 
         if response_format is not None:
@@ -293,10 +366,12 @@ class agent:
             raise ValueError("error: openai stream ended without completion payload")
 
         outputs = getattr(completed_response, "output", None) or []
+        response_id = getattr(completed_response, "id", None)
 
         assistant_messages: list[dict[str, Any]] = []
         tool_calls: list[ToolCall] = []
         final_text_parts: list[str] = []
+        reasoning_items: list[dict[str, Any]] = []
 
         for output_item in outputs:
             item = self._as_dict(output_item)
@@ -323,6 +398,11 @@ class agent:
                     assistant_messages.append(item)
                 continue
 
+            if item_type == "reasoning":
+                reasoning_items.append(item)
+                assistant_messages.append(item)
+                continue
+
             assistant_messages.append(item)
 
         if not tool_calls and not final_text_parts and collected_chunks:
@@ -334,6 +414,8 @@ class agent:
             assistant_messages=assistant_messages,
             tool_calls=tool_calls,
             final_text="".join(final_text_parts).strip(),
+            response_id=response_id,
+            reasoning_items=reasoning_items or None,
         )
 
     def _ollama_fetch_once(
@@ -518,6 +600,7 @@ class agent:
             iteration=0,
             toolkit=base_toolkit(),
             emit_stream=False,
+            previous_response_id=None,
         )
 
         if observe_turn.final_text:

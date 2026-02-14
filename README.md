@@ -1,4 +1,5 @@
 <div align="center">
+  <img src="assets/miso_logo.png" alt="miso logo" width="160" />
   <h1>miso</h1>
   <p>A lightweight Python Agent Builder for OpenAI and Ollama.</p>
 </div>
@@ -62,12 +63,17 @@ pip install -r requirements.txt
 Default payloads are loaded from:
 
 - `miso/model_default_payloads.json`
+- `miso/model_capabilities.json`
 
 Merge rule:
 
 - Start from model default payload
 - Only keys that already exist in model defaults can be overridden by user payload
 - User payload keys not present in model defaults are ignored
+- Then payload is filtered by `allowed_payload_keys` from model capabilities
+
+For GPT-5 / GPT-5-Codex models, defaults include `reasoning`, `include`, and `store`,
+so you can override those keys from user payload.
 
 ---
 
@@ -121,6 +127,30 @@ tk.register(add, observe=True)  # observe=True enables review pass after tool ex
 agent.toolkit = tk
 ```
 
+### 4) GPT-5 reasoning + previous response chaining
+
+```python
+from miso import agent as Agent
+
+agent = Agent()
+agent.provider = "openai"
+agent.model = "gpt-5"
+agent.openai_api_key = "YOUR_OPENAI_API_KEY"
+
+result = agent.run(
+    messages=[{"role": "user", "content": "Analyze and answer briefly."}],
+    payload={
+        "reasoning": {"effort": "medium"},
+        "include": ["reasoning.encrypted_content"],
+        "store": True,
+    },
+    max_iterations=1,
+)
+
+print("last response id:", agent.last_response_id)
+print("reasoning blocks:", len(agent.last_reasoning_items))
+```
+
 ---
 
 ## <h1>Structured Output</h1> <a id="structured-output"></a>
@@ -163,6 +193,7 @@ print([m for m in result if m.get("role") == "assistant"][-1]["content"])
 - `token_delta`
 - `tool_call`
 - `tool_result`
+- `reasoning`
 - `observation`
 - `final_message`
 - `run_completed`

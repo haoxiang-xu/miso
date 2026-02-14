@@ -1,4 +1,5 @@
 import json
+import importlib
 
 from miso import agent as Agent, response_format, tool, toolkit
 from miso.agent import ProviderTurnResult, ToolCall
@@ -134,3 +135,244 @@ def test_merged_payload_ignores_user_payload_when_model_has_no_defaults():
     merged = agent._merged_payload({"temperature": 0.1, "max_output_tokens": 10})
 
     assert merged == {}
+
+
+def test_openai_run_threads_previous_response_id_across_iterations():
+    agent = Agent()
+    agent.provider = "openai"
+
+    seen_previous_ids = []
+    seen_messages = []
+    state = {"turn": 0}
+
+    def fake_fetch_once(**kwargs):
+        seen_previous_ids.append(kwargs.get("previous_response_id"))
+        seen_messages.append(kwargs.get("messages"))
+        state["turn"] += 1
+
+        if state["turn"] == 1:
+            return ProviderTurnResult(
+                assistant_messages=[
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "missing_tool",
+                        "status": "completed",
+                        "arguments": "{}",
+                    }
+                ],
+                tool_calls=[ToolCall(call_id="call_1", name="missing_tool", arguments={})],
+                final_text="",
+                response_id="resp_1",
+            )
+
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "done"}],
+            tool_calls=[],
+            final_text="done",
+            response_id="resp_2",
+        )
+
+    agent._fetch_once = fake_fetch_once
+
+    result = agent.run(
+        messages=[{"role": "user", "content": "start"}],
+        previous_response_id="prev_0",
+        max_iterations=3,
+    )
+
+    assert seen_previous_ids == ["prev_0", "resp_1"]
+    assert isinstance(seen_messages[1], list)
+    assert len(seen_messages[1]) == 1
+    assert seen_messages[1][0].get("type") == "function_call_output"
+    assert agent.last_response_id == "resp_2"
+    assert [msg for msg in result if msg.get("role") == "assistant"][-1]["content"] == "done"
+
+
+def test_openai_run_emits_reasoning_event_and_tracks_reasoning_items():
+    agent = Agent()
+    agent.provider = "openai"
+
+    def fake_fetch_once(**kwargs):
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "done"}],
+            tool_calls=[],
+            final_text="done",
+            response_id="resp_reasoning",
+            reasoning_items=[
+                {
+                    "type": "reasoning",
+                    "summary": [
+                        {"type": "summary_text", "text": "Need to verify data shape first."},
+                    ],
+                }
+            ],
+        )
+
+    agent._fetch_once = fake_fetch_once
+
+    events = []
+    agent.run(
+        messages=[{"role": "user", "content": "start"}],
+        callback=events.append,
+        max_iterations=1,
+    )
+
+    reasoning_events = [evt for evt in events if evt["type"] == "reasoning"]
+    assert len(reasoning_events) == 1
+    assert reasoning_events[0]["response_id"] == "resp_reasoning"
+    assert agent.last_response_id == "resp_reasoning"
+    assert len(agent.last_reasoning_items) == 1
+
+
+def test_merged_payload_respects_model_capability_allowed_payload_keys():
+    agent = Agent()
+    agent.model = "gpt-4.1"
+
+    # Inject a key into defaults that is not allowed by model_capabilities.
+    agent.default_payload["gpt-4.1"]["store"] = True
+
+    merged = agent._merged_payload({"store": False, "temperature": 0.4})
+
+    assert merged["temperature"] == 0.4
+    assert "store" not in merged
+
+
+def test_run_drops_previous_response_id_when_capability_disallows_it():
+    agent = Agent()
+    agent.provider = "openai"
+    agent.model = "gpt-4.1"
+    agent.model_capabilities["gpt-4.1"]["supports_previous_response_id"] = False
+
+    seen_previous_ids = []
+
+    def fake_fetch_once(**kwargs):
+        seen_previous_ids.append(kwargs.get("previous_response_id"))
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "done"}],
+            tool_calls=[],
+            final_text="done",
+            response_id="resp_done",
+        )
+
+    agent._fetch_once = fake_fetch_once
+
+    agent.run(
+        messages=[{"role": "user", "content": "start"}],
+        previous_response_id="prev_should_be_ignored",
+        max_iterations=1,
+    )
+
+    assert seen_previous_ids == [None]
+
+def test_openai_fetch_once_forces_stream_true(monkeypatch):
+    agent = Agent()
+    agent.provider = "openai"
+    agent.model = "gpt-4.1"
+    agent.openai_api_key = "test-key"
+    agent.default_payload.setdefault("gpt-4.1", {})["stream"] = False
+
+    captured_kwargs = {}
+
+    class FakeOpenAIStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            yield type("Chunk", (), {
+                "type": "response.completed",
+                "response": type("Resp", (), {
+                    "id": "resp_stream_test",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "ok"}],
+                        }
+                    ],
+                })(),
+            })()
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return FakeOpenAIStream()
+
+    class FakeOpenAIClient:
+        def __init__(self, api_key):
+            self.api_key = api_key
+            self.responses = FakeResponses()
+
+    agent_module = importlib.import_module("miso.agent")
+    monkeypatch.setattr(agent_module, "OpenAI", FakeOpenAIClient)
+
+    turn = agent._openai_fetch_once(
+        messages=[{"role": "user", "content": "hi"}],
+        payload={"stream": False},
+        response_format=None,
+        callback=None,
+        verbose=False,
+        run_id="run_stream",
+        iteration=0,
+        toolkit=toolkit(),
+        emit_stream=False,
+        previous_response_id=None,
+    )
+
+    assert captured_kwargs["stream"] is True
+    assert turn.final_text == "ok"
+
+
+def test_ollama_fetch_once_forces_stream_true(monkeypatch):
+    agent = Agent()
+    agent.provider = "ollama"
+
+    captured_request = {}
+
+    class FakeHTTPXStream:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            yield json.dumps({
+                "message": {"content": "ok"},
+                "done": True,
+            })
+
+        def read(self):
+            return b""
+
+    def fake_httpx_stream(method, url, json, timeout):
+        captured_request["method"] = method
+        captured_request["url"] = url
+        captured_request["json"] = json
+        captured_request["timeout"] = timeout
+        return FakeHTTPXStream()
+
+    agent_module = importlib.import_module("miso.agent")
+    monkeypatch.setattr(agent_module.httpx, "stream", fake_httpx_stream)
+
+    turn = agent._ollama_fetch_once(
+        messages=[{"role": "user", "content": "hi"}],
+        payload={},
+        response_format=None,
+        callback=None,
+        verbose=False,
+        run_id="run_stream",
+        iteration=0,
+        toolkit=toolkit(),
+        emit_stream=False,
+    )
+
+    assert captured_request["json"]["stream"] is True
+    assert turn.final_text == "ok"

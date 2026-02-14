@@ -1,0 +1,58 @@
+{
+  "gpt-4.1": {
+    "provider": "openai",
+    "supports_tools": true,
+    "supports_response_format": true,
+    "supports_previous_response_id": true,
+    "supports_reasoning": false,
+    "allowed_payload_keys": [
+      "instructions",
+      "temperature",
+      "top_p",
+      "max_output_tokens",
+      "truncation"
+    ]
+  },
+  "gpt-5": {
+    "provider": "openai",
+    "supports_tools": true,
+    "supports_response_format": true,
+    "supports_previous_response_id": true,
+    "supports_reasoning": true,
+    "allowed_payload_keys": [
+      "instructions",
+      "max_output_tokens",
+      "truncation",
+      "store",
+      "include",
+      "reasoning"
+    ]
+  },
+  "gpt-5-codex": {
+    "provider": "openai",
+    "supports_tools": true,
+    "supports_response_format": true,
+    "supports_previous_response_id": true,
+    "supports_reasoning": true,
+    "allowed_payload_keys": [
+      "instructions",
+      "max_output_tokens",
+      "truncation",
+      "store",
+      "include",
+      "reasoning"
+    ]
+  },
+  "deepseek-r1:14b": {
+    "provider": "ollama",
+    "supports_tools": true,
+    "supports_response_format": true,
+    "supports_previous_response_id": false,
+    "supports_reasoning": false,
+    "allowed_payload_keys": [
+      "num_predict",
+      "temperature",
+      "top_p"
+    ]
+  }
+}
