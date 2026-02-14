@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import re
 import shutil
@@ -85,8 +87,8 @@ class _PythonRuntime:
             return {"reset": True, "runtime_dir": str(self.runtime_dir)}
         return {"reset": False, "runtime_dir": str(self.runtime_dir)}
 
-class predefined_toolkit(toolkit):
-    """Dedicated toolkit that bundles predefined tools."""
+class builtin_toolkit(toolkit):
+    """Dedicated toolkit that bundles builtin tools."""
 
     def __init__(
         self,
@@ -144,6 +146,13 @@ class predefined_toolkit(toolkit):
                 name="search_text",
                 description="Search text pattern in workspace files.",
                 observe=True,
+            )
+        )
+        self.register(
+            tool.from_callable(
+                self.create_minimal_demo,
+                name="create_minimal_demo",
+                description="Create a minimal runnable Python demo file in workspace.",
             )
         )
 
@@ -284,6 +293,34 @@ class predefined_toolkit(toolkit):
             "truncated": False,
         }
 
+    def create_minimal_demo(
+        self,
+        path: str = "demo_minimal.py",
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        target = self._resolve_workspace_path(path)
+        if target.exists() and not overwrite:
+            return {
+                "path": str(target),
+                "created": False,
+                "reason": "file already exists",
+            }
+
+        content = (
+            "def greet(name: str) -> str:\n"
+            "    return f\"hello, {name}\"\n\n"
+            "if __name__ == \"__main__\":\n"
+            "    print(greet(\"miso\"))\n"
+        )
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return {
+            "path": str(target),
+            "created": True,
+            "bytes_written": len(content.encode("utf-8")),
+        }
+
     def python_runtime_init(self, reset: bool = False) -> dict[str, Any]:
         return self.python_runtime.ensure(reset=reset)
 
@@ -296,17 +333,17 @@ class predefined_toolkit(toolkit):
     def python_runtime_reset(self) -> dict[str, Any]:
         return self.python_runtime.reset()
 
-def build_predefined_toolkit(
+def build_builtin_toolkit(
     *,
     workspace_root: str | Path | None = None,
     include_python_runtime: bool = True,
-) -> predefined_toolkit:
-    return predefined_toolkit(
+) -> builtin_toolkit:
+    return builtin_toolkit(
         workspace_root=workspace_root,
         include_python_runtime=include_python_runtime,
     )
 
 __all__ = [
-    "predefined_toolkit",
-    "build_predefined_toolkit",
+    "builtin_toolkit",
+    "build_builtin_toolkit",
 ]

@@ -13,7 +13,7 @@
 - [Core Usage](#core-usage)
 - [Structured Output](#structured-output)
 - [Event Callback](#event-callback)
-- [Predefined Toolkit](#predefined-toolkit)
+- [Builtin Toolkit](#builtin-toolkit)
 - [Project Structure](#project-structure)
 - [Testing](#testing)
 - [Roadmap Notes](#roadmap-notes)
@@ -109,7 +109,7 @@ print([m for m in result if m.get("role") == "assistant"][-1]["content"])
 ### 4) Register your own tools
 
 ```python
-from miso import agent as Agent, toolkit
+from miso import agent as Agent, toolkit as Toolkit
 
 def add(a: int, b: int = 2):
     return a + b
@@ -118,9 +118,9 @@ agent = Agent()
 agent.provider = "openai"
 agent.openai_api_key = "YOUR_OPENAI_API_KEY"
 
-toolkit = toolkit()
-toolkit.register(add, observe=True)  # observe=True enables review pass after tool execution
-agent.toolkit = toolkit
+tk = Toolkit()
+tk.register(add, observe=True)  # observe=True enables review pass after tool execution
+agent.toolkit = tk
 ```
 
 ---
@@ -182,7 +182,7 @@ result = agent.run(messages=messages, callback=on_event)
 
 ---
 
-## <h1>Predefined Toolkit</h1> <a id="predefined-toolkit"></a>
+## <h1>Builtin Toolkit</h1> <a id="builtin-toolkit"></a>
 
 Use built-in workspace tools directly:
 
@@ -190,21 +190,23 @@ Use built-in workspace tools directly:
 from miso import agent as Agent
 
 agent = Agent()
-toolkit = agent.use_predefined_toolkit(
+toolkit = agent.use_builtin_toolkit(
     workspace_root=".",
     include_python_runtime=True,
 )
 
 toolkit.execute("write_text_file", {"path": "notes/demo.txt", "content": "hello\nworld\n"})
+toolkit.execute("create_minimal_demo", {"path": "demo_minimal.py"})
 print(toolkit.execute("search_text", {"pattern": "hello", "path": "notes"}))
 ```
 
-Registered predefined tools:
+Registered builtin tools:
 
 - `read_text_file`
 - `write_text_file`
 - `list_directory`
 - `search_text`
+- `create_minimal_demo`
 - `python_runtime_init`
 - `python_runtime_install`
 - `python_runtime_run`
@@ -221,13 +223,13 @@ miso/
   __init__.py
   agent.py               # agent core loop + provider adapters
   tool.py                # tool schema/inference/registry
-  predefined_tools.py    # workspace and isolated python runtime tools
+  builtin_tools.py    # workspace and isolated python runtime tools
   response_format.py     # JSON-schema response format helper
 tests/
   test_agent_core.py
   test_openai_family_smoke.py
   test_ollama_smoke.py
-  test_predefined_toolkit.py
+  test_builtin_toolkit.py
   test_toolkit_design.py
 run_tests.sh
 requirements.txt

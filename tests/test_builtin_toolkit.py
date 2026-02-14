@@ -1,27 +1,28 @@
 import tempfile
 from pathlib import Path
 
-from miso import agent as Agent, predefined_toolkit
+from miso import agent as Agent, builtin_toolkit
 
 
-def test_predefined_toolkit_registers_expected_tools():
+def test_builtin_toolkit_registers_expected_tools():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = predefined_toolkit(workspace_root=tmp, include_python_runtime=True)
+        toolkit = builtin_toolkit(workspace_root=tmp, include_python_runtime=True)
 
         names = set(toolkit.tools.keys())
         assert "read_text_file" in names
         assert "write_text_file" in names
         assert "list_directory" in names
         assert "search_text" in names
+        assert "create_minimal_demo" in names
         assert "python_runtime_init" in names
         assert "python_runtime_install" in names
         assert "python_runtime_run" in names
         assert "python_runtime_reset" in names
 
 
-def test_predefined_toolkit_file_ops_and_search():
+def test_builtin_toolkit_file_ops_and_search():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = predefined_toolkit(workspace_root=tmp, include_python_runtime=False)
+        toolkit = builtin_toolkit(workspace_root=tmp, include_python_runtime=False)
 
         write_result = toolkit.execute(
             "write_text_file",
@@ -42,9 +43,9 @@ def test_predefined_toolkit_file_ops_and_search():
         assert len(search_result["matches"]) == 2
 
 
-def test_predefined_toolkit_python_runtime_run_code():
+def test_builtin_toolkit_python_runtime_run_code():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = predefined_toolkit(workspace_root=tmp, include_python_runtime=True)
+        toolkit = builtin_toolkit(workspace_root=tmp, include_python_runtime=True)
 
         init_result = toolkit.execute("python_runtime_init", {"reset": True})
         assert init_result.get("created") is True
@@ -57,12 +58,29 @@ def test_predefined_toolkit_python_runtime_run_code():
         assert "runtime-ok" in run_result.get("stdout", "")
 
 
-def test_agent_use_predefined_toolkit_shortcut():
+def test_builtin_toolkit_create_minimal_demo_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        tk = builtin_toolkit(workspace_root=tmp, include_python_runtime=False)
+
+        created = tk.execute("create_minimal_demo", {"path": "demo_minimal.py"})
+        assert created.get("created") is True
+
+        demo_file = Path(tmp) / "demo_minimal.py"
+        assert demo_file.exists()
+        demo_content = demo_file.read_text(encoding="utf-8")
+        assert "def greet(name: str) -> str:" in demo_content
+        assert "print(greet(\"miso\"))" in demo_content
+
+        skipped = tk.execute("create_minimal_demo", {"path": "demo_minimal.py"})
+        assert skipped.get("created") is False
+
+
+def test_agent_use_builtin_toolkit_shortcut():
     with tempfile.TemporaryDirectory() as tmp:
         agent = Agent()
-        toolkit = agent.use_predefined_toolkit(workspace_root=tmp, include_python_runtime=False)
+        toolkit = agent.use_builtin_toolkit(workspace_root=tmp, include_python_runtime=False)
 
-        assert isinstance(toolkit, predefined_toolkit)
+        assert isinstance(toolkit, builtin_toolkit)
         assert "read_text_file" in agent.toolkit.tools
 
         workspace_file = Path(tmp) / "a.txt"

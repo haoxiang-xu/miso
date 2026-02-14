@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import copy
 import json
 import time
@@ -10,7 +12,7 @@ from openai import OpenAI
 
 from .response_format import response_format
 from .tool import toolkit
-from .predefined_tools import predefined_toolkit
+from .builtin_tools import builtin_toolkit
 
 try:
     from IPython.display import clear_output
@@ -69,13 +71,13 @@ class agent:
         }
         self.toolkit = toolkit()
 
-    def use_predefined_toolkit(
+    def use_builtin_toolkit(
         self,
         *,
         workspace_root: str | None = None,
         include_python_runtime: bool = True,
-    ) -> predefined_toolkit:
-        toolkit = predefined_toolkit(
+    ) -> builtin_toolkit:
+        toolkit = builtin_toolkit(
             workspace_root=workspace_root,
             include_python_runtime=include_python_runtime,
         )

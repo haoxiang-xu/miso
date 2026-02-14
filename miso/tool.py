@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import inspect
 import json
 from dataclasses import dataclass
@@ -178,19 +180,19 @@ def tool_decorator(
 class toolkit:
     def __init__(self, tools: dict[str, tool] | None = None):
         self.tools: dict[str, tool] = {}
-        for tool_name, tool in (tools or {}).items():
-            if isinstance(tool, tool):
-                self.tools[tool_name] = tool
+        for tool_name, tool_obj in (tools or {}).items():
+            if isinstance(tool_obj, tool):
+                self.tools[tool_name] = tool_obj
 
-    def register(self, tool: tool | Callable[..., Any], *, observe: bool | None = None) -> tool:
-        if isinstance(tool, tool):
+    def register(self, tool_obj: tool | Callable[..., Any], *, observe: bool | None = None) -> tool:
+        if isinstance(tool_obj, tool):
             if observe is not None:
-                tool.observe = observe
-            self.tools[tool.name] = tool
-            return tool
+                tool_obj.observe = observe
+            self.tools[tool_obj.name] = tool_obj
+            return tool_obj
 
-        if callable(tool):
-            wrapped = tool.from_callable(tool, observe=bool(observe))
+        if callable(tool_obj):
+            wrapped = tool.from_callable(tool_obj, observe=bool(observe))
             self.tools[wrapped.name] = wrapped
             return wrapped
 
@@ -200,13 +202,13 @@ class toolkit:
         return self.tools.get(function_name)
 
     def execute(self, function_name: str, arguments: dict[str, Any] | str | None) -> dict[str, Any]:
-        tool = self.get(function_name)
-        if tool is None:
+        tool_obj = self.get(function_name)
+        if tool_obj is None:
             return {"error": f"tool not found: {function_name}", "tool": function_name}
-        return tool.execute(arguments)
+        return tool_obj.execute(arguments)
 
     def to_json(self) -> list[dict[str, Any]]:
-        return [tool.to_json() for tool in self.tools.values()]
+        return [tool_obj.to_json() for tool_obj in self.tools.values()]
 
 __all__ = [
     "tool_parameter",
