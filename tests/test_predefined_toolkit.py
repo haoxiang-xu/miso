@@ -1,12 +1,12 @@
 import tempfile
 from pathlib import Path
 
-from miso import LLM_agent, LLM_predefined_toolkit
+from miso import agent as Agent, predefined_toolkit
 
 
 def test_predefined_toolkit_registers_expected_tools():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = LLM_predefined_toolkit(workspace_root=tmp, include_python_runtime=True)
+        toolkit = predefined_toolkit(workspace_root=tmp, include_python_runtime=True)
 
         names = set(toolkit.tools.keys())
         assert "read_text_file" in names
@@ -21,7 +21,7 @@ def test_predefined_toolkit_registers_expected_tools():
 
 def test_predefined_toolkit_file_ops_and_search():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = LLM_predefined_toolkit(workspace_root=tmp, include_python_runtime=False)
+        toolkit = predefined_toolkit(workspace_root=tmp, include_python_runtime=False)
 
         write_result = toolkit.execute(
             "write_text_file",
@@ -44,7 +44,7 @@ def test_predefined_toolkit_file_ops_and_search():
 
 def test_predefined_toolkit_python_runtime_run_code():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = LLM_predefined_toolkit(workspace_root=tmp, include_python_runtime=True)
+        toolkit = predefined_toolkit(workspace_root=tmp, include_python_runtime=True)
 
         init_result = toolkit.execute("python_runtime_init", {"reset": True})
         assert init_result.get("created") is True
@@ -59,10 +59,10 @@ def test_predefined_toolkit_python_runtime_run_code():
 
 def test_agent_use_predefined_toolkit_shortcut():
     with tempfile.TemporaryDirectory() as tmp:
-        agent = LLM_agent()
+        agent = Agent()
         toolkit = agent.use_predefined_toolkit(workspace_root=tmp, include_python_runtime=False)
 
-        assert isinstance(toolkit, LLM_predefined_toolkit)
+        assert isinstance(toolkit, predefined_toolkit)
         assert "read_text_file" in agent.toolkit.tools
 
         workspace_file = Path(tmp) / "a.txt"

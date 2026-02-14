@@ -24,12 +24,12 @@
 
 `miso` is a compact agent framework focused on:
 
-- Multi-step tool calling loops (`LLM_agent.run`)
+- Multi-step tool calling loops (`agent.run`)
 - OpenAI Responses API + OpenAI-compatible endpoints
 - Local Ollama chat support
-- Custom tool registration (`LLM_tool`, `LLM_toolkit`, `@llm_tool`)
+- Custom tool registration (`tool`, `toolkit`, `@tool_decorator`)
 - Predefined workspace tools (read/write/search files, optional isolated Python runtime)
-- JSON-schema response formatting (`LLM_response_format`)
+- JSON-schema response formatting (`response_format`)
 
 If your goal is "agent builder but not heavy framework", this repo is exactly that.
 
@@ -66,9 +66,9 @@ pip install -r requirements.txt
 ### 1) OpenAI provider
 
 ```python
-from miso import LLM_agent
+from miso import agent as Agent
 
-agent = LLM_agent()
+agent = Agent()
 agent.provider = "openai"
 agent.model = "gpt-4.1"
 agent.openai_api_key = "YOUR_OPENAI_API_KEY"
@@ -83,9 +83,9 @@ print(last_assistant["content"])
 ### 2) OpenAI-compatible endpoint
 
 ```python
-from miso import LLM_agent
+from miso import agent as Agent
 
-agent = LLM_agent()
+agent = Agent()
 agent.provider = "openai"
 agent.model = "your-model-name"
 agent.openai_api_key = "YOUR_COMPAT_API_KEY"
@@ -95,9 +95,9 @@ agent.openai_base_url = "https://your-openai-compatible-endpoint/v1"
 ### 3) Ollama provider
 
 ```python
-from miso import LLM_agent
+from miso import agent as Agent
 
-agent = LLM_agent()
+agent = Agent()
 agent.provider = "ollama"
 agent.model = "deepseek-r1:14b"
 
@@ -109,16 +109,16 @@ print([m for m in result if m.get("role") == "assistant"][-1]["content"])
 ### 4) Register your own tools
 
 ```python
-from miso import LLM_agent, LLM_toolkit
+from miso import agent as Agent, toolkit
 
 def add(a: int, b: int = 2):
     return a + b
 
-agent = LLM_agent()
+agent = Agent()
 agent.provider = "openai"
 agent.openai_api_key = "YOUR_OPENAI_API_KEY"
 
-toolkit = LLM_toolkit()
+toolkit = toolkit()
 toolkit.register(add, observe=True)  # observe=True enables review pass after tool execution
 agent.toolkit = toolkit
 ```
@@ -128,9 +128,9 @@ agent.toolkit = toolkit
 ## <h1>Structured Output</h1> <a id="structured-output"></a>
 
 ```python
-from miso import LLM_agent, LLM_response_format
+from miso import agent as Agent, response_format
 
-response_format = LLM_response_format(
+fmt = response_format(
     name="answer_format",
     schema={
         "type": "object",
@@ -142,17 +142,17 @@ response_format = LLM_response_format(
     },
 )
 
-agent = LLM_agent()
+agent = Agent()
 agent.provider = "openai"
 agent.openai_api_key = "YOUR_OPENAI_API_KEY"
 
 messages = [{"role": "user", "content": 'Return JSON: {"answer":"ok"}'}]
-result = agent.run(messages=messages, response_format=response_format, max_iterations=1)
+result = agent.run(messages=messages, response_format=fmt, max_iterations=1)
 
 print([m for m in result if m.get("role") == "assistant"][-1]["content"])
 ```
 
-`LLM_response_format` will parse and normalize the last assistant message according to the schema.
+`response_format` will parse and normalize the last assistant message according to the schema.
 
 ---
 
@@ -187,9 +187,9 @@ result = agent.run(messages=messages, callback=on_event)
 Use built-in workspace tools directly:
 
 ```python
-from miso import LLM_agent
+from miso import agent as Agent
 
-agent = LLM_agent()
+agent = Agent()
 toolkit = agent.use_predefined_toolkit(
     workspace_root=".",
     include_python_runtime=True,
@@ -219,7 +219,7 @@ Registered predefined tools:
 ```text
 miso/
   __init__.py
-  endpoint.py            # LLM_agent core loop + provider adapters
+  agent.py               # agent core loop + provider adapters
   tool.py                # tool schema/inference/registry
   predefined_tools.py    # workspace and isolated python runtime tools
   response_format.py     # JSON-schema response format helper
@@ -259,4 +259,4 @@ Optional smoke tests depend on environment variables:
 ## <h1>Roadmap Notes</h1> <a id="roadmap-notes"></a>
 
 - `retrieval_mode` currently exists as a reserved field for future retrieval strategy.
-- `LLM_endpoint` is kept as a backward-compatible alias of `LLM_agent`.
+- Use `agent` as the single entry class.

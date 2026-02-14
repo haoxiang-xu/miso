@@ -6,7 +6,7 @@ import venv
 from pathlib import Path
 from typing import Any
 
-from .tool import LLM_tool, LLM_toolkit
+from .tool import tool, toolkit
 
 class _PythonRuntime:
     def __init__(self, workspace_root: Path):
@@ -85,7 +85,7 @@ class _PythonRuntime:
             return {"reset": True, "runtime_dir": str(self.runtime_dir)}
         return {"reset": False, "runtime_dir": str(self.runtime_dir)}
 
-class LLM_predefined_toolkit(LLM_toolkit):
+class predefined_toolkit(toolkit):
     """Dedicated toolkit that bundles predefined tools."""
 
     def __init__(
@@ -118,28 +118,28 @@ class LLM_predefined_toolkit(LLM_toolkit):
 
     def _register_core_tools(self):
         self.register(
-            LLM_tool.from_callable(
+            tool.from_callable(
                 self.read_text_file,
                 name="read_text_file",
                 description="Read UTF-8 text file from workspace.",
             )
         )
         self.register(
-            LLM_tool.from_callable(
+            tool.from_callable(
                 self.write_text_file,
                 name="write_text_file",
                 description="Write UTF-8 text file into workspace.",
             )
         )
         self.register(
-            LLM_tool.from_callable(
+            tool.from_callable(
                 self.list_directory,
                 name="list_directory",
                 description="List files and folders under a workspace path.",
             )
         )
         self.register(
-            LLM_tool.from_callable(
+            tool.from_callable(
                 self.search_text,
                 name="search_text",
                 description="Search text pattern in workspace files.",
@@ -149,14 +149,14 @@ class LLM_predefined_toolkit(LLM_toolkit):
 
     def _register_python_runtime_tools(self):
         self.register(
-            LLM_tool.from_callable(
+            tool.from_callable(
                 self.python_runtime_init,
                 name="python_runtime_init",
                 description="Create isolated Python runtime (venv) in workspace.",
             )
         )
         self.register(
-            LLM_tool.from_callable(
+            tool.from_callable(
                 self.python_runtime_install,
                 name="python_runtime_install",
                 description="Install Python packages into isolated runtime via pip.",
@@ -164,7 +164,7 @@ class LLM_predefined_toolkit(LLM_toolkit):
             )
         )
         self.register(
-            LLM_tool.from_callable(
+            tool.from_callable(
                 self.python_runtime_run,
                 name="python_runtime_run",
                 description="Run Python code inside isolated runtime.",
@@ -172,7 +172,7 @@ class LLM_predefined_toolkit(LLM_toolkit):
             )
         )
         self.register(
-            LLM_tool.from_callable(
+            tool.from_callable(
                 self.python_runtime_reset,
                 name="python_runtime_reset",
                 description="Delete and reset isolated Python runtime.",
@@ -300,13 +300,13 @@ def build_predefined_toolkit(
     *,
     workspace_root: str | Path | None = None,
     include_python_runtime: bool = True,
-) -> LLM_predefined_toolkit:
-    return LLM_predefined_toolkit(
+) -> predefined_toolkit:
+    return predefined_toolkit(
         workspace_root=workspace_root,
         include_python_runtime=include_python_runtime,
     )
 
 __all__ = [
-    "LLM_predefined_toolkit",
+    "predefined_toolkit",
     "build_predefined_toolkit",
 ]

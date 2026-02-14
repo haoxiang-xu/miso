@@ -1,16 +1,16 @@
 import json
 
-from miso import LLM_agent, LLM_response_format, LLM_tool, LLM_toolkit
-from miso.endpoint import ProviderTurnResult, ToolCall
+from miso import agent as Agent, response_format, tool, toolkit
+from miso.agent import ProviderTurnResult, ToolCall
 
 
 def test_observation_injected_into_last_tool_message_and_callback_events():
-    agent = LLM_agent()
+    agent = Agent()
     agent.provider = "ollama"
 
-    observed_tool = LLM_tool(name="need_observe", func=lambda: {"value": 1}, observe=True, parameters=[])
-    plain_tool = LLM_tool(name="plain_tool", func=lambda: {"value": 2}, observe=False, parameters=[])
-    agent.toolkit = LLM_toolkit({
+    observed_tool = tool(name="need_observe", func=lambda: {"value": 1}, observe=True, parameters=[])
+    plain_tool = tool(name="plain_tool", func=lambda: {"value": 2}, observe=False, parameters=[])
+    agent.toolkit = toolkit({
         observed_tool.name: observed_tool,
         plain_tool.name: plain_tool,
     })
@@ -75,7 +75,7 @@ def test_observation_injected_into_last_tool_message_and_callback_events():
 
 
 def test_response_format_parses_last_assistant_message():
-    agent = LLM_agent()
+    agent = Agent()
     agent.provider = "ollama"
 
     def fake_fetch_once(**kwargs):
@@ -87,7 +87,7 @@ def test_response_format_parses_last_assistant_message():
 
     agent._fetch_once = fake_fetch_once
 
-    response_format = LLM_response_format(
+    fmt = response_format(
         name="answer_format",
         schema={
             "type": "object",
@@ -101,7 +101,7 @@ def test_response_format_parses_last_assistant_message():
 
     result = agent.run(
         messages=[{"role": "user", "content": "give me json"}],
-        response_format=response_format,
+        response_format=fmt,
         max_iterations=1,
     )
 

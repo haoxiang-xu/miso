@@ -8,7 +8,7 @@ import pytest
 repo_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(repo_root))
 
-from miso import LLM_endpoint
+from miso import agent as Agent
 
 
 def _ollama_tags(timeout=2.0):
@@ -44,11 +44,11 @@ def test_ollama_smoke():
     if not _model_available(tags, model):
         pytest.skip(f"ollama model not installed: {model}")
 
-    endpoint = LLM_endpoint()
-    endpoint.provider = "ollama"
-    endpoint.model = model
+    agent = Agent()
+    agent.provider = "ollama"
+    agent.model = model
 
     messages = [{"role": "user", "content": "只回复 OK"}]
-    result = endpoint.chat_completion(messages, payload={"num_predict": 32}, verbose=False)
+    result = agent.chat_completion(messages, payload={"num_predict": 32}, verbose=False)
 
     assert _last_assistant_text(result) != ""

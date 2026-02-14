@@ -2,7 +2,7 @@ import json
 from copy import deepcopy
 from typing import Any, Callable
 
-class LLM_response_format:
+class response_format:
     """JSON-schema based response format as a concrete class."""
 
     def __init__(
@@ -56,4 +56,4 @@ class LLM_response_format:
 
         return parsed
 
-__all__ = ["LLM_response_format"]
+__all__ = ["response_format"]

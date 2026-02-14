@@ -1,13 +1,13 @@
 import json
 
-from miso import LLM_tool, LLM_toolkit
+from miso import tool, toolkit
 
 
 def test_tool_parameter_inference_and_execute():
     def add(a: int, b: int = 2):
         return a + b
 
-    tool = LLM_tool.from_callable(add, observe=True)
+    tool = tool.from_callable(add, observe=True)
 
     schema = tool.to_json()
     assert schema["name"] == "add"
@@ -21,7 +21,7 @@ def test_tool_parameter_inference_and_execute():
 
 
 def test_toolkit_register_and_unknown_tool_error():
-    toolkit = LLM_toolkit()
+    toolkit = toolkit()
 
     def echo(text: str):
         return {"echo": text}

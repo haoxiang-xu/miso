@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from miso import LLM_agent
+from miso import agent as Agent
 
 
 def _last_assistant_text(messages):
@@ -18,7 +18,7 @@ def test_openai_smoke():
     if not api_key or not model:
         pytest.skip("OPENAI_API_KEY or OPENAI_MODEL not set")
 
-    agent = LLM_agent()
+    agent = Agent()
     agent.provider = "openai"
     agent.openai_api_key = api_key
     agent.openai_base_url = os.environ.get("OPENAI_BASE_URL")
@@ -37,7 +37,7 @@ def test_openai_compatible_smoke():
     if not base_url or not api_key or not model:
         pytest.skip("OPENAI_COMPAT_BASE_URL / OPENAI_COMPAT_API_KEY / OPENAI_COMPAT_MODEL not set")
 
-    agent = LLM_agent()
+    agent = Agent()
     agent.provider = "openai"
     agent.openai_api_key = api_key
     agent.openai_base_url = base_url

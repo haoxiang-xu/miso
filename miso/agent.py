@@ -8,9 +8,9 @@ from typing import Any, Callable
 import httpx
 from openai import OpenAI
 
-from .response_format import LLM_response_format
-from .tool import LLM_toolkit
-from .predefined_tools import LLM_predefined_toolkit
+from .response_format import response_format
+from .tool import toolkit
+from .predefined_tools import predefined_toolkit
 
 try:
     from IPython.display import clear_output
@@ -50,7 +50,7 @@ class ProviderTurnResult:
     tool_calls: list[ToolCall]
     final_text: str = ""
 
-class LLM_agent:
+class agent:
     def __init__(self):
         self.retrieval_mode = "force_retrieve"  # reserved for future retrieval strategy
         self.openai_api_key = None
@@ -67,15 +67,15 @@ class LLM_agent:
                 "truncation": "auto",  # options: "auto", "disabled"
             }
         }
-        self.toolkit = LLM_toolkit()
+        self.toolkit = toolkit()
 
     def use_predefined_toolkit(
         self,
         *,
         workspace_root: str | None = None,
         include_python_runtime: bool = True,
-    ) -> LLM_predefined_toolkit:
-        toolkit = LLM_predefined_toolkit(
+    ) -> predefined_toolkit:
+        toolkit = predefined_toolkit(
             workspace_root=workspace_root,
             include_python_runtime=include_python_runtime,
         )
@@ -86,7 +86,7 @@ class LLM_agent:
         self,
         messages,
         payload: dict[str, Any] | None = None,
-        response_format: LLM_response_format | None = None,
+        response_format: response_format | None = None,
         callback: Callable[[dict[str, Any]], None] | None = None,
         verbose: bool = False,
         max_iterations: int | None = None,
@@ -104,7 +104,7 @@ class LLM_agent:
         self,
         messages,
         payload: dict[str, Any] | None = None,
-        response_format: LLM_response_format | None = None,
+        response_format: response_format | None = None,
         callback: Callable[[dict[str, Any]], None] | None = None,
         verbose: bool = False,
         max_iterations: int | None = None,
@@ -201,12 +201,12 @@ class LLM_agent:
         *,
         messages: list[dict[str, Any]],
         payload: dict[str, Any],
-        response_format: LLM_response_format | None,
+        response_format: response_format | None,
         callback: Callable[[dict[str, Any]], None] | None,
         verbose: bool,
         run_id: str,
         iteration: int,
-        toolkit: LLM_toolkit,
+        toolkit: toolkit,
         emit_stream: bool,
     ) -> ProviderTurnResult:
         if self.provider == "openai":
@@ -233,7 +233,7 @@ class LLM_agent:
                 toolkit=toolkit,
                 emit_stream=emit_stream,
             )
-        raise ValueError("error: unsupported provider specified. ( LLM_agent -> run )")
+        raise ValueError("error: unsupported provider specified. ( agent -> run )")
 
     def _merged_payload(self, payload: dict[str, Any] | None) -> dict[str, Any]:
         if self.provider == "openai":
@@ -248,12 +248,12 @@ class LLM_agent:
         *,
         messages: list[dict[str, Any]],
         payload: dict[str, Any],
-        response_format: LLM_response_format | None,
+        response_format: response_format | None,
         callback: Callable[[dict[str, Any]], None] | None,
         verbose: bool,
         run_id: str,
         iteration: int,
-        toolkit: LLM_toolkit,
+        toolkit: toolkit,
         emit_stream: bool,
     ) -> ProviderTurnResult:
         if not self.openai_api_key:
@@ -303,7 +303,7 @@ class LLM_agent:
                                 accumulated_text="".join(collected_chunks),
                             )
                 elif chunk_type == "response.error":
-                    raise ValueError("error: LLM text generation failed. ( LLM_agent -> _openai_fetch_once )")
+                    raise ValueError("error: LLM text generation failed. ( agent -> _openai_fetch_once )")
                 elif chunk_type == "response.completed":
                     completed_response = getattr(chunk, "response", None)
 
@@ -359,12 +359,12 @@ class LLM_agent:
         *,
         messages: list[dict[str, Any]],
         payload: dict[str, Any],
-        response_format: LLM_response_format | None,
+        response_format: response_format | None,
         callback: Callable[[dict[str, Any]], None] | None,
         verbose: bool,
         run_id: str,
         iteration: int,
-        toolkit: LLM_toolkit,
+        toolkit: toolkit,
         emit_stream: bool,
     ) -> ProviderTurnResult:
         request_body: dict[str, Any] = {
@@ -397,7 +397,7 @@ class LLM_agent:
         with httpx.stream("POST", "http://localhost:11434/api/chat", json=request_body, timeout=None) as response:
             if response.status_code >= 400:
                 detail = response.read().decode()
-                raise ValueError(f"error: {detail} ( LLM_agent -> _ollama_fetch_once )")
+                raise ValueError(f"error: {detail} ( agent -> _ollama_fetch_once )")
             response.raise_for_status()
 
             for line in response.iter_lines():
@@ -406,7 +406,7 @@ class LLM_agent:
 
                 data = json.loads(line)
                 if data.get("error"):
-                    raise ValueError(f"error: {data['error']} ( LLM_agent -> _ollama_fetch_once )")
+                    raise ValueError(f"error: {data['error']} ( agent -> _ollama_fetch_once )")
 
                 message = data.get("message") or {}
                 delta = message.get("content", "") or message.get("thinking", "")
@@ -458,7 +458,7 @@ class LLM_agent:
                         final_text=full_message,
                     )
 
-        raise ValueError("error: unexpected termination of ollama stream. ( LLM_agent -> _ollama_fetch_once )")
+        raise ValueError("error: unexpected termination of ollama stream. ( agent -> _ollama_fetch_once )")
 
     def _execute_tool_calls(
         self,
@@ -534,7 +534,7 @@ class LLM_agent:
             verbose=False,
             run_id="observe",
             iteration=0,
-            toolkit=LLM_toolkit(),
+            toolkit=toolkit(),
             emit_stream=False,
         )
 
@@ -586,7 +586,7 @@ class LLM_agent:
     def _apply_response_format(
         self,
         messages: list[dict[str, Any]],
-        response_format: LLM_response_format | None,
+        response_format: response_format | None,
     ):
         if response_format is None:
             return
@@ -626,11 +626,7 @@ class LLM_agent:
                 return (msg.get("content") or "").strip()
         return ""
 
-class LLM_endpoint(LLM_agent):
-    """Backward-compatible alias. Prefer LLM_agent."""
-
 __all__ = [
-    "LLM_agent",
-    "LLM_endpoint",
-    "LLM_response_format",
+    "agent",
+    "response_format",
 ]

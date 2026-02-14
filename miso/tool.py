@@ -17,7 +17,7 @@ def _annotation_to_json_type(annotation: Any) -> str:
     return "string"
 
 @dataclass
-class LLM_tool_parameter:
+class tool_parameter:
     name: str
     description: str
     type_: str
@@ -33,13 +33,13 @@ class LLM_tool_parameter:
             json_parameter["pattern"] = self.pattern
         return json_parameter
 
-class LLM_tool:
+class tool:
     def __init__(
         self,
         name: str = "",
         description: str = "",
         func: Callable[..., Any] | None = None,
-        parameters: list[LLM_tool_parameter | dict[str, Any]] | None = None,
+        parameters: list[tool_parameter | dict[str, Any]] | None = None,
         observe: bool = False,
     ):
         self.name = name
@@ -64,9 +64,9 @@ class LLM_tool:
         *,
         name: str | None = None,
         description: str | None = None,
-        parameters: list[LLM_tool_parameter | dict[str, Any]] | None = None,
+        parameters: list[tool_parameter | dict[str, Any]] | None = None,
         observe: bool = False,
-    ) -> "LLM_tool":
+    ) -> "tool":
         return cls(
             name=name or func.__name__,
             description=description or (func.__doc__.strip().splitlines()[0] if func.__doc__ else ""),
@@ -77,15 +77,15 @@ class LLM_tool:
 
     def _construct_parameters(
         self,
-        parameters: list[LLM_tool_parameter | dict[str, Any]] | None,
-    ) -> list[LLM_tool_parameter]:
-        constructed_parameters: list[LLM_tool_parameter] = []
+        parameters: list[tool_parameter | dict[str, Any]] | None,
+    ) -> list[tool_parameter]:
+        constructed_parameters: list[tool_parameter] = []
         for parameter in parameters or []:
-            if isinstance(parameter, LLM_tool_parameter):
+            if isinstance(parameter, tool_parameter):
                 constructed_parameters.append(parameter)
             elif isinstance(parameter, dict):
                 constructed_parameters.append(
-                    LLM_tool_parameter(
+                    tool_parameter(
                         name=parameter.get("name", ""),
                         description=parameter.get("description", ""),
                         type_=parameter.get("type_", "string"),
@@ -95,8 +95,8 @@ class LLM_tool:
                 )
         return constructed_parameters
 
-    def _infer_parameters_from_func(self, func: Callable[..., Any]) -> list[LLM_tool_parameter]:
-        inferred: list[LLM_tool_parameter] = []
+    def _infer_parameters_from_func(self, func: Callable[..., Any]) -> list[tool_parameter]:
+        inferred: list[tool_parameter] = []
         signature = inspect.signature(func)
         for name, param in signature.parameters.items():
             if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
@@ -106,7 +106,7 @@ class LLM_tool:
             type_ = _annotation_to_json_type(annotation)
             required = param.default == inspect._empty
             inferred.append(
-                LLM_tool_parameter(
+                tool_parameter(
                     name=name,
                     description=f"Argument {name}",
                     type_=type_,
@@ -137,7 +137,7 @@ class LLM_tool:
 
     def execute(self, arguments: dict[str, Any] | str | None) -> dict[str, Any]:
         if self.func is None:
-            return {"error": "tool function not implemented (LLM_tool --> execute)"}
+            return {"error": "tool function not implemented (tool --> execute)"}
 
         try:
             if arguments is None:
@@ -157,15 +157,15 @@ class LLM_tool:
         except Exception as exc:
             return {"error": str(exc), "tool": self.name}
 
-def llm_tool(
+def tool_decorator(
     *,
     name: str | None = None,
     description: str | None = None,
-    parameters: list[LLM_tool_parameter | dict[str, Any]] | None = None,
+    parameters: list[tool_parameter | dict[str, Any]] | None = None,
     observe: bool = False,
 ):
-    def decorator(func: Callable[..., Any]) -> LLM_tool:
-        return LLM_tool.from_callable(
+    def decorator(func: Callable[..., Any]) -> tool:
+        return tool.from_callable(
             func,
             name=name,
             description=description,
@@ -175,28 +175,28 @@ def llm_tool(
 
     return decorator
 
-class LLM_toolkit:
-    def __init__(self, tools: dict[str, LLM_tool] | None = None):
-        self.tools: dict[str, LLM_tool] = {}
+class toolkit:
+    def __init__(self, tools: dict[str, tool] | None = None):
+        self.tools: dict[str, tool] = {}
         for tool_name, tool in (tools or {}).items():
-            if isinstance(tool, LLM_tool):
+            if isinstance(tool, tool):
                 self.tools[tool_name] = tool
 
-    def register(self, tool: LLM_tool | Callable[..., Any], *, observe: bool | None = None) -> LLM_tool:
-        if isinstance(tool, LLM_tool):
+    def register(self, tool: tool | Callable[..., Any], *, observe: bool | None = None) -> tool:
+        if isinstance(tool, tool):
             if observe is not None:
                 tool.observe = observe
             self.tools[tool.name] = tool
             return tool
 
         if callable(tool):
-            wrapped = LLM_tool.from_callable(tool, observe=bool(observe))
+            wrapped = tool.from_callable(tool, observe=bool(observe))
             self.tools[wrapped.name] = wrapped
             return wrapped
 
         raise ValueError("invalid tool passed to register")
 
-    def get(self, function_name: str) -> LLM_tool | None:
+    def get(self, function_name: str) -> tool | None:
         return self.tools.get(function_name)
 
     def execute(self, function_name: str, arguments: dict[str, Any] | str | None) -> dict[str, Any]:
@@ -209,8 +209,8 @@ class LLM_toolkit:
         return [tool.to_json() for tool in self.tools.values()]
 
 __all__ = [
-    "LLM_tool_parameter",
-    "LLM_tool",
-    "LLM_toolkit",
-    "llm_tool",
+    "tool_parameter",
+    "tool",
+    "toolkit",
+    "tool_decorator",
 ]
