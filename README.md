@@ -25,7 +25,7 @@
 `miso` is a compact agent framework focused on:
 
 - Multi-step tool calling loops (`agent.run`)
-- OpenAI Responses API + OpenAI-compatible endpoints
+- OpenAI Responses API
 - Local Ollama chat support
 - Custom tool registration (`tool`, `toolkit`, `@tool_decorator`)
 - Predefined workspace tools (read/write/search files, optional isolated Python runtime)
@@ -59,6 +59,16 @@ pip install -r requirements.txt
 ./run_tests.sh
 ```
 
+Default payloads are loaded from:
+
+- `miso/model_default_payloads.json`
+
+Merge rule:
+
+- Start from model default payload
+- Only keys that already exist in model defaults can be overridden by user payload
+- User payload keys not present in model defaults are ignored
+
 ---
 
 ## <h1>Core Usage</h1> <a id="core-usage"></a>
@@ -80,19 +90,7 @@ last_assistant = [m for m in result if m.get("role") == "assistant"][-1]
 print(last_assistant["content"])
 ```
 
-### 2) OpenAI-compatible endpoint
-
-```python
-from miso import agent as Agent
-
-agent = Agent()
-agent.provider = "openai"
-agent.model = "your-model-name"
-agent.openai_api_key = "YOUR_COMPAT_API_KEY"
-agent.openai_base_url = "https://your-openai-compatible-endpoint/v1"
-```
-
-### 3) Ollama provider
+### 2) Ollama provider
 
 ```python
 from miso import agent as Agent
@@ -102,11 +100,11 @@ agent.provider = "ollama"
 agent.model = "deepseek-r1:14b"
 
 messages = [{"role": "user", "content": "只回复 OK"}]
-result = agent.chat_completion(messages, payload={"num_predict": 32}, max_iterations=1)
+result = agent.run(messages=messages, payload={"num_predict": 32}, max_iterations=1)
 print([m for m in result if m.get("role") == "assistant"][-1]["content"])
 ```
 
-### 4) Register your own tools
+### 3) Register your own tools
 
 ```python
 from miso import agent as Agent, toolkit as Toolkit
@@ -187,13 +185,14 @@ result = agent.run(messages=messages, callback=on_event)
 Use built-in workspace tools directly:
 
 ```python
-from miso import agent as Agent
+from miso import agent as Agent, builtin_toolkit
 
 agent = Agent()
-toolkit = agent.use_builtin_toolkit(
+agent.toolkit = builtin_toolkit(
     workspace_root=".",
     include_python_runtime=True,
 )
+toolkit = agent.toolkit
 
 toolkit.execute("write_text_file", {"path": "notes/demo.txt", "content": "hello\nworld\n"})
 toolkit.execute("create_minimal_demo", {"path": "demo_minimal.py"})
@@ -248,11 +247,6 @@ Optional smoke tests depend on environment variables:
 - OpenAI:
   - `OPENAI_API_KEY`
   - `OPENAI_MODEL`
-  - `OPENAI_BASE_URL` (optional)
-- OpenAI-compatible:
-  - `OPENAI_COMPAT_BASE_URL`
-  - `OPENAI_COMPAT_API_KEY`
-  - `OPENAI_COMPAT_MODEL`
 - Ollama:
   - `OLLAMA_MODEL` (default: `deepseek-r1:14b`)
 
@@ -260,5 +254,4 @@ Optional smoke tests depend on environment variables:
 
 ## <h1>Roadmap Notes</h1> <a id="roadmap-notes"></a>
 
-- `retrieval_mode` currently exists as a reserved field for future retrieval strategy.
 - Use `agent` as the single entry class.

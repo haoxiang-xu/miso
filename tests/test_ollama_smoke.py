@@ -49,6 +49,6 @@ def test_ollama_smoke():
     agent.model = model
 
     messages = [{"role": "user", "content": "只回复 OK"}]
-    result = agent.chat_completion(messages, payload={"num_predict": 32}, verbose=False)
+    result = agent.run(messages=messages, payload={"num_predict": 32}, verbose=False)
 
     assert _last_assistant_text(result) != ""

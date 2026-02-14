@@ -21,26 +21,6 @@ def test_openai_smoke():
     agent = Agent()
     agent.provider = "openai"
     agent.openai_api_key = api_key
-    agent.openai_base_url = os.environ.get("OPENAI_BASE_URL")
-    agent.model = model
-
-    messages = [{"role": "user", "content": "Reply with OK only."}]
-    result = agent.run(messages=messages, payload={"max_output_tokens": 32}, max_iterations=1)
-
-    assert _last_assistant_text(result) != ""
-
-
-def test_openai_compatible_smoke():
-    base_url = os.environ.get("OPENAI_COMPAT_BASE_URL")
-    api_key = os.environ.get("OPENAI_COMPAT_API_KEY")
-    model = os.environ.get("OPENAI_COMPAT_MODEL")
-    if not base_url or not api_key or not model:
-        pytest.skip("OPENAI_COMPAT_BASE_URL / OPENAI_COMPAT_API_KEY / OPENAI_COMPAT_MODEL not set")
-
-    agent = Agent()
-    agent.provider = "openai"
-    agent.openai_api_key = api_key
-    agent.openai_base_url = base_url
     agent.model = model
 
     messages = [{"role": "user", "content": "Reply with OK only."}]

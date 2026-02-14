@@ -5,14 +5,14 @@ import json
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 import httpx
 from openai import OpenAI
 
 from .response_format import response_format
-from .tool import toolkit
-from .builtin_tools import builtin_toolkit
+from .tool import toolkit as base_toolkit
 
 try:
     from IPython.display import clear_output
@@ -39,6 +39,7 @@ Rules:
 
 OBSERVATION_RECENT_MESSAGES = 6
 OBSERVATION_MAX_OUTPUT_TOKENS = 512
+DEFAULT_PAYLOADS_FILE = Path(__file__).with_name("model_default_payloads.json")
 
 @dataclass
 class ToolCall:
@@ -54,53 +55,31 @@ class ProviderTurnResult:
 
 class agent:
     def __init__(self):
-        self.retrieval_mode = "force_retrieve"  # reserved for future retrieval strategy
         self.openai_api_key = None
-        self.openai_base_url = None
         self.provider = "openai"
         self.model = "gpt-4.1"
         self.max_iterations = 6
-        self.default_payload = {
-            "gpt-4.1": {
-                "instructions": "",
-                "temperature": 0.7,
-                "top_p": 1,
-                "max_output_tokens": 2048,
-                "truncation": "auto",  # options: "auto", "disabled"
-            }
-        }
-        self.toolkit = toolkit()
+        self.default_payload = self._load_default_payloads(DEFAULT_PAYLOADS_FILE)
+        self.toolkit = base_toolkit()
 
-    def use_builtin_toolkit(
-        self,
-        *,
-        workspace_root: str | None = None,
-        include_python_runtime: bool = True,
-    ) -> builtin_toolkit:
-        toolkit = builtin_toolkit(
-            workspace_root=workspace_root,
-            include_python_runtime=include_python_runtime,
-        )
-        self.toolkit = toolkit
-        return toolkit
+    def _load_default_payloads(self, path: str | Path) -> dict[str, dict[str, Any]]:
+        file_path = Path(path)
+        if not file_path.exists():
+            return {}
 
-    def chat_completion(
-        self,
-        messages,
-        payload: dict[str, Any] | None = None,
-        response_format: response_format | None = None,
-        callback: Callable[[dict[str, Any]], None] | None = None,
-        verbose: bool = False,
-        max_iterations: int | None = None,
-    ):
-        return self.run(
-            messages=messages,
-            payload=payload,
-            response_format=response_format,
-            callback=callback,
-            verbose=verbose,
-            max_iterations=max_iterations,
-        )
+        try:
+            raw = json.loads(file_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+        if not isinstance(raw, dict):
+            return {}
+
+        parsed: dict[str, dict[str, Any]] = {}
+        for model_name, payload in raw.items():
+            if isinstance(model_name, str) and isinstance(payload, dict):
+                parsed[model_name] = payload
+        return parsed
 
     def run(
         self,
@@ -208,7 +187,7 @@ class agent:
         verbose: bool,
         run_id: str,
         iteration: int,
-        toolkit: toolkit,
+        toolkit: base_toolkit,
         emit_stream: bool,
     ) -> ProviderTurnResult:
         if self.provider == "openai":
@@ -238,12 +217,16 @@ class agent:
         raise ValueError("error: unsupported provider specified. ( agent -> run )")
 
     def _merged_payload(self, payload: dict[str, Any] | None) -> dict[str, Any]:
-        if self.provider == "openai":
-            merged = copy.deepcopy(self.default_payload.get(self.model, {}) or {})
-        else:
-            merged = {}
-        merged.update(payload or {})
-        return merged
+        defaults = copy.deepcopy(self.default_payload.get(self.model, {}) or {})
+        if not isinstance(defaults, dict):
+            return {}
+
+        user_payload = payload or {}
+        for key in list(defaults.keys()):
+            if key in user_payload:
+                defaults[key] = user_payload[key]
+
+        return defaults
 
     def _openai_fetch_once(
         self,
@@ -255,16 +238,13 @@ class agent:
         verbose: bool,
         run_id: str,
         iteration: int,
-        toolkit: toolkit,
+        toolkit: base_toolkit,
         emit_stream: bool,
     ) -> ProviderTurnResult:
         if not self.openai_api_key:
             raise ValueError("error: openai_api_key is required for openai provider")
 
-        client_kwargs: dict[str, Any] = {"api_key": self.openai_api_key}
-        if self.openai_base_url:
-            client_kwargs["base_url"] = self.openai_base_url
-        openai_client = OpenAI(**client_kwargs)
+        openai_client = OpenAI(api_key=self.openai_api_key)
         request_payload = self._merged_payload(payload)
         request_kwargs: dict[str, Any] = {
             "model": self.model,
@@ -366,7 +346,7 @@ class agent:
         verbose: bool,
         run_id: str,
         iteration: int,
-        toolkit: toolkit,
+        toolkit: base_toolkit,
         emit_stream: bool,
     ) -> ProviderTurnResult:
         request_body: dict[str, Any] = {
@@ -536,7 +516,7 @@ class agent:
             verbose=False,
             run_id="observe",
             iteration=0,
-            toolkit=toolkit(),
+            toolkit=base_toolkit(),
             emit_stream=False,
         )
 

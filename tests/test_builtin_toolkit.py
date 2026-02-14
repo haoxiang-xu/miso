@@ -75,16 +75,6 @@ def test_builtin_toolkit_create_minimal_demo_file():
         assert skipped.get("created") is False
 
 
-def test_agent_use_builtin_toolkit_shortcut():
-    with tempfile.TemporaryDirectory() as tmp:
-        agent = Agent()
-        toolkit = agent.use_builtin_toolkit(workspace_root=tmp, include_python_runtime=False)
-
-        assert isinstance(toolkit, builtin_toolkit)
-        assert "read_text_file" in agent.toolkit.tools
-
-        workspace_file = Path(tmp) / "a.txt"
-        workspace_file.write_text("abc", encoding="utf-8")
-
-        result = agent.toolkit.execute("read_text_file", {"path": "a.txt"})
-        assert result["content"] == "abc"
+def test_agent_uses_empty_toolkit_by_default():
+    agent = Agent()
+    assert agent.toolkit.tools == {}

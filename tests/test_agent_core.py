@@ -107,3 +107,30 @@ def test_response_format_parses_last_assistant_message():
 
     last_assistant = [msg for msg in result if msg.get("role") == "assistant"][-1]
     assert json.loads(last_assistant["content"]) == {"answer": "ok"}
+
+
+def test_merged_payload_overrides_only_known_default_keys():
+    agent = Agent()
+    agent.model = "gpt-4.1"
+
+    merged = agent._merged_payload(
+        {
+            "temperature": 0.2,
+            "max_output_tokens": 64,
+            "not_allowed": "ignored",
+        }
+    )
+
+    assert merged["temperature"] == 0.2
+    assert merged["max_output_tokens"] == 64
+    assert merged["top_p"] == 1
+    assert "not_allowed" not in merged
+
+
+def test_merged_payload_ignores_user_payload_when_model_has_no_defaults():
+    agent = Agent()
+    agent.model = "unknown-model"
+
+    merged = agent._merged_payload({"temperature": 0.1, "max_output_tokens": 10})
+
+    assert merged == {}
