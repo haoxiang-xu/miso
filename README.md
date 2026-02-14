@@ -1,0 +1,262 @@
+<div align="center">
+  <h1>miso</h1>
+  <p>A lightweight Python Agent Builder for OpenAI and Ollama.</p>
+</div>
+
+---
+
+## <h1>Table of Contents</h1>
+
+- [What is miso](#what-is-miso)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Core Usage](#core-usage)
+- [Structured Output](#structured-output)
+- [Event Callback](#event-callback)
+- [Predefined Toolkit](#predefined-toolkit)
+- [Project Structure](#project-structure)
+- [Testing](#testing)
+- [Roadmap Notes](#roadmap-notes)
+
+---
+
+## <h1>What is miso</h1> <a id="what-is-miso"></a>
+
+`miso` is a compact agent framework focused on:
+
+- Multi-step tool calling loops (`LLM_agent.run`)
+- OpenAI Responses API + OpenAI-compatible endpoints
+- Local Ollama chat support
+- Custom tool registration (`LLM_tool`, `LLM_toolkit`, `@llm_tool`)
+- Predefined workspace tools (read/write/search files, optional isolated Python runtime)
+- JSON-schema response formatting (`LLM_response_format`)
+
+If your goal is "agent builder but not heavy framework", this repo is exactly that.
+
+---
+
+## <h1>Prerequisites</h1> <a id="prerequisites"></a>
+
+- Python 3.9+ (recommend 3.11)
+- `pip`
+- Optional:
+  - OpenAI API key (for `provider="openai"`)
+  - Ollama running locally at `http://localhost:11434` (for `provider="ollama"`)
+
+---
+
+## <h1>Quick Start</h1> <a id="quick-start"></a>
+
+```bash
+# 1) create and activate virtual env
+python3 -m venv venv
+source venv/bin/activate
+
+# 2) install deps
+pip install -r requirements.txt
+
+# 3) run tests
+./run_tests.sh
+```
+
+---
+
+## <h1>Core Usage</h1> <a id="core-usage"></a>
+
+### 1) OpenAI provider
+
+```python
+from miso import LLM_agent
+
+agent = LLM_agent()
+agent.provider = "openai"
+agent.model = "gpt-4.1"
+agent.openai_api_key = "YOUR_OPENAI_API_KEY"
+
+messages = [{"role": "user", "content": "Reply with OK only."}]
+result = agent.run(messages=messages, payload={"max_output_tokens": 32}, max_iterations=1)
+
+last_assistant = [m for m in result if m.get("role") == "assistant"][-1]
+print(last_assistant["content"])
+```
+
+### 2) OpenAI-compatible endpoint
+
+```python
+from miso import LLM_agent
+
+agent = LLM_agent()
+agent.provider = "openai"
+agent.model = "your-model-name"
+agent.openai_api_key = "YOUR_COMPAT_API_KEY"
+agent.openai_base_url = "https://your-openai-compatible-endpoint/v1"
+```
+
+### 3) Ollama provider
+
+```python
+from miso import LLM_agent
+
+agent = LLM_agent()
+agent.provider = "ollama"
+agent.model = "deepseek-r1:14b"
+
+messages = [{"role": "user", "content": "只回复 OK"}]
+result = agent.chat_completion(messages, payload={"num_predict": 32}, max_iterations=1)
+print([m for m in result if m.get("role") == "assistant"][-1]["content"])
+```
+
+### 4) Register your own tools
+
+```python
+from miso import LLM_agent, LLM_toolkit
+
+def add(a: int, b: int = 2):
+    return a + b
+
+agent = LLM_agent()
+agent.provider = "openai"
+agent.openai_api_key = "YOUR_OPENAI_API_KEY"
+
+toolkit = LLM_toolkit()
+toolkit.register(add, observe=True)  # observe=True enables review pass after tool execution
+agent.toolkit = toolkit
+```
+
+---
+
+## <h1>Structured Output</h1> <a id="structured-output"></a>
+
+```python
+from miso import LLM_agent, LLM_response_format
+
+response_format = LLM_response_format(
+    name="answer_format",
+    schema={
+        "type": "object",
+        "properties": {
+            "answer": {"type": "string"},
+        },
+        "required": ["answer"],
+        "additionalProperties": False,
+    },
+)
+
+agent = LLM_agent()
+agent.provider = "openai"
+agent.openai_api_key = "YOUR_OPENAI_API_KEY"
+
+messages = [{"role": "user", "content": 'Return JSON: {"answer":"ok"}'}]
+result = agent.run(messages=messages, response_format=response_format, max_iterations=1)
+
+print([m for m in result if m.get("role") == "assistant"][-1]["content"])
+```
+
+`LLM_response_format` will parse and normalize the last assistant message according to the schema.
+
+---
+
+## <h1>Event Callback</h1> <a id="event-callback"></a>
+
+`run(..., callback=...)` emits events such as:
+
+- `run_started`
+- `iteration_started`
+- `token_delta`
+- `tool_call`
+- `tool_result`
+- `observation`
+- `final_message`
+- `run_completed`
+- `run_max_iterations`
+
+Example:
+
+```python
+def on_event(evt: dict):
+    if evt["type"] in ("tool_call", "tool_result", "final_message"):
+        print(evt["type"], evt.get("tool_name"), evt.get("content", ""))
+
+result = agent.run(messages=messages, callback=on_event)
+```
+
+---
+
+## <h1>Predefined Toolkit</h1> <a id="predefined-toolkit"></a>
+
+Use built-in workspace tools directly:
+
+```python
+from miso import LLM_agent
+
+agent = LLM_agent()
+toolkit = agent.use_predefined_toolkit(
+    workspace_root=".",
+    include_python_runtime=True,
+)
+
+toolkit.execute("write_text_file", {"path": "notes/demo.txt", "content": "hello\nworld\n"})
+print(toolkit.execute("search_text", {"pattern": "hello", "path": "notes"}))
+```
+
+Registered predefined tools:
+
+- `read_text_file`
+- `write_text_file`
+- `list_directory`
+- `search_text`
+- `python_runtime_init`
+- `python_runtime_install`
+- `python_runtime_run`
+- `python_runtime_reset`
+
+`workspace_root` safety rule: file operations are constrained inside the workspace root.
+
+---
+
+## <h1>Project Structure</h1> <a id="project-structure"></a>
+
+```text
+miso/
+  __init__.py
+  endpoint.py            # LLM_agent core loop + provider adapters
+  tool.py                # tool schema/inference/registry
+  predefined_tools.py    # workspace and isolated python runtime tools
+  response_format.py     # JSON-schema response format helper
+tests/
+  test_agent_core.py
+  test_openai_family_smoke.py
+  test_ollama_smoke.py
+  test_predefined_toolkit.py
+  test_toolkit_design.py
+run_tests.sh
+requirements.txt
+```
+
+---
+
+## <h1>Testing</h1> <a id="testing"></a>
+
+```bash
+./run_tests.sh
+```
+
+Optional smoke tests depend on environment variables:
+
+- OpenAI:
+  - `OPENAI_API_KEY`
+  - `OPENAI_MODEL`
+  - `OPENAI_BASE_URL` (optional)
+- OpenAI-compatible:
+  - `OPENAI_COMPAT_BASE_URL`
+  - `OPENAI_COMPAT_API_KEY`
+  - `OPENAI_COMPAT_MODEL`
+- Ollama:
+  - `OLLAMA_MODEL` (default: `deepseek-r1:14b`)
+
+---
+
+## <h1>Roadmap Notes</h1> <a id="roadmap-notes"></a>
+
+- `retrieval_mode` currently exists as a reserved field for future retrieval strategy.
+- `LLM_endpoint` is kept as a backward-compatible alias of `LLM_agent`.
