@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from miso import agent as Agent, build_builtin_toolkit, python_workspace_toolkit
+from miso import broth as Broth, build_builtin_toolkit, python_workspace_toolkit
 
 
 def test_builtin_toolkit_registers_expected_tools():
@@ -183,7 +183,7 @@ def test_file_create_delete_copy_move_exists():
 
 
 def test_agent_uses_empty_toolkit_by_default():
-    agent = Agent()
+    agent = Broth()
     assert agent.toolkit.tools == {}
 
 
@@ -192,7 +192,7 @@ def test_agent_add_multiple_toolkits():
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
-        agent = Agent()
+        agent = Broth()
         ws = python_workspace_toolkit(workspace_root=tmp, include_python_runtime=False)
         ws_py = python_workspace_toolkit(workspace_root=tmp, include_python_runtime=True)
 

@@ -316,12 +316,12 @@ class TestMcpConnectDisconnect:
 
 
 class TestMcpWithAgent:
-    """Test that mcp integrates with the agent's multi-toolkit system."""
+    """Test that mcp integrates with broth's multi-toolkit system."""
 
     def test_agent_can_add_mcp_toolkit(self):
-        from miso import agent as Agent
+        from miso import broth as Broth
 
-        a = Agent()
+        a = Broth()
         m = mcp(command="echo")
 
         # Register a fake tool manually (simulating what connect() does)
@@ -341,9 +341,9 @@ class TestMcpWithAgent:
         assert "mcp_tool" in tool_names
 
     def test_agent_find_tool_in_mcp_toolkit(self):
-        from miso import agent as Agent
+        from miso import broth as Broth
 
-        a = Agent()
+        a = Broth()
         m = mcp(command="echo")
 
         from miso.tool import tool as Tool

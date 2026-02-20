@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from miso import agent as Agent
+from miso import broth as Broth
 
 
 def _last_assistant_text(messages):
@@ -18,7 +18,7 @@ def test_openai_smoke():
     if not api_key or not model:
         pytest.skip("OPENAI_API_KEY or OPENAI_MODEL not set")
 
-    agent = Agent()
+    agent = Broth()
     agent.provider = "openai"
     agent.api_key = api_key
     agent.model = model

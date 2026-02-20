@@ -8,7 +8,7 @@ import pytest
 repo_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(repo_root))
 
-from miso import agent as Agent
+from miso import broth as Broth
 
 
 def _ollama_tags(timeout=2.0):
@@ -44,7 +44,7 @@ def test_ollama_smoke():
     if not _model_available(tags, model):
         pytest.skip(f"ollama model not installed: {model}")
 
-    agent = Agent()
+    agent = Broth()
     agent.provider = "ollama"
     agent.model = model
 

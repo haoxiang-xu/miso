@@ -62,7 +62,7 @@ class ProviderTurnResult:
     reasoning_items: list[dict[str, Any]] | None = None
     consumed_tokens: int = 0
 
-class agent:
+class broth:
     def __init__(self):
         self.api_key = None
         self.provider = "openai"
@@ -410,7 +410,7 @@ class agent:
                 toolkit=toolkit,
                 emit_stream=emit_stream,
             )
-        raise ValueError("error: unsupported provider specified. ( agent -> run )")
+        raise ValueError("error: unsupported provider specified. ( broth -> run )")
 
     def _merged_payload(self, payload: dict[str, Any] | None) -> dict[str, Any]:
         resolved_key = self._resolve_model_key(self.default_payload)
@@ -491,7 +491,7 @@ class agent:
                                 accumulated_text="".join(collected_chunks),
                             )
                 elif chunk_type == "response.error":
-                    raise ValueError("error: LLM text generation failed. ( agent -> _openai_fetch_once )")
+                    raise ValueError("error: LLM text generation failed. ( broth -> _openai_fetch_once )")
                 elif chunk_type == "response.completed":
                     completed_response = getattr(chunk, "response", None)
 
@@ -599,7 +599,7 @@ class agent:
         with httpx.stream("POST", "http://localhost:11434/api/chat", json=request_body, timeout=None) as response:
             if response.status_code >= 400:
                 detail = response.read().decode()
-                raise ValueError(f"error: {detail} ( agent -> _ollama_fetch_once )")
+                raise ValueError(f"error: {detail} ( broth -> _ollama_fetch_once )")
             response.raise_for_status()
 
             for line in response.iter_lines():
@@ -608,7 +608,7 @@ class agent:
 
                 data = json.loads(line)
                 if data.get("error"):
-                    raise ValueError(f"error: {data['error']} ( agent -> _ollama_fetch_once )")
+                    raise ValueError(f"error: {data['error']} ( broth -> _ollama_fetch_once )")
                 if isinstance(data.get("prompt_eval_count"), int):
                     latest_prompt_eval_count = data["prompt_eval_count"]
                 if isinstance(data.get("eval_count"), int):
@@ -666,7 +666,7 @@ class agent:
                         consumed_tokens=latest_prompt_eval_count + latest_eval_count,
                     )
 
-        raise ValueError("error: unexpected termination of ollama stream. ( agent -> _ollama_fetch_once )")
+        raise ValueError("error: unexpected termination of ollama stream. ( broth -> _ollama_fetch_once )")
 
     def _anthropic_fetch_once(
         self,
@@ -1049,6 +1049,6 @@ class agent:
         return ""
 
 __all__ = [
-    "agent",
+    "broth",
     "response_format",
 ]

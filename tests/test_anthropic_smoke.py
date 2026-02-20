@@ -9,8 +9,8 @@ import pytest
 repo_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(repo_root))
 
-from miso import agent as Agent, toolkit
-from miso.agent import ProviderTurnResult, ToolCall
+from miso import broth as Broth, toolkit
+from miso.broth import ProviderTurnResult, ToolCall
 
 
 def _last_assistant_text(messages):
@@ -33,7 +33,7 @@ def test_anthropic_smoke():
     if not api_key or not model:
         pytest.skip("ANTHROPIC_API_KEY or ANTHROPIC_MODEL not set")
 
-    a = Agent()
+    a = Broth()
     a.provider = "anthropic"
     a.api_key = api_key
     a.model = model
@@ -52,7 +52,7 @@ def test_anthropic_smoke():
 # ── unit test: _anthropic_fetch_once forces stream & returns text ───────────
 
 def test_anthropic_fetch_once_forces_stream_true(monkeypatch):
-    a = Agent()
+    a = Broth()
     a.provider = "anthropic"
     a.api_key = "sk-test-fake"
     a.model = "claude-sonnet-4"
@@ -113,8 +113,8 @@ def test_anthropic_fetch_once_forces_stream_true(monkeypatch):
             self.api_key = api_key
             self.messages = FakeMessages()
 
-    agent_module = importlib.import_module("miso.agent")
-    monkeypatch.setattr(agent_module, "Anthropic", FakeAnthropicClient)
+    broth_module = importlib.import_module("miso.broth")
+    monkeypatch.setattr(broth_module, "Anthropic", FakeAnthropicClient)
 
     turn = a._anthropic_fetch_once(
         messages=[{"role": "user", "content": "hi"}],
@@ -136,7 +136,7 @@ def test_anthropic_fetch_once_forces_stream_true(monkeypatch):
 # ── unit test: _anthropic_fetch_once parses tool_use blocks ─────────────────
 
 def test_anthropic_fetch_once_parses_tool_calls(monkeypatch):
-    a = Agent()
+    a = Broth()
     a.provider = "anthropic"
     a.api_key = "sk-test-fake"
     a.model = "claude-sonnet-4"
@@ -193,8 +193,8 @@ def test_anthropic_fetch_once_parses_tool_calls(monkeypatch):
         def __init__(self, api_key):
             self.messages = FakeMessages()
 
-    agent_module = importlib.import_module("miso.agent")
-    monkeypatch.setattr(agent_module, "Anthropic", FakeAnthropicClient)
+    broth_module = importlib.import_module("miso.broth")
+    monkeypatch.setattr(broth_module, "Anthropic", FakeAnthropicClient)
 
     turn = a._anthropic_fetch_once(
         messages=[{"role": "user", "content": "What's the weather?"}],
@@ -219,7 +219,7 @@ def test_anthropic_fetch_once_parses_tool_calls(monkeypatch):
 # ── unit test: dated model resolves to undated config ───────────────────────
 
 def test_dated_model_resolves_to_base_config():
-    a = Agent()
+    a = Broth()
     a.model = "claude-opus-4-20250514"
 
     # Should resolve to claude-opus-4 entry
@@ -236,7 +236,7 @@ def test_dated_model_resolves_to_base_config():
 
 
 def test_dated_model_46_resolves():
-    a = Agent()
+    a = Broth()
     a.model = "claude-sonnet-4.6-20260101"
 
     provider = a._model_capability("provider")

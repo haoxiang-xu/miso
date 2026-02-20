@@ -1,7 +1,7 @@
 """MCP (Model Context Protocol) client wrapper for miso.
 
 Exposes any MCP server as a standard ``toolkit`` so it can be registered
-with the miso ``agent`` via ``agent.add_toolkit()``.
+with ``broth`` via ``broth.add_toolkit()``.
 
 Supports three transport modes:
 
@@ -16,23 +16,23 @@ Supports three transport modes:
 
 Usage::
 
-    from miso import agent, mcp
+    from miso import broth, mcp
 
     server = mcp(command="npx", args=["-y", "@modelcontextprotocol/server-filesystem", "/tmp"])
     server.connect()
 
-    a = agent()
-    a.add_toolkit(server)
-    messages, bundle = a.run(...)
+    b = broth()
+    b.add_toolkit(server)
+    messages, bundle = b.run(...)
 
     server.disconnect()
 
 Or as a context manager::
 
     with mcp(command="npx", args=[...]) as server:
-        a = agent()
-        a.add_toolkit(server)
-        messages, bundle = a.run(...)
+        b = broth()
+        b.add_toolkit(server)
+        messages, bundle = b.run(...)
 """
 
 from __future__ import annotations
