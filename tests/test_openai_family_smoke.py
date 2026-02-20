@@ -20,7 +20,7 @@ def test_openai_smoke():
 
     agent = Agent()
     agent.provider = "openai"
-    agent.openai_api_key = api_key
+    agent.api_key = api_key
     agent.model = model
 
     messages = [{"role": "user", "content": "Reply with OK only."}]

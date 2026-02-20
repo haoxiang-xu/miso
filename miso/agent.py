@@ -11,6 +11,11 @@ from typing import Any, Callable
 import httpx
 from openai import OpenAI
 
+try:
+    from anthropic import Anthropic
+except ImportError:  # pragma: no cover
+    Anthropic = None  # type: ignore[assignment,misc]
+
 from .response_format import response_format
 from .tool import toolkit as base_toolkit
 
@@ -60,7 +65,7 @@ class ProviderTurnResult:
 
 class agent:
     def __init__(self):
-        self.openai_api_key = None
+        self.api_key = None
         self.provider = "openai"
         self.model = "gpt-5"
         self.max_iterations = 6
@@ -166,8 +171,25 @@ class agent:
                 parsed[model_name] = capabilities
         return parsed
 
+    def _resolve_model_key(self, registry: dict[str, Any]) -> str | None:
+        """Resolve self.model to the best matching key in *registry*.
+
+        Returns ``self.model`` verbatim when it exists in the registry.
+        Otherwise, finds the longest registered key that is a prefix of
+        ``self.model``, so that e.g. ``claude-opus-4-20250514`` matches
+        the ``claude-opus-4`` entry.  Returns ``None`` when no key matches.
+        """
+        if self.model in registry:
+            return self.model
+        best: str | None = None
+        for key in registry:
+            if self.model.startswith(key) and (best is None or len(key) > len(best)):
+                best = key
+        return best
+
     def _model_capability(self, key: str, default: Any = None) -> Any:
-        model_caps = self.model_capabilities.get(self.model, {})
+        resolved = self._resolve_model_key(self.model_capabilities)
+        model_caps = self.model_capabilities.get(resolved, {}) if resolved else {}
         if not isinstance(model_caps, dict):
             return default
         return model_caps.get(key, default)
@@ -350,10 +372,23 @@ class agent:
                 toolkit=toolkit,
                 emit_stream=emit_stream,
             )
+        if self.provider == "anthropic":
+            return self._anthropic_fetch_once(
+                messages=messages,
+                payload=payload,
+                response_format=response_format,
+                callback=callback,
+                verbose=verbose,
+                run_id=run_id,
+                iteration=iteration,
+                toolkit=toolkit,
+                emit_stream=emit_stream,
+            )
         raise ValueError("error: unsupported provider specified. ( agent -> run )")
 
     def _merged_payload(self, payload: dict[str, Any] | None) -> dict[str, Any]:
-        defaults = copy.deepcopy(self.default_payload.get(self.model, {}) or {})
+        resolved_key = self._resolve_model_key(self.default_payload)
+        defaults = copy.deepcopy(self.default_payload.get(resolved_key, {}) if resolved_key else {})
         if not isinstance(defaults, dict):
             return {}
 
@@ -383,10 +418,10 @@ class agent:
         emit_stream: bool,
         previous_response_id: str | None = None,
     ) -> ProviderTurnResult:
-        if not self.openai_api_key:
+        if not self.api_key:
             raise ValueError("error: openai_api_key is required for openai provider")
 
-        openai_client = OpenAI(api_key=self.openai_api_key)
+        openai_client = OpenAI(api_key=self.api_key)
         request_payload = self._merged_payload(payload)
         request_kwargs: dict[str, Any] = {
             "model": self.model,
@@ -611,6 +646,186 @@ class agent:
 
         raise ValueError("error: unexpected termination of ollama stream. ( agent -> _ollama_fetch_once )")
 
+    def _anthropic_fetch_once(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        payload: dict[str, Any],
+        response_format: response_format | None,
+        callback: Callable[[dict[str, Any]], None] | None,
+        verbose: bool,
+        run_id: str,
+        iteration: int,
+        toolkit: base_toolkit,
+        emit_stream: bool,
+    ) -> ProviderTurnResult:
+        if Anthropic is None:
+            raise ImportError("anthropic package is required for anthropic provider — pip install anthropic")
+        if not self.api_key:
+            raise ValueError("error: api_key is required for anthropic provider")
+
+        client = Anthropic(api_key=self.api_key)
+        request_payload = self._merged_payload(payload)
+
+        # ── separate system prompt from messages ───────────────────────────
+        system_prompt: str | None = None
+        chat_messages: list[dict[str, Any]] = []
+        for msg in messages:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                system_prompt = msg.get("content", "")
+            else:
+                chat_messages.append(msg)
+
+        # ── build tools for Anthropic format ───────────────────────────────
+        tools_json = toolkit.to_json()
+        anthropic_tools: list[dict[str, Any]] = []
+        supports_tools = bool(self._model_capability("supports_tools", True))
+        if tools_json and supports_tools:
+            for t in tools_json:
+                params = t.get("parameters", {})
+                anthropic_tools.append({
+                    "name": t.get("name", ""),
+                    "description": t.get("description", ""),
+                    "input_schema": params,
+                })
+
+        # ── build request kwargs ───────────────────────────────────────────
+        max_tokens = request_payload.pop("max_tokens", 4096)
+        request_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": chat_messages,
+            "max_tokens": max_tokens,
+            "stream": True,
+            **request_payload,
+        }
+        if system_prompt:
+            request_kwargs["system"] = system_prompt
+        if anthropic_tools:
+            request_kwargs["tools"] = anthropic_tools
+
+        # ── stream response ────────────────────────────────────────────────
+        collected_chunks: list[str] = []
+        assistant_messages: list[dict[str, Any]] = []
+        tool_calls: list[ToolCall] = []
+        final_text_parts: list[str] = []
+        consumed_tokens = 0
+        context_window_tokens = 0
+
+        # Track content blocks being built
+        current_tool_name: str = ""
+        current_tool_id: str = ""
+        current_tool_json_parts: list[str] = []
+        content_blocks: list[dict[str, Any]] = []
+
+        with client.messages.stream(**request_kwargs) as stream:
+            for event in stream:
+                event_type = getattr(event, "type", None)
+
+                if event_type == "content_block_start":
+                    block = getattr(event, "content_block", None)
+                    if block is not None:
+                        block_dict = self._as_dict(block)
+                        if block_dict.get("type") == "tool_use":
+                            current_tool_name = block_dict.get("name", "")
+                            current_tool_id = block_dict.get("id", str(uuid.uuid4()))
+                            current_tool_json_parts = []
+
+                elif event_type == "content_block_delta":
+                    delta = getattr(event, "delta", None)
+                    if delta is not None:
+                        delta_dict = self._as_dict(delta)
+                        delta_type = delta_dict.get("type", "")
+
+                        if delta_type == "text_delta":
+                            text = delta_dict.get("text", "")
+                            if text:
+                                collected_chunks.append(text)
+                                if verbose and clear_output is not None:
+                                    clear_output(wait=True)
+                                    print("".join(collected_chunks))
+                                if emit_stream:
+                                    self._emit(
+                                        callback,
+                                        "token_delta",
+                                        run_id,
+                                        iteration=iteration,
+                                        provider="anthropic",
+                                        delta=text,
+                                        accumulated_text="".join(collected_chunks),
+                                    )
+
+                        elif delta_type == "input_json_delta":
+                            partial = delta_dict.get("partial_json", "")
+                            if partial:
+                                current_tool_json_parts.append(partial)
+
+                elif event_type == "content_block_stop":
+                    if current_tool_name:
+                        raw_json = "".join(current_tool_json_parts)
+                        try:
+                            arguments = json.loads(raw_json) if raw_json.strip() else {}
+                        except json.JSONDecodeError:
+                            arguments = raw_json
+
+                        tool_calls.append(ToolCall(
+                            call_id=current_tool_id,
+                            name=current_tool_name,
+                            arguments=arguments,
+                        ))
+                        content_blocks.append({
+                            "type": "tool_use",
+                            "id": current_tool_id,
+                            "name": current_tool_name,
+                            "input": arguments if isinstance(arguments, dict) else {},
+                        })
+                        current_tool_name = ""
+                        current_tool_id = ""
+                        current_tool_json_parts = []
+
+                elif event_type == "message_delta":
+                    # Extract usage from message_delta
+                    usage = getattr(event, "usage", None)
+                    if usage:
+                        usage_dict = self._as_dict(usage)
+                        output_tokens = usage_dict.get("output_tokens", 0)
+                        consumed_tokens += max(0, int(output_tokens or 0))
+
+                elif event_type == "message_start":
+                    msg = getattr(event, "message", None)
+                    if msg:
+                        msg_dict = self._as_dict(msg)
+                        usage = msg_dict.get("usage", {})
+                        if isinstance(usage, dict):
+                            input_tokens = usage.get("input_tokens", 0)
+                            context_window_tokens = max(0, int(input_tokens or 0))
+                            consumed_tokens += context_window_tokens
+
+        # ── assemble result ────────────────────────────────────────────────
+        full_text = "".join(collected_chunks).strip()
+        if full_text:
+            final_text_parts.append(full_text)
+
+        if tool_calls:
+            # Build assistant message with both text and tool_use blocks
+            assistant_content: list[dict[str, Any]] = []
+            if full_text:
+                assistant_content.append({"type": "text", "text": full_text})
+            assistant_content.extend(content_blocks)
+            assistant_messages.append({
+                "role": "assistant",
+                "content": assistant_content,
+            })
+        elif full_text:
+            assistant_messages.append({"role": "assistant", "content": full_text})
+
+        return ProviderTurnResult(
+            assistant_messages=assistant_messages,
+            tool_calls=tool_calls,
+            final_text="".join(final_text_parts).strip(),
+            consumed_tokens=consumed_tokens,
+            context_window_tokens=context_window_tokens,
+        )
+
     def _execute_tool_calls(
         self,
         *,
@@ -645,6 +860,15 @@ class agent:
                     "type": "function_call_output",
                     "call_id": tool_call.call_id,
                     "output": content,
+                }
+            elif self.provider == "anthropic":
+                tool_message = {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": tool_call.call_id,
+                        "content": content,
+                    }],
                 }
             else:
                 tool_message = {
@@ -719,6 +943,8 @@ class agent:
             observe_payload["max_output_tokens"] = OBSERVATION_MAX_OUTPUT_TOKENS
         if self.provider == "ollama":
             observe_payload["num_predict"] = OBSERVATION_MAX_OUTPUT_TOKENS
+        if self.provider == "anthropic":
+            observe_payload["max_tokens"] = OBSERVATION_MAX_OUTPUT_TOKENS
         return observe_payload
 
     def _inject_observation(self, tool_message: dict[str, Any], observation: str):
@@ -770,6 +996,16 @@ class agent:
             return obj.model_dump()
         if hasattr(obj, "to_dict"):
             return obj.to_dict()
+        if hasattr(obj, "__dict__") and obj.__dict__:
+            return dict(obj.__dict__)
+        # Fall back to public attributes (covers classes with only class-level attrs)
+        attrs = {
+            k: getattr(obj, k)
+            for k in dir(obj)
+            if not k.startswith("_") and not callable(getattr(obj, k, None))
+        }
+        if attrs:
+            return attrs
         return {"value": str(obj)}
 
     def _extract_openai_input_tokens(self, usage: Any) -> int:

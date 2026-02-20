@@ -37,6 +37,14 @@ class response_format:
         # Ollama /api/chat accepts either "json" or a schema-like object in "format".
         return deepcopy(self.schema)
 
+    def to_anthropic(self) -> str:
+        """Return a system-prompt suffix that instructs Claude to output JSON."""
+        schema_str = json.dumps(self.schema, indent=2, ensure_ascii=False)
+        return (
+            f"You MUST respond with valid JSON only, no other text.\n"
+            f"The JSON must conform to this schema:\n{schema_str}"
+        )
+
     def parse(self, content: str | dict[str, Any]) -> dict[str, Any]:
         if isinstance(content, dict):
             parsed = deepcopy(content)

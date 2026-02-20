@@ -1,4 +1,5 @@
 annotated-types==0.7.0
+anthropic==0.83.0
 antlr4-python3-runtime==4.11.1
 anyio==4.11.0
 appnope==0.1.4

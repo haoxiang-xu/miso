@@ -279,7 +279,7 @@ def test_openai_fetch_once_forces_stream_true(monkeypatch):
     agent = Agent()
     agent.provider = "openai"
     agent.model = "gpt-4.1"
-    agent.openai_api_key = "test-key"
+    agent.api_key = "test-key"
     agent.default_payload.setdefault("gpt-4.1", {})["stream"] = False
 
     captured_kwargs = {}

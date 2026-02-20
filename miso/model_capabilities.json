@@ -54,5 +54,83 @@
       "temperature",
       "top_p"
     ]
+  },
+  "claude-sonnet-4": {
+    "provider": "anthropic",
+    "supports_tools": true,
+    "supports_response_format": false,
+    "supports_previous_response_id": false,
+    "supports_reasoning": false,
+    "allowed_payload_keys": [
+      "max_tokens",
+      "temperature",
+      "top_p",
+      "top_k"
+    ]
+  },
+  "claude-opus-4": {
+    "provider": "anthropic",
+    "supports_tools": true,
+    "supports_response_format": false,
+    "supports_previous_response_id": false,
+    "supports_reasoning": false,
+    "allowed_payload_keys": [
+      "max_tokens",
+      "temperature",
+      "top_p",
+      "top_k"
+    ]
+  },
+  "claude-haiku-4": {
+    "provider": "anthropic",
+    "supports_tools": true,
+    "supports_response_format": false,
+    "supports_previous_response_id": false,
+    "supports_reasoning": false,
+    "allowed_payload_keys": [
+      "max_tokens",
+      "temperature",
+      "top_p",
+      "top_k"
+    ]
+  },
+  "claude-sonnet-4.6": {
+    "provider": "anthropic",
+    "supports_tools": true,
+    "supports_response_format": false,
+    "supports_previous_response_id": false,
+    "supports_reasoning": false,
+    "allowed_payload_keys": [
+      "max_tokens",
+      "temperature",
+      "top_p",
+      "top_k"
+    ]
+  },
+  "claude-opus-4.6": {
+    "provider": "anthropic",
+    "supports_tools": true,
+    "supports_response_format": false,
+    "supports_previous_response_id": false,
+    "supports_reasoning": false,
+    "allowed_payload_keys": [
+      "max_tokens",
+      "temperature",
+      "top_p",
+      "top_k"
+    ]
+  },
+  "claude-haiku-4.6": {
+    "provider": "anthropic",
+    "supports_tools": true,
+    "supports_response_format": false,
+    "supports_previous_response_id": false,
+    "supports_reasoning": false,
+    "allowed_payload_keys": [
+      "max_tokens",
+      "temperature",
+      "top_p",
+      "top_k"
+    ]
   }
 }
