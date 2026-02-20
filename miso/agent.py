@@ -61,7 +61,6 @@ class ProviderTurnResult:
     response_id: str | None = None
     reasoning_items: list[dict[str, Any]] | None = None
     consumed_tokens: int = 0
-    context_window_tokens: int = 0
 
 class agent:
     def __init__(self):
@@ -75,6 +74,7 @@ class agent:
         self.last_response_id: str | None = None
         self.last_reasoning_items: list[dict[str, Any]] = []
         self.last_consumed_tokens: int = 0
+        self.consumed_tokens: int = 0
 
     # ── toolkit property (backward compatibility) ──────────────────────────
 
@@ -194,6 +194,20 @@ class agent:
             return default
         return model_caps.get(key, default)
 
+    @property
+    def max_context_window_tokens(self) -> int:
+        """Return the context window size for the current model (from capabilities config)."""
+        return int(self._model_capability("max_context_window_tokens", 0))
+
+    def _build_bundle(self, run_consumed: int, last_turn_tokens: int) -> dict[str, Any]:
+        max_ctx = self.max_context_window_tokens
+        pct = (last_turn_tokens / max_ctx * 100.0) if max_ctx > 0 else 0.0
+        return {
+            "consumed_tokens": run_consumed,
+            "max_context_window_tokens": max_ctx,
+            "context_window_used_pct": round(pct, 2),
+        }
+
     def run(
         self,
         messages,
@@ -214,7 +228,7 @@ class agent:
         next_openai_input = copy.deepcopy(seed_messages)
         self.last_reasoning_items = []
         total_consumed_tokens = 0
-        total_context_window_tokens = 0
+        last_turn_tokens = 0
 
         self._emit(callback, "run_started", run_id, iteration=0, provider=self.provider, model=self.model)
 
@@ -243,7 +257,7 @@ class agent:
                 next_previous_response_id = turn.response_id
                 self.last_response_id = turn.response_id
             total_consumed_tokens += max(0, int(turn.consumed_tokens or 0))
-            total_context_window_tokens += max(0, int(turn.context_window_tokens or 0))
+            last_turn_tokens = max(0, int(turn.consumed_tokens or 0))
 
             if turn.reasoning_items:
                 self.last_reasoning_items = copy.deepcopy(turn.reasoning_items)
@@ -272,8 +286,7 @@ class agent:
                         tool_messages=tool_messages,
                         payload=payload,
                     )
-                    total_consumed_tokens += max(0, int(observe_consumed_tokens[0] or 0))
-                    total_context_window_tokens += max(0, int(observe_consumed_tokens[1] or 0))
+                    total_consumed_tokens += max(0, int(observe_consumed_tokens or 0))
                     if observation:
                         self._inject_observation(tool_messages[-1], observation)
                         self._emit(
@@ -304,13 +317,15 @@ class agent:
                 content=final_text,
             )
             self._emit(callback, "run_completed", run_id, iteration=iteration)
-            bundle = {"consumed_tokens": total_consumed_tokens, "context_window_tokens": total_context_window_tokens}
             self.last_consumed_tokens = total_consumed_tokens
+            self.consumed_tokens += total_consumed_tokens
+            bundle = self._build_bundle(total_consumed_tokens, last_turn_tokens)
             return conversation, bundle
 
         self._emit(callback, "run_max_iterations", run_id, iteration=max_loops)
-        bundle = {"consumed_tokens": total_consumed_tokens, "context_window_tokens": total_context_window_tokens}
         self.last_consumed_tokens = total_consumed_tokens
+        self.consumed_tokens += total_consumed_tokens
+        bundle = self._build_bundle(total_consumed_tokens, last_turn_tokens)
         return conversation, bundle
 
     def _emit(
@@ -476,7 +491,6 @@ class agent:
         response_id = getattr(completed_response, "id", None)
         usage = getattr(completed_response, "usage", None)
         consumed_tokens = self._extract_openai_consumed_tokens(usage)
-        context_window_tokens = self._extract_openai_input_tokens(usage)
 
         assistant_messages: list[dict[str, Any]] = []
         tool_calls: list[ToolCall] = []
@@ -527,7 +541,6 @@ class agent:
             response_id=response_id,
             reasoning_items=reasoning_items or None,
             consumed_tokens=consumed_tokens,
-            context_window_tokens=context_window_tokens,
         )
 
     def _ollama_fetch_once(
@@ -631,7 +644,6 @@ class agent:
                         tool_calls=tool_calls,
                         final_text="",
                         consumed_tokens=latest_prompt_eval_count + latest_eval_count,
-                        context_window_tokens=latest_prompt_eval_count,
                     )
 
                 if data.get("done", False):
@@ -641,7 +653,6 @@ class agent:
                         tool_calls=[],
                         final_text=full_message,
                         consumed_tokens=latest_prompt_eval_count + latest_eval_count,
-                        context_window_tokens=latest_prompt_eval_count,
                     )
 
         raise ValueError("error: unexpected termination of ollama stream. ( agent -> _ollama_fetch_once )")
@@ -709,7 +720,6 @@ class agent:
         tool_calls: list[ToolCall] = []
         final_text_parts: list[str] = []
         consumed_tokens = 0
-        context_window_tokens = 0
 
         # Track content blocks being built
         current_tool_name: str = ""
@@ -797,8 +807,7 @@ class agent:
                         usage = msg_dict.get("usage", {})
                         if isinstance(usage, dict):
                             input_tokens = usage.get("input_tokens", 0)
-                            context_window_tokens = max(0, int(input_tokens or 0))
-                            consumed_tokens += context_window_tokens
+                            consumed_tokens += max(0, int(input_tokens or 0))
 
         # ── assemble result ────────────────────────────────────────────────
         full_text = "".join(collected_chunks).strip()
@@ -823,7 +832,6 @@ class agent:
             tool_calls=tool_calls,
             final_text="".join(final_text_parts).strip(),
             consumed_tokens=consumed_tokens,
-            context_window_tokens=context_window_tokens,
         )
 
     def _execute_tool_calls(
@@ -915,9 +923,9 @@ class agent:
         )
 
         if observe_turn.final_text:
-            return observe_turn.final_text.strip(), (int(observe_turn.consumed_tokens or 0), int(observe_turn.context_window_tokens or 0))
+            return observe_turn.final_text.strip(), int(observe_turn.consumed_tokens or 0)
 
-        return self._last_assistant_text(observe_turn.assistant_messages).strip(), (int(observe_turn.consumed_tokens or 0), int(observe_turn.context_window_tokens or 0))
+        return self._last_assistant_text(observe_turn.assistant_messages).strip(), int(observe_turn.consumed_tokens or 0)
 
     def _build_observation_messages(
         self,
@@ -1007,18 +1015,6 @@ class agent:
         if attrs:
             return attrs
         return {"value": str(obj)}
-
-    def _extract_openai_input_tokens(self, usage: Any) -> int:
-        if usage is None:
-            return 0
-        usage_dict = self._as_dict(usage)
-        input_tokens = usage_dict.get("input_tokens")
-        if isinstance(input_tokens, int):
-            return max(0, input_tokens)
-        prompt_tokens = usage_dict.get("prompt_tokens")
-        if isinstance(prompt_tokens, int):
-            return max(0, prompt_tokens)
-        return 0
 
     def _extract_openai_consumed_tokens(self, usage: Any) -> int:
         if usage is None:

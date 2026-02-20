@@ -386,3 +386,111 @@ def test_ollama_fetch_once_forces_stream_true(monkeypatch):
 
     assert captured_request["json"]["stream"] is True
     assert turn.final_text == "ok"
+
+
+# ── Context-window tracking tests ──────────────────────────────────────
+
+def test_max_context_window_tokens_from_capabilities():
+    """max_context_window_tokens property reads from model_capabilities.json."""
+    a = Agent()
+    a.model = "gpt-5"
+    assert a.max_context_window_tokens == 1047576
+    a.model = "claude-opus-4"
+    assert a.max_context_window_tokens == 200000
+    a.model = "deepseek-r1:14b"
+    assert a.max_context_window_tokens == 128000
+    # Unknown model falls back to 0
+    a.model = "unknown-model-xyz"
+    assert a.max_context_window_tokens == 0
+
+
+def test_bundle_contains_context_window_used_pct():
+    """context_window_used_pct = last turn's tokens / max_context_window_tokens (not cumulative)."""
+    a = Agent()
+    a.provider = "ollama"
+    a.model = "deepseek-r1:14b"  # max_context_window_tokens = 128000
+
+    state = {"turn": 0}
+
+    def fake_fetch_once(**kwargs):
+        state["turn"] += 1
+        if state["turn"] == 1:
+            # First turn: tool call, 2000 tokens
+            return ProviderTurnResult(
+                assistant_messages=[{
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": "c1", "function": {"name": "t1", "arguments": "{}"}}],
+                }],
+                tool_calls=[ToolCall(call_id="c1", name="t1", arguments={})],
+                final_text="",
+                consumed_tokens=2000,
+            )
+        # Second turn: final answer, 6400 tokens (conversation grew)
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "done"}],
+            tool_calls=[],
+            final_text="done",
+            consumed_tokens=6400,
+        )
+
+    from miso import tool, toolkit
+    t1 = tool(name="t1", func=lambda: "ok", parameters=[])
+    a.toolkit = toolkit({"t1": t1})
+    a._fetch_once = fake_fetch_once
+
+    _, bundle = a.run([{"role": "user", "content": "hello"}])
+    assert bundle["consumed_tokens"] == 8400      # cumulative: 2000 + 6400
+    assert bundle["max_context_window_tokens"] == 128000
+    assert bundle["context_window_used_pct"] == 5.0  # last turn: 6400/128000*100
+    assert "context_window_tokens" not in bundle
+
+
+def test_consumed_tokens_accumulated_across_runs():
+    """agent.consumed_tokens accumulates across multiple run() calls."""
+    a = Agent()
+    a.provider = "ollama"
+    a.model = "deepseek-r1:14b"
+    call_count = 0
+
+    def fake_fetch_once(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": f"resp{call_count}"}],
+            tool_calls=[],
+            final_text=f"resp{call_count}",
+            consumed_tokens=100,
+        )
+
+    a._fetch_once = fake_fetch_once
+
+    assert a.consumed_tokens == 0
+
+    a.run([{"role": "user", "content": "first"}])
+    assert a.consumed_tokens == 100
+    assert a.last_consumed_tokens == 100
+
+    a.run([{"role": "user", "content": "second"}])
+    assert a.consumed_tokens == 200
+    assert a.last_consumed_tokens == 100  # last run only
+
+
+def test_context_window_used_pct_zero_for_unknown_model():
+    """When max_context_window_tokens is 0 (unknown model), pct should be 0."""
+    a = Agent()
+    a.provider = "ollama"
+    a.model = "unknown-model"
+
+    def fake_fetch_once(**kwargs):
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "ok"}],
+            tool_calls=[],
+            final_text="ok",
+            consumed_tokens=10,
+        )
+
+    a._fetch_once = fake_fetch_once
+    _, bundle = a.run([{"role": "user", "content": "hi"}])
+    assert bundle["max_context_window_tokens"] == 0
+    assert bundle["context_window_used_pct"] == 0.0

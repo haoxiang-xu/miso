@@ -1,6 +1,7 @@
 {
   "gpt-4.1": {
     "provider": "openai",
+    "max_context_window_tokens": 1047576,
     "supports_tools": true,
     "supports_response_format": true,
     "supports_previous_response_id": true,
@@ -15,6 +16,7 @@
   },
   "gpt-5": {
     "provider": "openai",
+    "max_context_window_tokens": 1047576,
     "supports_tools": true,
     "supports_response_format": true,
     "supports_previous_response_id": true,
@@ -30,6 +32,7 @@
   },
   "gpt-5-codex": {
     "provider": "openai",
+    "max_context_window_tokens": 1047576,
     "supports_tools": true,
     "supports_response_format": true,
     "supports_previous_response_id": true,
@@ -45,6 +48,7 @@
   },
   "deepseek-r1:14b": {
     "provider": "ollama",
+    "max_context_window_tokens": 128000,
     "supports_tools": true,
     "supports_response_format": true,
     "supports_previous_response_id": false,
@@ -57,6 +61,7 @@
   },
   "claude-sonnet-4": {
     "provider": "anthropic",
+    "max_context_window_tokens": 200000,
     "supports_tools": true,
     "supports_response_format": false,
     "supports_previous_response_id": false,
@@ -70,6 +75,7 @@
   },
   "claude-opus-4": {
     "provider": "anthropic",
+    "max_context_window_tokens": 200000,
     "supports_tools": true,
     "supports_response_format": false,
     "supports_previous_response_id": false,
@@ -83,6 +89,7 @@
   },
   "claude-haiku-4": {
     "provider": "anthropic",
+    "max_context_window_tokens": 200000,
     "supports_tools": true,
     "supports_response_format": false,
     "supports_previous_response_id": false,
@@ -96,6 +103,7 @@
   },
   "claude-sonnet-4.6": {
     "provider": "anthropic",
+    "max_context_window_tokens": 200000,
     "supports_tools": true,
     "supports_response_format": false,
     "supports_previous_response_id": false,
@@ -109,6 +117,7 @@
   },
   "claude-opus-4.6": {
     "provider": "anthropic",
+    "max_context_window_tokens": 200000,
     "supports_tools": true,
     "supports_response_format": false,
     "supports_previous_response_id": false,
@@ -122,6 +131,7 @@
   },
   "claude-haiku-4.6": {
     "provider": "anthropic",
+    "max_context_window_tokens": 200000,
     "supports_tools": true,
     "supports_response_format": false,
     "supports_previous_response_id": false,
