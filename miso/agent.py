@@ -75,6 +75,7 @@ class agent:
         self.last_reasoning_items: list[dict[str, Any]] = []
         self.last_consumed_tokens: int = 0
         self.consumed_tokens: int = 0
+        self._max_context_window_tokens: int | None = None
 
     # ── toolkit property (backward compatibility) ──────────────────────────
 
@@ -196,8 +197,18 @@ class agent:
 
     @property
     def max_context_window_tokens(self) -> int:
-        """Return the context window size for the current model (from capabilities config)."""
+        """Return the context window token limit.
+
+        Uses the user-specified value if set, otherwise falls back to the
+        model's default from capabilities config.
+        """
+        if self._max_context_window_tokens is not None:
+            return self._max_context_window_tokens
         return int(self._model_capability("max_context_window_tokens", 0))
+
+    @max_context_window_tokens.setter
+    def max_context_window_tokens(self, value: int | None) -> None:
+        self._max_context_window_tokens = value
 
     def _build_bundle(self, run_consumed: int, last_turn_tokens: int) -> dict[str, Any]:
         max_ctx = self.max_context_window_tokens

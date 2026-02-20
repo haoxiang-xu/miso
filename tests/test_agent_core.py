@@ -404,6 +404,20 @@ def test_max_context_window_tokens_from_capabilities():
     assert a.max_context_window_tokens == 0
 
 
+def test_max_context_window_tokens_user_override():
+    """User-set max_context_window_tokens takes precedence over model default."""
+    a = Agent()
+    a.model = "gpt-5"
+    assert a.max_context_window_tokens == 1047576  # default from capabilities
+
+    a.max_context_window_tokens = 50000
+    assert a.max_context_window_tokens == 50000  # user override
+
+    # Resetting to None falls back to model default
+    a.max_context_window_tokens = None
+    assert a.max_context_window_tokens == 1047576
+
+
 def test_bundle_contains_context_window_used_pct():
     """context_window_used_pct = last turn's tokens / max_context_window_tokens (not cumulative)."""
     a = Agent()
