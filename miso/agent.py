@@ -66,10 +66,67 @@ class agent:
         self.max_iterations = 6
         self.default_payload = self._load_default_payloads(DEFAULT_PAYLOADS_FILE)
         self.model_capabilities = self._load_model_capabilities(MODEL_CAPABILITIES_FILE)
-        self.toolkit = base_toolkit()
+        self.toolkits: list[base_toolkit] = []
         self.last_response_id: str | None = None
         self.last_reasoning_items: list[dict[str, Any]] = []
         self.last_consumed_tokens: int = 0
+
+    # ── toolkit property (backward compatibility) ──────────────────────────
+
+    @property
+    def toolkit(self) -> base_toolkit:
+        """Return a merged view of all registered toolkits.
+
+        Setting this property replaces the entire toolkits list with a single
+        toolkit, preserving backward compatibility.
+        """
+        merged = base_toolkit()
+        for tk in self.toolkits:
+            merged.tools.update(tk.tools)
+        return merged
+
+    @toolkit.setter
+    def toolkit(self, value: base_toolkit) -> None:
+        self.toolkits = [value]
+
+    # ── multi-toolkit management ───────────────────────────────────────────
+
+    def add_toolkit(self, tk: base_toolkit) -> None:
+        """Append a toolkit to the agent's toolkit list."""
+        self.toolkits.append(tk)
+
+    def remove_toolkit(self, tk: base_toolkit) -> None:
+        """Remove a toolkit from the agent's toolkit list."""
+        self.toolkits.remove(tk)
+
+    # ── internal helpers for merged tool lookup ────────────────────────────
+
+    def _merged_tools_json(self) -> list[dict[str, Any]]:
+        """Build a combined tool-definition list from all registered toolkits."""
+        merged: dict[str, dict[str, Any]] = {}
+        for tk in self.toolkits:
+            for t in tk.to_json():
+                merged[t.get("name", "")] = t
+        return list(merged.values())
+
+    def _find_tool(self, name: str):
+        """Look up a tool by name across all toolkits (last registered wins)."""
+        result = None
+        for tk in self.toolkits:
+            found = tk.get(name)
+            if found is not None:
+                result = found
+        return result
+
+    def _execute_from_toolkits(self, name: str, arguments) -> dict[str, Any]:
+        """Execute a tool by name, searching all toolkits (last registered wins)."""
+        target_toolkit = None
+        for tk in self.toolkits:
+            if tk.get(name) is not None:
+                target_toolkit = tk
+        if target_toolkit is None:
+            return {"error": f"tool not found: {name}", "tool": name}
+        return target_toolkit.execute(name, arguments)
 
     def _load_default_payloads(self, path: str | Path) -> dict[str, dict[str, Any]]:
         file_path = Path(path)
@@ -146,6 +203,8 @@ class agent:
                 # With previous_response_id, OpenAI expects incremental input for each next turn.
                 request_messages = next_openai_input
 
+            merged_toolkit = self.toolkit
+
             turn = self._fetch_once(
                 messages=request_messages,
                 payload=payload,
@@ -154,7 +213,7 @@ class agent:
                 verbose=verbose,
                 run_id=run_id,
                 iteration=iteration,
-                toolkit=self.toolkit,
+                toolkit=merged_toolkit,
                 emit_stream=True,
                 previous_response_id=next_previous_response_id if self.provider == "openai" else None,
             )
@@ -574,11 +633,11 @@ class agent:
                 arguments=tool_call.arguments,
             )
 
-            tool = self.toolkit.get(tool_call.name)
+            tool = self._find_tool(tool_call.name)
             if tool is not None and tool.observe:
                 should_observe = True
 
-            tool_result = self.toolkit.execute(tool_call.name, tool_call.arguments)
+            tool_result = self._execute_from_toolkits(tool_call.name, tool_call.arguments)
             content = json.dumps(tool_result, default=str, ensure_ascii=False)
 
             if self.provider == "openai":

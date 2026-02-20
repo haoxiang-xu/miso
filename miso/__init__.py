@@ -5,7 +5,11 @@ from .tool import (
     toolkit,
     tool_decorator,
 )
-from .builtin_tools import builtin_toolkit, build_builtin_toolkit
+from .builtin_tools import (
+    builtin_toolkit,
+    build_builtin_toolkit,
+    python_workspace_toolkit,
+)
 from .response_format import response_format
 from .agent import agent
 # import ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- #
@@ -17,6 +21,7 @@ __all__ = [
     "tool_decorator",
     "builtin_toolkit",
     "build_builtin_toolkit",
+    "python_workspace_toolkit",
     "response_format",
     "agent",
 ]
