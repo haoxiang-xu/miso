@@ -9,7 +9,6 @@ from typing import Any, Callable, Union, get_args, get_origin, get_type_hints
 
 _UNION_TYPE = getattr(types, "UnionType", None)
 
-
 def _annotation_to_json_type(annotation: Any) -> str:
     origin = get_origin(annotation)
     if origin in (list, tuple, set, frozenset):
@@ -38,7 +37,6 @@ def _annotation_to_json_type(annotation: Any) -> str:
     if annotation in (dict,):
         return "object"
     return "string"
-
 
 def _parse_docstring(func: Callable[..., Any]) -> tuple[str, dict[str, str]]:
     doc = inspect.getdoc(func) or ""
@@ -100,7 +98,6 @@ def _parse_docstring(func: Callable[..., Any]) -> tuple[str, dict[str, str]]:
 
     return summary, parameter_descriptions
 
-
 @dataclass
 class tool_parameter:
     name: str
@@ -117,7 +114,6 @@ class tool_parameter:
         if self.pattern is not None:
             json_parameter["pattern"] = self.pattern
         return json_parameter
-
 
 class tool:
     def __init__(
@@ -273,7 +269,6 @@ class tool:
         except Exception as exc:
             return {"error": str(exc), "tool": self.name}
 
-
 def tool_decorator(
     *,
     name: str | None = None,
@@ -291,7 +286,6 @@ def tool_decorator(
         )
 
     return decorator
-
 
 class toolkit:
     def __init__(self, tools: dict[str, tool] | None = None):
