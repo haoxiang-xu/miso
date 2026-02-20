@@ -10,6 +10,7 @@ from .builtin_toolkits import (
     build_builtin_toolkit,
     python_workspace_toolkit,
 )
+from .mcp import mcp
 from .response_format import response_format
 from .agent import agent
 # import ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- #
@@ -22,6 +23,7 @@ __all__ = [
     "builtin_toolkit",
     "build_builtin_toolkit",
     "python_workspace_toolkit",
+    "mcp",
     "response_format",
     "agent",
 ]
