@@ -8,7 +8,7 @@ import venv
 from pathlib import Path
 from typing import Any
 
-from .tool import tool, toolkit
+from .tool import toolkit
 
 class _PythonRuntime:
     def __init__(self, workspace_root: Path):
@@ -119,76 +119,22 @@ class builtin_toolkit(toolkit):
         return resolved
 
     def _register_core_tools(self):
-        self.register(
-            tool.from_callable(
-                self.read_text_file,
-                name="read_text_file",
-                description="Read UTF-8 text file from workspace.",
-            )
+        self.register_many(
+            self.read_text_file,
+            self.write_text_file,
+            self.list_directory,
+            self.create_minimal_demo,
         )
-        self.register(
-            tool.from_callable(
-                self.write_text_file,
-                name="write_text_file",
-                description="Write UTF-8 text file into workspace.",
-            )
-        )
-        self.register(
-            tool.from_callable(
-                self.list_directory,
-                name="list_directory",
-                description="List files and folders under a workspace path.",
-            )
-        )
-        self.register(
-            tool.from_callable(
-                self.search_text,
-                name="search_text",
-                description="Search text pattern in workspace files.",
-                observe=True,
-            )
-        )
-        self.register(
-            tool.from_callable(
-                self.create_minimal_demo,
-                name="create_minimal_demo",
-                description="Create a minimal runnable Python demo file in workspace.",
-            )
-        )
+        self.register(self.search_text, observe=True)
 
     def _register_python_runtime_tools(self):
-        self.register(
-            tool.from_callable(
-                self.python_runtime_init,
-                name="python_runtime_init",
-                description="Create isolated Python runtime (venv) in workspace.",
-            )
-        )
-        self.register(
-            tool.from_callable(
-                self.python_runtime_install,
-                name="python_runtime_install",
-                description="Install Python packages into isolated runtime via pip.",
-                observe=True,
-            )
-        )
-        self.register(
-            tool.from_callable(
-                self.python_runtime_run,
-                name="python_runtime_run",
-                description="Run Python code inside isolated runtime.",
-                observe=True,
-            )
-        )
-        self.register(
-            tool.from_callable(
-                self.python_runtime_reset,
-                name="python_runtime_reset",
-                description="Delete and reset isolated Python runtime.",
-            )
-        )
+        self.register(self.python_runtime_init)
+        self.register(self.python_runtime_reset)
+        self.register(self.python_runtime_install, observe=True)
+        self.register(self.python_runtime_run, observe=True)
 
     def read_text_file(self, path: str, max_chars: int = 20000) -> dict[str, Any]:
+        """Read UTF-8 text file from workspace."""
         target = self._resolve_workspace_path(path)
         if not target.exists():
             return {"error": f"file not found: {target}"}
@@ -207,6 +153,7 @@ class builtin_toolkit(toolkit):
         }
 
     def write_text_file(self, path: str, content: str, append: bool = False) -> dict[str, Any]:
+        """Write UTF-8 text file into workspace."""
         target = self._resolve_workspace_path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -221,6 +168,7 @@ class builtin_toolkit(toolkit):
         }
 
     def list_directory(self, path: str = ".", recursive: bool = False, max_entries: int = 200) -> dict[str, Any]:
+        """List files and folders under a workspace path."""
         target = self._resolve_workspace_path(path)
         if not target.exists():
             return {"error": f"path not found: {target}"}
@@ -248,6 +196,7 @@ class builtin_toolkit(toolkit):
         max_results: int = 100,
         case_sensitive: bool = False,
     ) -> dict[str, Any]:
+        """Search text pattern in workspace files."""
         if not pattern:
             return {"error": "pattern is required"}
 
@@ -298,6 +247,7 @@ class builtin_toolkit(toolkit):
         path: str = "demo_minimal.py",
         overwrite: bool = False,
     ) -> dict[str, Any]:
+        """Create a minimal runnable Python demo file in workspace."""
         target = self._resolve_workspace_path(path)
         if target.exists() and not overwrite:
             return {
@@ -322,15 +272,19 @@ class builtin_toolkit(toolkit):
         }
 
     def python_runtime_init(self, reset: bool = False) -> dict[str, Any]:
+        """Create isolated Python runtime (venv) in workspace."""
         return self.python_runtime.ensure(reset=reset)
 
     def python_runtime_install(self, packages: list[str], timeout_seconds: int = 180) -> dict[str, Any]:
+        """Install Python packages into isolated runtime via pip."""
         return self.python_runtime.install(packages=packages, timeout_seconds=timeout_seconds)
 
     def python_runtime_run(self, code: str, timeout_seconds: int = 30) -> dict[str, Any]:
+        """Run Python code inside isolated runtime."""
         return self.python_runtime.run_code(code=code, timeout_seconds=timeout_seconds)
 
     def python_runtime_reset(self) -> dict[str, Any]:
+        """Delete and reset isolated Python runtime."""
         return self.python_runtime.reset()
 
 def build_builtin_toolkit(

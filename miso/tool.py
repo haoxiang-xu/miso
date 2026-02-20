@@ -2,10 +2,31 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
+import types
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Union, get_args, get_origin, get_type_hints
+
+_UNION_TYPE = getattr(types, "UnionType", None)
+
 
 def _annotation_to_json_type(annotation: Any) -> str:
+    origin = get_origin(annotation)
+    if origin in (list, tuple, set, frozenset):
+        return "array"
+    if origin in (dict,):
+        return "object"
+    union_origins = (Union,) if _UNION_TYPE is None else (Union, _UNION_TYPE)
+    if origin in union_origins:
+        union_args = [arg for arg in get_args(annotation) if arg is not type(None)]
+        if len(union_args) == 1:
+            return _annotation_to_json_type(union_args[0])
+        return "string"
+    if origin is not None:
+        origin_args = get_args(annotation)
+        if origin_args:
+            return _annotation_to_json_type(origin)
+
     if annotation in (int,):
         return "integer"
     if annotation in (float,):
@@ -17,6 +38,68 @@ def _annotation_to_json_type(annotation: Any) -> str:
     if annotation in (dict,):
         return "object"
     return "string"
+
+
+def _parse_docstring(func: Callable[..., Any]) -> tuple[str, dict[str, str]]:
+    doc = inspect.getdoc(func) or ""
+    if not doc:
+        return "", {}
+
+    lines = doc.splitlines()
+    summary = lines[0].strip()
+    parameter_descriptions: dict[str, str] = {}
+
+    # reStructuredText style: :param name: description
+    for line in lines:
+        match = re.match(r"^\s*:param\s+([A-Za-z_]\w*)\s*:\s*(.+)$", line)
+        if match:
+            parameter_descriptions[match.group(1)] = match.group(2).strip()
+
+    # Google style:
+    # Args:
+    #     name: description
+    in_args_block = False
+    current_parameter: str | None = None
+
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        if stripped in {"Args:", "Arguments:", "Parameters:"}:
+            in_args_block = True
+            current_parameter = None
+            continue
+
+        if not in_args_block:
+            continue
+
+        if not stripped:
+            current_parameter = None
+            continue
+
+        if re.match(r"^[A-Z][A-Za-z ]+:$", stripped):
+            in_args_block = False
+            current_parameter = None
+            continue
+
+        parameter_match = re.match(
+            r"^([A-Za-z_]\w*)(?:\s*\([^)]+\))?\s*:\s*(.+)$",
+            stripped,
+        )
+        if parameter_match:
+            current_parameter = parameter_match.group(1)
+            parameter_descriptions[current_parameter] = parameter_match.group(2).strip()
+            continue
+
+        if current_parameter and line.startswith((" ", "\t")):
+            parameter_descriptions[current_parameter] = (
+                f"{parameter_descriptions[current_parameter]} {stripped}".strip()
+            )
+        else:
+            current_parameter = None
+
+    return summary, parameter_descriptions
+
 
 @dataclass
 class tool_parameter:
@@ -35,15 +118,20 @@ class tool_parameter:
             json_parameter["pattern"] = self.pattern
         return json_parameter
 
+
 class tool:
     def __init__(
         self,
-        name: str = "",
+        name: str | Callable[..., Any] = "",
         description: str = "",
         func: Callable[..., Any] | None = None,
         parameters: list[tool_parameter | dict[str, Any]] | None = None,
         observe: bool = False,
     ):
+        if callable(name) and func is None:
+            func = name
+            name = ""
+
         self.name = name
         self.description = description
         self.func = func
@@ -56,8 +144,25 @@ class tool:
         if not self.name and self.func is not None:
             self.name = self.func.__name__
 
-        if not self.description and self.func is not None and self.func.__doc__:
-            self.description = self.func.__doc__.strip().splitlines()[0]
+        if not self.description and self.func is not None:
+            summary, _ = _parse_docstring(self.func)
+            self.description = summary
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        if self.func is None and len(args) == 1 and callable(args[0]) and not kwargs:
+            func = args[0]
+            return tool.from_callable(
+                func,
+                name=self.name or None,
+                description=self.description or None,
+                parameters=self.parameters or None,
+                observe=self.observe,
+            )
+
+        if self.func is not None:
+            return self.func(*args, **kwargs)
+
+        raise TypeError("tool object is not callable without a wrapped function")
 
     @classmethod
     def from_callable(
@@ -69,9 +174,10 @@ class tool:
         parameters: list[tool_parameter | dict[str, Any]] | None = None,
         observe: bool = False,
     ) -> "tool":
+        summary, _ = _parse_docstring(func)
         return cls(
             name=name or func.__name__,
-            description=description or (func.__doc__.strip().splitlines()[0] if func.__doc__ else ""),
+            description=description or summary,
             func=func,
             parameters=parameters,
             observe=observe,
@@ -100,17 +206,25 @@ class tool:
     def _infer_parameters_from_func(self, func: Callable[..., Any]) -> list[tool_parameter]:
         inferred: list[tool_parameter] = []
         signature = inspect.signature(func)
+        try:
+            resolved_hints = get_type_hints(func)
+        except Exception:
+            resolved_hints = {}
+        _, parameter_descriptions = _parse_docstring(func)
+
         for name, param in signature.parameters.items():
             if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
                 continue
 
-            annotation = param.annotation if param.annotation != inspect._empty else str
+            annotation = resolved_hints.get(name, param.annotation)
+            if annotation == inspect._empty:
+                annotation = str
             type_ = _annotation_to_json_type(annotation)
             required = param.default == inspect._empty
             inferred.append(
                 tool_parameter(
                     name=name,
-                    description=f"Argument {name}",
+                    description=parameter_descriptions.get(name, f"Argument {name}"),
                     type_=type_,
                     required=required,
                 )
@@ -159,6 +273,7 @@ class tool:
         except Exception as exc:
             return {"error": str(exc), "tool": self.name}
 
+
 def tool_decorator(
     *,
     name: str | None = None,
@@ -177,6 +292,7 @@ def tool_decorator(
 
     return decorator
 
+
 class toolkit:
     def __init__(self, tools: dict[str, tool] | None = None):
         self.tools: dict[str, tool] = {}
@@ -184,19 +300,74 @@ class toolkit:
             if isinstance(tool_obj, tool):
                 self.tools[tool_name] = tool_obj
 
-    def register(self, tool_obj: tool | Callable[..., Any], *, observe: bool | None = None) -> tool:
+    def register(
+        self,
+        tool_obj: tool | Callable[..., Any],
+        *,
+        observe: bool | None = None,
+        name: str | None = None,
+        description: str | None = None,
+        parameters: list[tool_parameter | dict[str, Any]] | None = None,
+    ) -> tool:
         if isinstance(tool_obj, tool):
+            if name is not None:
+                tool_obj.name = name
+            if description is not None:
+                tool_obj.description = description
+            if parameters is not None:
+                tool_obj.parameters = tool_obj._construct_parameters(parameters)
             if observe is not None:
                 tool_obj.observe = observe
             self.tools[tool_obj.name] = tool_obj
             return tool_obj
 
         if callable(tool_obj):
-            wrapped = tool.from_callable(tool_obj, observe=bool(observe))
+            wrapped = tool.from_callable(
+                tool_obj,
+                name=name,
+                description=description,
+                parameters=parameters,
+                observe=bool(observe),
+            )
             self.tools[wrapped.name] = wrapped
             return wrapped
 
         raise ValueError("invalid tool passed to register")
+
+    def register_many(self, *tool_objs: tool | Callable[..., Any]) -> list[tool]:
+        registered: list[tool] = []
+        for tool_obj in tool_objs:
+            registered.append(self.register(tool_obj))
+        return registered
+
+    def tool(
+        self,
+        func: Callable[..., Any] | None = None,
+        *,
+        observe: bool = False,
+        name: str | None = None,
+        description: str | None = None,
+        parameters: list[tool_parameter | dict[str, Any]] | None = None,
+    ):
+        if func is not None:
+            return self.register(
+                func,
+                observe=observe,
+                name=name,
+                description=description,
+                parameters=parameters,
+            )
+
+        def decorator(inner: Callable[..., Any]) -> tool:
+            return self.register(
+                inner,
+                observe=observe,
+                name=name,
+                description=description,
+                parameters=parameters,
+            )
+
+        return decorator
 
     def get(self, function_name: str) -> tool | None:
         return self.tools.get(function_name)

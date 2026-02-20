@@ -28,7 +28,7 @@
 - Multi-step tool calling loops (`agent.run`)
 - OpenAI Responses API
 - Local Ollama chat support
-- Custom tool registration (`tool`, `toolkit`, `@tool_decorator`)
+- Custom tool registration (`tool`, `toolkit`, `@tool`)
 - Predefined workspace tools (read/write/search files, optional isolated Python runtime)
 - JSON-schema response formatting (`response_format`)
 
@@ -115,9 +115,11 @@ print(bundle["consumed_tokens"])
 ### 3) Register your own tools
 
 ```python
-from miso import agent as Agent, toolkit as Toolkit
+from miso import agent as Agent, tool, toolkit as Toolkit
 
+@tool
 def add(a: int, b: int = 2):
+    """Add two integers."""
     return a + b
 
 agent = Agent()
@@ -125,7 +127,14 @@ agent.provider = "openai"
 agent.openai_api_key = "YOUR_OPENAI_API_KEY"
 
 tk = Toolkit()
-tk.register(add, observe=True)  # observe=True enables review pass after tool execution
+tk.register(add, observe=True)  # defaulted params are optional; no-default params are required
+
+# Or register directly as toolkit decorator:
+@tk.tool(observe=True)
+def multiply(a: int, b: int):
+    """Multiply two integers."""
+    return a * b
+
 agent.toolkit = tk
 ```
 
