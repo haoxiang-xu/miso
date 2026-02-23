@@ -1,6 +1,8 @@
 import json
 import importlib
 
+import pytest
+
 from miso import broth as Broth, response_format, tool, toolkit
 from miso.broth import ProviderTurnResult, ToolCall
 
@@ -508,3 +510,189 @@ def test_context_window_used_pct_zero_for_unknown_model():
     _, bundle = a.run([{"role": "user", "content": "hi"}])
     assert bundle["max_context_window_tokens"] == 0
     assert bundle["context_window_used_pct"] == 0.0
+
+
+def test_run_projects_multimodal_seed_messages_to_openai_blocks():
+    agent = Broth()
+    agent.provider = "openai"
+    agent.model = "gpt-5"
+
+    captured_messages = []
+
+    def fake_fetch_once(**kwargs):
+        captured_messages.append(kwargs.get("messages"))
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "ok"}],
+            tool_calls=[],
+            final_text="ok",
+            response_id="resp_mm_1",
+        )
+
+    agent._fetch_once = fake_fetch_once
+
+    agent.run(
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "read both"},
+                    {"type": "image", "source": {"type": "url", "url": "https://example.com/a.jpg"}},
+                    {
+                        "type": "pdf",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": "JVBERi0xLjQK",
+                        },
+                    },
+                ],
+            }
+        ],
+        max_iterations=1,
+    )
+
+    assert len(captured_messages) == 1
+    first_request = captured_messages[0]
+    assert isinstance(first_request, list)
+    blocks = first_request[0]["content"]
+    assert [b["type"] for b in blocks] == ["input_text", "input_image", "input_file"]
+    assert blocks[0]["text"] == "read both"
+    assert blocks[1]["image_url"] == "https://example.com/a.jpg"
+    assert blocks[2]["file_data"] == "JVBERi0xLjQK"
+    assert blocks[2]["filename"] == "document.pdf"
+
+
+def test_run_projects_multimodal_seed_messages_to_anthropic_blocks():
+    agent = Broth()
+    agent.provider = "anthropic"
+    agent.model = "claude-sonnet-4"
+
+    captured_messages = []
+
+    def fake_fetch_once(**kwargs):
+        captured_messages.append(kwargs.get("messages"))
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "ok"}],
+            tool_calls=[],
+            final_text="ok",
+        )
+
+    agent._fetch_once = fake_fetch_once
+
+    agent.run(
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "check"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "iVBORw0KGgoAAAANSUhEUgAA",
+                        },
+                    },
+                    {"type": "pdf", "source": {"type": "url", "url": "https://example.com/a.pdf"}},
+                ],
+            }
+        ],
+        max_iterations=1,
+    )
+
+    assert len(captured_messages) == 1
+    first_request = captured_messages[0]
+    blocks = first_request[0]["content"]
+    assert [b["type"] for b in blocks] == ["text", "image", "document"]
+    assert blocks[1]["source"]["type"] == "base64"
+    assert blocks[2]["source"]["type"] == "url"
+
+
+def test_run_rejects_unsupported_multimodal_input_for_text_only_model():
+    agent = Broth()
+    agent.provider = "ollama"
+    agent.model = "deepseek-r1:14b"
+
+    with pytest.raises(ValueError, match="does not support input modality 'image'"):
+        agent.run(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "hello"},
+                        {"type": "image", "source": {"type": "url", "url": "https://example.com/a.jpg"}},
+                    ],
+                }
+            ],
+            max_iterations=1,
+        )
+
+
+def test_run_rejects_disallowed_source_type_from_capabilities():
+    agent = Broth()
+    agent.provider = "openai"
+    agent.model = "gpt-5"
+    agent.model_capabilities["gpt-5"]["input_source_types"] = {
+        "image": ["url"],
+        "pdf": ["url", "base64"],
+    }
+
+    with pytest.raises(ValueError, match="source.type 'base64'"):
+        agent.run(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "iVBORw0KGgoAAAANSUhEUgAA",
+                            },
+                        }
+                    ],
+                }
+            ],
+            max_iterations=1,
+        )
+
+
+def test_canonicalize_compat_provider_native_input_blocks():
+    agent = Broth()
+    agent.provider = "openai"
+    agent.model = "gpt-5"
+
+    canonical = agent._canonicalize_seed_messages(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "native"},
+                    {"type": "input_image", "image_url": "https://example.com/a.jpg"},
+                    {"type": "input_file", "file_url": "https://example.com/a.pdf"},
+                ],
+            }
+        ]
+    )
+    blocks = canonical[0]["content"]
+    assert [b["type"] for b in blocks] == ["text", "image", "pdf"]
+
+    projected_openai = agent._project_canonical_to_openai(canonical)
+    assert [b["type"] for b in projected_openai[0]["content"]] == ["input_text", "input_image", "input_file"]
+
+    agent.provider = "anthropic"
+    canonical_from_anthropic = agent._canonicalize_seed_messages(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "native"},
+                    {"type": "image", "source": {"type": "url", "url": "https://example.com/a.jpg"}},
+                    {"type": "document", "source": {"type": "url", "url": "https://example.com/a.pdf"}},
+                ],
+            }
+        ]
+    )
+    projected_anthropic = agent._project_canonical_to_anthropic(canonical_from_anthropic)
+    assert [b["type"] for b in projected_anthropic[0]["content"]] == ["text", "image", "document"]

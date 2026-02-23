@@ -245,3 +245,45 @@ def test_dated_model_46_resolves():
     merged = a._merged_payload(None)
     assert "max_tokens" in merged
     assert merged["max_tokens"] == 8192
+
+
+def test_anthropic_run_multimodal_projection_unit():
+    a = Broth()
+    a.provider = "anthropic"
+    a.model = "claude-sonnet-4"
+
+    captured_messages = []
+
+    def fake_fetch_once(**kwargs):
+        captured_messages.append(kwargs.get("messages"))
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "ok"}],
+            tool_calls=[],
+            final_text="ok",
+        )
+
+    a._fetch_once = fake_fetch_once
+    a.run(
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "summarize"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": "/9j/4AAQSkZJRgABAQ",
+                        },
+                    },
+                    {"type": "pdf", "source": {"type": "url", "url": "https://example.com/a.pdf"}},
+                ],
+            }
+        ],
+        max_iterations=1,
+    )
+
+    assert len(captured_messages) == 1
+    content = captured_messages[0][0]["content"]
+    assert [b["type"] for b in content] == ["text", "image", "document"]

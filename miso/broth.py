@@ -182,9 +182,16 @@ class broth:
         """
         if self.model in registry:
             return self.model
+        normalized_model = self.model.replace(".", "-")
         best: str | None = None
         for key in registry:
-            if self.model.startswith(key) and (best is None or len(key) > len(best)):
+            normalized_key = key.replace(".", "-")
+            if (
+                self.model.startswith(key)
+                or self.model.startswith(normalized_key)
+                or normalized_model.startswith(key)
+                or normalized_model.startswith(normalized_key)
+            ) and (best is None or len(key) > len(best)):
                 best = key
         return best
 
@@ -219,6 +226,578 @@ class broth:
             "context_window_used_pct": round(pct, 2),
         }
 
+    def _canonicalize_seed_messages(self, messages) -> list[dict[str, Any]]:
+        canonical: list[dict[str, Any]] = []
+        for index, message in enumerate(messages or []):
+            if not isinstance(message, dict):
+                raise ValueError(
+                    f"error: messages[{index}] must be a dict. "
+                    "( broth -> _canonicalize_seed_messages )"
+                )
+
+            # Keep non-chat OpenAI response items untouched for compatibility.
+            if "role" not in message:
+                canonical.append(copy.deepcopy(message))
+                continue
+
+            normalized = copy.deepcopy(message)
+            normalized["content"] = self._canonicalize_content_blocks(
+                role=str(normalized.get("role", "")),
+                content=normalized.get("content", ""),
+            )
+            canonical.append(normalized)
+        return canonical
+
+    def _canonicalize_content_blocks(self, role: str, content: Any) -> list[dict[str, Any]] | str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            raise ValueError(
+                "error: message content must be string or list of blocks. "
+                "( broth -> _canonicalize_content_blocks )"
+            )
+
+        canonical_blocks = self._detect_and_convert_provider_native_blocks(self.provider, content)
+        if role == "system":
+            text_parts: list[str] = []
+            for block in canonical_blocks:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = block.get("text", "")
+                    text_parts.append(text if isinstance(text, str) else str(text))
+                    continue
+                raise ValueError(
+                    "error: system content blocks only support text. "
+                    "( broth -> _canonicalize_content_blocks )"
+                )
+            return "".join(text_parts)
+        return canonical_blocks
+
+    def _detect_and_convert_provider_native_blocks(
+        self,
+        provider: str,
+        blocks: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        del provider  # reserved for provider-specific conversion behavior
+        converted: list[dict[str, Any]] = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                raise ValueError(
+                    "error: content block must be an object. "
+                    "( broth -> _detect_and_convert_provider_native_blocks )"
+                )
+            block_type = block.get("type")
+
+            if block_type in ("text", "input_text"):
+                text = block.get("text", "")
+                if not isinstance(text, str):
+                    raise ValueError(
+                        "error: text block requires string field 'text'. "
+                        "( broth -> _detect_and_convert_provider_native_blocks )"
+                    )
+                converted.append({"type": "text", "text": text})
+                continue
+
+            if block_type in ("image", "input_image"):
+                converted.append(self._canonicalize_image_block(block, str(block_type)))
+                continue
+
+            if block_type in ("pdf", "document", "input_file"):
+                converted.append(self._canonicalize_pdf_block(block, str(block_type)))
+                continue
+
+            converted.append(copy.deepcopy(block))
+
+        return converted
+
+    def _canonicalize_image_block(self, block: dict[str, Any], block_type: str) -> dict[str, Any]:
+        if block_type == "input_image":
+            image_url = block.get("image_url")
+            if not isinstance(image_url, str) or not image_url.strip():
+                raise ValueError(
+                    "error: input_image requires non-empty string field 'image_url'. "
+                    "( broth -> _canonicalize_image_block )"
+                )
+
+            parsed = self._parse_data_url(image_url)
+            if parsed is not None:
+                media_type, data = parsed
+                if not media_type.startswith("image/"):
+                    raise ValueError(
+                        "error: image base64 media_type must start with 'image/'. "
+                        "( broth -> _canonicalize_image_block )"
+                    )
+                return {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data,
+                    },
+                }
+
+            return {
+                "type": "image",
+                "source": {
+                    "type": "url",
+                    "url": image_url,
+                },
+            }
+
+        source = block.get("source")
+        if not isinstance(source, dict):
+            raise ValueError(
+                "error: image block requires object field 'source'. "
+                "( broth -> _canonicalize_image_block )"
+            )
+        return {
+            "type": "image",
+            "source": self._canonicalize_image_source(source),
+        }
+
+    def _canonicalize_pdf_block(self, block: dict[str, Any], block_type: str) -> dict[str, Any]:
+        if block_type == "input_file":
+            file_url = block.get("file_url")
+            if isinstance(file_url, str) and file_url.strip():
+                return {
+                    "type": "pdf",
+                    "source": {
+                        "type": "url",
+                        "url": file_url,
+                    },
+                }
+
+            file_data = block.get("file_data")
+            if isinstance(file_data, str) and file_data.strip():
+                media_type = block.get("media_type", "application/pdf")
+                if media_type != "application/pdf":
+                    raise ValueError(
+                        "error: pdf base64 media_type must be 'application/pdf'. "
+                        "( broth -> _canonicalize_pdf_block )"
+                    )
+                source: dict[str, Any] = {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": file_data,
+                }
+                filename = block.get("filename")
+                if isinstance(filename, str) and filename.strip():
+                    source["filename"] = filename
+                return {
+                    "type": "pdf",
+                    "source": source,
+                }
+
+            raise ValueError(
+                "error: input_file requires 'file_url' or 'file_data'. "
+                "( broth -> _canonicalize_pdf_block )"
+            )
+
+        source = block.get("source")
+        if not isinstance(source, dict):
+            raise ValueError(
+                "error: pdf block requires object field 'source'. "
+                "( broth -> _canonicalize_pdf_block )"
+            )
+        return {
+            "type": "pdf",
+            "source": self._canonicalize_pdf_source(source),
+        }
+
+    def _canonicalize_image_source(self, source: dict[str, Any]) -> dict[str, Any]:
+        source_type = source.get("type")
+        if source_type == "url":
+            url = source.get("url")
+            if not isinstance(url, str) or not url.strip():
+                raise ValueError(
+                    "error: image url source requires non-empty string 'url'. "
+                    "( broth -> _canonicalize_image_source )"
+                )
+            return {"type": "url", "url": url}
+
+        if source_type == "base64":
+            data = source.get("data")
+            media_type = source.get("media_type")
+            if not isinstance(data, str) or not data.strip():
+                raise ValueError(
+                    "error: image base64 source requires non-empty string 'data'. "
+                    "( broth -> _canonicalize_image_source )"
+                )
+            if not isinstance(media_type, str) or not media_type.startswith("image/"):
+                raise ValueError(
+                    "error: image base64 media_type must start with 'image/'. "
+                    "( broth -> _canonicalize_image_source )"
+                )
+            return {
+                "type": "base64",
+                "media_type": media_type,
+                "data": data,
+            }
+
+        raise ValueError(
+            "error: image source.type must be 'url' or 'base64'. "
+            "( broth -> _canonicalize_image_source )"
+        )
+
+    def _canonicalize_pdf_source(self, source: dict[str, Any]) -> dict[str, Any]:
+        source_type = source.get("type")
+        if source_type == "url":
+            url = source.get("url")
+            if not isinstance(url, str) or not url.strip():
+                raise ValueError(
+                    "error: pdf url source requires non-empty string 'url'. "
+                    "( broth -> _canonicalize_pdf_source )"
+                )
+            return {"type": "url", "url": url}
+
+        if source_type == "base64":
+            data = source.get("data")
+            media_type = source.get("media_type")
+            if not isinstance(data, str) or not data.strip():
+                raise ValueError(
+                    "error: pdf base64 source requires non-empty string 'data'. "
+                    "( broth -> _canonicalize_pdf_source )"
+                )
+            if media_type != "application/pdf":
+                raise ValueError(
+                    "error: pdf base64 media_type must be 'application/pdf'. "
+                    "( broth -> _canonicalize_pdf_source )"
+                )
+            normalized: dict[str, Any] = {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": data,
+            }
+            filename = source.get("filename")
+            if isinstance(filename, str) and filename.strip():
+                normalized["filename"] = filename
+            return normalized
+
+        raise ValueError(
+            "error: pdf source.type must be 'url' or 'base64'. "
+            "( broth -> _canonicalize_pdf_source )"
+        )
+
+    def _parse_data_url(self, value: str) -> tuple[str, str] | None:
+        if not isinstance(value, str) or not value.startswith("data:"):
+            return None
+        if ";base64," not in value:
+            return None
+        header, data = value.split(";base64,", 1)
+        media_type = header[5:].strip()
+        if not media_type or not data:
+            return None
+        return media_type, data
+
+    def _validate_modalities_against_capabilities(self, canonical_messages: list[dict[str, Any]]) -> None:
+        raw_modalities = self._model_capability("input_modalities", ["text"])
+        if not isinstance(raw_modalities, list):
+            raw_modalities = ["text"]
+        allowed_modalities = {m for m in raw_modalities if isinstance(m, str)}
+        if not allowed_modalities:
+            allowed_modalities = {"text"}
+
+        raw_source_types = self._model_capability("input_source_types", {})
+        source_type_map = raw_source_types if isinstance(raw_source_types, dict) else {}
+
+        for message in canonical_messages:
+            if not isinstance(message, dict) or "role" not in message:
+                continue
+            content = message.get("content", "")
+            if isinstance(content, str):
+                if "text" not in allowed_modalities:
+                    raise ValueError(
+                        "error: model does not support text input. "
+                        "( broth -> _validate_modalities_against_capabilities )"
+                    )
+                continue
+            if not isinstance(content, list):
+                continue
+
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                modality = block.get("type")
+                if modality not in ("text", "image", "pdf"):
+                    continue
+                if modality not in allowed_modalities:
+                    raise ValueError(
+                        f"error: model '{self.model}' does not support input modality '{modality}'. "
+                        "( broth -> _validate_modalities_against_capabilities )"
+                    )
+
+                if modality == "text":
+                    continue
+
+                source = block.get("source")
+                if not isinstance(source, dict):
+                    raise ValueError(
+                        f"error: {modality} block must include object field 'source'. "
+                        "( broth -> _validate_modalities_against_capabilities )"
+                    )
+                source_type = source.get("type")
+                allowed_types_raw = source_type_map.get(modality, ["url", "base64"])
+                if isinstance(allowed_types_raw, list) and allowed_types_raw:
+                    allowed_types = {t for t in allowed_types_raw if isinstance(t, str)}
+                else:
+                    allowed_types = {"url", "base64"}
+                if source_type not in allowed_types:
+                    raise ValueError(
+                        f"error: model '{self.model}' does not support source.type '{source_type}' "
+                        f"for modality '{modality}'. ( broth -> _validate_modalities_against_capabilities )"
+                    )
+
+    def _project_canonical_to_openai(self, canonical_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        projected: list[dict[str, Any]] = []
+        for message in canonical_messages:
+            if not isinstance(message, dict) or "role" not in message:
+                projected.append(copy.deepcopy(message))
+                continue
+
+            out_message = {k: copy.deepcopy(v) for k, v in message.items() if k != "content"}
+            content = message.get("content", "")
+            if isinstance(content, str):
+                out_message["content"] = content
+                projected.append(out_message)
+                continue
+
+            if not isinstance(content, list):
+                out_message["content"] = copy.deepcopy(content)
+                projected.append(out_message)
+                continue
+
+            out_blocks: list[dict[str, Any]] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+
+                if block_type == "text":
+                    text = block.get("text", "")
+                    out_blocks.append({
+                        "type": "input_text",
+                        "text": text if isinstance(text, str) else str(text),
+                    })
+                    continue
+
+                if block_type == "image":
+                    source = block.get("source", {})
+                    if not isinstance(source, dict):
+                        raise ValueError(
+                            "error: image block requires object field 'source'. "
+                            "( broth -> _project_canonical_to_openai )"
+                        )
+                    source_type = source.get("type")
+                    if source_type == "url":
+                        out_blocks.append({
+                            "type": "input_image",
+                            "image_url": source.get("url", ""),
+                        })
+                        continue
+                    if source_type == "base64":
+                        media_type = source.get("media_type", "")
+                        data = source.get("data", "")
+                        out_blocks.append({
+                            "type": "input_image",
+                            "image_url": f"data:{media_type};base64,{data}",
+                        })
+                        continue
+                    raise ValueError(
+                        "error: image source.type must be 'url' or 'base64'. "
+                        "( broth -> _project_canonical_to_openai )"
+                    )
+
+                if block_type == "pdf":
+                    source = block.get("source", {})
+                    if not isinstance(source, dict):
+                        raise ValueError(
+                            "error: pdf block requires object field 'source'. "
+                            "( broth -> _project_canonical_to_openai )"
+                        )
+                    source_type = source.get("type")
+                    if source_type == "url":
+                        out_blocks.append({
+                            "type": "input_file",
+                            "file_url": source.get("url", ""),
+                        })
+                        continue
+                    if source_type == "base64":
+                        filename = source.get("filename", "document.pdf")
+                        if not isinstance(filename, str) or not filename.strip():
+                            filename = "document.pdf"
+                        out_blocks.append({
+                            "type": "input_file",
+                            "file_data": source.get("data", ""),
+                            "filename": filename,
+                        })
+                        continue
+                    raise ValueError(
+                        "error: pdf source.type must be 'url' or 'base64'. "
+                        "( broth -> _project_canonical_to_openai )"
+                    )
+
+                out_blocks.append(copy.deepcopy(block))
+
+            out_message["content"] = out_blocks
+            projected.append(out_message)
+        return projected
+
+    def _project_canonical_to_anthropic(self, canonical_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        projected: list[dict[str, Any]] = []
+        for message in canonical_messages:
+            if not isinstance(message, dict) or "role" not in message:
+                projected.append(copy.deepcopy(message))
+                continue
+
+            out_message = {k: copy.deepcopy(v) for k, v in message.items() if k != "content"}
+            content = message.get("content", "")
+            if isinstance(content, str):
+                out_message["content"] = content
+                projected.append(out_message)
+                continue
+
+            if not isinstance(content, list):
+                out_message["content"] = copy.deepcopy(content)
+                projected.append(out_message)
+                continue
+
+            out_blocks: list[dict[str, Any]] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+                if block_type == "text":
+                    text = block.get("text", "")
+                    out_blocks.append({
+                        "type": "text",
+                        "text": text if isinstance(text, str) else str(text),
+                    })
+                    continue
+
+                if block_type == "image":
+                    source = block.get("source", {})
+                    if not isinstance(source, dict):
+                        raise ValueError(
+                            "error: image block requires object field 'source'. "
+                            "( broth -> _project_canonical_to_anthropic )"
+                        )
+                    source_type = source.get("type")
+                    if source_type == "url":
+                        out_blocks.append({
+                            "type": "image",
+                            "source": {
+                                "type": "url",
+                                "url": source.get("url", ""),
+                            },
+                        })
+                        continue
+                    if source_type == "base64":
+                        out_blocks.append({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": source.get("media_type", ""),
+                                "data": source.get("data", ""),
+                            },
+                        })
+                        continue
+                    raise ValueError(
+                        "error: image source.type must be 'url' or 'base64'. "
+                        "( broth -> _project_canonical_to_anthropic )"
+                    )
+
+                if block_type == "pdf":
+                    source = block.get("source", {})
+                    if not isinstance(source, dict):
+                        raise ValueError(
+                            "error: pdf block requires object field 'source'. "
+                            "( broth -> _project_canonical_to_anthropic )"
+                        )
+                    source_type = source.get("type")
+                    if source_type == "url":
+                        out_blocks.append({
+                            "type": "document",
+                            "source": {
+                                "type": "url",
+                                "url": source.get("url", ""),
+                            },
+                        })
+                        continue
+                    if source_type == "base64":
+                        out_blocks.append({
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "application/pdf",
+                                "data": source.get("data", ""),
+                            },
+                        })
+                        continue
+                    raise ValueError(
+                        "error: pdf source.type must be 'url' or 'base64'. "
+                        "( broth -> _project_canonical_to_anthropic )"
+                    )
+
+                out_blocks.append(copy.deepcopy(block))
+
+            out_message["content"] = out_blocks
+            projected.append(out_message)
+        return projected
+
+    def _project_canonical_to_ollama(self, canonical_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        projected: list[dict[str, Any]] = []
+        for message in canonical_messages:
+            if not isinstance(message, dict) or "role" not in message:
+                projected.append(copy.deepcopy(message))
+                continue
+
+            out_message = {k: copy.deepcopy(v) for k, v in message.items() if k != "content"}
+            content = message.get("content", "")
+            if isinstance(content, str):
+                out_message["content"] = content
+                projected.append(out_message)
+                continue
+
+            if not isinstance(content, list):
+                out_message["content"] = str(content)
+                projected.append(out_message)
+                continue
+
+            text_parts: list[str] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+                if block_type == "text":
+                    text = block.get("text", "")
+                    text_parts.append(text if isinstance(text, str) else str(text))
+                    continue
+                if block_type in ("image", "pdf"):
+                    raise ValueError(
+                        f"error: provider '{self.provider}' does not support modality '{block_type}'. "
+                        "( broth -> _project_canonical_to_ollama )"
+                    )
+                raise ValueError(
+                    "error: ollama content blocks only support text. "
+                    "( broth -> _project_canonical_to_ollama )"
+                )
+            out_message["content"] = "".join(text_parts)
+            projected.append(out_message)
+        return projected
+
+    def _project_canonical_messages_for_provider(
+        self,
+        canonical_messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if self.provider == "openai":
+            return self._project_canonical_to_openai(canonical_messages)
+        if self.provider == "anthropic":
+            return self._project_canonical_to_anthropic(canonical_messages)
+        if self.provider == "ollama":
+            return self._project_canonical_to_ollama(canonical_messages)
+        return copy.deepcopy(canonical_messages)
+
     def run(
         self,
         messages,
@@ -230,7 +809,10 @@ class broth:
         previous_response_id: str | None = None,
     ):
         run_id = str(uuid.uuid4())
-        seed_messages = copy.deepcopy(list(messages or []))
+        raw_seed_messages = copy.deepcopy(list(messages or []))
+        canonical_seed_messages = self._canonicalize_seed_messages(raw_seed_messages)
+        self._validate_modalities_against_capabilities(canonical_seed_messages)
+        seed_messages = self._project_canonical_messages_for_provider(canonical_seed_messages)
         conversation = copy.deepcopy(seed_messages)
         payload = dict(payload or {})
         max_loops = max_iterations or self.max_iterations
@@ -726,6 +1308,7 @@ class broth:
             "messages": chat_messages,
             "max_tokens": max_tokens,
             **request_payload,
+            "stream": True,
         }
         if system_prompt:
             request_kwargs["system"] = system_prompt
@@ -998,7 +1581,7 @@ class broth:
         for message in reversed(messages):
             if message.get("role") != "assistant":
                 continue
-            raw_content = message.get("content", "")
+            raw_content = self._content_to_text(message.get("content", ""))
             parsed = response_format.parse(raw_content)
             message["content"] = json.dumps(parsed, ensure_ascii=False)
             return
@@ -1049,10 +1632,27 @@ class broth:
             return max(0, input_tokens + output_tokens)
         return 0
 
+    def _content_to_text(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") in ("text", "output_text", "input_text"):
+                    text = block.get("text", "")
+                    if text:
+                        parts.append(text if isinstance(text, str) else str(text))
+            return "".join(parts)
+        if content is None:
+            return ""
+        return str(content)
+
     def _last_assistant_text(self, messages: list[dict[str, Any]]) -> str:
         for msg in reversed(messages):
             if isinstance(msg, dict) and msg.get("role") == "assistant":
-                return (msg.get("content") or "").strip()
+                return self._content_to_text(msg.get("content", "")).strip()
         return ""
 
 __all__ = [

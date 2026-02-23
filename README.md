@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/miso_logo.png" alt="miso logo" width="160" />
   <h1>miso</h1>
-  <p>A lightweight Python Agent Builder for OpenAI and Ollama.</p>
+  <p>A lightweight Python Agent Builder for OpenAI, Anthropic, and Ollama.</p>
 </div>
 
 ---
@@ -12,6 +12,7 @@
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
 - [Core Usage](#core-usage)
+- [Multimodal Input](#multimodal-input)
 - [Structured Output](#structured-output)
 - [Event Callback](#event-callback)
 - [Builtin Toolkit](#builtin-toolkit)
@@ -27,6 +28,7 @@
 
 - Multi-step tool calling loops (`agent.run`)
 - OpenAI Responses API
+- Anthropic Messages API
 - Local Ollama chat support
 - Custom tool registration (`tool`, `toolkit`, `@tool`)
 - Predefined workspace tools (read/write/search files, optional isolated Python runtime)
@@ -74,6 +76,13 @@ Merge rule:
 
 For GPT-5 / GPT-5-Codex models, defaults include `reasoning`, `include`, and `store`,
 so you can override those keys from user payload.
+
+Input modality capabilities are also read from `model_capabilities.json`:
+
+- `input_modalities` (for example `["text", "image", "pdf"]`)
+- `input_source_types` (for example `{"image":["url","base64"],"pdf":["url","base64"]}`)
+
+`run()` enforces these capabilities before provider API calls. Unknown models default to text-only input.
 
 ---
 
@@ -162,6 +171,46 @@ print("last response id:", agent.last_response_id)
 print("reasoning blocks:", len(agent.last_reasoning_items))
 print("consumed_tokens:", bundle["consumed_tokens"])
 ```
+
+---
+
+## <h1>Multimodal Input</h1> <a id="multimodal-input"></a>
+
+`miso` supports a unified MISO content-block format for multimodal user input on OpenAI and Anthropic:
+
+```python
+from miso import agent as Agent
+
+agent = Agent()
+agent.provider = "openai"  # or "anthropic"
+agent.model = "gpt-5"      # or "claude-sonnet-4"
+
+messages = [
+    {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "先总结 PDF，再结合图片回答"},
+            {"type": "image", "source": {"type": "url", "url": "https://example.com/a.jpg"}},
+            {
+                "type": "pdf",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": "JVBERi0xLjQK..."
+                }
+            },
+        ],
+    }
+]
+
+messages_out, bundle = agent.run(messages=messages, max_iterations=1)
+```
+
+Notes:
+
+- v1 supports `url` and `base64` sources only.
+- Local-path upload and `file_id` input are intentionally out of scope in v1.
+- Existing `content: "plain text"` remains fully compatible.
 
 ---
 
