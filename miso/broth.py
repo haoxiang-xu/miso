@@ -428,6 +428,14 @@ class broth:
             allowed_key_set = {key for key in allowed_keys if isinstance(key, str)}
             defaults = {key: value for key, value in defaults.items() if key in allowed_key_set}
 
+        if self.provider == "anthropic" and "temperature" in defaults and "top_p" in defaults:
+            user_set_temperature = "temperature" in user_payload
+            user_set_top_p = "top_p" in user_payload
+            if user_set_top_p and not user_set_temperature:
+                defaults.pop("temperature", None)
+            else:
+                defaults.pop("top_p", None)
+
         return defaults
 
     def _openai_fetch_once(
@@ -717,7 +725,6 @@ class broth:
             "model": self.model,
             "messages": chat_messages,
             "max_tokens": max_tokens,
-            "stream": True,
             **request_payload,
         }
         if system_prompt:

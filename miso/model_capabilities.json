@@ -101,7 +101,7 @@
       "top_k"
     ]
   },
-  "claude-sonnet-4.6": {
+  "claude-sonnet-4-6": {
     "provider": "anthropic",
     "max_context_window_tokens": 200000,
     "supports_tools": true,
@@ -115,7 +115,7 @@
       "top_k"
     ]
   },
-  "claude-opus-4.6": {
+  "claude-opus-4-6": {
     "provider": "anthropic",
     "max_context_window_tokens": 200000,
     "supports_tools": true,
@@ -129,7 +129,7 @@
       "top_k"
     ]
   },
-  "claude-haiku-4.6": {
+  "claude-haiku-4-6": {
     "provider": "anthropic",
     "max_context_window_tokens": 200000,
     "supports_tools": true,
