@@ -13,6 +13,7 @@ from .builtin_toolkits import (
 from .mcp import mcp
 from .response_format import response_format
 from .broth import broth
+from . import media
 # import ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- #
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "mcp",
     "response_format",
     "broth",
+    "media",
 ]
