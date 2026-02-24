@@ -358,6 +358,16 @@ class broth:
 
     def _canonicalize_pdf_block(self, block: dict[str, Any], block_type: str) -> dict[str, Any]:
         if block_type == "input_file":
+            file_id = block.get("file_id")
+            if isinstance(file_id, str) and file_id.strip():
+                return {
+                    "type": "pdf",
+                    "source": {
+                        "type": "file_id",
+                        "file_id": file_id,
+                    },
+                }
+
             file_url = block.get("file_url")
             if isinstance(file_url, str) and file_url.strip():
                 return {
@@ -390,7 +400,7 @@ class broth:
                 }
 
             raise ValueError(
-                "error: input_file requires 'file_url' or 'file_data'. "
+                "error: input_file requires 'file_id', 'file_url', or 'file_data'. "
                 "( broth -> _canonicalize_pdf_block )"
             )
 
@@ -474,8 +484,17 @@ class broth:
                 normalized["filename"] = filename
             return normalized
 
+        if source_type == "file_id":
+            file_id = source.get("file_id")
+            if not isinstance(file_id, str) or not file_id.strip():
+                raise ValueError(
+                    "error: pdf file_id source requires non-empty string 'file_id'. "
+                    "( broth -> _canonicalize_pdf_source )"
+                )
+            return {"type": "file_id", "file_id": file_id}
+
         raise ValueError(
-            "error: pdf source.type must be 'url' or 'base64'. "
+            "error: pdf source.type must be 'url', 'base64', or 'file_id'. "
             "( broth -> _canonicalize_pdf_source )"
         )
 
@@ -537,6 +556,9 @@ class broth:
                         "( broth -> _validate_modalities_against_capabilities )"
                     )
                 source_type = source.get("type")
+                # file_id is an OpenAI-specific upload reference; skip capability-map checks.
+                if source_type == "file_id":
+                    continue
                 allowed_types_raw = source_type_map.get(modality, ["url", "base64"])
                 if isinstance(allowed_types_raw, list) and allowed_types_raw:
                     allowed_types = {t for t in allowed_types_raw if isinstance(t, str)}
@@ -626,14 +648,24 @@ class broth:
                         filename = source.get("filename", "document.pdf")
                         if not isinstance(filename, str) or not filename.strip():
                             filename = "document.pdf"
+                        file_data = source.get("data", "")
+                        # OpenAI Responses API requires a data URL, not raw base64.
+                        if isinstance(file_data, str) and file_data and not file_data.startswith("data:"):
+                            file_data = f"data:application/pdf;base64,{file_data}"
                         out_blocks.append({
                             "type": "input_file",
-                            "file_data": source.get("data", ""),
+                            "file_data": file_data,
                             "filename": filename,
                         })
                         continue
+                    if source_type == "file_id":
+                        out_blocks.append({
+                            "type": "input_file",
+                            "file_id": source.get("file_id", ""),
+                        })
+                        continue
                     raise ValueError(
-                        "error: pdf source.type must be 'url' or 'base64'. "
+                        "error: pdf source.type must be 'url', 'base64', or 'file_id'. "
                         "( broth -> _project_canonical_to_openai )"
                     )
 
@@ -734,8 +766,13 @@ class broth:
                             },
                         })
                         continue
+                    if source_type == "file_id":
+                        raise ValueError(
+                            "error: pdf source.type 'file_id' is OpenAI-specific and not supported by Anthropic. "
+                            "( broth -> _project_canonical_to_anthropic )"
+                        )
                     raise ValueError(
-                        "error: pdf source.type must be 'url' or 'base64'. "
+                        "error: pdf source.type must be 'url', 'base64', or 'file_id'. "
                         "( broth -> _project_canonical_to_anthropic )"
                     )
 
@@ -1086,6 +1123,18 @@ class broth:
                     completed_response = getattr(chunk, "response", None)
 
         if completed_response is None:
+            # gpt-5 / preview models occasionally close the stream without emitting
+            # response.completed. If we collected text deltas, return them gracefully
+            # rather than raising — the content is valid, just the envelope is missing.
+            if collected_chunks:
+                full_text = "".join(collected_chunks).strip()
+                return ProviderTurnResult(
+                    assistant_messages=[{"role": "assistant", "content": full_text}],
+                    tool_calls=[],
+                    final_text=full_text,
+                    response_id=None,
+                    consumed_tokens=0,
+                )
             raise ValueError("error: openai stream ended without completion payload")
 
         outputs = getattr(completed_response, "output", None) or []
@@ -1308,7 +1357,6 @@ class broth:
             "messages": chat_messages,
             "max_tokens": max_tokens,
             **request_payload,
-            "stream": True,
         }
         if system_prompt:
             request_kwargs["system"] = system_prompt

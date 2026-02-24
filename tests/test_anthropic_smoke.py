@@ -51,7 +51,7 @@ def test_anthropic_smoke():
 
 # ── unit test: _anthropic_fetch_once forces stream & returns text ───────────
 
-def test_anthropic_fetch_once_forces_stream_true(monkeypatch):
+def test_anthropic_fetch_once_uses_stream_method(monkeypatch):
     a = Broth()
     a.provider = "anthropic"
     a.api_key = "sk-test-fake"
@@ -128,7 +128,8 @@ def test_anthropic_fetch_once_forces_stream_true(monkeypatch):
         emit_stream=False,
     )
 
-    assert captured_kwargs["stream"] is True
+    assert captured_kwargs["model"] == "claude-sonnet-4"
+    assert "stream" not in captured_kwargs  # stream() implies streaming; no explicit kwarg needed
     assert turn.final_text == "hello"
     assert turn.consumed_tokens > 0
 

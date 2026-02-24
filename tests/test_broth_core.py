@@ -558,7 +558,7 @@ def test_run_projects_multimodal_seed_messages_to_openai_blocks():
     assert [b["type"] for b in blocks] == ["input_text", "input_image", "input_file"]
     assert blocks[0]["text"] == "read both"
     assert blocks[1]["image_url"] == "https://example.com/a.jpg"
-    assert blocks[2]["file_data"] == "JVBERi0xLjQK"
+    assert blocks[2]["file_data"] == "data:application/pdf;base64,JVBERi0xLjQK"
     assert blocks[2]["filename"] == "document.pdf"
 
 
