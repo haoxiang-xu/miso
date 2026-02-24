@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
 import copy
+import hashlib
+import io
 import json
 import time
 import uuid
@@ -9,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import httpx
+import openai
 from openai import OpenAI
 
 try:
@@ -63,10 +67,10 @@ class ProviderTurnResult:
     consumed_tokens: int = 0
 
 class broth:
-    def __init__(self):
-        self.api_key = None
-        self.provider = "openai"
-        self.model = "gpt-5"
+    def __init__(self, *, provider: str | None = None, model: str | None = None, api_key: str | None = None):
+        self.api_key = api_key
+        self.provider = provider or "openai"
+        self.model = model or "gpt-5"
         self.max_iterations = 6
         self.default_payload = self._load_default_payloads(DEFAULT_PAYLOADS_FILE)
         self.model_capabilities = self._load_model_capabilities(MODEL_CAPABILITIES_FILE)
@@ -76,6 +80,12 @@ class broth:
         self.last_consumed_tokens: int = 0
         self.consumed_tokens: int = 0
         self._max_context_window_tokens: int | None = None
+        # sha256(base64_data) -> openai file_id — shared across run() calls
+        self._file_id_cache: dict[str, str] = {}
+        # openai file_id -> sha256 (reverse map for stale-id retry)
+        self._file_id_reverse: dict[str, str] = {}
+        # canonical seed messages for the current run (used in stale-file retry)
+        self._last_canonical_seed: list[dict[str, Any]] = []
 
     # ── toolkit property (backward compatibility) ──────────────────────────
 
@@ -570,6 +580,24 @@ class broth:
                         f"for modality '{modality}'. ( broth -> _validate_modalities_against_capabilities )"
                     )
 
+    def _openai_resolve_file(self, data: str, media_type: str, filename: str) -> str:
+        """Upload base64-encoded file data to the OpenAI Files API and cache the
+        resulting file_id for the lifetime of this Broth instance.  Subsequent
+        calls with the same data return the cached id without a network round-trip.
+        """
+        key = hashlib.sha256(data.encode()).hexdigest()
+        if key in self._file_id_cache:
+            return self._file_id_cache[key]
+        raw = base64.b64decode(data)
+        client = OpenAI(api_key=self.api_key)
+        resp = client.files.create(
+            file=(filename, io.BytesIO(raw), media_type),
+            purpose="user_data",
+        )
+        self._file_id_cache[key] = resp.id
+        self._file_id_reverse[resp.id] = key
+        return resp.id
+
     def _project_canonical_to_openai(self, canonical_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         projected: list[dict[str, Any]] = []
         for message in canonical_messages:
@@ -648,15 +676,26 @@ class broth:
                         filename = source.get("filename", "document.pdf")
                         if not isinstance(filename, str) or not filename.strip():
                             filename = "document.pdf"
-                        file_data = source.get("data", "")
-                        # OpenAI Responses API requires a data URL, not raw base64.
-                        if isinstance(file_data, str) and file_data and not file_data.startswith("data:"):
-                            file_data = f"data:application/pdf;base64,{file_data}"
-                        out_blocks.append({
-                            "type": "input_file",
-                            "file_data": file_data,
-                            "filename": filename,
-                        })
+                        data = source.get("data", "")
+                        if self.api_key and data:
+                            # Upload to OpenAI Files API and cache the file_id so
+                            # repeat run() calls on the same Broth instance don't
+                            # re-upload the same file on every iteration.
+                            file_id = self._openai_resolve_file(data, "application/pdf", filename)
+                            out_blocks.append({
+                                "type": "input_file",
+                                "file_id": file_id,
+                            })
+                        else:
+                            # Fallback when api_key unavailable: send inline data URL.
+                            file_data = data
+                            if isinstance(file_data, str) and file_data and not file_data.startswith("data:"):
+                                file_data = f"data:application/pdf;base64,{file_data}"
+                            out_blocks.append({
+                                "type": "input_file",
+                                "file_data": file_data,
+                                "filename": filename,
+                            })
                         continue
                     if source_type == "file_id":
                         out_blocks.append({
@@ -725,14 +764,19 @@ class broth:
                         })
                         continue
                     if source_type == "base64":
-                        out_blocks.append({
+                        img_data = source.get("data", "")
+                        out_block: dict[str, Any] = {
                             "type": "image",
                             "source": {
                                 "type": "base64",
                                 "media_type": source.get("media_type", ""),
-                                "data": source.get("data", ""),
+                                "data": img_data,
                             },
-                        })
+                        }
+                        # Inject prompt-caching hint for large payloads.
+                        if len(img_data) > 10_000:
+                            out_block["cache_control"] = {"type": "ephemeral"}
+                        out_blocks.append(out_block)
                         continue
                     raise ValueError(
                         "error: image source.type must be 'url' or 'base64'. "
@@ -757,14 +801,19 @@ class broth:
                         })
                         continue
                     if source_type == "base64":
-                        out_blocks.append({
+                        pdf_data = source.get("data", "")
+                        out_block = {
                             "type": "document",
                             "source": {
                                 "type": "base64",
                                 "media_type": "application/pdf",
-                                "data": source.get("data", ""),
+                                "data": pdf_data,
                             },
-                        })
+                        }
+                        # Inject prompt-caching hint for large payloads.
+                        if len(pdf_data) > 10_000:
+                            out_block["cache_control"] = {"type": "ephemeral"}
+                        out_blocks.append(out_block)
                         continue
                     if source_type == "file_id":
                         raise ValueError(
@@ -849,6 +898,8 @@ class broth:
         raw_seed_messages = copy.deepcopy(list(messages or []))
         canonical_seed_messages = self._canonicalize_seed_messages(raw_seed_messages)
         self._validate_modalities_against_capabilities(canonical_seed_messages)
+        # Stash for stale-file-id retry in _openai_fetch_once.
+        self._last_canonical_seed = canonical_seed_messages
         seed_messages = self._project_canonical_messages_for_provider(canonical_seed_messages)
         conversation = copy.deepcopy(seed_messages)
         payload = dict(payload or {})
@@ -1070,6 +1121,7 @@ class broth:
         toolkit: base_toolkit,
         emit_stream: bool,
         previous_response_id: str | None = None,
+        _allow_retry: bool = True,
     ) -> ProviderTurnResult:
         if not self.api_key:
             raise ValueError("error: openai_api_key is required for openai provider")
@@ -1096,31 +1148,63 @@ class broth:
         collected_chunks: list[str] = []
         completed_response = None
 
-        with openai_client.responses.create(**request_kwargs) as stream_response:
-            for chunk in stream_response:
-                chunk_type = getattr(chunk, "type", None)
+        try:
+            with openai_client.responses.create(**request_kwargs) as stream_response:
+                for chunk in stream_response:
+                    chunk_type = getattr(chunk, "type", None)
 
-                if chunk_type == "response.output_text.delta":
-                    delta = getattr(chunk, "delta", "") or ""
-                    if delta:
-                        collected_chunks.append(delta)
-                        if verbose and clear_output is not None:
-                            clear_output(wait=True)
-                            print("".join(collected_chunks))
-                        if emit_stream:
-                            self._emit(
-                                callback,
-                                "token_delta",
-                                run_id,
-                                iteration=iteration,
-                                provider="openai",
-                                delta=delta,
-                                accumulated_text="".join(collected_chunks),
-                            )
-                elif chunk_type == "response.error":
-                    raise ValueError("error: LLM text generation failed. ( broth -> _openai_fetch_once )")
-                elif chunk_type == "response.completed":
-                    completed_response = getattr(chunk, "response", None)
+                    if chunk_type == "response.output_text.delta":
+                        delta = getattr(chunk, "delta", "") or ""
+                        if delta:
+                            collected_chunks.append(delta)
+                            if verbose and clear_output is not None:
+                                clear_output(wait=True)
+                                print("".join(collected_chunks))
+                            if emit_stream:
+                                self._emit(
+                                    callback,
+                                    "token_delta",
+                                    run_id,
+                                    iteration=iteration,
+                                    provider="openai",
+                                    delta=delta,
+                                    accumulated_text="".join(collected_chunks),
+                                )
+                    elif chunk_type == "response.error":
+                        raise ValueError("error: LLM text generation failed. ( broth -> _openai_fetch_once )")
+                    elif chunk_type == "response.completed":
+                        completed_response = getattr(chunk, "response", None)
+        except openai.NotFoundError as exc:
+            # A cached file_id was deleted/expired on the OpenAI side.  Evict the
+            # stale entry, re-project the canonical seed messages (which will trigger
+            # a fresh file upload via _openai_resolve_file), and retry once.
+            if not _allow_retry or not self._last_canonical_seed:
+                raise
+            stale_ids = {v for v in self._file_id_reverse if v in str(exc)}
+            if stale_ids:
+                for fid in stale_ids:
+                    sha = self._file_id_reverse.pop(fid, None)
+                    if sha:
+                        self._file_id_cache.pop(sha, None)
+            else:
+                # Can't identify which id failed — clear everything.
+                self._file_id_cache.clear()
+                self._file_id_reverse.clear()
+            fresh_messages = self._project_canonical_messages_for_provider(self._last_canonical_seed)
+            request_kwargs["input"] = fresh_messages
+            return self._openai_fetch_once(
+                messages=fresh_messages,
+                payload=payload,
+                response_format=response_format,
+                callback=callback,
+                verbose=verbose,
+                run_id=run_id,
+                iteration=iteration,
+                toolkit=toolkit,
+                emit_stream=emit_stream,
+                previous_response_id=previous_response_id,
+                _allow_retry=False,
+            )
 
         if completed_response is None:
             # gpt-5 / preview models occasionally close the stream without emitting
