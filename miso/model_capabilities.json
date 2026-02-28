@@ -26,7 +26,8 @@
       "temperature",
       "top_p",
       "max_output_tokens",
-      "truncation"
+      "truncation",
+      "tool_choice"
     ]
   },
   "gpt-5": {
@@ -57,7 +58,8 @@
       "truncation",
       "store",
       "include",
-      "reasoning"
+      "reasoning",
+      "tool_choice"
     ]
   },
   "gpt-5-codex": {
@@ -88,7 +90,8 @@
       "truncation",
       "store",
       "include",
-      "reasoning"
+      "reasoning",
+      "tool_choice"
     ]
   },
   "deepseek-r1:14b": {

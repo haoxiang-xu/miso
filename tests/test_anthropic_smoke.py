@@ -221,9 +221,9 @@ def test_anthropic_fetch_once_parses_tool_calls(monkeypatch):
 
 def test_dated_model_resolves_to_base_config():
     a = Broth()
-    a.model = "claude-opus-4-20250514"
+    a.model = "claude-opus-4.6-20260101"
 
-    # Should resolve to claude-opus-4 entry
+    # Should resolve to claude-opus-4-6 entry
     provider = a._model_capability("provider")
     assert provider == "anthropic"
 
@@ -233,7 +233,7 @@ def test_dated_model_resolves_to_base_config():
     # Default payload should also resolve
     merged = a._merged_payload(None)
     assert "max_tokens" in merged
-    assert merged["max_tokens"] == 4096
+    assert merged["max_tokens"] == 128000
 
 
 def test_dated_model_46_resolves():
@@ -245,7 +245,7 @@ def test_dated_model_46_resolves():
 
     merged = a._merged_payload(None)
     assert "max_tokens" in merged
-    assert merged["max_tokens"] == 8192
+    assert merged["max_tokens"] == 64000
 
 
 def test_anthropic_run_multimodal_projection_unit():

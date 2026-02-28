@@ -9,6 +9,51 @@ from typing import Any, Callable, Union, get_args, get_origin, get_type_hints
 
 _UNION_TYPE = getattr(types, "UnionType", None)
 
+
+def _escape_control_chars_inside_json_strings(raw: str) -> str:
+    """Escape raw control chars that appear inside JSON string literals.
+
+    Some model tool-call arguments occasionally include literal newlines or tabs
+    inside quoted JSON string values, which breaks ``json.loads``. This helper
+    rewrites those characters to their escaped forms while preserving valid JSON.
+    """
+    chars: list[str] = []
+    in_string = False
+    escaped = False
+
+    for ch in raw:
+        if in_string:
+            if escaped:
+                chars.append(ch)
+                escaped = False
+                continue
+            if ch == "\\":
+                chars.append(ch)
+                escaped = True
+                continue
+            if ch == "\"":
+                chars.append(ch)
+                in_string = False
+                continue
+            if ch == "\n":
+                chars.append("\\n")
+                continue
+            if ch == "\r":
+                chars.append("\\r")
+                continue
+            if ch == "\t":
+                chars.append("\\t")
+                continue
+            chars.append(ch)
+            continue
+
+        chars.append(ch)
+        if ch == "\"":
+            in_string = True
+            escaped = False
+
+    return "".join(chars)
+
 def _annotation_to_json_type(annotation: Any) -> str:
     origin = get_origin(annotation)
     if origin in (list, tuple, set, frozenset):
@@ -37,6 +82,19 @@ def _annotation_to_json_type(annotation: Any) -> str:
     if annotation in (dict,):
         return "object"
     return "string"
+
+def _annotation_to_json_schema(annotation: Any) -> dict[str, Any]:
+    origin = get_origin(annotation)
+    if origin in (list, tuple, set, frozenset):
+        origin_args = [arg for arg in get_args(annotation) if arg is not Ellipsis]
+        item_schema: dict[str, Any] = {"type": "string"}
+        if origin_args:
+            item_schema = _annotation_to_json_schema(origin_args[0])
+        if "type" not in item_schema:
+            item_schema = {"type": "string"}
+        return {"type": "array", "items": item_schema}
+
+    return {"type": _annotation_to_json_type(annotation)}
 
 def _parse_docstring(func: Callable[..., Any]) -> tuple[str, dict[str, str]]:
     doc = inspect.getdoc(func) or ""
@@ -105,6 +163,7 @@ class tool_parameter:
     type_: str
     required: bool = False
     pattern: str | None = None
+    items: dict[str, Any] | None = None
 
     def to_json(self) -> dict[str, Any]:
         json_parameter: dict[str, Any] = {
@@ -113,6 +172,11 @@ class tool_parameter:
         }
         if self.pattern is not None:
             json_parameter["pattern"] = self.pattern
+        if self.items is not None:
+            json_parameter["items"] = self.items
+        elif self.type_ == "array":
+            # OpenAI function schema requires array "items".
+            json_parameter["items"] = {"type": "string"}
         return json_parameter
 
 class tool:
@@ -195,6 +259,7 @@ class tool:
                         type_=parameter.get("type_", "string"),
                         required=parameter.get("required", False),
                         pattern=parameter.get("pattern"),
+                        items=parameter.get("items"),
                     )
                 )
         return constructed_parameters
@@ -215,7 +280,9 @@ class tool:
             annotation = resolved_hints.get(name, param.annotation)
             if annotation == inspect._empty:
                 annotation = str
-            type_ = _annotation_to_json_type(annotation)
+            schema = _annotation_to_json_schema(annotation)
+            type_ = schema.get("type", "string")
+            items = schema.get("items") if type_ == "array" else None
             required = param.default == inspect._empty
             inferred.append(
                 tool_parameter(
@@ -223,6 +290,7 @@ class tool:
                     description=parameter_descriptions.get(name, f"Argument {name}"),
                     type_=type_,
                     required=required,
+                    items=items,
                 )
             )
         return inferred
@@ -256,7 +324,14 @@ class tool:
                 parsed_arguments: dict[str, Any] = {}
             elif isinstance(arguments, str):
                 stripped = arguments.strip()
-                parsed_arguments = json.loads(stripped) if stripped else {}
+                if not stripped:
+                    parsed_arguments = {}
+                else:
+                    try:
+                        parsed_arguments = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        repaired = _escape_control_chars_inside_json_strings(stripped)
+                        parsed_arguments = json.loads(repaired)
             elif isinstance(arguments, dict):
                 parsed_arguments = arguments
             else:

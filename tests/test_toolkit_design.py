@@ -76,6 +76,7 @@ def test_tool_resolves_string_annotations_from_future_annotations():
 
     assert schema["parameters"]["properties"]["count"]["type"] == "integer"
     assert schema["parameters"]["properties"]["tags"]["type"] == "array"
+    assert schema["parameters"]["properties"]["tags"]["items"]["type"] == "string"
     assert schema["parameters"]["properties"]["enabled"]["type"] == "boolean"
     assert schema["parameters"]["required"] == ["count", "tags"]
 
@@ -136,3 +137,14 @@ def test_toolkit_register_many_and_tool_decorator():
     assert toolkit_obj.execute("add", {"a": 4, "b": 1}) == {"result": 5}
     assert toolkit_obj.execute("sub", {"a": 4, "b": 1}) == {"result": 3}
     assert toolkit_obj.execute("ping", {"message": "pong"}) == {"message": "pong"}
+
+
+def test_tool_execute_repairs_unescaped_newlines_in_json_arguments():
+    def echo(content: str):
+        return {"content": content}
+
+    echo_tool = Tool.from_callable(echo)
+    bad_json_arguments = '{"content":"line1\nline2"}'
+    result = echo_tool.execute(bad_json_arguments)
+
+    assert result == {"content": "line1\nline2"}

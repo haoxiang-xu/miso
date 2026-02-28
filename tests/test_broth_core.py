@@ -1,6 +1,8 @@
 import json
 import importlib
 
+import httpx
+import openai
 import pytest
 
 from miso import broth as Broth, response_format, tool, toolkit
@@ -187,6 +189,7 @@ def test_openai_run_threads_previous_response_id_across_iterations():
     messages, bundle = agent.run(
         messages=[{"role": "user", "content": "start"}],
         previous_response_id="prev_0",
+        payload={"store": True},
         max_iterations=3,
     )
 
@@ -194,6 +197,146 @@ def test_openai_run_threads_previous_response_id_across_iterations():
     assert isinstance(seen_messages[1], list)
     assert len(seen_messages[1]) == 1
     assert seen_messages[1][0].get("type") == "function_call_output"
+    assert agent.last_response_id == "resp_2"
+    assert [msg for msg in messages if msg.get("role") == "assistant"][-1]["content"] == "done"
+    assert bundle["consumed_tokens"] == 18
+
+
+def test_openai_run_drops_previous_response_id_when_store_disabled():
+    agent = Broth()
+    agent.provider = "openai"
+
+    seen_previous_ids = []
+    seen_messages = []
+    state = {"turn": 0}
+
+    def fake_fetch_once(**kwargs):
+        seen_previous_ids.append(kwargs.get("previous_response_id"))
+        seen_messages.append(kwargs.get("messages"))
+        state["turn"] += 1
+
+        if state["turn"] == 1:
+            return ProviderTurnResult(
+                assistant_messages=[
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "missing_tool",
+                        "status": "completed",
+                        "arguments": "{}",
+                    }
+                ],
+                tool_calls=[ToolCall(call_id="call_1", name="missing_tool", arguments={})],
+                final_text="",
+                response_id="resp_1",
+                consumed_tokens=11,
+            )
+
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "done"}],
+            tool_calls=[],
+            final_text="done",
+            response_id="resp_2",
+            consumed_tokens=7,
+        )
+
+    agent._fetch_once = fake_fetch_once
+
+    messages, bundle = agent.run(
+        messages=[{"role": "user", "content": "start"}],
+        previous_response_id="prev_0",
+        payload={"store": False},
+        max_iterations=3,
+    )
+
+    assert seen_previous_ids == [None, None]
+    assert isinstance(seen_messages[1], list)
+    assert len(seen_messages[1]) > 1
+    assert any(item.get("type") == "function_call_output" for item in seen_messages[1])
+    assert agent.last_response_id == "resp_2"
+    assert [msg for msg in messages if msg.get("role") == "assistant"][-1]["content"] == "done"
+    assert bundle["consumed_tokens"] == 18
+
+
+def test_openai_run_falls_back_when_previous_response_not_found():
+    agent = Broth()
+    agent.provider = "openai"
+
+    seen_previous_ids = []
+    seen_messages = []
+    state = {"turn": 0}
+
+    def fake_fetch_once(**kwargs):
+        seen_previous_ids.append(kwargs.get("previous_response_id"))
+        seen_messages.append(kwargs.get("messages"))
+        state["turn"] += 1
+
+        if state["turn"] == 1:
+            return ProviderTurnResult(
+                assistant_messages=[
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "missing_tool",
+                        "status": "completed",
+                        "arguments": "{}",
+                    }
+                ],
+                tool_calls=[ToolCall(call_id="call_1", name="missing_tool", arguments={})],
+                final_text="",
+                response_id="resp_1",
+                consumed_tokens=11,
+            )
+
+        if state["turn"] == 2:
+            response = httpx.Response(
+                400,
+                request=httpx.Request("POST", "https://api.openai.com/v1/responses"),
+            )
+            raise openai.BadRequestError(
+                message=(
+                    "Error code: 400 - {'error': {'message': "
+                    "\"Previous response with id 'resp_1' not found.\", "
+                    "'type': 'invalid_request_error', 'param': 'previous_response_id', "
+                    "'code': 'previous_response_not_found'}}"
+                ),
+                response=response,
+                body={
+                    "error": {
+                        "message": "Previous response with id 'resp_1' not found.",
+                        "type": "invalid_request_error",
+                        "param": "previous_response_id",
+                        "code": "previous_response_not_found",
+                    }
+                },
+            )
+
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "done"}],
+            tool_calls=[],
+            final_text="done",
+            response_id="resp_2",
+            consumed_tokens=7,
+        )
+
+    agent._fetch_once = fake_fetch_once
+
+    events = []
+    messages, bundle = agent.run(
+        messages=[{"role": "user", "content": "start"}],
+        previous_response_id="prev_0",
+        payload={"store": True},
+        callback=events.append,
+        max_iterations=3,
+    )
+
+    assert seen_previous_ids == ["prev_0", "resp_1", None]
+    assert isinstance(seen_messages[2], list)
+    assert len(seen_messages[2]) > 1
+    assert any(item.get("type") == "function_call_output" for item in seen_messages[2])
+    fallback_events = [evt for evt in events if evt["type"] == "previous_response_fallback"]
+    assert len(fallback_events) == 1
+    assert fallback_events[0]["previous_response_id"] == "resp_1"
     assert agent.last_response_id == "resp_2"
     assert [msg for msg in messages if msg.get("role") == "assistant"][-1]["content"] == "done"
     assert bundle["consumed_tokens"] == 18
@@ -335,6 +478,233 @@ def test_openai_fetch_once_forces_stream_true(monkeypatch):
 
     assert captured_kwargs["stream"] is True
     assert turn.final_text == "ok"
+
+
+def test_openai_fetch_once_normalizes_function_call_input_items(monkeypatch):
+    agent = Broth()
+    agent.provider = "openai"
+    agent.model = "gpt-4.1"
+    agent.api_key = "test-key"
+
+    captured_kwargs = {}
+
+    class FakeOpenAIStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            yield type("Chunk", (), {
+                "type": "response.completed",
+                "response": type("Resp", (), {
+                    "id": "resp_norm_test",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "ok"}],
+                        }
+                    ],
+                })(),
+            })()
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return FakeOpenAIStream()
+
+    class FakeOpenAIClient:
+        def __init__(self, api_key):
+            self.api_key = api_key
+            self.responses = FakeResponses()
+
+    broth_module = importlib.import_module("miso.broth")
+    monkeypatch.setattr(broth_module, "OpenAI", FakeOpenAIClient)
+
+    turn = agent._openai_fetch_once(
+        messages=[
+            {"role": "user", "content": "hi"},
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "demo_tool",
+                "arguments": "{}",
+                "status": "completed",
+            },
+        ],
+        payload={},
+        response_format=None,
+        callback=None,
+        verbose=False,
+        run_id="run_norm",
+        iteration=0,
+        toolkit=toolkit(),
+        emit_stream=False,
+        previous_response_id=None,
+    )
+
+    sent_item = captured_kwargs["input"][1]
+    assert sent_item["type"] == "function_call"
+    assert sent_item["call_id"] == "call_1"
+    assert "status" not in sent_item
+    assert turn.final_text == "ok"
+
+
+def test_openai_fetch_once_handles_missing_completed_with_output_item_done(monkeypatch):
+    agent = Broth()
+    agent.provider = "openai"
+    agent.model = "gpt-4.1"
+    agent.api_key = "test-key"
+
+    class FakeOpenAIStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            yield type("Chunk", (), {
+                "type": "response.created",
+                "response": type("Resp", (), {"id": "resp_partial"})(),
+            })()
+            yield type("Chunk", (), {
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "demo_tool",
+                    "arguments": "{}",
+                    "status": "completed",
+                },
+            })()
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            return FakeOpenAIStream()
+
+    class FakeOpenAIClient:
+        def __init__(self, api_key):
+            self.api_key = api_key
+            self.responses = FakeResponses()
+
+    broth_module = importlib.import_module("miso.broth")
+    monkeypatch.setattr(broth_module, "OpenAI", FakeOpenAIClient)
+
+    turn = agent._openai_fetch_once(
+        messages=[{"role": "user", "content": "hi"}],
+        payload={},
+        response_format=None,
+        callback=None,
+        verbose=False,
+        run_id="run_partial",
+        iteration=0,
+        toolkit=toolkit(),
+        emit_stream=False,
+        previous_response_id=None,
+    )
+
+    assert turn.response_id == "resp_partial"
+    assert len(turn.tool_calls) == 1
+    assert turn.tool_calls[0].name == "demo_tool"
+    assert turn.tool_calls[0].call_id == "call_1"
+    assert turn.final_text == ""
+
+
+def test_build_observation_messages_filters_orphan_anthropic_tool_results():
+    agent = Broth()
+    agent.provider = "anthropic"
+
+    full_messages = [
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "toolu_old", "content": "{}"}],
+        },
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "toolu_new", "name": "demo_tool", "input": {}}],
+        },
+    ]
+    tool_messages = [
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "toolu_new", "content": "{\"ok\":1}"}],
+        }
+    ]
+
+    observe_messages = agent._build_observation_messages(full_messages, tool_messages)
+    chat_messages = observe_messages[1:]  # skip system
+
+    assert not any(
+        isinstance(msg, dict)
+        and msg.get("role") == "user"
+        and any(
+            isinstance(block, dict)
+            and block.get("type") == "tool_result"
+            and block.get("tool_use_id") == "toolu_old"
+            for block in (msg.get("content") if isinstance(msg.get("content"), list) else [])
+        )
+        for msg in chat_messages
+    )
+
+    idx_tool_use = next(
+        idx
+        for idx, msg in enumerate(chat_messages)
+        if isinstance(msg, dict)
+        and msg.get("role") == "assistant"
+        and any(
+            isinstance(block, dict)
+            and block.get("type") == "tool_use"
+            and block.get("id") == "toolu_new"
+            for block in (msg.get("content") if isinstance(msg.get("content"), list) else [])
+        )
+    )
+    idx_tool_result = next(
+        idx
+        for idx, msg in enumerate(chat_messages)
+        if isinstance(msg, dict)
+        and msg.get("role") == "user"
+        and any(
+            isinstance(block, dict)
+            and block.get("type") == "tool_result"
+            and block.get("tool_use_id") == "toolu_new"
+            for block in (msg.get("content") if isinstance(msg.get("content"), list) else [])
+        )
+    )
+    assert idx_tool_use < idx_tool_result
+
+
+def test_observe_tool_batch_skips_anthropic_tool_result_validation_errors():
+    agent = Broth()
+    agent.provider = "anthropic"
+
+    def fake_fetch_once(**kwargs):
+        raise ValueError("tool_result blocks must have a corresponding tool_use block")
+
+    agent._fetch_once = fake_fetch_once
+    observation, consumed = agent._observe_tool_batch(
+        full_messages=[],
+        tool_messages=[],
+        payload={},
+    )
+
+    assert observation == ""
+    assert consumed == 0
+
+
+def test_extract_openai_message_text_includes_refusal_blocks():
+    agent = Broth()
+    text = agent._extract_openai_message_text(
+        {
+            "type": "message",
+            "content": [
+                {"type": "refusal", "refusal": "I can’t help with that exact request."},
+            ],
+        }
+    )
+    assert text == "I can’t help with that exact request."
 
 
 def test_ollama_fetch_once_forces_stream_true(monkeypatch):

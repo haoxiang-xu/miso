@@ -3,12 +3,12 @@
     "instructions": "",
     "temperature": 0.7,
     "top_p": 1,
-    "max_output_tokens": 2048,
+    "max_output_tokens": 32768,
     "truncation": "auto"
   },
   "gpt-5": {
     "instructions": "",
-    "max_output_tokens": 4096,
+    "max_output_tokens": 128000,
     "truncation": "auto",
     "store": false,
     "include": [],
@@ -18,26 +18,27 @@
   },
   "gpt-5-codex": {
     "instructions": "",
-    "max_output_tokens": 4096,
+    "max_output_tokens": 128000,
     "truncation": "auto",
     "store": false,
     "include": [],
     "reasoning": {
       "effort": "medium"
-    }
+    },
+    "tool_choice": null
   },
   "deepseek-r1:14b": {
-    "num_predict": 2048,
+    "num_predict": -1,
     "temperature": 0.7,
     "top_p": 1
   },
   "claude-sonnet-4-6": {
-    "max_tokens": 8192,
+    "max_tokens": 64000,
     "temperature": 0.7,
     "top_p": 1
   },
   "claude-opus-4-6": {
-    "max_tokens": 8192,
+    "max_tokens": 128000,
     "temperature": 0.7,
     "top_p": 1
   }

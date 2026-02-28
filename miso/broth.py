@@ -903,9 +903,16 @@ class broth:
         seed_messages = self._project_canonical_messages_for_provider(canonical_seed_messages)
         conversation = copy.deepcopy(seed_messages)
         payload = dict(payload or {})
+        effective_payload = self._merged_payload(payload)
         max_loops = max_iterations or self.max_iterations
         supports_prev = bool(self._model_capability("supports_previous_response_id", True))
-        next_previous_response_id = previous_response_id if supports_prev else None
+        store_enabled = effective_payload.get("store") is not False
+        use_openai_previous_response_chain = (
+            self.provider == "openai" and supports_prev and store_enabled
+        )
+        next_previous_response_id = (
+            previous_response_id if use_openai_previous_response_chain else None
+        )
         next_openai_input = copy.deepcopy(seed_messages)
         self.last_reasoning_items = []
         total_consumed_tokens = 0
@@ -916,26 +923,64 @@ class broth:
         for iteration in range(max_loops):
             self._emit(callback, "iteration_started", run_id, iteration=iteration)
             request_messages = conversation
-            if self.provider == "openai":
+            request_previous_response_id = None
+            if self.provider == "openai" and use_openai_previous_response_chain:
                 # With previous_response_id, OpenAI expects incremental input for each next turn.
                 request_messages = next_openai_input
+                request_previous_response_id = next_previous_response_id
 
             merged_toolkit = self.toolkit
 
-            turn = self._fetch_once(
-                messages=request_messages,
-                payload=payload,
-                response_format=response_format,
-                callback=callback,
-                verbose=verbose,
-                run_id=run_id,
-                iteration=iteration,
-                toolkit=merged_toolkit,
-                emit_stream=True,
-                previous_response_id=next_previous_response_id if self.provider == "openai" else None,
-            )
+            try:
+                turn = self._fetch_once(
+                    messages=request_messages,
+                    payload=payload,
+                    response_format=response_format,
+                    callback=callback,
+                    verbose=verbose,
+                    run_id=run_id,
+                    iteration=iteration,
+                    toolkit=merged_toolkit,
+                    emit_stream=True,
+                    previous_response_id=request_previous_response_id,
+                )
+            except openai.BadRequestError as exc:
+                should_fallback = (
+                    self.provider == "openai"
+                    and use_openai_previous_response_chain
+                    and bool(request_previous_response_id)
+                    and self._is_previous_response_not_found_error(exc)
+                )
+                if not should_fallback:
+                    raise
+
+                self._emit(
+                    callback,
+                    "previous_response_fallback",
+                    run_id,
+                    iteration=iteration,
+                    reason="previous_response_not_found",
+                    previous_response_id=request_previous_response_id,
+                )
+                use_openai_previous_response_chain = False
+                next_previous_response_id = None
+
+                turn = self._fetch_once(
+                    messages=conversation,
+                    payload=payload,
+                    response_format=response_format,
+                    callback=callback,
+                    verbose=verbose,
+                    run_id=run_id,
+                    iteration=iteration,
+                    toolkit=merged_toolkit,
+                    emit_stream=True,
+                    previous_response_id=None,
+                )
             if self.provider == "openai":
-                next_previous_response_id = turn.response_id
+                next_previous_response_id = (
+                    turn.response_id if use_openai_previous_response_chain else None
+                )
                 self.last_response_id = turn.response_id
             total_consumed_tokens += max(0, int(turn.consumed_tokens or 0))
             last_turn_tokens = max(0, int(turn.consumed_tokens or 0))
@@ -979,7 +1024,7 @@ class broth:
                         )
 
                 conversation.extend(tool_messages)
-                if self.provider == "openai":
+                if self.provider == "openai" and use_openai_previous_response_chain:
                     # Continue the same response chain with tool outputs only.
                     if next_previous_response_id:
                         next_openai_input = copy.deepcopy(tool_messages)
@@ -1028,6 +1073,48 @@ class broth:
         }
         event.update(extra)
         callback(event)
+
+    def _is_previous_response_not_found_error(self, exc: Exception) -> bool:
+        """Return True when OpenAI reports an invalid previous_response_id."""
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            error_obj = body.get("error")
+            if isinstance(error_obj, dict):
+                code = error_obj.get("code")
+                if code == "previous_response_not_found":
+                    return True
+
+                param = error_obj.get("param")
+                message = str(error_obj.get("message", ""))
+                if param == "previous_response_id" and "not found" in message.lower():
+                    return True
+
+        text = str(exc).lower()
+        return "previous_response_id" in text and "not found" in text
+
+    def _normalize_openai_input_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Normalize OpenAI response items so they can be reused as input safely."""
+        normalized: list[dict[str, Any]] = []
+
+        for message in messages:
+            if not isinstance(message, dict):
+                normalized.append(copy.deepcopy(message))
+                continue
+
+            item_type = message.get("type")
+            if item_type == "function_call":
+                call_id = message.get("call_id") or message.get("id") or str(uuid.uuid4())
+                normalized.append({
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": message.get("name", ""),
+                    "arguments": message.get("arguments", "{}"),
+                })
+                continue
+
+            normalized.append(copy.deepcopy(message))
+
+        return normalized
 
     def _fetch_once(
         self,
@@ -1096,6 +1183,11 @@ class broth:
         allowed_keys = self._model_capability("allowed_payload_keys", None)
         if isinstance(allowed_keys, list) and allowed_keys:
             allowed_key_set = {key for key in allowed_keys if isinstance(key, str)}
+            # Also inject user-supplied keys that are allowed but absent from defaults
+            # (e.g. tool_choice, which has no default value for reasoning models)
+            for key in user_payload:
+                if key in allowed_key_set and key not in defaults:
+                    defaults[key] = user_payload[key]
             defaults = {key: value for key, value in defaults.items() if key in allowed_key_set}
 
         if self.provider == "anthropic" and "temperature" in defaults and "top_p" in defaults:
@@ -1105,6 +1197,10 @@ class broth:
                 defaults.pop("temperature", None)
             else:
                 defaults.pop("top_p", None)
+
+        # Strip sentinel None values (e.g. "tool_choice": null in model defaults)
+        # so they are not forwarded to the provider API unless the user explicitly set them.
+        defaults = {k: v for k, v in defaults.items() if v is not None or k in user_payload}
 
         return defaults
 
@@ -1127,10 +1223,11 @@ class broth:
             raise ValueError("error: openai_api_key is required for openai provider")
 
         openai_client = OpenAI(api_key=self.api_key)
+        normalized_messages = self._normalize_openai_input_messages(messages)
         request_payload = self._merged_payload(payload)
         request_kwargs: dict[str, Any] = {
             "model": self.model,
-            "input": messages,
+            "input": normalized_messages,
             **request_payload,
             "stream": True,
         }
@@ -1147,6 +1244,8 @@ class broth:
 
         collected_chunks: list[str] = []
         completed_response = None
+        created_response_id: str | None = None
+        output_items_from_events: dict[int, dict[str, Any]] = {}
 
         try:
             with openai_client.responses.create(**request_kwargs) as stream_response:
@@ -1172,6 +1271,17 @@ class broth:
                                 )
                     elif chunk_type == "response.error":
                         raise ValueError("error: LLM text generation failed. ( broth -> _openai_fetch_once )")
+                    elif chunk_type == "response.created":
+                        created = self._as_dict(getattr(chunk, "response", None))
+                        if isinstance(created, dict):
+                            cid = created.get("id")
+                            if isinstance(cid, str) and cid:
+                                created_response_id = cid
+                    elif chunk_type == "response.output_item.done":
+                        item = self._as_dict(getattr(chunk, "item", None))
+                        output_index = getattr(chunk, "output_index", None)
+                        if isinstance(item, dict) and isinstance(output_index, int):
+                            output_items_from_events[output_index] = item
                     elif chunk_type == "response.completed":
                         completed_response = getattr(chunk, "response", None)
         except openai.NotFoundError as exc:
@@ -1207,24 +1317,32 @@ class broth:
             )
 
         if completed_response is None:
-            # gpt-5 / preview models occasionally close the stream without emitting
-            # response.completed. If we collected text deltas, return them gracefully
-            # rather than raising — the content is valid, just the envelope is missing.
-            if collected_chunks:
-                full_text = "".join(collected_chunks).strip()
-                return ProviderTurnResult(
-                    assistant_messages=[{"role": "assistant", "content": full_text}],
-                    tool_calls=[],
-                    final_text=full_text,
-                    response_id=None,
-                    consumed_tokens=0,
-                )
-            raise ValueError("error: openai stream ended without completion payload")
-
-        outputs = getattr(completed_response, "output", None) or []
-        response_id = getattr(completed_response, "id", None)
-        usage = getattr(completed_response, "usage", None)
-        consumed_tokens = self._extract_openai_consumed_tokens(usage)
+            if output_items_from_events:
+                outputs = [
+                    output_items_from_events[idx]
+                    for idx in sorted(output_items_from_events.keys())
+                ]
+                response_id = created_response_id
+                consumed_tokens = 0
+            else:
+                # gpt-5 / preview models occasionally close the stream without emitting
+                # response.completed. If we collected text deltas, return them gracefully
+                # rather than raising — the content is valid, just the envelope is missing.
+                if collected_chunks:
+                    full_text = "".join(collected_chunks).strip()
+                    return ProviderTurnResult(
+                        assistant_messages=[{"role": "assistant", "content": full_text}],
+                        tool_calls=[],
+                        final_text=full_text,
+                        response_id=created_response_id,
+                        consumed_tokens=0,
+                    )
+                raise ValueError("error: openai stream ended without completion payload")
+        else:
+            outputs = getattr(completed_response, "output", None) or []
+            response_id = getattr(completed_response, "id", None)
+            usage = getattr(completed_response, "usage", None)
+            consumed_tokens = self._extract_openai_consumed_tokens(usage)
 
         assistant_messages: list[dict[str, Any]] = []
         tool_calls: list[ToolCall] = []
@@ -1244,7 +1362,12 @@ class broth:
                         arguments=item.get("arguments", "{}"),
                     )
                 )
-                assistant_messages.append(item)
+                assistant_messages.append({
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": item.get("name", ""),
+                    "arguments": item.get("arguments", "{}"),
+                })
                 continue
 
             if item_type == "message":
@@ -1252,16 +1375,11 @@ class broth:
                 if text:
                     assistant_messages.append({"role": "assistant", "content": text})
                     final_text_parts.append(text)
-                else:
-                    assistant_messages.append(item)
                 continue
 
             if item_type == "reasoning":
                 reasoning_items.append(item)
-                assistant_messages.append(item)
                 continue
-
-            assistant_messages.append(item)
 
         if not tool_calls and not final_text_parts and collected_chunks:
             full_text = "".join(collected_chunks)
@@ -1642,23 +1760,55 @@ class broth:
         observe_messages = self._build_observation_messages(full_messages, tool_messages)
         observe_payload = self._build_observation_payload(payload)
 
-        observe_turn = self._fetch_once(
-            messages=observe_messages,
-            payload=observe_payload,
-            response_format=None,
-            callback=None,
-            verbose=False,
-            run_id="observe",
-            iteration=0,
-            toolkit=base_toolkit(),
-            emit_stream=False,
-            previous_response_id=None,
-        )
+        try:
+            observe_turn = self._fetch_once(
+                messages=observe_messages,
+                payload=observe_payload,
+                response_format=None,
+                callback=None,
+                verbose=False,
+                run_id="observe",
+                iteration=0,
+                toolkit=base_toolkit(),
+                emit_stream=False,
+                previous_response_id=None,
+            )
+        except Exception as exc:
+            # Observation is optional: never let review pass break the main run.
+            if self.provider == "anthropic" and "tool_result" in str(exc):
+                return "", 0
+            raise
 
         if observe_turn.final_text:
             return observe_turn.final_text.strip(), int(observe_turn.consumed_tokens or 0)
 
         return self._last_assistant_text(observe_turn.assistant_messages).strip(), int(observe_turn.consumed_tokens or 0)
+
+    def _is_anthropic_tool_result_message(self, message: dict[str, Any]) -> bool:
+        if not isinstance(message, dict) or message.get("role") != "user":
+            return False
+        content = message.get("content")
+        if not isinstance(content, list) or not content:
+            return False
+        return any(isinstance(block, dict) and block.get("type") == "tool_result" for block in content)
+
+    def _find_anthropic_matching_tool_use_message(
+        self,
+        full_messages: list[dict[str, Any]],
+        tool_use_ids: set[str],
+    ) -> dict[str, Any] | None:
+        for message in reversed(full_messages):
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use" and block.get("id") in tool_use_ids:
+                    return message
+        return None
 
     def _build_observation_messages(
         self,
@@ -1666,6 +1816,24 @@ class broth:
         tool_messages: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         recent = full_messages[-OBSERVATION_RECENT_MESSAGES:]
+        if self.provider == "anthropic":
+            recent = [msg for msg in recent if not self._is_anthropic_tool_result_message(msg)]
+
+            current_tool_use_ids = {
+                block.get("tool_use_id")
+                for tool_msg in tool_messages
+                if isinstance(tool_msg, dict)
+                for block in (tool_msg.get("content") if isinstance(tool_msg.get("content"), list) else [])
+                if isinstance(block, dict) and block.get("type") == "tool_result" and isinstance(block.get("tool_use_id"), str)
+            }
+            if current_tool_use_ids:
+                matching_tool_use_msg = self._find_anthropic_matching_tool_use_message(
+                    full_messages,
+                    current_tool_use_ids,
+                )
+                if matching_tool_use_msg is not None and matching_tool_use_msg not in recent:
+                    recent.append(matching_tool_use_msg)
+
         observe_messages: list[dict[str, Any]] = [
             {"role": "system", "content": OBSERVATION_SYSTEM_PROMPT},
             *recent,
@@ -1728,6 +1896,11 @@ class broth:
                 text = block.get("text", "")
                 if text:
                     text_parts.append(text)
+                continue
+            if block.get("type") == "refusal":
+                refusal_text = block.get("refusal", "")
+                if refusal_text:
+                    text_parts.append(refusal_text if isinstance(refusal_text, str) else str(refusal_text))
         return "".join(text_parts)
 
     def _as_dict(self, obj: Any) -> dict[str, Any]:

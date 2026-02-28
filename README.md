@@ -321,12 +321,16 @@ from miso import python_workspace_toolkit, build_builtin_toolkit
 tk = python_workspace_toolkit(
     workspace_root=".",
     include_python_runtime=True,
+    include_terminal_runtime=True,
+    terminal_strict_mode=True,
 )
 
 # 等价 helper
 tk2 = build_builtin_toolkit(
     workspace_root=".",
     include_python_runtime=True,
+    include_terminal_runtime=True,
+    terminal_strict_mode=True,
 )
 ```
 
@@ -372,6 +376,13 @@ Python 隔离运行时（`.miso_python_runtime`）：
 - `python_runtime_install`（`observe=True`）
 - `python_runtime_run`（`observe=True`）
 - `python_runtime_reset`
+
+Terminal 运行时（受限 shell）：
+
+- `terminal_exec`
+- `terminal_session_open`
+- `terminal_session_write`
+- `terminal_session_close`
 
 ---
 
@@ -509,7 +520,14 @@ messages, bundle = agent.run(
 from miso import broth as Broth, python_workspace_toolkit
 
 agent = Broth(provider="openai", model="gpt-5", api_key="YOUR_OPENAI_API_KEY")
-agent.add_toolkit(python_workspace_toolkit(workspace_root=".", include_python_runtime=True))
+agent.add_toolkit(
+    python_workspace_toolkit(
+        workspace_root=".",
+        include_python_runtime=True,
+        include_terminal_runtime=True,
+        terminal_strict_mode=True,
+    )
+)
 
 messages, bundle = agent.run(
     messages=[{"role": "user", "content": "创建 demo.py，写入一个 hello 函数并运行它"}],

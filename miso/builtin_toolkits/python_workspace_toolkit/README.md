@@ -1,7 +1,7 @@
 # python_workspace_toolkit
 
 An all-in-one workspace toolkit for the **miso** agent framework.  
-Provides **file operations**, **line-level editing**, **directory management**, and an **isolated Python runtime** — all scoped to a user-specified `workspace_root`.
+Provides **file operations**, **line-level editing**, **directory management**, an **isolated Python runtime**, and a **restricted terminal runtime** — all scoped to a user-specified `workspace_root`.
 
 ---
 
@@ -65,6 +65,17 @@ a.toolkit = python_workspace_toolkit(workspace_root=".")
 | `python_runtime_run` | Execute a Python code string inside the venv. (`observe=True`) |
 | `python_runtime_reset` | Delete the entire venv. |
 
+### Terminal Runtime (restricted shell)
+
+| Tool | Description |
+|------|-------------|
+| `terminal_exec` | Execute one command (`shell=False`, parsed by `shlex.split`) and return `ok`, `returncode`, `stdout`, `stderr`, `timed_out`, `truncated`. |
+| `terminal_session_open` | Start a persistent shell session and return `session_id`. |
+| `terminal_session_write` | Write input to a session and collect available output. |
+| `terminal_session_close` | Close a session and return final output. |
+
+Strict mode blocks high-risk and network-related commands (for example `sudo`, `shutdown`, `reboot`, `mkfs`, `dd`, `curl`, `wget`, `ssh`, and `rm -rf /`).
+
 > Tools marked `observe=True` have their results reviewed by the observation sub-agent for error checking.
 
 ---
@@ -75,11 +86,15 @@ a.toolkit = python_workspace_toolkit(workspace_root=".")
 python_workspace_toolkit(
     workspace_root="/path/to/project",   # defaults to cwd
     include_python_runtime=True,         # set False to skip venv tools
+    include_terminal_runtime=True,       # set False to skip terminal tools
+    terminal_strict_mode=True,           # strict command safety checks
 )
 ```
 
 - **`workspace_root`** — All file paths are resolved relative to this directory and are prevented from escaping it.
 - **`include_python_runtime`** — When `False`, only filesystem & editing tools are registered (no venv).
+- **`include_terminal_runtime`** — When `False`, terminal tools are not registered.
+- **`terminal_strict_mode`** — When `True`, disallowed command patterns are blocked before execution.
 
 ---
 
@@ -120,4 +135,13 @@ tk.execute("move_lines", {"path": "hello.py", "start": 3, "end": 4, "to_line": 1
 # Run Python code in isolated venv
 tk.execute("python_runtime_init", {})
 tk.execute("python_runtime_run", {"code": "print('hello from venv')"})
+
+# Execute one terminal command
+tk.execute("terminal_exec", {"command": "echo hello terminal"})
+
+# Open/write/close a terminal session
+opened = tk.execute("terminal_session_open", {"shell": "/bin/bash"})
+sid = opened["session_id"]
+tk.execute("terminal_session_write", {"session_id": sid, "input": "echo session-ok\n"})
+tk.execute("terminal_session_close", {"session_id": sid})
 ```
