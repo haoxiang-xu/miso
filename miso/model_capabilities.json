@@ -168,5 +168,32 @@
       "top_p",
       "top_k"
     ]
+  },
+  "gpt-5.2-codex": {
+    "provider": "openai",
+    "max_context_window_tokens": 400000,
+    "supports_tools": true,
+    "supports_response_format": true,
+    "supports_previous_response_id": true,
+    "supports_reasoning": true,
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "input_source_types": {
+      "image": [
+        "url",
+        "base64"
+      ]
+    },
+    "allowed_payload_keys": [
+      "instructions",
+      "max_output_tokens",
+      "truncation",
+      "store",
+      "include",
+      "reasoning",
+      "tool_choice"
+    ]
   }
 }
