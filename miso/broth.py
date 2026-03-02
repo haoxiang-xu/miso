@@ -24,6 +24,7 @@ except ImportError:  # pragma: no cover
 
 from .response_format import response_format
 from .tool import toolkit as base_toolkit
+from .memory import MemoryManager
 
 try:
     from IPython.display import clear_output
@@ -69,7 +70,14 @@ class ProviderTurnResult:
     consumed_tokens: int = 0
 
 class broth:
-    def __init__(self, *, provider: str | None = None, model: str | None = None, api_key: str | None = None):
+    def __init__(
+        self,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        api_key: str | None = None,
+        memory_manager: MemoryManager | None = None,
+    ):
         self.api_key = api_key
         self.provider = provider or "openai"
         self.model = model or "gpt-5"
@@ -89,6 +97,7 @@ class broth:
         self._file_id_reverse: dict[str, str] = {}
         # canonical seed messages for the current run (used in stale-file retry)
         self._last_canonical_seed: list[dict[str, Any]] = []
+        self.memory_manager = memory_manager
 
     # ── toolkit property (backward compatibility) ──────────────────────────
 
@@ -204,6 +213,10 @@ class broth:
                 or self.model.startswith(normalized_key)
                 or normalized_model.startswith(key)
                 or normalized_model.startswith(normalized_key)
+                or key.startswith(self.model)
+                or key.startswith(normalized_model)
+                or normalized_key.startswith(self.model)
+                or normalized_key.startswith(normalized_model)
             ) and (best is None or len(key) > len(best)):
                 best = key
         return best
@@ -897,6 +910,7 @@ class broth:
         max_iterations: int | None = None,
         previous_response_id: str | None = None,
         on_tool_confirm: Callable | None = None,
+        session_id: str | None = None,
     ):
         run_id = str(uuid.uuid4())
         raw_seed_messages = copy.deepcopy(list(messages or []))
@@ -905,6 +919,36 @@ class broth:
         # Stash for stale-file-id retry in _openai_fetch_once.
         self._last_canonical_seed = canonical_seed_messages
         seed_messages = self._project_canonical_messages_for_provider(canonical_seed_messages)
+        if self.memory_manager is not None and session_id:
+            try:
+                seed_messages = self.memory_manager.prepare_messages(
+                    session_id=session_id,
+                    incoming=seed_messages,
+                    max_context_window_tokens=self.max_context_window_tokens,
+                    model=self.model,
+                    summary_generator=self._generate_memory_summary,
+                )
+                memory_prepare_info = {
+                    **self.memory_manager.last_prepare_info,
+                    "applied": True,
+                }
+                self._emit(
+                    callback,
+                    "memory_prepare",
+                    run_id,
+                    iteration=0,
+                    **memory_prepare_info,
+                )
+            except Exception as exc:
+                self._emit(
+                    callback,
+                    "memory_prepare",
+                    run_id,
+                    iteration=0,
+                    session_id=session_id,
+                    applied=False,
+                    fallback_reason=f"memory_prepare_failed: {exc}",
+                )
         conversation = copy.deepcopy(seed_messages)
         payload = dict(payload or {})
         effective_payload = self._merged_payload(payload)
@@ -1052,12 +1096,66 @@ class broth:
             self._emit(callback, "run_completed", run_id, iteration=iteration)
             self.last_consumed_tokens = total_consumed_tokens
             self.consumed_tokens += total_consumed_tokens
+            if self.memory_manager is not None and session_id:
+                try:
+                    self.memory_manager.commit_messages(
+                        session_id=session_id,
+                        full_conversation=conversation,
+                    )
+                    memory_commit_info = {
+                        **self.memory_manager.last_commit_info,
+                        "applied": True,
+                    }
+                    self._emit(
+                        callback,
+                        "memory_commit",
+                        run_id,
+                        iteration=iteration,
+                        **memory_commit_info,
+                    )
+                except Exception as exc:
+                    self._emit(
+                        callback,
+                        "memory_commit",
+                        run_id,
+                        iteration=iteration,
+                        session_id=session_id,
+                        applied=False,
+                        fallback_reason=f"memory_commit_failed: {exc}",
+                    )
             bundle = self._build_bundle(total_consumed_tokens, last_turn_tokens)
             return conversation, bundle
 
         self._emit(callback, "run_max_iterations", run_id, iteration=max_loops)
         self.last_consumed_tokens = total_consumed_tokens
         self.consumed_tokens += total_consumed_tokens
+        if self.memory_manager is not None and session_id:
+            try:
+                self.memory_manager.commit_messages(
+                    session_id=session_id,
+                    full_conversation=conversation,
+                )
+                memory_commit_info = {
+                    **self.memory_manager.last_commit_info,
+                    "applied": True,
+                }
+                self._emit(
+                    callback,
+                    "memory_commit",
+                    run_id,
+                    iteration=max_loops,
+                    **memory_commit_info,
+                )
+            except Exception as exc:
+                self._emit(
+                    callback,
+                    "memory_commit",
+                    run_id,
+                    iteration=max_loops,
+                    session_id=session_id,
+                    applied=False,
+                    fallback_reason=f"memory_commit_failed: {exc}",
+                )
         bundle = self._build_bundle(total_consumed_tokens, last_turn_tokens)
         return conversation, bundle
 
@@ -1913,6 +2011,81 @@ class broth:
         if self.provider == "anthropic":
             observe_payload["max_tokens"] = OBSERVATION_MAX_OUTPUT_TOKENS
         return observe_payload
+
+    def _build_memory_summary_payload(self, max_summary_chars: int) -> dict[str, Any]:
+        max_output_tokens = max(64, min(512, max_summary_chars // 2))
+        summary_payload: dict[str, Any] = {}
+        if self.provider == "openai":
+            summary_payload["max_output_tokens"] = max_output_tokens
+            summary_payload["store"] = False
+        if self.provider == "ollama":
+            summary_payload["num_predict"] = max_output_tokens
+        if self.provider == "anthropic":
+            summary_payload["max_tokens"] = max_output_tokens
+        return summary_payload
+
+    def _generate_memory_summary(
+        self,
+        previous_summary: str,
+        messages: list[dict[str, Any]],
+        max_summary_chars: int,
+        model: str,
+    ) -> str:
+        del model
+
+        transcript_lines: list[str] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role") or message.get("type") or "item"
+            role_text = role if isinstance(role, str) else str(role)
+            if "content" in message:
+                content_text = self._content_to_text(message.get("content", ""))
+            else:
+                content_text = json.dumps(message, default=str, ensure_ascii=False)
+            content_text = content_text.strip()
+            if not content_text:
+                continue
+            transcript_lines.append(f"{role_text}: {content_text}")
+
+        transcript = "\n".join(transcript_lines)
+        max_transcript_chars = max(1000, max_summary_chars * 6)
+        if len(transcript) > max_transcript_chars:
+            transcript = transcript[-max_transcript_chars:]
+
+        summary_system_prompt = (
+            "You write compact memory summaries for an AI assistant. "
+            "Keep stable user preferences, key decisions, unresolved TODOs, and constraints. "
+            "Do not include filler. Use short bullet points."
+        )
+
+        prior = previous_summary.strip()
+        summary_user_prompt = (
+            f"Previous summary:\n{prior or '(none)'}\n\n"
+            f"New conversation chunk:\n{transcript}\n\n"
+            f"Produce an updated memory summary within {max_summary_chars} characters."
+        )
+
+        summary_messages = [
+            {"role": "system", "content": summary_system_prompt},
+            {"role": "user", "content": summary_user_prompt},
+        ]
+        summary_turn = self._fetch_once(
+            messages=summary_messages,
+            payload=self._build_memory_summary_payload(max_summary_chars),
+            response_format=None,
+            callback=None,
+            verbose=False,
+            run_id="memory_summary",
+            iteration=0,
+            toolkit=base_toolkit(),
+            emit_stream=False,
+            previous_response_id=None,
+        )
+        summary_text = (summary_turn.final_text or self._last_assistant_text(summary_turn.assistant_messages)).strip()
+        if len(summary_text) > max_summary_chars:
+            summary_text = summary_text[:max_summary_chars].rstrip()
+        return summary_text
 
     def _inject_observation(self, tool_message: dict[str, Any], observation: str):
         content_key = "content" if "content" in tool_message else "output"

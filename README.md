@@ -3,6 +3,7 @@
 `miso` 是一个轻量的 Python Agent Builder，核心目标是把“多轮工具调用代理”拆成可组合的最小部件：
 
 - 一个主循环引擎：`broth`
+- 一个会话记忆层：`memory`（`MemoryManager` + context window 策略）
 - 一套工具抽象：`tool` / `toolkit`
 - 一个结构化输出层：`response_format`
 - 一个多模态输入规范层：`media` + canonical content blocks
@@ -16,22 +17,24 @@
 ## 目录
 
 1. [快速开始](#快速开始)
-2. [组件总览（按代码模块）](#组件总览按代码模块)
-3. [分层架构与流层逻辑](#分层架构与流层逻辑)
-4. [`broth` 主循环详解](#broth-主循环详解)
-5. [工具系统（`tool` / `toolkit`）](#工具系统tool--toolkit)
-6. [工具确认回调（`on_tool_confirm`）](#工具确认回调on_tool_confirm)
-7. [多模态输入规范（canonical blocks）](#多模态输入规范canonical-blocks)
-8. [`response_format` 结构化输出](#response_format-结构化输出)
-9. [内置工具包：`python_workspace_toolkit`](#内置工具包python_workspace_toolkit)
-10. [MCP 工具桥接：`mcp`](#mcp-工具桥接mcp)
-11. [配置层：模型默认参数与能力矩阵](#配置层模型默认参数与能力矩阵)
-12. [回调事件与可观测性](#回调事件与可观测性)
-13. [Provider 差异对照](#provider-差异对照)
-14. [典型端到端示例](#典型端到端示例)
-15. [项目结构](#项目结构)
-16. [测试](#测试)
-17. [边界与注意事项](#边界与注意事项)
+2. [对外 API（`miso/__init__.py`）](#对外-apimiso__init__py)
+3. [组件总览（按代码模块）](#组件总览按代码模块)
+4. [分层架构与流层逻辑](#分层架构与流层逻辑)
+5. [`broth` 主循环详解](#broth-主循环详解)
+6. [Session Memory（Context Window 策略）](#session-memorycontext-window-策略)
+7. [工具系统（`tool` / `toolkit`）](#工具系统tool--toolkit)
+8. [工具确认回调（`on_tool_confirm`）](#工具确认回调on_tool_confirm)
+9. [多模态输入规范（canonical blocks）](#多模态输入规范canonical-blocks)
+10. [`response_format` 结构化输出](#response_format-结构化输出)
+11. [内置工具包：`python_workspace_toolkit`](#内置工具包python_workspace_toolkit)
+12. [MCP 工具桥接：`mcp`](#mcp-工具桥接mcp)
+13. [配置层：模型默认参数与能力矩阵](#配置层模型默认参数与能力矩阵)
+14. [回调事件与可观测性](#回调事件与可观测性)
+15. [Provider 差异对照](#provider-差异对照)
+16. [典型端到端示例](#典型端到端示例)
+17. [项目结构](#项目结构)
+18. [测试](#测试)
+19. [边界与注意事项](#边界与注意事项)
 
 ---
 
@@ -64,6 +67,9 @@ print(bundle)
 当前包导出的主要符号：
 
 - `broth`：主入口类
+- `MemoryManager` / `MemoryConfig`
+- `ContextStrategy` / `SessionStore` / `VectorStoreAdapter`
+- `LastNTurnsStrategy` / `SummaryTokenStrategy` / `HybridContextStrategy`
 - `tool_parameter` / `tool` / `toolkit` / `tool_decorator`
 - `ToolConfirmationRequest` / `ToolConfirmationResponse`
 - `response_format`
@@ -80,6 +86,7 @@ print(bundle)
 | 模块                                              | 核心对象                              | 职责                                                          |
 | ------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------- |
 | `miso/broth.py`                                   | `broth`                               | 代理主循环、provider 适配、工具调用闭环、token 统计、回调事件 |
+| `miso/memory.py`                                  | `MemoryManager` / 策略协议            | session memory、context window 裁剪、summary、可选向量召回     |
 | `miso/tool.py`                                    | `tool_parameter` / `tool` / `toolkit` | 工具 schema 推断、工具注册、工具执行                          |
 | `miso/response_format.py`                         | `response_format`                     | JSON Schema 输出约束与解析                                    |
 | `miso/media.py`                                   | `from_file` / `from_url`              | 生成 canonical 多模态输入块                                   |
@@ -96,37 +103,46 @@ print(bundle)
 ## 分层架构与流层逻辑
 
 `miso` 的核心不是“单次问答”，而是“一个可迭代的代理流”。  
-可以把它看成 8 层：
+可以把它看成 10 层：
 
-1. **调用层**：`broth.run(messages, payload, ...)`
+1. **调用层**：`broth.run(messages, payload, session_id, ...)`
 2. **标准化层**：把输入消息转成 canonical blocks（text/image/pdf）
 3. **能力校验层**：根据模型能力矩阵校验模态与 source.type
 4. **Provider 投影层**：canonical -> provider 原生请求格式
-5. **LLM 回合层**：`_fetch_once` 拉取一轮输出（流式）
-6. **工具执行层**：提取 tool calls -> 执行 toolkit -> 生成 tool result message
-7. **观察层（可选）**：若工具标记 `observe=True`，触发一次“工具结果复核”
-8. **收敛层**：无 tool call 时应用 `response_format`，输出最终消息和 bundle
+5. **Memory 预处理层（可选）**：按 `session_id` 合并历史并应用策略（summary / last-n / vector recall）
+6. **LLM 回合层**：`_fetch_once` 拉取一轮输出（流式）
+7. **工具执行层**：提取 tool calls -> 执行 toolkit -> 生成 tool result message
+8. **观察层（可选）**：若工具标记 `observe=True`，触发一次“工具结果复核”
+9. **收敛层**：无 tool call 时应用 `response_format`，输出最终消息和 bundle
+10. **Memory 提交层（可选）**：将最终对话写回 session，并可写入向量索引
 
 ### 单次 `run()` 时序图
 
 ```mermaid
 flowchart LR
-    A["run(messages)"] --> B["Canonicalize content blocks"]
+    A["run(messages, session_id)"] --> B["Canonicalize content blocks"]
     B --> C["Validate model capabilities"]
     C --> D["Project to provider format"]
-    D --> E["_fetch_once (OpenAI/Anthropic/Ollama)"]
-    E --> F{"Has tool calls?"}
-    F -- "No" --> G["Apply response_format parse"]
-    G --> H["Emit final_message / run_completed"]
-    H --> I["Return messages + bundle"]
-    F -- "Yes" --> J["Execute tool calls in toolkit(s)"]
-    J --> K{"Any tool.observe == True?"}
-    K -- "No" --> L["Append tool results to conversation"]
-    K -- "Yes" --> M["Run observation sub-turn"]
-    M --> N["Inject observation into last tool result"]
-    N --> L
-    L --> O["Next iteration"]
-    O --> E
+    D --> E{"Memory enabled?"}
+    E -- "Yes" --> F["Prepare session memory context"]
+    E -- "No" --> G["Use projected messages directly"]
+    F --> G
+    G --> H["_fetch_once (OpenAI/Anthropic/Ollama)"]
+    H --> I{"Has tool calls?"}
+    I -- "No" --> J["Apply response_format parse"]
+    J --> K["Emit final_message / run_completed"]
+    K --> L{"Memory enabled?"}
+    L -- "Yes" --> M["Commit conversation to session memory"]
+    L -- "No" --> N["Return messages + bundle"]
+    M --> N
+    I -- "Yes" --> O["Execute tool calls in toolkit(s)"]
+    O --> P{"Any tool.observe == True?"}
+    P -- "No" --> Q["Append tool results to conversation"]
+    P -- "Yes" --> R["Run observation sub-turn"]
+    R --> S["Inject observation into last tool result"]
+    S --> Q
+    Q --> T["Next iteration"]
+    T --> H
 ```
 
 ---
@@ -138,6 +154,7 @@ flowchart LR
 `broth` 在实例上维护了这些关键状态：
 
 - `provider` / `model` / `api_key`
+- `memory_manager`: 可选 session memory 管理器
 - `toolkits`: 可注册多个 toolkit
 - `last_response_id`: OpenAI 最近一次 response id（支持链式 `previous_response_id`）
 - `last_reasoning_items`: OpenAI 最近一轮 reasoning blocks
@@ -159,11 +176,13 @@ flowchart LR
 2. canonicalize（兼容 provider 原生 block）
 3. 能力校验（多模态、source.type）
 4. provider 投影
-5. 进入迭代（默认最多 `self.max_iterations=6`）
-6. 每轮调用 `_fetch_once` 获取 assistant 输出
-7. 若有 tool call，执行工具并回填 tool result message
-8. 若本批工具中任意工具 `observe=True`，触发一次 observation 子回合，并把 observation 注入“最后一个工具结果”
-9. 若无 tool call，进入收敛：应用 `response_format.parse` 并返回
+5. 若配置了 `memory_manager` 且传入 `session_id`，执行 memory prepare（合并历史 + 裁剪/摘要）
+6. 进入迭代（默认最多 `self.max_iterations=6`）
+7. 每轮调用 `_fetch_once` 获取 assistant 输出
+8. 若有 tool call，执行工具并回填 tool result message
+9. 若本批工具中任意工具 `observe=True`，触发一次 observation 子回合，并把 observation 注入“最后一个工具结果”
+10. 若无 tool call，进入收敛：应用 `response_format.parse`
+11. 返回前（含 `run_max_iterations` 路径）若启用 session memory 则执行 commit
 
 若到达 `max_iterations` 仍未收敛，会触发 `run_max_iterations` 事件并返回当前对话。
 
@@ -174,6 +193,12 @@ flowchart LR
 - `consumed_tokens`: 本次 run 累计 token
 - `max_context_window_tokens`: 从模型能力矩阵读取（可手动 override）
 - `context_window_used_pct`: 用“最后一轮 token 消耗 / max_context_window_tokens”计算
+
+### 4.1) 关键参数补充
+
+- `Broth(..., memory_manager=...)`：启用可插拔 session memory
+- `run(..., session_id="...")`：为当前请求绑定会话记忆；不传则完全兼容旧行为
+- `previous_response_id`（OpenAI）逻辑不变；memory 只影响请求消息准备与会话提交
 
 ### 5) OpenAI 特殊逻辑
 
@@ -196,6 +221,98 @@ flowchart LR
 - 强制流式
 - tool schema 会转换成 Ollama 接受的 function 格式
 - **仅支持文本输入**，image/pdf 会在前置校验阶段报错
+
+---
+
+## Session Memory（Context Window 策略）
+
+`miso` 的 memory 是内置 class 机制，不是 tool 调用链。  
+核心入口是 `MemoryManager`，默认策略是 `HybridContextStrategy(summary + last-n)`。
+
+### 1) 最小启用示例
+
+```python
+from miso import broth as Broth
+from miso import MemoryManager, MemoryConfig
+
+memory = MemoryManager(
+    config=MemoryConfig(
+        last_n_turns=8,
+        summary_trigger_pct=0.75,
+        summary_target_pct=0.45,
+    )
+)
+
+agent = Broth(
+    provider="openai",
+    model="gpt-5",
+    api_key="YOUR_OPENAI_API_KEY",
+    memory_manager=memory,
+)
+
+messages, bundle = agent.run(
+    messages=[{"role": "user", "content": "继续上次的话题"}],
+    session_id="demo-session-1",
+)
+```
+
+### 2) 默认策略行为
+
+- token 估算：`estimated_tokens = ceil(chars / 4)`
+- 触发条件：估算占比超过 `summary_trigger_pct`
+- 压缩目标：靠近 `summary_target_pct`
+- 裁剪方式：保留全部 `system` 消息 + 最近 `last_n_turns` 个 turn
+- 失败回退：summary 或 vector 异常不会中断主流程，会自动回退并继续
+
+### 3) 策略与扩展接口
+
+- `SessionStore`：`load(session_id) / save(session_id, state)`
+- `ContextStrategy`：`prepare(...) / commit(...)`
+- `VectorStoreAdapter`：`add_texts(...) / similarity_search(...)`
+- 默认存储：`InMemorySessionStore`（进程内）
+- 默认策略：`HybridContextStrategy`（内部组合 `SummaryTokenStrategy + LastNTurnsStrategy`）
+
+### 4) 自定义 vector adapter 示例
+
+```python
+from miso import MemoryManager, MemoryConfig
+
+class MyVectorAdapter:
+    def add_texts(self, *, session_id, texts, metadatas):
+        ...
+
+    def similarity_search(self, *, session_id, query, k):
+        return []
+
+memory = MemoryManager(
+    config=MemoryConfig(
+        vector_adapter=MyVectorAdapter(),
+        vector_top_k=4,
+    )
+)
+```
+
+### 5) Recall 如何生成
+
+Recall 来自你注入的 `VectorStoreAdapter`，流程如下：
+
+1. 在 `commit_messages(...)` 阶段，memory 会把新增的 `user/assistant/tool` 消息抽成文本，调用 `add_texts(...)` 做增量入库（用 `vector_indexed_until` 防止重复索引）。
+2. 在下一次 `prepare_messages(...)` 阶段，memory 会取“最新一条 user 消息”作为 query，调用 `similarity_search(session_id, query, k)`。
+3. 若返回 `list[str]` 非空，会被注入为一条 system 消息：
+   `"[MEMORY RECALL]\\n- item1\\n- item2 ..."`，一起进入当轮 context window。
+4. 若未配置 adapter、没有 user query、检索报错或结果为空，则跳过 recall，不影响主流程。
+
+注意：
+
+- `miso` 本身不内置 embedding/向量库实现；这些由你的 adapter 自己决定。
+- recall 内容是“可选附加上下文”，不会覆盖原始会话消息。
+
+### 6) 事件可观测性
+
+启用 memory 后，`callback` 里会额外收到：
+
+- `memory_prepare`：是否应用 memory、裁剪前后估算 token、summary/vector 回退原因等
+- `memory_commit`：session 写回结果、写入消息条数、可选向量索引结果
 
 ---
 
@@ -586,12 +703,19 @@ with mcp(command="npx", args=["-y", "@modelcontextprotocol/server-filesystem", "
 - `tool_denied`（工具被用户拒绝，跳过执行；含 `tool_name`, `call_id`, `reason`）
 - `tool_result`
 - `observation`
+- `memory_prepare`
+- `memory_commit`
 - `iteration_completed`
 - `final_message`
 - `run_completed`
 - `run_max_iterations`
 
 事件含通用字段：`type`, `run_id`, `iteration`, `timestamp`，并附带上下文字段（如 `delta`, `tool_name`, `result`）。
+
+Memory 事件补充字段：
+
+- `memory_prepare`: `session_id`, `applied`, `before_estimated_tokens`, `after_estimated_tokens`，以及可选 `summary_fallback_reason` / `vector_fallback_reason`
+- `memory_commit`: `session_id`, `applied`, `stored_message_count`，以及可选 `vector_indexed_count` / `vector_fallback_reason`
 
 ---
 
@@ -740,6 +864,43 @@ messages, bundle = agent.run(
 )
 ```
 
+### 6) Session Memory（last-n + summary）
+
+```python
+from miso import broth as Broth
+from miso import MemoryManager, MemoryConfig
+
+memory = MemoryManager(
+    config=MemoryConfig(
+        last_n_turns=6,
+        summary_trigger_pct=0.7,
+        summary_target_pct=0.4,
+        max_summary_chars=1800,
+    )
+)
+
+agent = Broth(
+    provider="openai",
+    model="gpt-5",
+    api_key="YOUR_OPENAI_API_KEY",
+    memory_manager=memory,
+)
+
+# turn 1
+messages, _ = agent.run(
+    messages=[{"role": "user", "content": "我偏好简短回答，技术决策优先给结论再给原因。"}],
+    session_id="product-a-chat",
+    max_iterations=2,
+)
+
+# turn 2（自动带上同 session 的记忆上下文）
+messages, bundle = agent.run(
+    messages=[{"role": "user", "content": "继续刚才的话题，给我一个迁移计划。"}],
+    session_id="product-a-chat",
+    max_iterations=4,
+)
+```
+
 ---
 
 ## 项目结构
@@ -748,6 +909,7 @@ messages, bundle = agent.run(
 miso/
   __init__.py
   broth.py
+  memory.py
   tool.py
   response_format.py
   media.py
@@ -762,6 +924,7 @@ miso/
       python_workspace_toolkit.py
 tests/
   test_broth_core.py
+  test_memory.py
   test_agent_core.py
   test_toolkit_design.py
   test_tool_confirmation.py
@@ -802,11 +965,14 @@ Smoke tests 依赖环境变量：
 6. `python_workspace_toolkit` 默认可在工作区内创建/删除/移动文件，生产场景建议最小化 `workspace_root` 范围。
 7. `requires_confirmation` 标记的工具在未提供 `on_tool_confirm` 回调时会自动放行，不会阻塞执行。
 8. MCP 工具如果带 `annotations.destructiveHint = true`，会自动标记为需要确认。
+9. memory 默认是进程内会话存储（`InMemorySessionStore`），进程重启后不会自动恢复历史。
+10. summary 触发使用字符启发式 token 估算（`ceil(chars/4)`），是稳定近似值，不是 provider 官方 tokenizer 精算值。
 
 ---
 
 如果你准备基于 miso 二次开发，建议优先阅读：
 
 1. `miso/broth.py`（主循环与 provider 适配）
-2. `miso/tool.py`（工具抽象）
-3. `miso/builtin_toolkits/python_workspace_toolkit/python_workspace_toolkit.py`（可直接落地的工具实现）
+2. `miso/memory.py`（session memory 与 context window 策略）
+3. `miso/tool.py`（工具抽象）
+4. `miso/builtin_toolkits/python_workspace_toolkit/python_workspace_toolkit.py`（可直接落地的工具实现）
