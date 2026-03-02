@@ -4,6 +4,8 @@ from .tool import (
     tool,
     toolkit,
     tool_decorator,
+    ToolConfirmationRequest,
+    ToolConfirmationResponse,
 )
 from .builtin_toolkits import (
     builtin_toolkit,
@@ -21,6 +23,8 @@ __all__ = [
     "tool",
     "toolkit",
     "tool_decorator",
+    "ToolConfirmationRequest",
+    "ToolConfirmationResponse",
     "builtin_toolkit",
     "build_builtin_toolkit",
     "python_workspace_toolkit",

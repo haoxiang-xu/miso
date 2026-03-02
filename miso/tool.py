@@ -187,6 +187,7 @@ class tool:
         func: Callable[..., Any] | None = None,
         parameters: list[tool_parameter | dict[str, Any]] | None = None,
         observe: bool = False,
+        requires_confirmation: bool = False,
     ):
         if callable(name) and func is None:
             func = name
@@ -196,6 +197,7 @@ class tool:
         self.description = description
         self.func = func
         self.observe = observe
+        self.requires_confirmation = requires_confirmation
         self.parameters = self._construct_parameters(parameters)
 
         if self.func is not None and not self.parameters:
@@ -217,6 +219,7 @@ class tool:
                 description=self.description or None,
                 parameters=self.parameters or None,
                 observe=self.observe,
+                requires_confirmation=self.requires_confirmation,
             )
 
         if self.func is not None:
@@ -233,6 +236,7 @@ class tool:
         description: str | None = None,
         parameters: list[tool_parameter | dict[str, Any]] | None = None,
         observe: bool = False,
+        requires_confirmation: bool = False,
     ) -> "tool":
         summary, _ = _parse_docstring(func)
         return cls(
@@ -241,6 +245,7 @@ class tool:
             func=func,
             parameters=parameters,
             observe=observe,
+            requires_confirmation=requires_confirmation,
         )
 
     def _construct_parameters(
@@ -350,6 +355,7 @@ def tool_decorator(
     description: str | None = None,
     parameters: list[tool_parameter | dict[str, Any]] | None = None,
     observe: bool = False,
+    requires_confirmation: bool = False,
 ):
     def decorator(func: Callable[..., Any]) -> tool:
         return tool.from_callable(
@@ -358,6 +364,7 @@ def tool_decorator(
             description=description,
             parameters=parameters,
             observe=observe,
+            requires_confirmation=requires_confirmation,
         )
 
     return decorator
@@ -374,6 +381,7 @@ class toolkit:
         tool_obj: tool | Callable[..., Any],
         *,
         observe: bool | None = None,
+        requires_confirmation: bool | None = None,
         name: str | None = None,
         description: str | None = None,
         parameters: list[tool_parameter | dict[str, Any]] | None = None,
@@ -387,6 +395,8 @@ class toolkit:
                 tool_obj.parameters = tool_obj._construct_parameters(parameters)
             if observe is not None:
                 tool_obj.observe = observe
+            if requires_confirmation is not None:
+                tool_obj.requires_confirmation = requires_confirmation
             self.tools[tool_obj.name] = tool_obj
             return tool_obj
 
@@ -397,6 +407,7 @@ class toolkit:
                 description=description,
                 parameters=parameters,
                 observe=bool(observe),
+                requires_confirmation=bool(requires_confirmation),
             )
             self.tools[wrapped.name] = wrapped
             return wrapped
@@ -414,6 +425,7 @@ class toolkit:
         func: Callable[..., Any] | None = None,
         *,
         observe: bool = False,
+        requires_confirmation: bool = False,
         name: str | None = None,
         description: str | None = None,
         parameters: list[tool_parameter | dict[str, Any]] | None = None,
@@ -422,6 +434,7 @@ class toolkit:
             return self.register(
                 func,
                 observe=observe,
+                requires_confirmation=requires_confirmation,
                 name=name,
                 description=description,
                 parameters=parameters,
@@ -431,6 +444,7 @@ class toolkit:
             return self.register(
                 inner,
                 observe=observe,
+                requires_confirmation=requires_confirmation,
                 name=name,
                 description=description,
                 parameters=parameters,
@@ -450,9 +464,70 @@ class toolkit:
     def to_json(self) -> list[dict[str, Any]]:
         return [tool_obj.to_json() for tool_obj in self.tools.values()]
 
+# ── confirmation callback data structures ──────────────────────────────
+
+@dataclass
+class ToolConfirmationRequest:
+    """Sent to the ``on_tool_confirm`` callback before a tool that has
+    ``requires_confirmation=True`` is executed.
+
+    The callback should inspect this object and return a
+    :class:`ToolConfirmationResponse` (or a plain ``dict`` / ``bool``).
+    """
+
+    tool_name: str
+    call_id: str
+    arguments: dict[str, Any]
+    description: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "tool_confirmation_request",
+            "tool_name": self.tool_name,
+            "call_id": self.call_id,
+            "arguments": self.arguments,
+            "description": self.description,
+        }
+
+
+@dataclass
+class ToolConfirmationResponse:
+    """Value returned by the ``on_tool_confirm`` callback.
+
+    * ``approved=True``  — proceed with execution.
+    * ``approved=True, modified_arguments={...}``  — execute with new args.
+    * ``approved=False`` — deny execution; an optional *reason* is recorded.
+
+    For convenience the callback may also return a plain ``bool``
+    (``True`` ≡ approved, ``False`` ≡ denied) or a ``dict`` with matching keys.
+    """
+
+    approved: bool = True
+    modified_arguments: dict[str, Any] | None = None
+    reason: str = ""
+
+    @classmethod
+    def from_raw(cls, raw: "bool | dict[str, Any] | ToolConfirmationResponse") -> "ToolConfirmationResponse":
+        """Normalize the many accepted return types into a response object."""
+        if isinstance(raw, ToolConfirmationResponse):
+            return raw
+        if isinstance(raw, bool):
+            return cls(approved=raw)
+        if isinstance(raw, dict):
+            return cls(
+                approved=raw.get("approved", True),
+                modified_arguments=raw.get("modified_arguments"),
+                reason=raw.get("reason", ""),
+            )
+        # Fallback: truthy check.
+        return cls(approved=bool(raw))
+
+
 __all__ = [
     "tool_parameter",
     "tool",
     "toolkit",
     "tool_decorator",
+    "ToolConfirmationRequest",
+    "ToolConfirmationResponse",
 ]

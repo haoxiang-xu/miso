@@ -15,6 +15,8 @@ import httpx
 import openai
 from openai import OpenAI
 
+from miso.tool import ToolConfirmationRequest, ToolConfirmationResponse
+
 try:
     from anthropic import Anthropic
 except ImportError:  # pragma: no cover
@@ -75,6 +77,7 @@ class broth:
         self.default_payload = self._load_default_payloads(DEFAULT_PAYLOADS_FILE)
         self.model_capabilities = self._load_model_capabilities(MODEL_CAPABILITIES_FILE)
         self.toolkits: list[base_toolkit] = []
+        self.on_tool_confirm: Callable | None = None
         self.last_response_id: str | None = None
         self.last_reasoning_items: list[dict[str, Any]] = []
         self.last_consumed_tokens: int = 0
@@ -893,6 +896,7 @@ class broth:
         verbose: bool = False,
         max_iterations: int | None = None,
         previous_response_id: str | None = None,
+        on_tool_confirm: Callable | None = None,
     ):
         run_id = str(uuid.uuid4())
         raw_seed_messages = copy.deepcopy(list(messages or []))
@@ -917,6 +921,8 @@ class broth:
         self.last_reasoning_items = []
         total_consumed_tokens = 0
         last_turn_tokens = 0
+
+        effective_on_tool_confirm = on_tool_confirm or self.on_tool_confirm
 
         self._emit(callback, "run_started", run_id, iteration=0, provider=self.provider, model=self.model)
 
@@ -1004,6 +1010,7 @@ class broth:
                     run_id=run_id,
                     iteration=iteration,
                     callback=callback,
+                    on_tool_confirm=effective_on_tool_confirm,
                 )
 
                 if should_observe and tool_messages:
@@ -1692,6 +1699,7 @@ class broth:
         run_id: str,
         iteration: int,
         callback: Callable[[dict[str, Any]], None] | None,
+        on_tool_confirm: Callable | None = None,
     ) -> tuple[list[dict[str, Any]], bool]:
         result_messages: list[dict[str, Any]] = []
         should_observe = False
@@ -1707,11 +1715,61 @@ class broth:
                 arguments=tool_call.arguments,
             )
 
-            tool = self._find_tool(tool_call.name)
-            if tool is not None and tool.observe:
+            tool_obj = self._find_tool(tool_call.name)
+            if tool_obj is not None and tool_obj.observe:
                 should_observe = True
 
-            tool_result = self._execute_from_toolkits(tool_call.name, tool_call.arguments)
+            # ── confirmation gate ──────────────────────────────────────
+            effective_arguments = tool_call.arguments
+            denied = False
+            deny_reason = ""
+
+            if (
+                tool_obj is not None
+                and tool_obj.requires_confirmation
+                and on_tool_confirm is not None
+            ):
+                confirmation_request = ToolConfirmationRequest(
+                    tool_name=tool_call.name,
+                    call_id=tool_call.call_id,
+                    arguments=tool_call.arguments if isinstance(tool_call.arguments, dict) else {},
+                    description=tool_obj.description,
+                )
+                raw_response = on_tool_confirm(confirmation_request)
+                response = ToolConfirmationResponse.from_raw(raw_response)
+
+                if not response.approved:
+                    denied = True
+                    deny_reason = response.reason
+                    self._emit(
+                        callback,
+                        "tool_denied",
+                        run_id,
+                        iteration=iteration,
+                        tool_name=tool_call.name,
+                        call_id=tool_call.call_id,
+                        reason=deny_reason,
+                    )
+                else:
+                    if response.modified_arguments is not None:
+                        effective_arguments = response.modified_arguments
+                    self._emit(
+                        callback,
+                        "tool_confirmed",
+                        run_id,
+                        iteration=iteration,
+                        tool_name=tool_call.name,
+                        call_id=tool_call.call_id,
+                    )
+
+            if denied:
+                tool_result = {
+                    "denied": True,
+                    "tool": tool_call.name,
+                    "reason": deny_reason or "User denied execution.",
+                }
+            else:
+                tool_result = self._execute_from_toolkits(tool_call.name, effective_arguments)
             content = json.dumps(tool_result, default=str, ensure_ascii=False)
 
             if self.provider == "openai":

@@ -20,17 +20,18 @@
 3. [分层架构与流层逻辑](#分层架构与流层逻辑)
 4. [`broth` 主循环详解](#broth-主循环详解)
 5. [工具系统（`tool` / `toolkit`）](#工具系统tool--toolkit)
-6. [多模态输入规范（canonical blocks）](#多模态输入规范canonical-blocks)
-7. [`response_format` 结构化输出](#response_format-结构化输出)
-8. [内置工具包：`python_workspace_toolkit`](#内置工具包python_workspace_toolkit)
-9. [MCP 工具桥接：`mcp`](#mcp-工具桥接mcp)
-10. [配置层：模型默认参数与能力矩阵](#配置层模型默认参数与能力矩阵)
-11. [回调事件与可观测性](#回调事件与可观测性)
-12. [Provider 差异对照](#provider-差异对照)
-13. [典型端到端示例](#典型端到端示例)
-14. [项目结构](#项目结构)
-15. [测试](#测试)
-16. [边界与注意事项](#边界与注意事项)
+6. [工具确认回调（`on_tool_confirm`）](#工具确认回调on_tool_confirm)
+7. [多模态输入规范（canonical blocks）](#多模态输入规范canonical-blocks)
+8. [`response_format` 结构化输出](#response_format-结构化输出)
+9. [内置工具包：`python_workspace_toolkit`](#内置工具包python_workspace_toolkit)
+10. [MCP 工具桥接：`mcp`](#mcp-工具桥接mcp)
+11. [配置层：模型默认参数与能力矩阵](#配置层模型默认参数与能力矩阵)
+12. [回调事件与可观测性](#回调事件与可观测性)
+13. [Provider 差异对照](#provider-差异对照)
+14. [典型端到端示例](#典型端到端示例)
+15. [项目结构](#项目结构)
+16. [测试](#测试)
+17. [边界与注意事项](#边界与注意事项)
 
 ---
 
@@ -64,6 +65,7 @@ print(bundle)
 
 - `broth`：主入口类
 - `tool_parameter` / `tool` / `toolkit` / `tool_decorator`
+- `ToolConfirmationRequest` / `ToolConfirmationResponse`
 - `response_format`
 - `media`
 - `mcp`
@@ -75,17 +77,17 @@ print(bundle)
 
 ## 组件总览（按代码模块）
 
-| 模块 | 核心对象 | 职责 |
-|---|---|---|
-| `miso/broth.py` | `broth` | 代理主循环、provider 适配、工具调用闭环、token 统计、回调事件 |
-| `miso/tool.py` | `tool_parameter` / `tool` / `toolkit` | 工具 schema 推断、工具注册、工具执行 |
-| `miso/response_format.py` | `response_format` | JSON Schema 输出约束与解析 |
-| `miso/media.py` | `from_file` / `from_url` | 生成 canonical 多模态输入块 |
-| `miso/mcp.py` | `mcp(toolkit)` | 把 MCP Server 暴露成 miso toolkit |
-| `miso/builtin_toolkits/base.py` | `builtin_toolkit` | 工作区路径安全基类 |
-| `miso/builtin_toolkits/python_workspace_toolkit/` | `python_workspace_toolkit` | 文件、目录、行级编辑、隔离 Python runtime |
-| `miso/model_default_payloads.json` | - | 不同模型默认 payload |
-| `miso/model_capabilities.json` | - | 不同模型能力矩阵（tools、多模态、payload 白名单等） |
+| 模块                                              | 核心对象                              | 职责                                                          |
+| ------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------- |
+| `miso/broth.py`                                   | `broth`                               | 代理主循环、provider 适配、工具调用闭环、token 统计、回调事件 |
+| `miso/tool.py`                                    | `tool_parameter` / `tool` / `toolkit` | 工具 schema 推断、工具注册、工具执行                          |
+| `miso/response_format.py`                         | `response_format`                     | JSON Schema 输出约束与解析                                    |
+| `miso/media.py`                                   | `from_file` / `from_url`              | 生成 canonical 多模态输入块                                   |
+| `miso/mcp.py`                                     | `mcp(toolkit)`                        | 把 MCP Server 暴露成 miso toolkit                             |
+| `miso/builtin_toolkits/base.py`                   | `builtin_toolkit`                     | 工作区路径安全基类                                            |
+| `miso/builtin_toolkits/python_workspace_toolkit/` | `python_workspace_toolkit`            | 文件、目录、行级编辑、隔离 Python runtime                     |
+| `miso/model_default_payloads.json`                | -                                     | 不同模型默认 payload                                          |
+| `miso/model_capabilities.json`                    | -                                     | 不同模型能力矩阵（tools、多模态、payload 白名单等）           |
 
 统一导出位于 `miso/__init__.py`，你通常会直接 `from miso import ...` 使用。
 
@@ -234,6 +236,8 @@ def add(a: int, b: int = 2):
 - `execute()` 支持 `dict` / JSON 字符串参数
 - 函数返回值若不是 `dict`，会被包装成 `{"result": ...}`
 - 工具异常会包装成 `{"error": "...", "tool": tool_name}`
+- `observe=True` 标记工具在执行后触发"结果复核"子回合
+- `requires_confirmation=True` 标记工具在执行前需要用户确认（详见[工具确认回调](#工具确认回调on_tool_confirm)）
 
 ### `toolkit`
 
@@ -243,6 +247,119 @@ def add(a: int, b: int = 2):
 - `tool()` 装饰器风格注册
 - `execute(name, arguments)`
 - `to_json()` 输出 provider 可消费的工具 schema 列表
+
+---
+
+## 工具确认回调（`on_tool_confirm`）
+
+某些工具（如删除文件、执行 shell 命令）在执行前需要用户确认。`miso` 提供了 per-tool 的确认机制。
+
+### 标记需要确认的工具
+
+在定义或注册 tool 时设置 `requires_confirmation=True`（默认 `False`）：
+
+```python
+from miso import tool, toolkit
+
+# 方式一：直接构造
+dangerous = tool(name="delete_file", func=delete_fn, requires_confirmation=True)
+
+# 方式二：装饰器
+@tool(requires_confirmation=True)
+def rm_rf(path: str):
+    """Delete everything."""
+    ...
+
+# 方式三：toolkit 注册时覆盖
+tk = toolkit()
+tk.register(some_func, requires_confirmation=True)
+
+# 方式四：toolkit 装饰器
+@tk.tool(requires_confirmation=True)
+def drop_database():
+    ...
+```
+
+### 提供确认回调
+
+通过 `on_tool_confirm` 参数提供回调函数。有两个入口，**run 级优先于实例级**：
+
+```python
+from miso import broth as Broth
+
+agent = Broth(provider="openai", model="gpt-5", api_key="...")
+
+# 实例级（所有 run 共享的默认行为）
+agent.on_tool_confirm = my_confirm_handler
+
+# run 级（仅本次 run 生效，覆盖实例级）
+agent.run(messages=..., on_tool_confirm=my_confirm_handler)
+```
+
+### 回调签名与返回值
+
+回调函数接收 `ToolConfirmationRequest`，返回值支持多态：
+
+```python
+from miso import ToolConfirmationRequest, ToolConfirmationResponse
+
+# 最简：返回 bool
+def confirm(req: ToolConfirmationRequest) -> bool:
+    return input(f"Allow '{req.tool_name}'? (y/n): ").lower() == "y"
+
+# 带拒绝原因
+def confirm_deny(req):
+    return {"approved": False, "reason": "Not allowed in production"}
+
+# 修改参数后放行
+def confirm_sanitize(req):
+    sanitized = {**req.arguments, "force": False}
+    return {"approved": True, "modified_arguments": sanitized}
+
+# 返回完整对象
+def confirm_obj(req):
+    return ToolConfirmationResponse(approved=True, reason="ok")
+```
+
+**`ToolConfirmationRequest` 字段：**
+
+| 字段          | 类型   | 说明              |
+| ------------- | ------ | ----------------- |
+| `tool_name`   | `str`  | 工具名称          |
+| `call_id`     | `str`  | 本次调用的唯一 ID |
+| `arguments`   | `dict` | LLM 传入的参数    |
+| `description` | `str`  | 工具的描述文本    |
+
+**`ToolConfirmationResponse` 字段：**
+
+| 字段                 | 类型           | 默认值 | 说明               |
+| -------------------- | -------------- | ------ | ------------------ |
+| `approved`           | `bool`         | `True` | 是否批准执行       |
+| `modified_arguments` | `dict \| None` | `None` | 批准时可选修改参数 |
+| `reason`             | `str`          | `""`   | 拒绝原因（可选）   |
+
+### 执行流判断逻辑
+
+```text
+tool.requires_confirmation?  ──No──→  直接执行（原路径）
+        │ Yes
+        ▼
+on_tool_confirm 存在?  ──No──→  直接执行（向后兼容，不会卡住）
+        │ Yes
+        ▼
+调用 on_tool_confirm(ToolConfirmationRequest)
+        │
+        ├─ 返回 True / {"approved": True}  →  执行，emit "tool_confirmed"
+        ├─ 返回 {"approved": True, "modified_arguments": {...}}  →  用新参数执行
+        └─ 返回 False / {"approved": False}  →  不执行，emit "tool_denied"
+                                                  返回 {"denied": True, ...} 给 LLM
+```
+
+关键设计原则：
+
+- **opt-in**：未标记 `requires_confirmation` 的工具完全不受影响
+- **无回调不阻塞**：标记了但未提供 `on_tool_confirm` 时自动放行，避免工具永远不执行
+- **MCP 自动映射**：MCP 工具如果带 `annotations.destructiveHint = true`，会自动设置 `requires_confirmation=True`
 
 ---
 
@@ -465,6 +582,8 @@ with mcp(command="npx", args=["-y", "@modelcontextprotocol/server-filesystem", "
 - `token_delta`
 - `reasoning`
 - `tool_call`
+- `tool_confirmed`（工具通过确认，即将执行；含 `tool_name`, `call_id`）
+- `tool_denied`（工具被用户拒绝，跳过执行；含 `tool_name`, `call_id`, `reason`）
 - `tool_result`
 - `observation`
 - `iteration_completed`
@@ -478,15 +597,15 @@ with mcp(command="npx", args=["-y", "@modelcontextprotocol/server-filesystem", "
 
 ## Provider 差异对照
 
-| 维度 | OpenAI | Anthropic | Ollama |
-|---|---|---|---|
-| 主要调用接口 | `OpenAI.responses.create` | `Anthropic.messages.stream` | `http://localhost:11434/api/chat` |
-| 是否强制流式 | 是 | 使用 stream API | 是 |
-| 多模态输入 | text/image/pdf | text/image/pdf | text only |
-| 工具调用 | function_call | tool_use | tool_calls |
-| `previous_response_id` | 支持（能力矩阵允许时） | 不支持 | 不支持 |
-| 结构化输出透传 | `response_format` | 当前未透传（本地 parse） | `format` |
-| PDF base64 处理 | 可上传 Files API 并缓存 file_id | 直接 document/base64 | 不支持 |
+| 维度                   | OpenAI                          | Anthropic                   | Ollama                            |
+| ---------------------- | ------------------------------- | --------------------------- | --------------------------------- |
+| 主要调用接口           | `OpenAI.responses.create`       | `Anthropic.messages.stream` | `http://localhost:11434/api/chat` |
+| 是否强制流式           | 是                              | 使用 stream API             | 是                                |
+| 多模态输入             | text/image/pdf                  | text/image/pdf              | text only                         |
+| 工具调用               | function_call                   | tool_use                    | tool_calls                        |
+| `previous_response_id` | 支持（能力矩阵允许时）          | 不支持                      | 不支持                            |
+| 结构化输出透传         | `response_format`               | 当前未透传（本地 parse）    | `format`                          |
+| PDF base64 处理        | 可上传 Files API 并缓存 file_id | 直接 document/base64        | 不支持                            |
 
 ---
 
@@ -581,6 +700,46 @@ messages_out, bundle = agent.run(
 )
 ```
 
+### 5) 工具确认回调
+
+```python
+from miso import broth as Broth, tool, toolkit
+
+@tool(requires_confirmation=True)
+def delete_file(path: str):
+    """Delete a file from the workspace."""
+    import os
+    os.remove(path)
+    return {"deleted": path}
+
+@tool(requires_confirmation=True)
+def terminal_exec(command: str):
+    """Execute a shell command."""
+    import subprocess
+    result = subprocess.run(command, shell=True, capture_output=True, text=True)
+    return {"stdout": result.stdout, "stderr": result.stderr}
+
+tk = toolkit()
+tk.register(delete_file)
+tk.register(terminal_exec)
+
+agent = Broth(provider="openai", model="gpt-5", api_key="YOUR_OPENAI_API_KEY")
+agent.toolkit = tk
+
+# 简单的终端确认
+def confirm(req):
+    print(f"\n⚠️  Tool: {req.tool_name}")
+    print(f"   Args: {req.arguments}")
+    answer = input("   Allow? (y/n): ")
+    return answer.strip().lower() == "y"
+
+messages, bundle = agent.run(
+    messages=[{"role": "user", "content": "删除 temp.txt 文件"}],
+    on_tool_confirm=confirm,
+    max_iterations=4,
+)
+```
+
 ---
 
 ## 项目结构
@@ -603,7 +762,9 @@ miso/
       python_workspace_toolkit.py
 tests/
   test_broth_core.py
+  test_agent_core.py
   test_toolkit_design.py
+  test_tool_confirmation.py
   test_builtin_toolkit.py
   test_mcp.py
   test_file_cache.py
@@ -639,6 +800,8 @@ Smoke tests 依赖环境变量：
 4. `observe=True` 触发的是“工具结果复核子回合”，会额外消耗 token。
 5. 工具名冲突时以后注册 toolkit 为准，建议在多 toolkit 组合时避免重名。
 6. `python_workspace_toolkit` 默认可在工作区内创建/删除/移动文件，生产场景建议最小化 `workspace_root` 范围。
+7. `requires_confirmation` 标记的工具在未提供 `on_tool_confirm` 回调时会自动放行，不会阻塞执行。
+8. MCP 工具如果带 `annotations.destructiveHint = true`，会自动标记为需要确认。
 
 ---
 

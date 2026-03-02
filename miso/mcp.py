@@ -312,6 +312,14 @@ class mcp(toolkit):
                 )
             )
 
+        # Derive requires_confirmation from MCP tool annotations if present.
+        annotations = getattr(mcp_tool, "annotations", None)
+        requires_confirmation = False
+        if annotations is not None:
+            # MCP ToolAnnotations may flag destructive / side-effect-ful tools.
+            if getattr(annotations, "destructiveHint", None) is True:
+                requires_confirmation = True
+
         # Create a tool whose execute() will be handled by our overridden
         # execute() method (the func is a no-op placeholder).
         return tool(
@@ -319,6 +327,7 @@ class mcp(toolkit):
             description=description,
             func=lambda **kw: {"error": "direct call not supported; use toolkit.execute()"},
             parameters=parameters,
+            requires_confirmation=requires_confirmation,
         )
 
     # ── internal: result parsing ───────────────────────────────────────────
