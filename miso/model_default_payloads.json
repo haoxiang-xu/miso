@@ -16,6 +16,16 @@
       "effort": "medium"
     }
   },
+  "gpt-5.4": {
+    "instructions": "",
+    "max_output_tokens": 128000,
+    "truncation": "auto",
+    "store": false,
+    "include": [],
+    "reasoning": {
+      "effort": "medium"
+    }
+  },
   "gpt-5-codex": {
     "instructions": "",
     "max_output_tokens": 128000,

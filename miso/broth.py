@@ -1015,8 +1015,39 @@ class broth:
                 use_openai_previous_response_chain = False
                 next_previous_response_id = None
 
+                # If request_messages contains function_call_output items, build a
+                # minimal context rather than resending the full conversation.
+                # We only need: system messages + the last user message + the
+                # matching function_call items (looked up by call_id) + the outputs.
+                # This avoids re-sending a potentially long history while still
+                # giving the model all the context it needs to handle the tool result.
+                output_call_ids = {
+                    m.get("call_id")
+                    for m in request_messages
+                    if isinstance(m, dict) and m.get("type") == "function_call_output"
+                }
+                if output_call_ids:
+                    systems = [
+                        m for m in conversation
+                        if isinstance(m, dict) and m.get("role") == "system"
+                    ]
+                    user_msgs = [
+                        m for m in conversation
+                        if isinstance(m, dict) and m.get("role") == "user"
+                    ]
+                    last_user = [user_msgs[-1]] if user_msgs else []
+                    matched_calls = [
+                        m for m in conversation
+                        if isinstance(m, dict)
+                        and m.get("type") == "function_call"
+                        and m.get("call_id") in output_call_ids
+                    ]
+                    fallback_messages = systems + last_user + matched_calls + list(request_messages)
+                else:
+                    fallback_messages = conversation
+
                 turn = self._fetch_once(
-                    messages=conversation,
+                    messages=fallback_messages,
                     payload=payload,
                     response_format=response_format,
                     callback=callback,
@@ -1180,7 +1211,13 @@ class broth:
         callback(event)
 
     def _is_previous_response_not_found_error(self, exc: Exception) -> bool:
-        """Return True when OpenAI reports an invalid previous_response_id."""
+        """Return True when OpenAI reports an invalid previous_response_id.
+
+        Also catches the case where a model doesn't persist the previous response
+        and returns 'No tool call found for function call output' — which means the
+        function_call items from the prior response are inaccessible, so we must
+        fall back to sending the full conversation.
+        """
         body = getattr(exc, "body", None)
         if isinstance(body, dict):
             error_obj = body.get("error")
@@ -1194,8 +1231,17 @@ class broth:
                 if param == "previous_response_id" and "not found" in message.lower():
                     return True
 
+                # gpt-4.5 and some preview models don't persist the previous
+                # response's tool calls, so tool outputs have no matching call.
+                if "no tool call found for function call output" in message.lower():
+                    return True
+
         text = str(exc).lower()
-        return "previous_response_id" in text and "not found" in text
+        if "previous_response_id" in text and "not found" in text:
+            return True
+        if "no tool call found for function call output" in text:
+            return True
+        return False
 
     def _normalize_openai_input_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Normalize OpenAI response items so they can be reused as input safely."""
