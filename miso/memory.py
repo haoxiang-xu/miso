@@ -211,7 +211,13 @@ def _merge_history_and_incoming(
         and clean_incoming[: len(clean_history)] == clean_history
     ):
         return clean_incoming
-    return clean_history + clean_incoming
+    # When the prefix check fails (e.g. memory-enabled mode where the client sends
+    # only the current user message plus a fresh system prompt), avoid duplicating
+    # system messages by using the system messages from `incoming` and appending
+    # only non-system messages from stored history followed by incoming non-system.
+    incoming_systems, incoming_non_system = _split_system_and_non_system(clean_incoming)
+    _, history_non_system = _split_system_and_non_system(clean_history)
+    return incoming_systems + history_non_system + incoming_non_system
 
 
 class LastNTurnsStrategy:

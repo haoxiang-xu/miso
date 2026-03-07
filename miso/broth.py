@@ -910,6 +910,7 @@ class broth:
         max_iterations: int | None = None,
         previous_response_id: str | None = None,
         on_tool_confirm: Callable | None = None,
+        on_continuation_request: Callable | None = None,
         session_id: str | None = None,
     ):
         run_id = str(uuid.uuid4())
@@ -953,7 +954,7 @@ class broth:
         payload = dict(payload or {})
         effective_payload = self._merged_payload(payload)
         max_loops = max_iterations or self.max_iterations
-        supports_prev = bool(self._model_capability("supports_previous_response_id", True))
+        supports_prev = bool(self._model_capability("supports_previous_response_id", False))
         store_enabled = effective_payload.get("store") is not False
         use_openai_previous_response_chain = (
             self.provider == "openai" and supports_prev and store_enabled
@@ -970,7 +971,19 @@ class broth:
 
         self._emit(callback, "run_started", run_id, iteration=0, provider=self.provider, model=self.model)
 
-        for iteration in range(max_loops):
+        iteration = 0
+        while True:
+            if iteration >= max_loops:
+                if on_continuation_request is not None:
+                    resp = on_continuation_request({"iteration": max_loops})
+                    if resp and resp.get("approved"):
+                        extra = max(1, int(resp.get("extra_iterations", 10)))
+                        max_loops += extra
+                    else:
+                        break
+                else:
+                    break
+
             self._emit(callback, "iteration_started", run_id, iteration=iteration)
             request_messages = conversation
             request_previous_response_id = None
@@ -1113,6 +1126,7 @@ class broth:
                     else:
                         next_openai_input = copy.deepcopy(conversation)
                 self._emit(callback, "iteration_completed", run_id, iteration=iteration, has_tool_calls=True)
+                iteration += 1
                 continue
 
             self._apply_response_format(conversation, response_format)
@@ -1209,6 +1223,33 @@ class broth:
         }
         event.update(extra)
         callback(event)
+
+    def _emit_request_messages(
+        self,
+        *,
+        callback: Callable[[dict[str, Any]], None] | None,
+        run_id: str,
+        iteration: int,
+        provider: str,
+        messages: list[dict[str, Any]],
+        previous_response_id: str | None = None,
+        system: str | None = None,
+    ) -> None:
+        event_payload: dict[str, Any] = {
+            "provider": provider,
+            "messages": copy.deepcopy(messages),
+        }
+        if previous_response_id is not None:
+            event_payload["previous_response_id"] = previous_response_id
+        if system is not None:
+            event_payload["system"] = system
+        self._emit(
+            callback,
+            "request_messages",
+            run_id,
+            iteration=iteration,
+            **event_payload,
+        )
 
     def _is_previous_response_not_found_error(self, exc: Exception) -> bool:
         """Return True when OpenAI reports an invalid previous_response_id.
@@ -1392,6 +1433,15 @@ class broth:
 
         if response_format is not None:
             request_kwargs["response_format"] = response_format.to_openai()
+
+        self._emit_request_messages(
+            callback=callback,
+            run_id=run_id,
+            iteration=iteration,
+            provider="openai",
+            messages=normalized_messages,
+            previous_response_id=previous_response_id,
+        )
 
         collected_chunks: list[str] = []
         completed_response = None
@@ -1584,6 +1634,14 @@ class broth:
         if response_format is not None:
             request_body["format"] = response_format.to_ollama()
 
+        self._emit_request_messages(
+            callback=callback,
+            run_id=run_id,
+            iteration=iteration,
+            provider="ollama",
+            messages=request_body.get("messages", []),
+        )
+
         collected_chunks: list[str] = []
         latest_prompt_eval_count = 0
         latest_eval_count = 0
@@ -1715,6 +1773,15 @@ class broth:
             request_kwargs["system"] = system_prompt
         if anthropic_tools:
             request_kwargs["tools"] = anthropic_tools
+
+        self._emit_request_messages(
+            callback=callback,
+            run_id=run_id,
+            iteration=iteration,
+            provider="anthropic",
+            messages=chat_messages,
+            system=system_prompt if isinstance(system_prompt, str) else None,
+        )
 
         # ── stream response ────────────────────────────────────────────────
         collected_chunks: list[str] = []
