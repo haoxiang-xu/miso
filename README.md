@@ -282,6 +282,12 @@ class MyVectorAdapter:
         ...
 
     def similarity_search(self, *, session_id, query, k):
+        # 兼容两种返回格式：
+        # 1) list[str]
+        # 2) list[{
+        #      "text": "...",
+        #      "messages": [{"role": "user|assistant", "content": "..."}]
+        #    }]
         return []
 
 memory = MemoryManager(
@@ -296,10 +302,16 @@ memory = MemoryManager(
 
 Recall 来自你注入的 `VectorStoreAdapter`，流程如下：
 
-1. 在 `commit_messages(...)` 阶段，memory 会把新增的 `user/assistant/tool` 消息抽成文本，调用 `add_texts(...)` 做增量入库（用 `vector_indexed_until` 防止重复索引）。
+1. 在 `commit_messages(...)` 阶段，memory 会按 turn 增量入库（`user -> assistant` 完整轮次）。
+   - 每个 turn 的 embedding 文本格式：`user: ...\\nassistant: ...`
+   - metadata 会携带 `messages`（仅 `user/assistant`）以及 `turn_start_index` / `turn_end_index`
+   - 不完整的尾 turn 不会提前入库，会在后续 commit 自动补齐
 2. 在下一次 `prepare_messages(...)` 阶段，memory 会取“最新一条 user 消息”作为 query，调用 `similarity_search(session_id, query, k)`。
-3. 若返回 `list[str]` 非空，会被注入为一条 system 消息：
-   `"[MEMORY RECALL]\\n- item1\\n- item2 ..."`，一起进入当轮 context window。
+3. 若返回结果非空，会被注入为一条 system 消息，格式为：
+   - 第一行固定标记：`[Recall messages]`
+   - 第二行开始为严格 JSON message array 字符串（`[{"role":"user|assistant","content":"..."}]`）
+   - 若 hit 里带 `messages`，会优先使用 `messages`
+   - 旧格式（`list[str]` / `{"text","role"}`）仍兼容，并会回退推断角色
 4. 若未配置 adapter、没有 user query、检索报错或结果为空，则跳过 recall，不影响主流程。
 
 注意：
@@ -715,7 +727,7 @@ with mcp(command="npx", args=["-y", "@modelcontextprotocol/server-filesystem", "
 Memory 事件补充字段：
 
 - `memory_prepare`: `session_id`, `applied`, `before_estimated_tokens`, `after_estimated_tokens`，以及可选 `summary_fallback_reason` / `vector_fallback_reason`
-- `memory_commit`: `session_id`, `applied`, `stored_message_count`，以及可选 `vector_indexed_count` / `vector_fallback_reason`
+- `memory_commit`: `session_id`, `applied`, `stored_message_count`，以及可选 `vector_indexed_count` / `vector_indexed_turn_count` / `vector_fallback_reason`
 
 ---
 

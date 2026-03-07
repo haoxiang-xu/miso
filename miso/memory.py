@@ -36,7 +36,7 @@ class VectorStoreAdapter(Protocol):
         session_id: str,
         query: str,
         k: int,
-    ) -> list[str]:
+    ) -> list[str | dict[str, Any]]:
         ...
 
 
@@ -136,6 +136,271 @@ def _message_to_text(message: dict[str, Any]) -> str:
     return json.dumps(message, default=str, ensure_ascii=False)
 
 
+def _normalize_dialog_role(role: Any) -> str | None:
+    if not isinstance(role, str):
+        return None
+    normalized = role.strip().lower()
+    if normalized in ("user", "assistant"):
+        return normalized
+    return None
+
+
+def _normalize_recall_messages_array(raw_messages: Any) -> list[dict[str, str]]:
+    if not isinstance(raw_messages, list):
+        return []
+    normalized: list[dict[str, str]] = []
+    for item in raw_messages:
+        if not isinstance(item, dict):
+            continue
+        role = _normalize_dialog_role(item.get("role"))
+        if role is None:
+            continue
+        raw_content = item.get("content")
+        if raw_content is None:
+            raw_content = item.get("text")
+        content = _content_to_text(raw_content).strip()
+        if not content:
+            continue
+        normalized.append({"role": role, "content": content})
+    return normalized
+
+
+def _parse_prefixed_dialog_text(text: str) -> list[dict[str, str]]:
+    parsed: list[dict[str, str]] = []
+    current_role: str | None = None
+    current_lines: list[str] = []
+
+    def _flush() -> None:
+        nonlocal current_role, current_lines
+        if current_role is None:
+            current_lines = []
+            return
+        content = "\n".join(line for line in current_lines if isinstance(line, str)).strip()
+        if content:
+            parsed.append({"role": current_role, "content": content})
+        current_role = None
+        current_lines = []
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        lowered = line.lower()
+        if lowered.startswith("user:") or lowered.startswith("assistant:"):
+            _flush()
+            role = "user" if lowered.startswith("user:") else "assistant"
+            content = line.split(":", 1)[1].strip() if ":" in line else ""
+            current_role = role
+            current_lines = [content] if content else []
+            continue
+
+        if current_role is not None:
+            current_lines.append(raw_line)
+
+    _flush()
+    return parsed
+
+
+def _normalize_recall_legacy_item(item: str | dict[str, Any]) -> list[dict[str, str]]:
+    role: str | None = None
+    raw_text: Any = ""
+    if isinstance(item, str):
+        raw_text = item
+    elif isinstance(item, dict):
+        raw_text = item.get("text")
+        if raw_text is None:
+            raw_text = item.get("content")
+        role = _normalize_dialog_role(item.get("role"))
+    else:
+        return []
+
+    text = _content_to_text(raw_text).strip()
+    if not text:
+        return []
+
+    parsed = _parse_prefixed_dialog_text(text)
+    if parsed:
+        return parsed
+    if role is not None:
+        return [{"role": role, "content": text}]
+    return [{"content": text}]
+
+
+def _normalize_recalled_messages(
+    recalled: list[str | dict[str, Any]],
+) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for item in recalled:
+        if isinstance(item, dict):
+            parsed_messages = _normalize_recall_messages_array(item.get("messages"))
+            if parsed_messages:
+                normalized.extend(parsed_messages)
+                continue
+        normalized.extend(_normalize_recall_legacy_item(item))
+    return normalized
+
+
+def _infer_recall_roles_from_messages(
+    recalled: list[dict[str, str]],
+    messages: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    text_to_role: dict[str, str] = {}
+    text_role_pairs: list[tuple[str, str]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        normalized_role = _normalize_dialog_role(role)
+        if normalized_role is None:
+            continue
+        text = _message_to_text(message).strip()
+        if not text:
+            continue
+        text_to_role[text] = normalized_role
+        text_role_pairs.append((text, normalized_role))
+
+    output: list[dict[str, str]] = []
+    for item in recalled:
+        normalized = dict(item)
+        if "role" not in normalized:
+            item_text = normalized.get("content", "")
+            if not item_text:
+                item_text = normalized.get("text", "")
+            matched_role = text_to_role.get(item_text)
+            if not matched_role and item_text:
+                candidate_roles = {
+                    role
+                    for message_text, role in text_role_pairs
+                    if item_text in message_text or message_text in item_text
+                }
+                if len(candidate_roles) == 1:
+                    matched_role = next(iter(candidate_roles))
+            if matched_role:
+                normalized["role"] = matched_role
+        output.append(normalized)
+    return output
+
+
+def _coerce_recall_messages(recalled: list[dict[str, str]]) -> list[dict[str, str]]:
+    coerced: list[dict[str, str]] = []
+    for item in recalled:
+        content = _content_to_text(item.get("content")).strip()
+        if not content:
+            continue
+        role = _normalize_dialog_role(item.get("role"))
+        if role is None:
+            role = "assistant"
+        coerced.append({"role": role, "content": content})
+    return coerced
+
+
+def _dedupe_adjacent_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    deduped: list[dict[str, str]] = []
+    for message in messages:
+        if (
+            deduped
+            and deduped[-1].get("role") == message.get("role")
+            and deduped[-1].get("content") == message.get("content")
+        ):
+            continue
+        deduped.append(message)
+    return deduped
+
+
+def _build_turn_embedding_payload(
+    turn_messages: list[tuple[int, dict[str, Any]]],
+    *,
+    turn_start_index: int,
+    turn_end_index: int,
+) -> tuple[str, dict[str, Any]] | None:
+    normalized_messages: list[dict[str, str]] = []
+    has_user = False
+    has_assistant = False
+
+    for _, message in turn_messages:
+        role = _normalize_dialog_role(message.get("role"))
+        if role is None:
+            continue
+        content = _message_to_text(message).strip()
+        if not content:
+            continue
+        normalized_messages.append({"role": role, "content": content})
+        if role == "user":
+            has_user = True
+        elif role == "assistant":
+            has_assistant = True
+
+    if not (has_user and has_assistant):
+        return None
+
+    text = "\n".join(f"{item['role']}: {item['content']}" for item in normalized_messages)
+    metadata = {
+        "messages": normalized_messages,
+        "turn_start_index": turn_start_index,
+        "turn_end_index": turn_end_index,
+    }
+    return text, metadata
+
+
+def _collect_complete_turns_for_vector_index(
+    messages: list[dict[str, Any]],
+    *,
+    start_index: int,
+) -> tuple[list[str], list[dict[str, Any]], int, int]:
+    n = len(messages)
+    safe_start = max(0, min(int(start_index), n))
+    texts: list[str] = []
+    metadatas: list[dict[str, Any]] = []
+    next_indexed_until = safe_start
+    indexed_turn_count = 0
+
+    i = safe_start
+    while i < n:
+        while i < n:
+            message = messages[i]
+            if isinstance(message, dict) and message.get("role") == "user":
+                break
+            i += 1
+        next_indexed_until = i
+        if i >= n:
+            break
+
+        turn_start = i
+        i += 1
+        while i < n:
+            message = messages[i]
+            if isinstance(message, dict) and message.get("role") == "user":
+                break
+            i += 1
+        turn_end = i - 1
+        is_tail = i >= n
+
+        turn_messages: list[tuple[int, dict[str, Any]]] = []
+        for idx in range(turn_start, turn_end + 1):
+            msg = messages[idx]
+            if isinstance(msg, dict):
+                turn_messages.append((idx, msg))
+
+        payload = _build_turn_embedding_payload(
+            turn_messages,
+            turn_start_index=turn_start,
+            turn_end_index=turn_end,
+        )
+        if payload is not None:
+            text, metadata = payload
+            texts.append(text)
+            metadatas.append(metadata)
+            indexed_turn_count += 1
+            next_indexed_until = turn_end + 1
+            continue
+
+        if is_tail:
+            next_indexed_until = turn_start
+            break
+
+        next_indexed_until = turn_end + 1
+
+    return texts, metadatas, next_indexed_until, indexed_turn_count
+
+
 def _estimate_tokens_from_messages(messages: list[dict[str, Any]]) -> int:
     total_chars = 0
     for message in messages:
@@ -216,8 +481,9 @@ def _merge_history_and_incoming(
     # system messages by using the system messages from `incoming` and appending
     # only non-system messages from stored history followed by incoming non-system.
     incoming_systems, incoming_non_system = _split_system_and_non_system(clean_incoming)
-    _, history_non_system = _split_system_and_non_system(clean_history)
-    return incoming_systems + history_non_system + incoming_non_system
+    history_systems, history_non_system = _split_system_and_non_system(clean_history)
+    systems = incoming_systems if incoming_systems else history_systems
+    return systems + history_non_system + incoming_non_system
 
 
 class LastNTurnsStrategy:
@@ -413,17 +679,21 @@ class HybridContextStrategy:
             memory_meta["vector_fallback_reason"] = f"vector_search_failed: {exc}"
             return output
 
-        cleaned_recalled = [item.strip() for item in recalled if isinstance(item, str) and item.strip()]
-        if not cleaned_recalled:
+        normalized_recalled = _normalize_recalled_messages(recalled)
+        if normalized_recalled:
+            normalized_recalled = _infer_recall_roles_from_messages(normalized_recalled, incoming)
+        recall_messages = _dedupe_adjacent_messages(_coerce_recall_messages(normalized_recalled))
+        if not recall_messages:
             return output
 
         systems, non_system = _split_system_and_non_system(output)
-        recall_lines = "\n".join(f"- {item}" for item in cleaned_recalled)
         recall_message = {
             "role": "system",
-            "content": f"[MEMORY RECALL]\n{recall_lines}",
+            "content": f"[Recall messages]\n{json.dumps(recall_messages, ensure_ascii=False)}",
         }
-        memory_meta["vector_recall_count"] = len(cleaned_recalled)
+        memory_meta["vector_recall_hit_count"] = len(recalled) if isinstance(recalled, list) else 0
+        memory_meta["vector_recall_count"] = len(recall_messages)
+        memory_meta["vector_recall_with_role_count"] = len(recall_messages)
         return systems + [recall_message] + non_system
 
     def commit(
@@ -539,19 +809,10 @@ class MemoryManager:
             indexed_until = int(indexed_until_raw) if isinstance(indexed_until_raw, int) else 0
             if indexed_until < 0 or indexed_until > len(clean_conversation):
                 indexed_until = 0
-            to_index = clean_conversation[indexed_until:]
-
-            texts: list[str] = []
-            metadatas: list[dict[str, Any]] = []
-            for idx, msg in enumerate(to_index, start=indexed_until):
-                role = msg.get("role")
-                if role not in ("user", "assistant", "tool"):
-                    continue
-                text = _message_to_text(msg).strip()
-                if not text:
-                    continue
-                texts.append(text)
-                metadatas.append({"role": role, "index": idx})
+            texts, metadatas, next_indexed_until, indexed_turn_count = _collect_complete_turns_for_vector_index(
+                clean_conversation,
+                start_index=indexed_until,
+            )
 
             if texts:
                 try:
@@ -560,12 +821,13 @@ class MemoryManager:
                         texts=texts,
                         metadatas=metadatas,
                     )
-                    state["vector_indexed_until"] = len(clean_conversation)
+                    state["vector_indexed_until"] = next_indexed_until
                     commit_info["vector_indexed_count"] = len(texts)
+                    commit_info["vector_indexed_turn_count"] = indexed_turn_count
                 except Exception as exc:
                     commit_info["vector_fallback_reason"] = f"vector_index_failed: {exc}"
             else:
-                state["vector_indexed_until"] = len(clean_conversation)
+                state["vector_indexed_until"] = next_indexed_until
 
         self.store.save(session_id, state)
         self._last_commit_info = commit_info

@@ -78,7 +78,7 @@ class QdrantVectorAdapter:
         session_id: str,
         query: str,
         k: int,
-    ) -> list[str]:
+    ) -> list[dict[str, Any]]:
         collection = self._collection_name(session_id)
         self._ensure_collection(collection)
         query_vec = self._embed_fn([query])[0]
@@ -87,7 +87,30 @@ class QdrantVectorAdapter:
             query_vector=query_vec,
             limit=k,
         )
-        return [r.payload.get("text", "") for r in results if r.payload]
+        recalled: list[dict[str, Any]] = []
+        for result in results:
+            payload = result.payload or {}
+            item: dict[str, Any] = {}
+
+            raw_messages = payload.get("messages")
+            if isinstance(raw_messages, list):
+                item["messages"] = copy.deepcopy(raw_messages)
+
+            text = payload.get("text")
+            if isinstance(text, str) and text.strip():
+                item["text"] = text
+
+            role = payload.get("role")
+            if isinstance(role, str) and role.strip():
+                item["role"] = role.strip().lower()
+
+            index = payload.get("index")
+            if isinstance(index, int):
+                item["index"] = index
+
+            if item:
+                recalled.append(item)
+        return recalled
 
 
 class JsonFileSessionStore:

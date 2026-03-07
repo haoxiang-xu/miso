@@ -1,4 +1,5 @@
 import json
+from typing import Any
 
 from miso import broth as Broth
 from miso.broth import ProviderTurnResult
@@ -14,18 +15,49 @@ from miso.memory import (
 class _FakeVectorAdapter:
     def __init__(self, *, fail_search: bool = False):
         self.fail_search = fail_search
-        self.added: list[tuple[str, list[str]]] = []
+        self.added: list[tuple[str, list[str], list[dict[str, Any]]]] = []
         self.searches: list[tuple[str, str, int]] = []
 
     def add_texts(self, *, session_id, texts, metadatas):
-        del metadatas
-        self.added.append((session_id, list(texts)))
+        self.added.append((session_id, list(texts), [dict(meta) for meta in metadatas]))
 
     def similarity_search(self, *, session_id, query, k):
         self.searches.append((session_id, query, k))
         if self.fail_search:
             raise RuntimeError("vector search failed")
-        return [f"recall:{query}:1", f"recall:{query}:2"]
+        return [
+            {
+                "messages": [
+                    {"role": "user", "content": f"recall-user:{query}"},
+                    {"role": "assistant", "content": f"recall-assistant:{query}"},
+                ]
+            },
+        ]
+
+
+def _extract_recall_json_message_array(prepared: list[dict[str, Any]]) -> list[dict[str, str]]:
+    for msg in prepared:
+        if msg.get("role") != "system" or not isinstance(msg.get("content"), str):
+            continue
+        content = msg["content"]
+        marker = "[Recall messages]"
+        if not content.startswith(marker):
+            continue
+        payload_text = content[len(marker):].strip()
+        if not payload_text:
+            continue
+        try:
+            payload = json.loads(payload_text)
+        except Exception:
+            continue
+        if not isinstance(payload, list):
+            continue
+        if not all(isinstance(item, dict) for item in payload):
+            continue
+        if not all("role" in item and "content" in item for item in payload):
+            continue
+        return payload
+    return []
 
 
 def _conversation_with_tool_turn() -> list[dict]:
@@ -182,12 +214,12 @@ def test_vector_recall_is_optional_and_non_blocking():
         summary_generator=lambda prev, msgs, max_chars, model: prev,
     )
     assert adapter.searches
-    assert any(
-        msg.get("role") == "system"
-        and isinstance(msg.get("content"), str)
-        and msg["content"].startswith("[MEMORY RECALL]")
-        for msg in prepared
-    )
+    recall_payload = _extract_recall_json_message_array(prepared)
+    assert recall_payload
+    assert recall_payload == [
+        {"role": "user", "content": "recall-user:what cache did we pick?"},
+        {"role": "assistant", "content": "recall-assistant:what cache did we pick?"},
+    ]
 
     failing_adapter = _FakeVectorAdapter(fail_search=True)
     failing_manager = MemoryManager(config=MemoryConfig(vector_adapter=failing_adapter, vector_top_k=2))
@@ -201,6 +233,127 @@ def test_vector_recall_is_optional_and_non_blocking():
     )
     assert isinstance(fallback_prepared, list)
     assert "vector_fallback_reason" in failing_manager.last_prepare_info
+
+
+def test_vector_recall_remains_compatible_with_legacy_string_results():
+    class _LegacyVectorAdapter(_FakeVectorAdapter):
+        def similarity_search(self, *, session_id, query, k):
+            self.searches.append((session_id, query, k))
+            return ["legacy_user_note", "", "legacy_assistant_note"]
+
+    adapter = _LegacyVectorAdapter()
+    manager = MemoryManager(config=MemoryConfig(vector_adapter=adapter, vector_top_k=2))
+    session_id = "s_vector_legacy"
+    manager.commit_messages(
+        session_id,
+        [
+            {"role": "user", "content": "legacy_user_note"},
+            {"role": "assistant", "content": "legacy_assistant_note"},
+        ],
+    )
+
+    prepared = manager.prepare_messages(
+        session_id,
+        [{"role": "user", "content": "follow up"}],
+        max_context_window_tokens=20_000,
+        model="gpt-5",
+        summary_generator=lambda prev, msgs, max_chars, model: prev,
+    )
+
+    recall_payload = _extract_recall_json_message_array(prepared)
+    assert recall_payload
+    assert recall_payload == [
+        {"role": "user", "content": "legacy_user_note"},
+        {"role": "assistant", "content": "legacy_assistant_note"},
+    ]
+
+
+def test_vector_recall_can_infer_role_from_partial_legacy_text():
+    class _LegacyVectorAdapter(_FakeVectorAdapter):
+        def similarity_search(self, *, session_id, query, k):
+            self.searches.append((session_id, query, k))
+            return ["提醒我要报税", "比较感兴趣的是 Qdrant"]
+
+    adapter = _LegacyVectorAdapter()
+    manager = MemoryManager(config=MemoryConfig(vector_adapter=adapter, vector_top_k=2))
+    session_id = "s_vector_partial_legacy"
+    manager.commit_messages(
+        session_id,
+        [
+            {"role": "assistant", "content": "你之前让我记一下等会提醒我要报税。"},
+            {"role": "user", "content": "我目前比较感兴趣的是 Qdrant"},
+        ],
+    )
+
+    prepared = manager.prepare_messages(
+        session_id,
+        [{"role": "user", "content": "你还记得吗"}],
+        max_context_window_tokens=20_000,
+        model="gpt-5",
+        summary_generator=lambda prev, msgs, max_chars, model: prev,
+    )
+
+    recall_payload = _extract_recall_json_message_array(prepared)
+    assert recall_payload
+    assert recall_payload == [
+        {"role": "assistant", "content": "提醒我要报税"},
+        {"role": "user", "content": "比较感兴趣的是 Qdrant"},
+    ]
+
+
+def test_vector_commit_indexes_only_completed_turns():
+    adapter = _FakeVectorAdapter()
+    manager = MemoryManager(config=MemoryConfig(vector_adapter=adapter, vector_top_k=2))
+    session_id = "s_vector_turn_indexing"
+
+    manager.commit_messages(
+        session_id,
+        [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": ""},
+        ],
+    )
+
+    assert len(adapter.added) == 1
+    _, texts, metadatas = adapter.added[0]
+    assert texts == ["user: u1\nassistant: a1"]
+    assert metadatas == [{
+        "messages": [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+        ],
+        "turn_start_index": 1,
+        "turn_end_index": 2,
+    }]
+    state = manager.store.load(session_id)
+    assert state.get("vector_indexed_until") == 3
+
+
+def test_vector_commit_can_complete_pending_tail_turn_in_next_commit():
+    adapter = _FakeVectorAdapter()
+    manager = MemoryManager(config=MemoryConfig(vector_adapter=adapter, vector_top_k=2))
+    session_id = "s_vector_turn_pending_tail"
+
+    first_conversation = [
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+    ]
+    manager.commit_messages(session_id, first_conversation)
+    assert len(adapter.added) == 1
+    assert adapter.added[0][1] == ["user: u1\nassistant: a1"]
+    assert manager.store.load(session_id).get("vector_indexed_until") == 2
+
+    second_conversation = first_conversation + [{"role": "assistant", "content": "a2"}]
+    manager.commit_messages(session_id, second_conversation)
+    assert len(adapter.added) == 2
+    assert adapter.added[1][1] == ["user: u2\nassistant: a2"]
+    state = manager.store.load(session_id)
+    assert state.get("vector_indexed_until") == len(second_conversation)
+    assert manager.last_commit_info.get("vector_indexed_turn_count") == 1
 
 
 def test_broth_emits_memory_events_and_commits_when_session_id_is_set():
