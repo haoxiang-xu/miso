@@ -25,6 +25,7 @@ from .memory import (
     SummaryTokenStrategy,
     HybridContextStrategy,
 )
+from .memory_qdrant import build_openai_embed_fn
 from . import media
 # import ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- #
 
@@ -49,5 +50,6 @@ __all__ = [
     "LastNTurnsStrategy",
     "SummaryTokenStrategy",
     "HybridContextStrategy",
+    "build_openai_embed_fn",
     "media",
 ]

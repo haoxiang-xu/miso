@@ -62,5 +62,14 @@
       "effort": "medium"
     },
     "tool_choice": null
+  },
+  "text-embedding-3-small": {
+    "encoding_format": "float"
+  },
+  "text-embedding-3-large": {
+    "encoding_format": "float"
+  },
+  "text-embedding-ada-002": {
+    "encoding_format": "float"
   }
 }

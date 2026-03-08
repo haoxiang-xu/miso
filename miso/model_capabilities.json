@@ -222,5 +222,37 @@
       "reasoning",
       "tool_choice"
     ]
+  },
+  "text-embedding-3-small": {
+    "provider": "openai",
+    "model_type": "embedding",
+    "default_embedding_dimensions": 1536,
+    "supports_dimensions": true,
+    "allowed_payload_keys": [
+      "dimensions",
+      "encoding_format",
+      "user"
+    ]
+  },
+  "text-embedding-3-large": {
+    "provider": "openai",
+    "model_type": "embedding",
+    "default_embedding_dimensions": 3072,
+    "supports_dimensions": true,
+    "allowed_payload_keys": [
+      "dimensions",
+      "encoding_format",
+      "user"
+    ]
+  },
+  "text-embedding-ada-002": {
+    "provider": "openai",
+    "model_type": "embedding",
+    "default_embedding_dimensions": 1536,
+    "supports_dimensions": false,
+    "allowed_payload_keys": [
+      "encoding_format",
+      "user"
+    ]
   }
 }

@@ -298,7 +298,40 @@ memory = MemoryManager(
 )
 ```
 
-### 5) Recall 如何生成
+### 5) OpenAI embedding 工厂（内置配置读取）
+
+`miso.memory_qdrant.build_openai_embed_fn(...)` 会从项目 JSON 配置构建 embedding 函数：
+
+- 能力配置：`miso/model_capabilities.json`
+- 默认 payload：`miso/model_default_payloads.json`
+- API key 优先级：`broth.api_key` -> `OPENAI_API_KEY`
+
+```python
+from miso import MemoryManager, MemoryConfig, build_openai_embed_fn
+from miso.memory_qdrant import QdrantVectorAdapter
+from qdrant_client import QdrantClient
+
+embed_fn, vector_size = build_openai_embed_fn(
+    model="text-embedding-3-small",
+    broth_instance=agent,  # optional; reads agent.api_key first
+    payload={"encoding_format": "float"},
+)
+
+vector_adapter = QdrantVectorAdapter(
+    client=QdrantClient(path="/tmp/qdrant"),
+    embed_fn=embed_fn,
+    vector_size=vector_size,
+)
+
+memory = MemoryManager(
+    config=MemoryConfig(
+        vector_adapter=vector_adapter,
+        vector_top_k=4,
+    )
+)
+```
+
+### 6) Recall 如何生成
 
 Recall 来自你注入的 `VectorStoreAdapter`，流程如下：
 
@@ -319,7 +352,7 @@ Recall 来自你注入的 `VectorStoreAdapter`，流程如下：
 - `miso` 本身不内置 embedding/向量库实现；这些由你的 adapter 自己决定。
 - recall 内容是“可选附加上下文”，不会覆盖原始会话消息。
 
-### 6) 事件可观测性
+### 7) 事件可观测性
 
 启用 memory 后，`callback` 里会额外收到：
 
