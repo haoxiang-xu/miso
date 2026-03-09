@@ -1253,11 +1253,11 @@ class python_workspace_toolkit(builtin_toolkit):
 
     def _register_api_tools(self) -> None:
         self.register_many(
-            self.api_get,
-            self.api_post,
+            self.http_get,
+            self.http_post,
         )
 
-    def api_get(
+    def http_get(
         self,
         url: str,
         headers: dict[str, str] | None = None,
@@ -1318,7 +1318,7 @@ class python_workspace_toolkit(builtin_toolkit):
                 "url": url,
             }
 
-    def api_post(
+    def http_post(
         self,
         url: str,
         body: str | dict[str, Any],
