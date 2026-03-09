@@ -18,14 +18,22 @@ from .broth import broth
 from .memory import (
     MemoryManager,
     MemoryConfig,
+    LongTermMemoryConfig,
     ContextStrategy,
     SessionStore,
     VectorStoreAdapter,
+    LongTermProfileStore,
+    LongTermVectorAdapter,
     LastNTurnsStrategy,
     SummaryTokenStrategy,
     HybridContextStrategy,
+    JsonFileLongTermProfileStore,
 )
-from .memory_qdrant import build_openai_embed_fn
+from .memory_qdrant import (
+    QdrantLongTermVectorAdapter,
+    build_default_long_term_qdrant_vector_adapter,
+    build_openai_embed_fn,
+)
 from . import media
 # import ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- #
 
@@ -44,12 +52,18 @@ __all__ = [
     "broth",
     "MemoryManager",
     "MemoryConfig",
+    "LongTermMemoryConfig",
     "ContextStrategy",
     "SessionStore",
     "VectorStoreAdapter",
+    "LongTermProfileStore",
+    "LongTermVectorAdapter",
     "LastNTurnsStrategy",
     "SummaryTokenStrategy",
     "HybridContextStrategy",
+    "JsonFileLongTermProfileStore",
+    "QdrantLongTermVectorAdapter",
+    "build_default_long_term_qdrant_vector_adapter",
     "build_openai_embed_fn",
     "media",
 ]

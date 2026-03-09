@@ -4,10 +4,12 @@ import copy
 import json
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 
 
 SummaryGenerator = Callable[[str, list[dict[str, Any]], int, str], str]
+LongTermExtractor = Callable[[dict[str, Any], list[dict[str, Any]], int, int, str], dict[str, Any]]
 
 
 @runtime_checkable
@@ -37,6 +39,37 @@ class VectorStoreAdapter(Protocol):
         query: str,
         k: int,
     ) -> list[str | dict[str, Any]]:
+        ...
+
+
+@runtime_checkable
+class LongTermProfileStore(Protocol):
+    def load(self, namespace: str) -> dict[str, Any]:
+        ...
+
+    def save(self, namespace: str, profile: dict[str, Any]) -> None:
+        ...
+
+
+@runtime_checkable
+class LongTermVectorAdapter(Protocol):
+    def add_texts(
+        self,
+        *,
+        namespace: str,
+        texts: list[str],
+        metadatas: list[dict[str, Any]],
+    ) -> None:
+        ...
+
+    def similarity_search(
+        self,
+        *,
+        namespace: str,
+        query: str,
+        k: int,
+        filters: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         ...
 
 
@@ -74,6 +107,47 @@ class InMemorySessionStore:
         self._sessions[session_id] = copy.deepcopy(state)
 
 
+class JsonFileLongTermProfileStore:
+    """Profile store backed by one JSON file per namespace."""
+
+    def __init__(self, base_dir: str | Path | None = None) -> None:
+        self._base = Path(base_dir) if base_dir is not None else (_default_user_data_dir() / "long_term_profiles")
+        self._base.mkdir(parents=True, exist_ok=True)
+
+    def _path(self, namespace: str) -> Path:
+        safe = "".join(c if c.isalnum() or c in "-_ ." else "_" for c in namespace).strip().replace(" ", "_")
+        return self._base / f"{safe or 'default'}.json"
+
+    def load(self, namespace: str) -> dict[str, Any]:
+        p = self._path(namespace)
+        if not p.exists():
+            return {}
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return copy.deepcopy(raw) if isinstance(raw, dict) else {}
+
+    def save(self, namespace: str, profile: dict[str, Any]) -> None:
+        p = self._path(namespace)
+        p.write_text(json.dumps(profile, default=str, ensure_ascii=False), encoding="utf-8")
+
+
+@dataclass
+class LongTermMemoryConfig:
+    profile_store: LongTermProfileStore | None = None
+    vector_adapter: LongTermVectorAdapter | None = None
+    extractor: LongTermExtractor | None = None
+    vector_top_k: int = 4
+    max_profile_chars: int = 1200
+    max_fact_items: int = 6
+    embedding_model: str = "text-embedding-3-small"
+    embedding_payload: dict[str, Any] | None = None
+    profile_base_dir: str | Path | None = None
+    qdrant_path: str | Path | None = None
+    collection_prefix: str = "long_term"
+
+
 @dataclass
 class MemoryConfig:
     last_n_turns: int = 8
@@ -82,6 +156,16 @@ class MemoryConfig:
     max_summary_chars: int = 2400
     vector_top_k: int = 4
     vector_adapter: VectorStoreAdapter | None = None
+    long_term: LongTermMemoryConfig | None = None
+
+
+def _default_user_data_dir() -> Path:
+    try:
+        from platformdirs import user_data_dir
+
+        return Path(user_data_dir("miso", "miso"))
+    except Exception:
+        return Path.home() / ".miso"
 
 
 def _deepcopy_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -476,14 +560,132 @@ def _merge_history_and_incoming(
         and clean_incoming[: len(clean_history)] == clean_history
     ):
         return clean_incoming
-    # When the prefix check fails (e.g. memory-enabled mode where the client sends
-    # only the current user message plus a fresh system prompt), avoid duplicating
-    # system messages by using the system messages from `incoming` and appending
-    # only non-system messages from stored history followed by incoming non-system.
     incoming_systems, incoming_non_system = _split_system_and_non_system(clean_incoming)
     history_systems, history_non_system = _split_system_and_non_system(clean_history)
     systems = incoming_systems if incoming_systems else history_systems
     return systems + history_non_system + incoming_non_system
+
+
+def _resolve_memory_namespace(session_id: str, memory_namespace: str | None) -> str:
+    if isinstance(memory_namespace, str) and memory_namespace.strip():
+        return memory_namespace.strip()
+    if isinstance(session_id, str) and session_id.strip():
+        return session_id.strip()
+    return ""
+
+
+def _normalize_profile_document(profile: Any) -> dict[str, Any]:
+    return copy.deepcopy(profile) if isinstance(profile, dict) else {}
+
+
+# Recursive merge keeps existing nested keys unless the patch overwrites them.
+def _merge_profile_documents(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(base)
+    for key, value in patch.items():
+        if isinstance(key, str) and isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_profile_documents(merged[key], value)
+        elif isinstance(key, str):
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def _flatten_turn_messages(metadatas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for metadata in metadatas:
+        raw_messages = metadata.get("messages")
+        if not isinstance(raw_messages, list):
+            continue
+        for message in raw_messages:
+            if not isinstance(message, dict):
+                continue
+            role = _normalize_dialog_role(message.get("role"))
+            content = _content_to_text(message.get("content")).strip()
+            if role is None or not content:
+                continue
+            messages.append({"role": role, "content": content})
+    return messages
+
+
+def _normalize_long_term_fact_item(item: Any) -> dict[str, str] | None:
+    if isinstance(item, str):
+        text = item.strip()
+        return {"kind": "fact", "text": text} if text else None
+    if not isinstance(item, dict):
+        return None
+    text = _content_to_text(item.get("text") if "text" in item else item.get("content")).strip()
+    if not text:
+        return None
+    raw_kind = item.get("kind")
+    kind = raw_kind.strip().lower() if isinstance(raw_kind, str) else "fact"
+    if kind not in {"fact", "event"}:
+        kind = "fact"
+    normalized = {"kind": kind, "text": text}
+    for key in ("source", "created_at"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            normalized[key] = value.strip()
+    return normalized
+
+
+def _normalize_long_term_facts(items: Any, max_items: int) -> list[dict[str, str]]:
+    if not isinstance(items, list):
+        return []
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in items:
+        fact = _normalize_long_term_fact_item(item)
+        if fact is None:
+            continue
+        key = (fact["kind"], fact["text"])
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(fact)
+        if len(normalized) >= max(0, int(max_items)):
+            break
+    return normalized
+
+
+def _normalize_long_term_search_results(items: Any, max_items: int) -> list[dict[str, str]]:
+    return _normalize_long_term_facts(items, max_items)
+
+
+def _build_long_term_fact_payloads(
+    facts: list[dict[str, str]],
+    *,
+    session_id: str,
+    memory_namespace: str,
+    turn_metadatas: list[dict[str, Any]],
+) -> tuple[list[str], list[dict[str, Any]]]:
+    if not facts:
+        return [], []
+    first_turn = min((meta.get("turn_start_index", 0) for meta in turn_metadatas if isinstance(meta, dict)), default=0)
+    last_turn = max((meta.get("turn_end_index", 0) for meta in turn_metadatas if isinstance(meta, dict)), default=0)
+    created_at = _current_timestamp()
+    texts: list[str] = []
+    metadatas: list[dict[str, Any]] = []
+    for fact in facts:
+        text = fact.get("text", "").strip()
+        if not text:
+            continue
+        texts.append(text)
+        metadata: dict[str, Any] = {
+            "kind": fact.get("kind", "fact"),
+            "session_id": session_id,
+            "memory_namespace": memory_namespace,
+            "turn_start_index": first_turn,
+            "turn_end_index": last_turn,
+            "created_at": fact.get("created_at", created_at),
+            "source": fact.get("source", "long_term_extractor"),
+        }
+        metadatas.append(metadata)
+    return texts, metadatas
+
+
+def _current_timestamp() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
 
 
 class LastNTurnsStrategy:
@@ -736,8 +938,93 @@ class MemoryManager:
     def last_commit_info(self) -> dict[str, Any]:
         return copy.deepcopy(self._last_commit_info)
 
+    def ensure_long_term_components(self, *, broth_instance: Any | None = None) -> None:
+        long_term = self.config.long_term
+        if long_term is None:
+            return
+
+        if long_term.profile_store is None:
+            long_term.profile_store = JsonFileLongTermProfileStore(base_dir=long_term.profile_base_dir)
+
+        if long_term.vector_adapter is not None:
+            return
+
+        from .memory_qdrant import build_default_long_term_qdrant_vector_adapter
+
+        qdrant_path = Path(long_term.qdrant_path) if long_term.qdrant_path is not None else (_default_user_data_dir() / "qdrant_long_term")
+        long_term.vector_adapter = build_default_long_term_qdrant_vector_adapter(
+            broth_instance=broth_instance,
+            model=long_term.embedding_model,
+            payload=long_term.embedding_payload,
+            path=qdrant_path,
+            collection_prefix=long_term.collection_prefix,
+        )
+
     def estimate_tokens(self, messages: list[dict[str, Any]]) -> int:
         return _estimate_tokens_from_messages(_deepcopy_messages(messages))
+
+    def _prepare_long_term_messages(
+        self,
+        *,
+        state: dict[str, Any],
+        prepared: list[dict[str, Any]],
+        session_id: str,
+        memory_namespace: str | None,
+    ) -> list[dict[str, Any]]:
+        long_term = self.config.long_term
+        if long_term is None:
+            return prepared
+
+        namespace = _resolve_memory_namespace(session_id, memory_namespace)
+        if not namespace:
+            return prepared
+
+        self.ensure_long_term_components()
+        memory_meta = state.setdefault("_memory_meta", {})
+        memory_meta["memory_namespace"] = namespace
+
+        systems, non_system = _split_system_and_non_system(prepared)
+        injected: list[dict[str, Any]] = []
+
+        profile_store = long_term.profile_store
+        if profile_store is not None:
+            try:
+                profile = _normalize_profile_document(profile_store.load(namespace))
+            except Exception as exc:
+                memory_meta["long_term_profile_fallback_reason"] = f"profile_load_failed: {exc}"
+            else:
+                if profile:
+                    injected.append({
+                        "role": "system",
+                        "content": f"[LONG_TERM_PROFILE]\n{json.dumps(profile, ensure_ascii=False)}",
+                    })
+                    memory_meta["long_term_profile_applied"] = True
+                    memory_meta["long_term_profile_key_count"] = len(profile)
+
+        query = _latest_user_query(prepared)
+        if query and long_term.vector_adapter is not None and long_term.vector_top_k > 0:
+            try:
+                recalled = long_term.vector_adapter.similarity_search(
+                    namespace=namespace,
+                    query=query,
+                    k=long_term.vector_top_k,
+                    filters=None,
+                )
+            except Exception as exc:
+                memory_meta["long_term_vector_fallback_reason"] = f"vector_search_failed: {exc}"
+            else:
+                facts = _normalize_long_term_search_results(recalled, long_term.vector_top_k)
+                if facts:
+                    injected.append({
+                        "role": "system",
+                        "content": f"[LONG_TERM_FACTS]\n{json.dumps(facts, ensure_ascii=False)}",
+                    })
+                    memory_meta["long_term_fact_recall_hit_count"] = len(recalled) if isinstance(recalled, list) else 0
+                    memory_meta["long_term_fact_recall_count"] = len(facts)
+
+        if not injected:
+            return prepared
+        return systems + injected + non_system
 
     def prepare_messages(
         self,
@@ -747,6 +1034,7 @@ class MemoryManager:
         max_context_window_tokens: int,
         model: str,
         summary_generator: SummaryGenerator | None = None,
+        memory_namespace: str | None = None,
     ) -> list[dict[str, Any]]:
         state = self.store.load(session_id) if session_id else {}
         history = state.get("messages", [])
@@ -769,6 +1057,12 @@ class MemoryManager:
                 max_context_window_tokens=max_context_window_tokens,
                 model=model,
             )
+            prepared = self._prepare_long_term_messages(
+                state=state,
+                prepared=_deepcopy_messages(prepared),
+                session_id=session_id,
+                memory_namespace=memory_namespace,
+            )
         finally:
             state.pop("_summary_generator", None)
             state.pop("_memory_model", None)
@@ -780,17 +1074,132 @@ class MemoryManager:
 
         self._last_prepare_info = {
             "session_id": session_id,
+            "memory_namespace": _resolve_memory_namespace(session_id, memory_namespace),
             "before_estimated_tokens": before_tokens,
             "after_estimated_tokens": after_tokens,
             **(memory_meta if isinstance(memory_meta, dict) else {}),
         }
-        self.store.save(session_id, state)
+        if session_id:
+            self.store.save(session_id, state)
         return prepared
+
+    def _commit_long_term_memory(
+        self,
+        *,
+        state: dict[str, Any],
+        session_id: str,
+        clean_conversation: list[dict[str, Any]],
+        commit_info: dict[str, Any],
+        memory_namespace: str | None,
+        model: str | None,
+        long_term_extractor: LongTermExtractor | None,
+    ) -> None:
+        long_term = self.config.long_term
+        if long_term is None:
+            return
+
+        namespace = _resolve_memory_namespace(session_id, memory_namespace)
+        if not namespace:
+            return
+
+        self.ensure_long_term_components()
+        commit_info["memory_namespace"] = namespace
+
+        indexed_until_raw = state.get("long_term_indexed_until", 0)
+        indexed_until = int(indexed_until_raw) if isinstance(indexed_until_raw, int) else 0
+        if indexed_until < 0 or indexed_until > len(clean_conversation):
+            indexed_until = 0
+
+        _, turn_metadatas, next_indexed_until, indexed_turn_count = _collect_complete_turns_for_vector_index(
+            clean_conversation,
+            start_index=indexed_until,
+        )
+        if not turn_metadatas:
+            state["long_term_indexed_until"] = next_indexed_until
+            return
+
+        extractor = long_term_extractor or long_term.extractor
+        if not callable(extractor):
+            commit_info["long_term_fallback_reason"] = "long_term_extractor_missing"
+            return
+
+        profile_store = long_term.profile_store
+        if profile_store is None:
+            commit_info["long_term_profile_fallback_reason"] = "profile_store_missing"
+            return
+
+        try:
+            previous_profile = _normalize_profile_document(profile_store.load(namespace))
+        except Exception as exc:
+            commit_info["long_term_profile_fallback_reason"] = f"profile_load_failed: {exc}"
+            return
+
+        extraction_messages = _flatten_turn_messages(turn_metadatas)
+        try:
+            extraction = extractor(
+                previous_profile,
+                extraction_messages,
+                long_term.max_profile_chars,
+                long_term.max_fact_items,
+                model or "",
+            )
+        except Exception as exc:
+            commit_info["long_term_extractor_fallback_reason"] = f"long_term_extraction_failed: {exc}"
+            return
+
+        extraction = extraction if isinstance(extraction, dict) else {}
+        profile_patch = _normalize_profile_document(extraction.get("profile_patch"))
+        facts = _normalize_long_term_facts(extraction.get("facts"), long_term.max_fact_items)
+
+        advance_cursor = True
+        did_write = False
+
+        if profile_patch:
+            did_write = True
+            merged_profile = _merge_profile_documents(previous_profile, profile_patch)
+            try:
+                profile_store.save(namespace, merged_profile)
+                commit_info["long_term_profile_updated"] = True
+                commit_info["long_term_profile_key_count"] = len(merged_profile)
+            except Exception as exc:
+                commit_info["long_term_profile_fallback_reason"] = f"profile_save_failed: {exc}"
+                advance_cursor = False
+
+        if facts and long_term.vector_adapter is not None:
+            did_write = True
+            texts, metadatas = _build_long_term_fact_payloads(
+                facts,
+                session_id=session_id,
+                memory_namespace=namespace,
+                turn_metadatas=turn_metadatas,
+            )
+            if texts:
+                try:
+                    long_term.vector_adapter.add_texts(
+                        namespace=namespace,
+                        texts=texts,
+                        metadatas=metadatas,
+                    )
+                    commit_info["long_term_fact_indexed_count"] = len(texts)
+                except Exception as exc:
+                    commit_info["long_term_vector_fallback_reason"] = f"vector_index_failed: {exc}"
+                    advance_cursor = False
+
+        if not did_write:
+            commit_info["long_term_noop"] = True
+
+        if advance_cursor:
+            state["long_term_indexed_until"] = next_indexed_until
+            commit_info["long_term_indexed_turn_count"] = indexed_turn_count
 
     def commit_messages(
         self,
         session_id: str,
         full_conversation: list[dict[str, Any]],
+        *,
+        memory_namespace: str | None = None,
+        model: str | None = None,
+        long_term_extractor: LongTermExtractor | None = None,
     ) -> None:
         state = self.store.load(session_id) if session_id else {}
         clean_conversation = _deepcopy_messages(full_conversation)
@@ -800,6 +1209,7 @@ class MemoryManager:
 
         commit_info: dict[str, Any] = {
             "session_id": session_id,
+            "memory_namespace": _resolve_memory_namespace(session_id, memory_namespace),
             "stored_message_count": len(clean_conversation),
         }
 
@@ -829,7 +1239,18 @@ class MemoryManager:
             else:
                 state["vector_indexed_until"] = next_indexed_until
 
-        self.store.save(session_id, state)
+        self._commit_long_term_memory(
+            state=state,
+            session_id=session_id,
+            clean_conversation=clean_conversation,
+            commit_info=commit_info,
+            memory_namespace=memory_namespace,
+            model=model,
+            long_term_extractor=long_term_extractor,
+        )
+
+        if session_id:
+            self.store.save(session_id, state)
         self._last_commit_info = commit_info
 
 
@@ -837,10 +1258,16 @@ __all__ = [
     "ContextStrategy",
     "HybridContextStrategy",
     "InMemorySessionStore",
+    "JsonFileLongTermProfileStore",
     "LastNTurnsStrategy",
+    "LongTermExtractor",
+    "LongTermMemoryConfig",
+    "LongTermProfileStore",
+    "LongTermVectorAdapter",
     "MemoryConfig",
     "MemoryManager",
     "SessionStore",
+    "SummaryGenerator",
     "SummaryTokenStrategy",
     "VectorStoreAdapter",
 ]

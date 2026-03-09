@@ -3,7 +3,8 @@ import types
 
 import pytest
 
-from miso.memory_qdrant import build_openai_embed_fn
+from miso.memory import LongTermMemoryConfig, MemoryConfig, MemoryManager
+from miso.memory_qdrant import build_default_long_term_qdrant_vector_adapter, build_openai_embed_fn
 
 
 class _FakeEmbeddingsAPI:
@@ -109,3 +110,42 @@ def test_build_openai_embed_fn_rejects_unknown_model(monkeypatch, fake_openai_mo
             model="text-embedding-unknown",
             broth_instance=None,
         )
+
+
+def test_build_default_long_term_qdrant_vector_adapter_requires_qdrant_client(monkeypatch, fake_openai_module):
+    monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+    monkeypatch.setattr("miso.memory_qdrant._QDRANT_AVAILABLE", False)
+
+    with pytest.raises(ValueError, match="qdrant-client.*default long-term vector storage"):
+        build_default_long_term_qdrant_vector_adapter(
+            broth_instance=types.SimpleNamespace(api_key="broth-key"),
+            path="/tmp/lt-qdrant-test",
+        )
+
+
+def test_memory_manager_keeps_custom_long_term_vector_adapter_without_default_builder(monkeypatch):
+    class _CustomAdapter:
+        def add_texts(self, *, namespace, texts, metadatas):
+            del namespace, texts, metadatas
+
+        def similarity_search(self, *, namespace, query, k, filters=None):
+            del namespace, query, k, filters
+            return []
+
+    custom_adapter = _CustomAdapter()
+    manager = MemoryManager(
+        config=MemoryConfig(
+            long_term=LongTermMemoryConfig(
+                profile_store=types.SimpleNamespace(load=lambda namespace: {}, save=lambda namespace, profile: None),
+                vector_adapter=custom_adapter,
+            )
+        )
+    )
+
+    def _explode(**kwargs):
+        del kwargs
+        raise AssertionError("default builder should not be called")
+
+    monkeypatch.setattr("miso.memory_qdrant.build_default_long_term_qdrant_vector_adapter", _explode)
+    manager.ensure_long_term_components()
+    assert manager.config.long_term.vector_adapter is custom_adapter

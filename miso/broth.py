@@ -912,6 +912,7 @@ class broth:
         on_tool_confirm: Callable | None = None,
         on_continuation_request: Callable | None = None,
         session_id: str | None = None,
+        memory_namespace: str | None = None,
     ):
         run_id = str(uuid.uuid4())
         raw_seed_messages = copy.deepcopy(list(messages or []))
@@ -921,6 +922,7 @@ class broth:
         self._last_canonical_seed = canonical_seed_messages
         seed_messages = self._project_canonical_messages_for_provider(canonical_seed_messages)
         if self.memory_manager is not None and session_id:
+            self.memory_manager.ensure_long_term_components(broth_instance=self)
             try:
                 seed_messages = self.memory_manager.prepare_messages(
                     session_id=session_id,
@@ -928,6 +930,7 @@ class broth:
                     max_context_window_tokens=self.max_context_window_tokens,
                     model=self.model,
                     summary_generator=self._generate_memory_summary,
+                    memory_namespace=memory_namespace,
                 )
                 memory_prepare_info = {
                     **self.memory_manager.last_prepare_info,
@@ -1146,6 +1149,9 @@ class broth:
                     self.memory_manager.commit_messages(
                         session_id=session_id,
                         full_conversation=conversation,
+                        memory_namespace=memory_namespace,
+                        model=self.model,
+                        long_term_extractor=self._extract_long_term_memory,
                     )
                     memory_commit_info = {
                         **self.memory_manager.last_commit_info,
@@ -1179,6 +1185,9 @@ class broth:
                 self.memory_manager.commit_messages(
                     session_id=session_id,
                     full_conversation=conversation,
+                    memory_namespace=memory_namespace,
+                    model=self.model,
+                    long_term_extractor=self._extract_long_term_memory,
                 )
                 memory_commit_info = {
                     **self.memory_manager.last_commit_info,
@@ -2199,6 +2208,126 @@ class broth:
         if len(summary_text) > max_summary_chars:
             summary_text = summary_text[:max_summary_chars].rstrip()
         return summary_text
+
+    def _build_long_term_extraction_payload(
+        self,
+        *,
+        max_profile_chars: int,
+        max_fact_items: int,
+    ) -> dict[str, Any]:
+        max_output_tokens = max(128, min(768, max_profile_chars // 2 + max_fact_items * 64))
+        extraction_payload: dict[str, Any] = {}
+        if self.provider == "openai":
+            extraction_payload["max_output_tokens"] = max_output_tokens
+            extraction_payload["store"] = False
+        if self.provider == "ollama":
+            extraction_payload["num_predict"] = max_output_tokens
+        if self.provider == "anthropic":
+            extraction_payload["max_tokens"] = max_output_tokens
+        return extraction_payload
+
+    def _extract_long_term_memory(
+        self,
+        previous_profile: dict[str, Any],
+        messages: list[dict[str, Any]],
+        max_profile_chars: int,
+        max_fact_items: int,
+        model: str,
+    ) -> dict[str, Any]:
+        del model
+
+        transcript_lines: list[str] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role") or message.get("type") or "item"
+            role_text = role if isinstance(role, str) else str(role)
+            content_text = self._content_to_text(message.get("content", ""))
+            content_text = content_text.strip()
+            if not content_text:
+                continue
+            transcript_lines.append(f"{role_text}: {content_text}")
+
+        transcript = "\n".join(transcript_lines)
+        max_transcript_chars = max(1200, max_profile_chars * 8)
+        if len(transcript) > max_transcript_chars:
+            transcript = transcript[-max_transcript_chars:]
+
+        previous_profile_json = json.dumps(previous_profile or {}, ensure_ascii=False)
+        extraction_format = response_format(
+            name="long_term_memory_extraction",
+            schema={
+                "type": "object",
+                "properties": {
+                    "profile_patch": {
+                        "type": "object",
+                        "description": "Stable user identity, preferences, and long-lived constraints only.",
+                        "additionalProperties": True,
+                    },
+                    "facts": {
+                        "type": "array",
+                        "description": "Reusable long-term facts or events worth semantic recall later.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "kind": {
+                                    "type": "string",
+                                    "enum": ["fact", "event"],
+                                },
+                                "text": {"type": "string"},
+                            },
+                            "required": ["kind", "text"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["profile_patch", "facts"],
+                "additionalProperties": False,
+            },
+            required=["profile_patch", "facts"],
+        )
+
+        extraction_system_prompt = (
+            "You extract long-term memory for an AI assistant. "
+            "Return only stable user identity details, durable preferences, explicit constraints, "
+            "and reusable long-term facts or events. Ignore transient requests, small talk, and "
+            "details that are unlikely to matter in future conversations."
+        )
+        extraction_user_prompt = (
+            f"Existing profile JSON:\n{previous_profile_json}\n\n"
+            f"New conversation chunk:\n{transcript or '(none)'}\n\n"
+            f"Return JSON only. Rules:\n"
+            f"- `profile_patch` should be an object with only durable updates.\n"
+            f"- Keep the updated profile compact enough to stay within roughly {max_profile_chars} characters when merged.\n"
+            f"- `facts` should contain at most {max_fact_items} items.\n"
+            f"- Each fact must be future-reusable and self-contained.\n"
+            f"- Use an empty object/list when there is nothing worth saving."
+        )
+
+        extraction_messages = [
+            {"role": "system", "content": extraction_system_prompt},
+            {"role": "user", "content": extraction_user_prompt},
+        ]
+        extraction_turn = self._fetch_once(
+            messages=extraction_messages,
+            payload=self._build_long_term_extraction_payload(
+                max_profile_chars=max_profile_chars,
+                max_fact_items=max_fact_items,
+            ),
+            response_format=extraction_format,
+            callback=None,
+            verbose=False,
+            run_id="long_term_memory",
+            iteration=0,
+            toolkit=base_toolkit(),
+            emit_stream=False,
+            previous_response_id=None,
+        )
+        raw_text = (
+            extraction_turn.final_text
+            or self._last_assistant_text(extraction_turn.assistant_messages)
+        ).strip()
+        return extraction_format.parse(raw_text)
 
     def _inject_observation(self, tool_message: dict[str, Any], observation: str):
         content_key = "content" if "content" in tool_message else "output"

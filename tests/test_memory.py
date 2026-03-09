@@ -6,6 +6,7 @@ from miso.broth import ProviderTurnResult
 from miso.memory import (
     HybridContextStrategy,
     LastNTurnsStrategy,
+    LongTermMemoryConfig,
     MemoryConfig,
     MemoryManager,
     SummaryTokenStrategy,
@@ -35,6 +36,46 @@ class _FakeVectorAdapter:
         ]
 
 
+class _FakeLongTermProfileStore:
+    def __init__(self, *, fail_load: bool = False, fail_save: bool = False):
+        self.fail_load = fail_load
+        self.fail_save = fail_save
+        self.profiles: dict[str, dict[str, Any]] = {}
+
+    def load(self, namespace: str) -> dict[str, Any]:
+        if self.fail_load:
+            raise RuntimeError("profile load failed")
+        return json.loads(json.dumps(self.profiles.get(namespace, {}), ensure_ascii=False))
+
+    def save(self, namespace: str, profile: dict[str, Any]) -> None:
+        if self.fail_save:
+            raise RuntimeError("profile save failed")
+        self.profiles[namespace] = json.loads(json.dumps(profile, ensure_ascii=False))
+
+
+class _FakeLongTermVectorAdapter:
+    def __init__(self, *, fail_search: bool = False, fail_add: bool = False):
+        self.fail_search = fail_search
+        self.fail_add = fail_add
+        self.added: list[tuple[str, list[str], list[dict[str, Any]]]] = []
+        self.searches: list[tuple[str, str, int, dict[str, Any] | None]] = []
+        self.records: dict[str, list[dict[str, Any]]] = {}
+
+    def add_texts(self, *, namespace, texts, metadatas):
+        if self.fail_add:
+            raise RuntimeError("long-term add failed")
+        self.added.append((namespace, list(texts), [dict(meta) for meta in metadatas]))
+        bucket = self.records.setdefault(namespace, [])
+        for text, metadata in zip(texts, metadatas):
+            bucket.append({"text": text, **dict(metadata)})
+
+    def similarity_search(self, *, namespace, query, k, filters=None):
+        self.searches.append((namespace, query, k, filters))
+        if self.fail_search:
+            raise RuntimeError("long-term search failed")
+        return [dict(item) for item in self.records.get(namespace, [])[:k]]
+
+
 def _extract_recall_json_message_array(prepared: list[dict[str, Any]]) -> list[dict[str, str]]:
     for msg in prepared:
         if msg.get("role") != "system" or not isinstance(msg.get("content"), str):
@@ -58,6 +99,23 @@ def _extract_recall_json_message_array(prepared: list[dict[str, Any]]) -> list[d
             continue
         return payload
     return []
+
+
+def _extract_tagged_json_payload(prepared: list[dict[str, Any]], marker: str):
+    for msg in prepared:
+        if msg.get("role") != "system" or not isinstance(msg.get("content"), str):
+            continue
+        content = msg["content"]
+        if not content.startswith(marker):
+            continue
+        payload_text = content[len(marker):].strip()
+        if not payload_text:
+            continue
+        try:
+            return json.loads(payload_text)
+        except Exception:
+            return None
+    return None
 
 
 def _conversation_with_tool_turn() -> list[dict]:
@@ -356,6 +414,291 @@ def test_vector_commit_can_complete_pending_tail_turn_in_next_commit():
     assert manager.last_commit_info.get("vector_indexed_turn_count") == 1
 
 
+def test_long_term_memory_recalls_profile_and_facts_across_sessions_with_namespace():
+    profile_store = _FakeLongTermProfileStore()
+    adapter = _FakeLongTermVectorAdapter()
+    manager = MemoryManager(
+        config=MemoryConfig(
+            long_term=LongTermMemoryConfig(
+                profile_store=profile_store,
+                vector_adapter=adapter,
+                vector_top_k=2,
+                max_fact_items=4,
+            )
+        )
+    )
+
+    def extractor(previous_profile, messages, max_profile_chars, max_fact_items, model):
+        del previous_profile, messages, max_profile_chars, max_fact_items, model
+        return {
+            "profile_patch": {"preferences": {"answer_style": "concise"}},
+            "facts": [
+                {"kind": "fact", "text": "User prefers concise answers."},
+                {"kind": "event", "text": "Selected Qdrant as the default vector store."},
+            ],
+        }
+
+    manager.commit_messages(
+        "session_a",
+        [
+            {"role": "user", "content": "Please keep answers concise."},
+            {"role": "assistant", "content": "Noted."},
+        ],
+        memory_namespace="user_123",
+        model="gpt-5",
+        long_term_extractor=extractor,
+    )
+
+    prepared = manager.prepare_messages(
+        "session_b",
+        [{"role": "user", "content": "what do you remember?"}],
+        max_context_window_tokens=20_000,
+        model="gpt-5",
+        memory_namespace="user_123",
+    )
+
+    profile_payload = _extract_tagged_json_payload(prepared, "[LONG_TERM_PROFILE]")
+    facts_payload = _extract_tagged_json_payload(prepared, "[LONG_TERM_FACTS]")
+
+    assert profile_payload == {"preferences": {"answer_style": "concise"}}
+    assert [item["text"] for item in facts_payload] == [
+        "User prefers concise answers.",
+        "Selected Qdrant as the default vector store.",
+    ]
+
+
+def test_long_term_memory_falls_back_to_session_id_when_namespace_missing():
+    profile_store = _FakeLongTermProfileStore()
+    adapter = _FakeLongTermVectorAdapter()
+    manager = MemoryManager(
+        config=MemoryConfig(
+            long_term=LongTermMemoryConfig(
+                profile_store=profile_store,
+                vector_adapter=adapter,
+            )
+        )
+    )
+
+    manager.commit_messages(
+        "session_only_namespace",
+        [
+            {"role": "user", "content": "I prefer bullet points."},
+            {"role": "assistant", "content": "Understood."},
+        ],
+        model="gpt-5",
+        long_term_extractor=lambda *args: {
+            "profile_patch": {"preferences": {"format": "bullets"}},
+            "facts": [{"kind": "fact", "text": "User prefers bullet points."}],
+        },
+    )
+
+    prepared_same_session = manager.prepare_messages(
+        "session_only_namespace",
+        [{"role": "user", "content": "remind me"}],
+        max_context_window_tokens=20_000,
+        model="gpt-5",
+    )
+    prepared_other_session = manager.prepare_messages(
+        "different_session",
+        [{"role": "user", "content": "remind me"}],
+        max_context_window_tokens=20_000,
+        model="gpt-5",
+    )
+
+    assert _extract_tagged_json_payload(prepared_same_session, "[LONG_TERM_PROFILE]") == {
+        "preferences": {"format": "bullets"}
+    }
+    assert _extract_tagged_json_payload(prepared_other_session, "[LONG_TERM_PROFILE]") is None
+
+
+def test_long_term_commit_indexes_only_new_complete_turns():
+    profile_store = _FakeLongTermProfileStore()
+    adapter = _FakeLongTermVectorAdapter()
+    manager = MemoryManager(
+        config=MemoryConfig(
+            long_term=LongTermMemoryConfig(
+                profile_store=profile_store,
+                vector_adapter=adapter,
+                max_fact_items=2,
+            )
+        )
+    )
+
+    def extractor(previous_profile, messages, max_profile_chars, max_fact_items, model):
+        del previous_profile, max_profile_chars, max_fact_items, model
+        return {
+            "profile_patch": {},
+            "facts": [{"kind": "event", "text": messages[-1]["content"]}],
+        }
+
+    first_conversation = [
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+    ]
+    manager.commit_messages(
+        "lt_incremental",
+        first_conversation,
+        memory_namespace="user_incremental",
+        model="gpt-5",
+        long_term_extractor=extractor,
+    )
+    assert len(adapter.added) == 1
+    assert adapter.added[0][1] == ["a1"]
+    assert manager.store.load("lt_incremental").get("long_term_indexed_until") == 2
+
+    second_conversation = first_conversation + [{"role": "assistant", "content": "a2"}]
+    manager.commit_messages(
+        "lt_incremental",
+        second_conversation,
+        memory_namespace="user_incremental",
+        model="gpt-5",
+        long_term_extractor=extractor,
+    )
+    assert len(adapter.added) == 2
+    assert adapter.added[1][1] == ["a2"]
+    assert manager.store.load("lt_incremental").get("long_term_indexed_until") == len(second_conversation)
+
+
+def test_long_term_profile_patch_merges_and_overrides_nested_keys():
+    profile_store = _FakeLongTermProfileStore()
+    adapter = _FakeLongTermVectorAdapter()
+    manager = MemoryManager(
+        config=MemoryConfig(
+            long_term=LongTermMemoryConfig(
+                profile_store=profile_store,
+                vector_adapter=adapter,
+            )
+        )
+    )
+
+    manager.commit_messages(
+        "profile_s1",
+        [
+            {"role": "user", "content": "Use concise English."},
+            {"role": "assistant", "content": "Noted."},
+        ],
+        memory_namespace="user_profile",
+        model="gpt-5",
+        long_term_extractor=lambda *args: {
+            "profile_patch": {"preferences": {"tone": "concise", "language": "en"}},
+            "facts": [],
+        },
+    )
+    manager.commit_messages(
+        "profile_s2",
+        [
+            {"role": "user", "content": "Actually be more detailed."},
+            {"role": "assistant", "content": "Will do."},
+        ],
+        memory_namespace="user_profile",
+        model="gpt-5",
+        long_term_extractor=lambda *args: {
+            "profile_patch": {"preferences": {"tone": "detailed"}},
+            "facts": [],
+        },
+    )
+
+    assert profile_store.load("user_profile") == {
+        "preferences": {"tone": "detailed", "language": "en"}
+    }
+
+
+def test_long_term_recall_is_optional_and_non_blocking():
+    profile_store = _FakeLongTermProfileStore()
+    failing_search_adapter = _FakeLongTermVectorAdapter(fail_search=True)
+    manager = MemoryManager(
+        config=MemoryConfig(
+            long_term=LongTermMemoryConfig(
+                profile_store=profile_store,
+                vector_adapter=failing_search_adapter,
+            )
+        )
+    )
+    profile_store.save("user_lt", {"preferences": {"style": "concise"}})
+    prepared = manager.prepare_messages(
+        "lt_prepare_fail",
+        [{"role": "user", "content": "what do you know?"}],
+        max_context_window_tokens=20_000,
+        model="gpt-5",
+        memory_namespace="user_lt",
+    )
+    assert isinstance(prepared, list)
+    assert "long_term_vector_fallback_reason" in manager.last_prepare_info
+
+    failing_add_adapter = _FakeLongTermVectorAdapter(fail_add=True)
+    commit_manager = MemoryManager(
+        config=MemoryConfig(
+            long_term=LongTermMemoryConfig(
+                profile_store=_FakeLongTermProfileStore(),
+                vector_adapter=failing_add_adapter,
+            )
+        )
+    )
+    commit_manager.commit_messages(
+        "lt_commit_fail",
+        [
+            {"role": "user", "content": "Remember that I like weekly digests."},
+            {"role": "assistant", "content": "Okay."},
+        ],
+        memory_namespace="user_lt_fail",
+        model="gpt-5",
+        long_term_extractor=lambda *args: {
+            "profile_patch": {"preferences": {"digest": "weekly"}},
+            "facts": [{"kind": "fact", "text": "User likes weekly digests."}],
+        },
+    )
+    assert "long_term_vector_fallback_reason" in commit_manager.last_commit_info
+    assert commit_manager.store.load("lt_commit_fail").get("long_term_indexed_until") is None
+
+
+def test_long_term_memory_can_coexist_with_short_term_recall():
+    short_term_adapter = _FakeVectorAdapter()
+    long_term_profile_store = _FakeLongTermProfileStore()
+    long_term_adapter = _FakeLongTermVectorAdapter()
+    manager = MemoryManager(
+        config=MemoryConfig(
+            vector_adapter=short_term_adapter,
+            vector_top_k=2,
+            long_term=LongTermMemoryConfig(
+                profile_store=long_term_profile_store,
+                vector_adapter=long_term_adapter,
+                vector_top_k=2,
+            ),
+        )
+    )
+    session_id = "hybrid_memory_session"
+
+    manager.commit_messages(
+        session_id,
+        [
+            {"role": "user", "content": "We picked Redis."},
+            {"role": "assistant", "content": "Yes, Redis is selected."},
+        ],
+        memory_namespace="user_hybrid",
+        model="gpt-5",
+        long_term_extractor=lambda *args: {
+            "profile_patch": {"preferences": {"cache": "redis"}},
+            "facts": [{"kind": "fact", "text": "Redis was selected as the cache."}],
+        },
+    )
+
+    prepared = manager.prepare_messages(
+        session_id,
+        [{"role": "user", "content": "what cache did we pick?"}],
+        max_context_window_tokens=20_000,
+        model="gpt-5",
+        memory_namespace="user_hybrid",
+        summary_generator=lambda prev, msgs, max_chars, model: prev,
+    )
+    assert _extract_recall_json_message_array(prepared)
+    assert _extract_tagged_json_payload(prepared, "[LONG_TERM_PROFILE]") == {
+        "preferences": {"cache": "redis"}
+    }
+    facts_payload = _extract_tagged_json_payload(prepared, "[LONG_TERM_FACTS]")
+    assert [item["text"] for item in facts_payload] == ["Redis was selected as the cache."]
+
+
 def test_broth_emits_memory_events_and_commits_when_session_id_is_set():
     manager = MemoryManager(
         config=MemoryConfig(last_n_turns=2),
@@ -391,3 +734,51 @@ def test_broth_emits_memory_events_and_commits_when_session_id_is_set():
     assert len(state.get("messages", [])) == len(messages_out)
     # Ensure stored data remains JSON-serializable for future persistence adapters.
     json.dumps(state, ensure_ascii=False)
+
+
+def test_broth_passes_memory_namespace_to_long_term_memory():
+    profile_store = _FakeLongTermProfileStore()
+    adapter = _FakeLongTermVectorAdapter()
+    manager = MemoryManager(
+        config=MemoryConfig(
+            long_term=LongTermMemoryConfig(
+                profile_store=profile_store,
+                vector_adapter=adapter,
+            )
+        )
+    )
+    agent = Broth(provider="ollama", model="deepseek-r1:14b", memory_manager=manager)
+
+    captured_requests: list[list[dict[str, Any]]] = []
+
+    def fake_fetch_once(**kwargs):
+        captured_requests.append(json.loads(json.dumps(kwargs["messages"], ensure_ascii=False)))
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "done"}],
+            tool_calls=[],
+            final_text="done",
+            consumed_tokens=8,
+        )
+
+    agent._fetch_once = fake_fetch_once
+    agent._extract_long_term_memory = lambda *args, **kwargs: {
+        "profile_patch": {"preferences": {"namespace": "shared_user"}},
+        "facts": [{"kind": "fact", "text": "Shared namespace fact."}],
+    }
+
+    agent.run(
+        messages=[{"role": "user", "content": "remember this"}],
+        session_id="broth_lt_s1",
+        memory_namespace="shared_user",
+        max_iterations=1,
+    )
+    agent.run(
+        messages=[{"role": "user", "content": "what do you know?"}],
+        session_id="broth_lt_s2",
+        memory_namespace="shared_user",
+        max_iterations=1,
+    )
+
+    second_request = captured_requests[-1]
+    profile_payload = _extract_tagged_json_payload(second_request, "[LONG_TERM_PROFILE]")
+    assert profile_payload == {"preferences": {"namespace": "shared_user"}}

@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 try:
     from qdrant_client import QdrantClient
-    from qdrant_client.models import Distance, PointStruct, VectorParams
+    from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams
     _QDRANT_AVAILABLE = True
 except ImportError:  # pragma: no cover
     _QDRANT_AVAILABLE = False
@@ -298,6 +298,107 @@ class QdrantVectorAdapter:
         return recalled
 
 
+class QdrantLongTermVectorAdapter:
+    """Long-term vector adapter backed by Qdrant embedded storage.
+
+    Each namespace maps to one collection so user/application memories stay
+    isolated while still being shared across short-term session ids.
+    """
+
+    def __init__(
+        self,
+        client: "QdrantClient",
+        embed_fn,
+        vector_size: int,
+        collection_prefix: str = "long_term",
+    ) -> None:
+        self._client = client
+        self._embed_fn = embed_fn
+        self._vector_size = vector_size
+        self._collection_prefix = collection_prefix
+        self._ensured: set[str] = set()
+
+    def _collection_name(self, namespace: str) -> str:
+        safe = "".join(c if c.isalnum() or c == "_" else "_" for c in namespace)
+        return f"{self._collection_prefix}_{safe}"
+
+    def _ensure_collection(self, name: str) -> None:
+        if name in self._ensured:
+            return
+        existing = {c.name for c in self._client.get_collections().collections}
+        if name not in existing:
+            self._client.create_collection(
+                collection_name=name,
+                vectors_config=VectorParams(
+                    size=self._vector_size,
+                    distance=Distance.COSINE,
+                ),
+            )
+        self._ensured.add(name)
+
+    def add_texts(
+        self,
+        *,
+        namespace: str,
+        texts: list[str],
+        metadatas: list[dict[str, Any]],
+    ) -> None:
+        collection = self._collection_name(namespace)
+        self._ensure_collection(collection)
+        vectors = self._embed_fn(texts)
+        points = [
+            PointStruct(
+                id=str(uuid.uuid4()),
+                vector=vec,
+                payload={"text": text, **meta},
+            )
+            for text, vec, meta in zip(texts, vectors, metadatas)
+        ]
+        self._client.upsert(collection_name=collection, points=points)
+
+    def similarity_search(
+        self,
+        *,
+        namespace: str,
+        query: str,
+        k: int,
+        filters: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        collection = self._collection_name(namespace)
+        self._ensure_collection(collection)
+        query_vec = self._embed_fn([query])[0]
+
+        qdrant_filter = None
+        if filters:
+            conditions = []
+            for key, value in filters.items():
+                if not isinstance(key, str) or not key.strip():
+                    continue
+                if isinstance(value, (str, int, float, bool)):
+                    conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
+            if conditions:
+                qdrant_filter = Filter(must=conditions)
+
+        results = self._client.search(
+            collection_name=collection,
+            query_vector=query_vec,
+            limit=k,
+            query_filter=qdrant_filter,
+        )
+        recalled: list[dict[str, Any]] = []
+        for result in results:
+            payload = result.payload or {}
+            if not isinstance(payload, dict):
+                continue
+            item = copy.deepcopy(payload)
+            score = getattr(result, "score", None)
+            if isinstance(score, (int, float)):
+                item["score"] = float(score)
+            if item:
+                recalled.append(item)
+        return recalled
+
+
 class JsonFileSessionStore:
     """SessionStore backed by one JSON file per session.
 
@@ -337,4 +438,49 @@ class JsonFileSessionStore:
             pass
 
 
-__all__ = ["JsonFileSessionStore", "QdrantVectorAdapter", "build_openai_embed_fn"]
+def build_embedded_qdrant_client(*, path: str | Path) -> "QdrantClient":
+    if not _QDRANT_AVAILABLE:
+        raise ValueError(
+            "error: qdrant-client is required for embedded Qdrant storage. "
+            "install 'qdrant-client' or provide a custom vector adapter."
+        )
+    base_path = Path(path)
+    base_path.mkdir(parents=True, exist_ok=True)
+    return QdrantClient(path=str(base_path))
+
+
+def build_default_long_term_qdrant_vector_adapter(
+    *,
+    broth_instance: Any | None = None,
+    model: str = "text-embedding-3-small",
+    payload: dict[str, Any] | None = None,
+    path: str | Path,
+    collection_prefix: str = "long_term",
+) -> QdrantLongTermVectorAdapter:
+    if not _QDRANT_AVAILABLE:
+        raise ValueError(
+            "error: qdrant-client is required for default long-term vector storage. "
+            "install 'qdrant-client' or provide MemoryConfig.long_term.vector_adapter."
+        )
+    client = build_embedded_qdrant_client(path=path)
+    embed_fn, vector_size = build_openai_embed_fn(
+        model=model,
+        broth_instance=broth_instance,
+        payload=payload,
+    )
+    return QdrantLongTermVectorAdapter(
+        client=client,
+        embed_fn=embed_fn,
+        vector_size=vector_size,
+        collection_prefix=collection_prefix,
+    )
+
+
+__all__ = [
+    "JsonFileSessionStore",
+    "QdrantLongTermVectorAdapter",
+    "QdrantVectorAdapter",
+    "build_default_long_term_qdrant_vector_adapter",
+    "build_embedded_qdrant_client",
+    "build_openai_embed_fn",
+]
