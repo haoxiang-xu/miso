@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import math
 from dataclasses import dataclass
@@ -9,7 +10,7 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 
 SummaryGenerator = Callable[[str, list[dict[str, Any]], int, str], str]
-LongTermExtractor = Callable[[dict[str, Any], list[dict[str, Any]], int, int, str], dict[str, Any]]
+LongTermExtractor = Callable[..., dict[str, Any]]
 
 
 @runtime_checkable
@@ -139,8 +140,13 @@ class LongTermMemoryConfig:
     vector_adapter: LongTermVectorAdapter | None = None
     extractor: LongTermExtractor | None = None
     vector_top_k: int = 4
+    episode_top_k: int = 2
+    playbook_top_k: int = 2
     max_profile_chars: int = 1200
     max_fact_items: int = 6
+    max_episode_items: int = 3
+    max_playbook_items: int = 2
+    extract_every_n_turns: int = 1
     embedding_model: str = "text-embedding-3-small"
     embedding_payload: dict[str, Any] | None = None
     profile_base_dir: str | Path | None = None
@@ -606,20 +612,40 @@ def _flatten_turn_messages(metadatas: list[dict[str, Any]]) -> list[dict[str, An
     return messages
 
 
+def _normalize_long_term_text(item: Any, *, max_chars: int = 2_000) -> str:
+    text = _content_to_text(item).strip()
+    if not text:
+        return ""
+    if len(text) > max_chars:
+        return text[:max_chars].rstrip()
+    return text
+
+
+def _infer_long_term_memory_type(item: dict[str, Any]) -> str:
+    raw_type = str(item.get("memory_type") or item.get("type") or "").strip().lower()
+    if raw_type in {"fact", "episode", "playbook"}:
+        return raw_type
+    if "steps" in item or "trigger" in item or "goal" in item:
+        return "playbook"
+    if "situation" in item or "action" in item or "outcome" in item:
+        return "episode"
+    return "fact"
+
+
 def _normalize_long_term_fact_item(item: Any) -> dict[str, str] | None:
     if isinstance(item, str):
         text = item.strip()
-        return {"kind": "fact", "text": text} if text else None
+        return {"memory_type": "fact", "subtype": "fact", "text": text} if text else None
     if not isinstance(item, dict):
         return None
-    text = _content_to_text(item.get("text") if "text" in item else item.get("content")).strip()
+    text = _normalize_long_term_text(item.get("text") if "text" in item else item.get("content"))
     if not text:
         return None
-    raw_kind = item.get("kind")
-    kind = raw_kind.strip().lower() if isinstance(raw_kind, str) else "fact"
-    if kind not in {"fact", "event"}:
-        kind = "fact"
-    normalized = {"kind": kind, "text": text}
+    raw_subtype = item.get("subtype") if "subtype" in item else item.get("kind")
+    subtype = raw_subtype.strip().lower() if isinstance(raw_subtype, str) else "fact"
+    if subtype not in {"fact", "decision", "project_context", "entity", "event"}:
+        subtype = "fact"
+    normalized = {"memory_type": "fact", "subtype": subtype, "text": text}
     for key in ("source", "created_at"):
         value = item.get(key)
         if isinstance(value, str) and value.strip():
@@ -636,7 +662,7 @@ def _normalize_long_term_facts(items: Any, max_items: int) -> list[dict[str, str
         fact = _normalize_long_term_fact_item(item)
         if fact is None:
             continue
-        key = (fact["kind"], fact["text"])
+        key = (fact["subtype"], fact["text"])
         if key in seen:
             continue
         seen.add(key)
@@ -646,40 +672,329 @@ def _normalize_long_term_facts(items: Any, max_items: int) -> list[dict[str, str
     return normalized
 
 
-def _normalize_long_term_search_results(items: Any, max_items: int) -> list[dict[str, str]]:
-    return _normalize_long_term_facts(items, max_items)
+def _format_episode_memory_text(item: dict[str, Any]) -> str:
+    explicit_text = _normalize_long_term_text(item.get("text"))
+    if explicit_text:
+        return explicit_text
+    parts = []
+    situation = _normalize_long_term_text(item.get("situation"), max_chars=600)
+    action = _normalize_long_term_text(item.get("action"), max_chars=600)
+    outcome = _normalize_long_term_text(item.get("outcome"), max_chars=600)
+    if situation:
+        parts.append(f"Situation: {situation}")
+    if action:
+        parts.append(f"Action: {action}")
+    if outcome:
+        parts.append(f"Outcome: {outcome}")
+    return "\n".join(parts).strip()
 
 
-def _build_long_term_fact_payloads(
-    facts: list[dict[str, str]],
+def _normalize_long_term_episode_item(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    text = _format_episode_memory_text(item)
+    if not text:
+        return None
+    normalized: dict[str, Any] = {
+        "memory_type": "episode",
+        "text": text,
+    }
+    for key in ("situation", "action", "outcome", "title"):
+        value = _normalize_long_term_text(item.get(key), max_chars=600)
+        if value:
+            normalized[key] = value
+    for key in ("source", "created_at"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            normalized[key] = value.strip()
+    return normalized
+
+
+def _normalize_long_term_episodes(items: Any, max_items: int) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        episode = _normalize_long_term_episode_item(item)
+        if episode is None:
+            continue
+        key = episode["text"]
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(episode)
+        if len(normalized) >= max(0, int(max_items)):
+            break
+    return normalized
+
+
+def _format_playbook_memory_text(item: dict[str, Any]) -> str:
+    explicit_text = _normalize_long_term_text(item.get("text"), max_chars=2_400)
+    if explicit_text:
+        return explicit_text
+    parts = []
+    trigger = _normalize_long_term_text(item.get("trigger"), max_chars=400)
+    goal = _normalize_long_term_text(item.get("goal"), max_chars=400)
+    steps = item.get("steps")
+    caveats = _normalize_long_term_text(item.get("caveats"), max_chars=600)
+    if trigger:
+        parts.append(f"Trigger: {trigger}")
+    if goal:
+        parts.append(f"Goal: {goal}")
+    if isinstance(steps, list):
+        normalized_steps = [
+            _normalize_long_term_text(step, max_chars=400)
+            for step in steps
+            if _normalize_long_term_text(step, max_chars=400)
+        ]
+        if normalized_steps:
+            parts.append("Steps:")
+            parts.extend(f"{idx + 1}. {step}" for idx, step in enumerate(normalized_steps[:8]))
+    if caveats:
+        parts.append(f"Caveats: {caveats}")
+    return "\n".join(parts).strip()
+
+
+def _normalize_long_term_playbook_item(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    text = _format_playbook_memory_text(item)
+    if not text:
+        return None
+    normalized: dict[str, Any] = {
+        "memory_type": "playbook",
+        "text": text,
+    }
+    for key in ("trigger", "goal", "caveats", "title"):
+        value = _normalize_long_term_text(item.get(key), max_chars=600)
+        if value:
+            normalized[key] = value
+    steps = item.get("steps")
+    if isinstance(steps, list):
+        normalized_steps = [
+            _normalize_long_term_text(step, max_chars=400)
+            for step in steps
+            if _normalize_long_term_text(step, max_chars=400)
+        ]
+        if normalized_steps:
+            normalized["steps"] = normalized_steps[:8]
+    for key in ("source", "created_at"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            normalized[key] = value.strip()
+    return normalized
+
+
+def _normalize_long_term_playbooks(items: Any, max_items: int) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        playbook = _normalize_long_term_playbook_item(item)
+        if playbook is None:
+            continue
+        key = playbook["text"]
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(playbook)
+        if len(normalized) >= max(0, int(max_items)):
+            break
+    return normalized
+
+
+def _normalize_long_term_search_results(
+    items: Any,
     *,
+    max_items: int,
+    memory_type: str,
+) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    filtered: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        inferred_type = _infer_long_term_memory_type(item)
+        if inferred_type != memory_type:
+            continue
+        filtered.append(item)
+    if memory_type == "fact":
+        return _normalize_long_term_facts(filtered, max_items)
+    if memory_type == "episode":
+        return _normalize_long_term_episodes(filtered, max_items)
+    if memory_type == "playbook":
+        return _normalize_long_term_playbooks(filtered, max_items)
+    return []
+
+
+def _build_long_term_memory_payloads(
+    *,
+    facts: list[dict[str, Any]],
+    episodes: list[dict[str, Any]],
+    playbooks: list[dict[str, Any]],
     session_id: str,
     memory_namespace: str,
     turn_metadatas: list[dict[str, Any]],
 ) -> tuple[list[str], list[dict[str, Any]]]:
-    if not facts:
+    if not facts and not episodes and not playbooks:
         return [], []
     first_turn = min((meta.get("turn_start_index", 0) for meta in turn_metadatas if isinstance(meta, dict)), default=0)
     last_turn = max((meta.get("turn_end_index", 0) for meta in turn_metadatas if isinstance(meta, dict)), default=0)
     created_at = _current_timestamp()
     texts: list[str] = []
     metadatas: list[dict[str, Any]] = []
-    for fact in facts:
-        text = fact.get("text", "").strip()
-        if not text:
+    for item in list(facts) + list(episodes) + list(playbooks):
+        memory_type = _infer_long_term_memory_type(item) if isinstance(item, dict) else ""
+        text = _normalize_long_term_text(item.get("text") if isinstance(item, dict) else "")
+        if memory_type not in {"fact", "episode", "playbook"} or not text:
             continue
         texts.append(text)
         metadata: dict[str, Any] = {
-            "kind": fact.get("kind", "fact"),
+            "memory_type": memory_type,
+            "kind": item.get("subtype", memory_type) if isinstance(item, dict) else memory_type,
             "session_id": session_id,
             "memory_namespace": memory_namespace,
             "turn_start_index": first_turn,
             "turn_end_index": last_turn,
-            "created_at": fact.get("created_at", created_at),
-            "source": fact.get("source", "long_term_extractor"),
+            "created_at": item.get("created_at", created_at) if isinstance(item, dict) else created_at,
+            "source": item.get("source", "long_term_extractor") if isinstance(item, dict) else "long_term_extractor",
         }
+        if isinstance(item, dict):
+            for key in ("subtype", "title", "situation", "action", "outcome", "trigger", "goal", "caveats"):
+                value = item.get(key)
+                if isinstance(value, str) and value.strip():
+                    metadata[key] = value.strip()
+            steps = item.get("steps")
+            if isinstance(steps, list):
+                normalized_steps = [step for step in steps if isinstance(step, str) and step.strip()]
+                if normalized_steps:
+                    metadata["steps"] = normalized_steps[:8]
         metadatas.append(metadata)
     return texts, metadatas
+
+
+def _profile_priority(key: str) -> tuple[int, str]:
+    normalized = str(key or "").strip().lower()
+    if normalized in {"hard_constraints", "constraints"}:
+        return (0, normalized)
+    if normalized == "preferences":
+        return (1, normalized)
+    if normalized == "communication_style":
+        return (2, normalized)
+    if normalized == "identity":
+        return (3, normalized)
+    return (10, normalized)
+
+
+def _select_profile_for_context(profile: dict[str, Any], *, max_chars: int) -> dict[str, Any]:
+    if not profile:
+        return {}
+    rendered = json.dumps(profile, ensure_ascii=False)
+    if len(rendered) <= max_chars:
+        return profile
+    selected: dict[str, Any] = {}
+    for key in sorted(profile.keys(), key=_profile_priority):
+        candidate = {**selected, key: profile[key]}
+        if len(json.dumps(candidate, ensure_ascii=False)) > max_chars:
+            continue
+        selected[key] = copy.deepcopy(profile[key])
+    return selected or {}
+
+
+def _should_recall_episode_memories(query: str) -> bool:
+    normalized = query.strip().lower()
+    if not normalized:
+        return False
+    hints = (
+        "before",
+        "previous",
+        "last time",
+        "again",
+        "similar",
+        "history",
+        "historical",
+        "remember",
+        "之前",
+        "以前",
+        "上次",
+        "类似",
+        "历史",
+        "记得",
+    )
+    return any(hint in normalized for hint in hints)
+
+
+def _should_recall_playbooks(query: str) -> bool:
+    normalized = query.strip().lower()
+    if not normalized:
+        return False
+    hints = (
+        "how to",
+        "how do",
+        "steps",
+        "process",
+        "procedure",
+        "workflow",
+        "plan",
+        "debug",
+        "troubleshoot",
+        "fix",
+        "resolve",
+        "repair",
+        "排查",
+        "步骤",
+        "流程",
+        "方案",
+        "修复",
+        "如何",
+        "怎么做",
+        "调试",
+        "排错",
+    )
+    return any(hint in normalized for hint in hints)
+
+
+def _call_long_term_extractor(
+    extractor: LongTermExtractor,
+    *,
+    previous_profile: dict[str, Any],
+    extraction_messages: list[dict[str, Any]],
+    long_term: LongTermMemoryConfig,
+    model: str,
+) -> dict[str, Any]:
+    try:
+        parameters = inspect.signature(extractor).parameters
+    except Exception:
+        parameters = {}
+
+    if "config" in parameters:
+        return extractor(
+            previous_profile,
+            extraction_messages,
+            long_term.max_profile_chars,
+            long_term.max_fact_items,
+            model,
+            config=long_term,
+        )
+    if "long_term_config" in parameters:
+        return extractor(
+            previous_profile,
+            extraction_messages,
+            long_term.max_profile_chars,
+            long_term.max_fact_items,
+            model,
+            long_term_config=long_term,
+        )
+    return extractor(
+        previous_profile,
+        extraction_messages,
+        long_term.max_profile_chars,
+        long_term.max_fact_items,
+        model,
+    )
 
 
 def _current_timestamp() -> str:
@@ -993,34 +1308,101 @@ class MemoryManager:
             except Exception as exc:
                 memory_meta["long_term_profile_fallback_reason"] = f"profile_load_failed: {exc}"
             else:
-                if profile:
+                selected_profile = _select_profile_for_context(
+                    profile,
+                    max_chars=long_term.max_profile_chars,
+                )
+                if selected_profile:
                     injected.append({
                         "role": "system",
-                        "content": f"[LONG_TERM_PROFILE]\n{json.dumps(profile, ensure_ascii=False)}",
+                        "content": f"[MEMORY_PROFILE]\n{json.dumps(selected_profile, ensure_ascii=False)}",
                     })
                     memory_meta["long_term_profile_applied"] = True
-                    memory_meta["long_term_profile_key_count"] = len(profile)
+                    memory_meta["long_term_profile_key_count"] = len(selected_profile)
 
         query = _latest_user_query(prepared)
-        if query and long_term.vector_adapter is not None and long_term.vector_top_k > 0:
+        if query and long_term.vector_adapter is not None:
             try:
-                recalled = long_term.vector_adapter.similarity_search(
-                    namespace=namespace,
-                    query=query,
-                    k=long_term.vector_top_k,
-                    filters=None,
-                )
+                if long_term.vector_top_k > 0:
+                    recalled_facts = long_term.vector_adapter.similarity_search(
+                        namespace=namespace,
+                        query=query,
+                        k=long_term.vector_top_k,
+                        filters={"memory_type": "fact"},
+                    )
+                else:
+                    recalled_facts = []
             except Exception as exc:
                 memory_meta["long_term_vector_fallback_reason"] = f"vector_search_failed: {exc}"
             else:
-                facts = _normalize_long_term_search_results(recalled, long_term.vector_top_k)
+                facts = _normalize_long_term_search_results(
+                    recalled_facts,
+                    max_items=long_term.vector_top_k,
+                    memory_type="fact",
+                )
                 if facts:
                     injected.append({
                         "role": "system",
-                        "content": f"[LONG_TERM_FACTS]\n{json.dumps(facts, ensure_ascii=False)}",
+                        "content": f"[MEMORY_FACTS]\n{json.dumps(facts, ensure_ascii=False)}",
                     })
-                    memory_meta["long_term_fact_recall_hit_count"] = len(recalled) if isinstance(recalled, list) else 0
+                    memory_meta["long_term_fact_recall_hit_count"] = len(recalled_facts) if isinstance(recalled_facts, list) else 0
                     memory_meta["long_term_fact_recall_count"] = len(facts)
+
+        if (
+            query
+            and long_term.vector_adapter is not None
+            and long_term.episode_top_k > 0
+            and _should_recall_episode_memories(query)
+        ):
+            try:
+                recalled_episodes = long_term.vector_adapter.similarity_search(
+                    namespace=namespace,
+                    query=query,
+                    k=long_term.episode_top_k,
+                    filters={"memory_type": "episode"},
+                )
+            except Exception as exc:
+                memory_meta["long_term_episode_fallback_reason"] = f"episode_search_failed: {exc}"
+            else:
+                episodes = _normalize_long_term_search_results(
+                    recalled_episodes,
+                    max_items=long_term.episode_top_k,
+                    memory_type="episode",
+                )
+                if episodes:
+                    injected.append({
+                        "role": "system",
+                        "content": f"[MEMORY_EPISODES]\n{json.dumps(episodes, ensure_ascii=False)}",
+                    })
+                    memory_meta["long_term_episode_recall_count"] = len(episodes)
+
+        if (
+            query
+            and long_term.vector_adapter is not None
+            and long_term.playbook_top_k > 0
+            and _should_recall_playbooks(query)
+        ):
+            try:
+                recalled_playbooks = long_term.vector_adapter.similarity_search(
+                    namespace=namespace,
+                    query=query,
+                    k=long_term.playbook_top_k,
+                    filters={"memory_type": "playbook"},
+                )
+            except Exception as exc:
+                memory_meta["long_term_playbook_fallback_reason"] = f"playbook_search_failed: {exc}"
+            else:
+                playbooks = _normalize_long_term_search_results(
+                    recalled_playbooks,
+                    max_items=long_term.playbook_top_k,
+                    memory_type="playbook",
+                )
+                if playbooks:
+                    injected.append({
+                        "role": "system",
+                        "content": f"[MEMORY_PLAYBOOKS]\n{json.dumps(playbooks, ensure_ascii=False)}",
+                    })
+                    memory_meta["long_term_playbook_recall_count"] = len(playbooks)
 
         if not injected:
             return prepared
@@ -1116,6 +1498,17 @@ class MemoryManager:
         )
         if not turn_metadatas:
             state["long_term_indexed_until"] = next_indexed_until
+            state["long_term_pending_turn_count"] = 0
+            return
+
+        pending_turn_count = max(0, indexed_turn_count)
+        extract_every_n_turns = max(1, int(long_term.extract_every_n_turns or 1))
+        state["long_term_pending_turn_count"] = pending_turn_count
+        commit_info["long_term_pending_turn_count"] = pending_turn_count
+        commit_info["long_term_extract_every_n_turns"] = extract_every_n_turns
+
+        if pending_turn_count < extract_every_n_turns:
+            commit_info["long_term_extraction_deferred"] = True
             return
 
         extractor = long_term_extractor or long_term.extractor
@@ -1136,12 +1529,12 @@ class MemoryManager:
 
         extraction_messages = _flatten_turn_messages(turn_metadatas)
         try:
-            extraction = extractor(
-                previous_profile,
-                extraction_messages,
-                long_term.max_profile_chars,
-                long_term.max_fact_items,
-                model or "",
+            extraction = _call_long_term_extractor(
+                extractor,
+                previous_profile=previous_profile,
+                extraction_messages=extraction_messages,
+                long_term=long_term,
+                model=model or "",
             )
         except Exception as exc:
             commit_info["long_term_extractor_fallback_reason"] = f"long_term_extraction_failed: {exc}"
@@ -1150,6 +1543,8 @@ class MemoryManager:
         extraction = extraction if isinstance(extraction, dict) else {}
         profile_patch = _normalize_profile_document(extraction.get("profile_patch"))
         facts = _normalize_long_term_facts(extraction.get("facts"), long_term.max_fact_items)
+        episodes = _normalize_long_term_episodes(extraction.get("episodes"), long_term.max_episode_items)
+        playbooks = _normalize_long_term_playbooks(extraction.get("playbooks"), long_term.max_playbook_items)
 
         advance_cursor = True
         did_write = False
@@ -1165,10 +1560,12 @@ class MemoryManager:
                 commit_info["long_term_profile_fallback_reason"] = f"profile_save_failed: {exc}"
                 advance_cursor = False
 
-        if facts and long_term.vector_adapter is not None:
+        if (facts or episodes or playbooks) and long_term.vector_adapter is not None:
             did_write = True
-            texts, metadatas = _build_long_term_fact_payloads(
-                facts,
+            texts, metadatas = _build_long_term_memory_payloads(
+                facts=facts,
+                episodes=episodes,
+                playbooks=playbooks,
                 session_id=session_id,
                 memory_namespace=namespace,
                 turn_metadatas=turn_metadatas,
@@ -1180,7 +1577,13 @@ class MemoryManager:
                         texts=texts,
                         metadatas=metadatas,
                     )
-                    commit_info["long_term_fact_indexed_count"] = len(texts)
+                    fact_count = len([meta for meta in metadatas if meta.get("memory_type") == "fact"])
+                    episode_count = len([meta for meta in metadatas if meta.get("memory_type") == "episode"])
+                    playbook_count = len([meta for meta in metadatas if meta.get("memory_type") == "playbook"])
+                    commit_info["long_term_fact_indexed_count"] = fact_count
+                    commit_info["long_term_episode_indexed_count"] = episode_count
+                    commit_info["long_term_playbook_indexed_count"] = playbook_count
+                    commit_info["long_term_memory_indexed_count"] = len(texts)
                 except Exception as exc:
                     commit_info["long_term_vector_fallback_reason"] = f"vector_index_failed: {exc}"
                     advance_cursor = False
@@ -1190,6 +1593,7 @@ class MemoryManager:
 
         if advance_cursor:
             state["long_term_indexed_until"] = next_indexed_until
+            state["long_term_pending_turn_count"] = 0
             commit_info["long_term_indexed_turn_count"] = indexed_turn_count
 
     def commit_messages(

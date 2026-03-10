@@ -2214,8 +2214,19 @@ class broth:
         *,
         max_profile_chars: int,
         max_fact_items: int,
+        max_episode_items: int = 0,
+        max_playbook_items: int = 0,
     ) -> dict[str, Any]:
-        max_output_tokens = max(128, min(768, max_profile_chars // 2 + max_fact_items * 64))
+        max_output_tokens = max(
+            192,
+            min(
+                1_200,
+                max_profile_chars // 2
+                + max_fact_items * 64
+                + max_episode_items * 96
+                + max_playbook_items * 128,
+            ),
+        )
         extraction_payload: dict[str, Any] = {}
         if self.provider == "openai":
             extraction_payload["max_output_tokens"] = max_output_tokens
@@ -2233,8 +2244,11 @@ class broth:
         max_profile_chars: int,
         max_fact_items: int,
         model: str,
+        config: Any | None = None,
     ) -> dict[str, Any]:
         del model
+        max_episode_items = max(0, int(getattr(config, "max_episode_items", 3) or 3))
+        max_playbook_items = max(0, int(getattr(config, "max_playbook_items", 2) or 2))
 
         transcript_lines: list[str] = []
         for message in messages:
@@ -2266,32 +2280,66 @@ class broth:
                     },
                     "facts": {
                         "type": "array",
-                        "description": "Reusable long-term facts or events worth semantic recall later.",
+                        "description": "Reusable long-term facts, project context, decisions, or entity relationships worth semantic recall later.",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "kind": {
+                                "subtype": {
                                     "type": "string",
-                                    "enum": ["fact", "event"],
+                                    "enum": ["fact", "decision", "project_context", "entity", "event"],
                                 },
                                 "text": {"type": "string"},
                             },
-                            "required": ["kind", "text"],
+                            "required": ["text"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "episodes": {
+                        "type": "array",
+                        "description": "Past cases that include enough situation, action, and outcome detail to be reusable later.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"},
+                                "situation": {"type": "string"},
+                                "action": {"type": "string"},
+                                "outcome": {"type": "string"},
+                            },
+                            "required": ["situation", "action", "outcome"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "playbooks": {
+                        "type": "array",
+                        "description": "Reusable workflows or procedures with trigger, goal, steps, and caveats.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"},
+                                "trigger": {"type": "string"},
+                                "goal": {"type": "string"},
+                                "steps": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "caveats": {"type": "string"},
+                            },
+                            "required": ["trigger", "goal", "steps"],
                             "additionalProperties": False,
                         },
                     },
                 },
-                "required": ["profile_patch", "facts"],
+                "required": ["profile_patch", "facts", "episodes", "playbooks"],
                 "additionalProperties": False,
             },
-            required=["profile_patch", "facts"],
+            required=["profile_patch", "facts", "episodes", "playbooks"],
         )
 
         extraction_system_prompt = (
             "You extract long-term memory for an AI assistant. "
             "Return only stable user identity details, durable preferences, explicit constraints, "
-            "and reusable long-term facts or events. Ignore transient requests, small talk, and "
-            "details that are unlikely to matter in future conversations."
+            "reusable long-term facts, reusable past episodes, and reusable workflows. "
+            "Ignore transient requests, small talk, and details that are unlikely to matter in future conversations."
         )
         extraction_user_prompt = (
             f"Existing profile JSON:\n{previous_profile_json}\n\n"
@@ -2301,6 +2349,9 @@ class broth:
             f"- Keep the updated profile compact enough to stay within roughly {max_profile_chars} characters when merged.\n"
             f"- `facts` should contain at most {max_fact_items} items.\n"
             f"- Each fact must be future-reusable and self-contained.\n"
+            f"- `episodes` should contain at most {max_episode_items} items and only include cases with clear situation, action, and outcome.\n"
+            f"- `playbooks` should contain at most {max_playbook_items} items and only include reusable procedures, not one-off improvisation.\n"
+            f"- Prefer stable long-lived information over short-lived details.\n"
             f"- Use an empty object/list when there is nothing worth saving."
         )
 
@@ -2313,6 +2364,8 @@ class broth:
             payload=self._build_long_term_extraction_payload(
                 max_profile_chars=max_profile_chars,
                 max_fact_items=max_fact_items,
+                max_episode_items=max_episode_items,
+                max_playbook_items=max_playbook_items,
             ),
             response_format=extraction_format,
             callback=None,

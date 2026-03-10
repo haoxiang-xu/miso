@@ -73,7 +73,14 @@ class _FakeLongTermVectorAdapter:
         self.searches.append((namespace, query, k, filters))
         if self.fail_search:
             raise RuntimeError("long-term search failed")
-        return [dict(item) for item in self.records.get(namespace, [])[:k]]
+        items = [dict(item) for item in self.records.get(namespace, [])]
+        if isinstance(filters, dict) and filters:
+            filtered = []
+            for item in items:
+                if all(item.get(key) == value for key, value in filters.items()):
+                    filtered.append(item)
+            items = filtered
+        return items[:k]
 
 
 def _extract_recall_json_message_array(prepared: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -457,8 +464,8 @@ def test_long_term_memory_recalls_profile_and_facts_across_sessions_with_namespa
         memory_namespace="user_123",
     )
 
-    profile_payload = _extract_tagged_json_payload(prepared, "[LONG_TERM_PROFILE]")
-    facts_payload = _extract_tagged_json_payload(prepared, "[LONG_TERM_FACTS]")
+    profile_payload = _extract_tagged_json_payload(prepared, "[MEMORY_PROFILE]")
+    facts_payload = _extract_tagged_json_payload(prepared, "[MEMORY_FACTS]")
 
     assert profile_payload == {"preferences": {"answer_style": "concise"}}
     assert [item["text"] for item in facts_payload] == [
@@ -505,10 +512,10 @@ def test_long_term_memory_falls_back_to_session_id_when_namespace_missing():
         model="gpt-5",
     )
 
-    assert _extract_tagged_json_payload(prepared_same_session, "[LONG_TERM_PROFILE]") == {
+    assert _extract_tagged_json_payload(prepared_same_session, "[MEMORY_PROFILE]") == {
         "preferences": {"format": "bullets"}
     }
-    assert _extract_tagged_json_payload(prepared_other_session, "[LONG_TERM_PROFILE]") is None
+    assert _extract_tagged_json_payload(prepared_other_session, "[MEMORY_PROFILE]") is None
 
 
 def test_long_term_commit_indexes_only_new_complete_turns():
@@ -692,10 +699,10 @@ def test_long_term_memory_can_coexist_with_short_term_recall():
         summary_generator=lambda prev, msgs, max_chars, model: prev,
     )
     assert _extract_recall_json_message_array(prepared)
-    assert _extract_tagged_json_payload(prepared, "[LONG_TERM_PROFILE]") == {
+    assert _extract_tagged_json_payload(prepared, "[MEMORY_PROFILE]") == {
         "preferences": {"cache": "redis"}
     }
-    facts_payload = _extract_tagged_json_payload(prepared, "[LONG_TERM_FACTS]")
+    facts_payload = _extract_tagged_json_payload(prepared, "[MEMORY_FACTS]")
     assert [item["text"] for item in facts_payload] == ["Redis was selected as the cache."]
 
 
@@ -780,5 +787,115 @@ def test_broth_passes_memory_namespace_to_long_term_memory():
     )
 
     second_request = captured_requests[-1]
-    profile_payload = _extract_tagged_json_payload(second_request, "[LONG_TERM_PROFILE]")
+    profile_payload = _extract_tagged_json_payload(second_request, "[MEMORY_PROFILE]")
     assert profile_payload == {"preferences": {"namespace": "shared_user"}}
+
+
+def test_long_term_extraction_waits_for_configured_number_of_complete_turns():
+    profile_store = _FakeLongTermProfileStore()
+    adapter = _FakeLongTermVectorAdapter()
+    manager = MemoryManager(
+        config=MemoryConfig(
+            long_term=LongTermMemoryConfig(
+                profile_store=profile_store,
+                vector_adapter=adapter,
+                extract_every_n_turns=2,
+            )
+        )
+    )
+
+    extractor_calls = []
+
+    def extractor(previous_profile, messages, max_profile_chars, max_fact_items, model):
+        del previous_profile, max_profile_chars, max_fact_items, model
+        extractor_calls.append([dict(message) for message in messages])
+        return {
+            "profile_patch": {},
+            "facts": [{"subtype": "fact", "text": messages[-1]["content"]}],
+            "episodes": [],
+            "playbooks": [],
+        }
+
+    manager.commit_messages(
+        "lt_deferred",
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+        ],
+        memory_namespace="shared",
+        model="gpt-5",
+        long_term_extractor=extractor,
+    )
+    assert extractor_calls == []
+    assert manager.last_commit_info.get("long_term_extraction_deferred") is True
+    assert manager.store.load("lt_deferred").get("long_term_pending_turn_count") == 1
+
+    manager.commit_messages(
+        "lt_deferred",
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+        ],
+        memory_namespace="shared",
+        model="gpt-5",
+        long_term_extractor=extractor,
+    )
+    assert len(extractor_calls) == 1
+    assert [message["content"] for message in extractor_calls[0]] == ["u1", "a1", "u2", "a2"]
+    assert manager.store.load("lt_deferred").get("long_term_pending_turn_count") == 0
+    assert adapter.added[-1][1] == ["a2"]
+
+
+def test_long_term_prepare_can_recall_typed_memory_blocks():
+    profile_store = _FakeLongTermProfileStore()
+    adapter = _FakeLongTermVectorAdapter()
+    manager = MemoryManager(
+        config=MemoryConfig(
+            long_term=LongTermMemoryConfig(
+                profile_store=profile_store,
+                vector_adapter=adapter,
+                vector_top_k=4,
+                episode_top_k=2,
+                playbook_top_k=2,
+            )
+        )
+    )
+    profile_store.save("typed_user", {"preferences": {"tone": "concise"}})
+    adapter.records["typed_user"] = [
+        {"memory_type": "fact", "text": "Project uses Qdrant for long-term memory."},
+        {
+            "memory_type": "episode",
+            "situation": "Asked how memory was wired in PuPu.",
+            "action": "Explained the sidecar integration path.",
+            "outcome": "User accepted the design.",
+            "text": "Situation: Asked how memory was wired in PuPu.\nAction: Explained the sidecar integration path.\nOutcome: User accepted the design.",
+        },
+        {
+            "memory_type": "playbook",
+            "trigger": "Need to debug memory integration.",
+            "goal": "Verify storage, sidecar wiring, and retrieval.",
+            "steps": ["Inspect memory.py", "Inspect memory_factory.py", "Run targeted tests"],
+            "caveats": "Do not index raw transcripts into long-term memory.",
+            "text": "Trigger: Need to debug memory integration.\nGoal: Verify storage, sidecar wiring, and retrieval.\nSteps:\n1. Inspect memory.py\n2. Inspect memory_factory.py\n3. Run targeted tests\nCaveats: Do not index raw transcripts into long-term memory.",
+        },
+    ]
+
+    prepared = manager.prepare_messages(
+        "typed_session",
+        [{"role": "user", "content": "how do we debug this memory workflow again?"}],
+        max_context_window_tokens=20_000,
+        model="gpt-5",
+        memory_namespace="typed_user",
+    )
+
+    assert _extract_tagged_json_payload(prepared, "[MEMORY_PROFILE]") == {
+        "preferences": {"tone": "concise"}
+    }
+    facts_payload = _extract_tagged_json_payload(prepared, "[MEMORY_FACTS]")
+    episodes_payload = _extract_tagged_json_payload(prepared, "[MEMORY_EPISODES]")
+    playbooks_payload = _extract_tagged_json_payload(prepared, "[MEMORY_PLAYBOOKS]")
+    assert [item["text"] for item in facts_payload] == ["Project uses Qdrant for long-term memory."]
+    assert episodes_payload[0]["outcome"] == "User accepted the design."
+    assert playbooks_payload[0]["trigger"] == "Need to debug memory integration."
