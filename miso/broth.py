@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import inspect
 import io
 import json
 import time
@@ -98,6 +99,66 @@ class broth:
         # canonical seed messages for the current run (used in stale-file retry)
         self._last_canonical_seed: list[dict[str, Any]] = []
         self.memory_manager = memory_manager
+
+    def _call_with_supported_kwargs(self, func: Callable[..., Any], **kwargs: Any) -> Any:
+        """Call a possibly monkey-patched callable, omitting unsupported kwargs."""
+        try:
+            signature = inspect.signature(func)
+        except (TypeError, ValueError):
+            return func(**kwargs)
+
+        if any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        ):
+            return func(**kwargs)
+
+        filtered_kwargs = {
+            key: value for key, value in kwargs.items() if key in signature.parameters
+        }
+        return func(**filtered_kwargs)
+
+    def _prepare_memory_messages(
+        self,
+        *,
+        session_id: str,
+        incoming: list[dict[str, Any]],
+        max_context_window_tokens: int,
+        model: str,
+        summary_generator: Callable[..., Any] | None = None,
+        memory_namespace: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if self.memory_manager is None:
+            return incoming
+        return self._call_with_supported_kwargs(
+            self.memory_manager.prepare_messages,
+            session_id=session_id,
+            incoming=incoming,
+            max_context_window_tokens=max_context_window_tokens,
+            model=model,
+            summary_generator=summary_generator,
+            memory_namespace=memory_namespace,
+        )
+
+    def _commit_memory_messages(
+        self,
+        *,
+        session_id: str,
+        full_conversation: list[dict[str, Any]],
+        memory_namespace: str | None = None,
+        model: str | None = None,
+        long_term_extractor: Callable[..., Any] | None = None,
+    ) -> None:
+        if self.memory_manager is None:
+            return
+        self._call_with_supported_kwargs(
+            self.memory_manager.commit_messages,
+            session_id=session_id,
+            full_conversation=full_conversation,
+            memory_namespace=memory_namespace,
+            model=model,
+            long_term_extractor=long_term_extractor,
+        )
 
     # ── toolkit property (backward compatibility) ──────────────────────────
 
@@ -924,7 +985,7 @@ class broth:
         if self.memory_manager is not None and session_id:
             self.memory_manager.ensure_long_term_components(broth_instance=self)
             try:
-                seed_messages = self.memory_manager.prepare_messages(
+                seed_messages = self._prepare_memory_messages(
                     session_id=session_id,
                     incoming=seed_messages,
                     max_context_window_tokens=self.max_context_window_tokens,
@@ -1146,7 +1207,7 @@ class broth:
             self.consumed_tokens += total_consumed_tokens
             if self.memory_manager is not None and session_id:
                 try:
-                    self.memory_manager.commit_messages(
+                    self._commit_memory_messages(
                         session_id=session_id,
                         full_conversation=conversation,
                         memory_namespace=memory_namespace,
@@ -1182,7 +1243,7 @@ class broth:
         self.consumed_tokens += total_consumed_tokens
         if self.memory_manager is not None and session_id:
             try:
-                self.memory_manager.commit_messages(
+                self._commit_memory_messages(
                     session_id=session_id,
                     full_conversation=conversation,
                     memory_namespace=memory_namespace,

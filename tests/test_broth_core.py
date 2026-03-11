@@ -5,7 +5,7 @@ import httpx
 import openai
 import pytest
 
-from miso import broth as Broth, response_format, tool, toolkit
+from miso import MemoryManager, broth as Broth, response_format, tool, toolkit
 from miso.broth import ProviderTurnResult, ToolCall
 
 
@@ -340,6 +340,65 @@ def test_openai_run_falls_back_when_previous_response_not_found():
     assert agent.last_response_id == "resp_2"
     assert [msg for msg in messages if msg.get("role") == "assistant"][-1]["content"] == "done"
     assert bundle["consumed_tokens"] == 18
+
+
+def test_run_memory_hooks_tolerate_legacy_monkey_patches_without_memory_namespace():
+    manager = MemoryManager()
+    original_prepare = manager.prepare_messages
+    original_commit = manager.commit_messages
+
+    def legacy_prepare_messages(session_id, incoming, *, max_context_window_tokens, model, summary_generator=None):
+        return original_prepare(
+            session_id,
+            incoming,
+            max_context_window_tokens=max_context_window_tokens,
+            model=model,
+            summary_generator=summary_generator,
+        )
+
+    def legacy_commit_messages(session_id, full_conversation, *, model=None, long_term_extractor=None):
+        return original_commit(
+            session_id,
+            full_conversation,
+            model=model,
+            long_term_extractor=long_term_extractor,
+        )
+
+    manager.prepare_messages = legacy_prepare_messages  # type: ignore[method-assign]
+    manager.commit_messages = legacy_commit_messages  # type: ignore[method-assign]
+
+    agent = Broth(memory_manager=manager)
+    agent.provider = "openai"
+
+    def fake_fetch_once(**kwargs):
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "done"}],
+            tool_calls=[],
+            final_text="done",
+            response_id="resp_legacy_memory",
+            consumed_tokens=5,
+        )
+
+    agent._fetch_once = fake_fetch_once
+
+    events = []
+    messages, bundle = agent.run(
+        messages=[{"role": "user", "content": "hello"}],
+        session_id="legacy-memory-session",
+        memory_namespace="shared-user",
+        callback=events.append,
+        max_iterations=1,
+    )
+
+    prepare_events = [event for event in events if event["type"] == "memory_prepare"]
+    commit_events = [event for event in events if event["type"] == "memory_commit"]
+
+    assert len(prepare_events) == 1
+    assert prepare_events[0]["applied"] is True
+    assert len(commit_events) == 1
+    assert commit_events[0]["applied"] is True
+    assert [msg for msg in messages if msg.get("role") == "assistant"][-1]["content"] == "done"
+    assert bundle["consumed_tokens"] == 5
 
 
 def test_openai_run_emits_reasoning_event_and_tracks_reasoning_items():
