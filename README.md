@@ -40,11 +40,40 @@
 
 ## 快速开始
 
+开发标准：
+
+- 根目录 `.python-version` 固定为 `3.12`
+- 开发环境唯一支持 `Python 3.12.x`
+- 开发虚拟环境目录唯一支持 `.venv/`
+- 不再支持旧的 `venv/`
+
+推荐初始化方式：
+
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+./scripts/init_python312_venv.sh
+source .venv/bin/activate
 ./run_tests.sh
+```
+
+Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\init_python312_venv.ps1
+.\.venv\Scripts\Activate.ps1
+```
+
+如需手动创建环境，也只能使用 Python 3.12.x：
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 ```
 
 最小调用（OpenAI）：
