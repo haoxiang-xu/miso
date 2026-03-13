@@ -8,15 +8,20 @@ Provides **file operations**, **line-level editing**, **directory management**, 
 ## Quick Start
 
 ```python
-from miso import agent, python_workspace_toolkit
+from miso import Agent, python_workspace_toolkit
 
-a = agent()
-a.add_toolkit(python_workspace_toolkit(workspace_root="/path/to/project"))
+a = Agent(
+    name="coder",
+    tools=[python_workspace_toolkit(workspace_root="/path/to/project")],
+)
 ```
 
-Or attach it with the traditional single-toolkit API:
+Or attach it to the low-level runtime directly:
 
 ```python
+from miso import broth as Broth, python_workspace_toolkit
+
+a = Broth()
 a.toolkit = python_workspace_toolkit(workspace_root=".")
 ```
 

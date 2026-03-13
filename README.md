@@ -128,7 +128,7 @@ print(bundle)
 当前包导出的主要符号：
 
 - `Agent` / `Team`：推荐的高层单 agent / multi-agent 入口
-- `broth`：主入口类
+- `broth`：底层 runtime engine / 兼容入口
 - `MemoryManager` / `MemoryConfig`
 - `ContextStrategy` / `SessionStore` / `VectorStoreAdapter`
 - `LastNTurnsStrategy` / `SummaryTokenStrategy` / `HybridContextStrategy`
@@ -147,7 +147,9 @@ print(bundle)
 
 | 模块                                              | 核心对象                              | 职责                                                          |
 | ------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------- |
-| `miso/broth.py`                                   | `broth`                               | 代理主循环、provider 适配、工具调用闭环、token 统计、回调事件 |
+| `miso/agent.py`                                   | `Agent`                               | 高层单 agent API；封装 tools/memory/defaults，并组合 `broth` |
+| `miso/team.py`                                    | `Team`                                | 多 agent 编排、channel 调度、handoff、owner finalize          |
+| `miso/broth.py`                                   | `broth`                               | 底层执行引擎：provider 适配、工具调用闭环、token 统计、回调事件 |
 | `miso/memory.py`                                  | `MemoryManager` / 策略协议            | session memory、context window 裁剪、summary、可选向量召回     |
 | `miso/tool.py`                                    | `tool_parameter` / `tool` / `toolkit` | 工具 schema 推断、工具注册、工具执行                          |
 | `miso/response_format.py`                         | `response_format`                     | JSON Schema 输出约束与解析                                    |
@@ -165,9 +167,10 @@ print(bundle)
 ## 分层架构与流层逻辑
 
 `miso` 的核心不是“单次问答”，而是“一个可迭代的代理流”。  
-可以把它看成 10 层：
+对外推荐入口是 `Agent` / `Team`，底层执行引擎是 `broth`。  
+可以把它看成 11 层：
 
-1. **调用层**：`broth.run(messages, payload, session_id, ...)`
+1. **入口层**：`Agent.run(...)` / `Agent.step(...)` / `Team.run(...)` / `broth.run(...)`
 2. **标准化层**：把输入消息转成 canonical blocks（text/image/pdf）
 3. **能力校验层**：根据模型能力矩阵校验模态与 source.type
 4. **Provider 投影层**：canonical -> provider 原生请求格式
@@ -177,6 +180,7 @@ print(bundle)
 8. **观察层（可选）**：若工具标记 `observe=True`，触发一次“工具结果复核”
 9. **收敛层**：无 tool call 时应用 `response_format`，输出最终消息和 bundle
 10. **Memory 提交层（可选）**：将最终对话写回 session，并可写入向量索引
+11. **编排层（Team）**：命名 channels、调度、handoff、owner finalize
 
 ### 单次 `run()` 时序图
 
@@ -210,6 +214,9 @@ flowchart LR
 ---
 
 ## `broth` 主循环详解
+
+`broth` 是底层 runtime engine。  
+如果你用 `Agent` / `Team`，最终也会落到这层执行；如果你需要完全手动控制 provider/tool loop，也可以继续直接使用 `broth`。
 
 ### 1) 核心状态
 
@@ -1015,12 +1022,15 @@ messages, bundle = agent.run(
 ```text
 miso/
   __init__.py
+  _agent_shared.py
+  agent.py
   broth.py
   memory.py
-  tool.py
-  response_format.py
   media.py
   mcp.py
+  response_format.py
+  team.py
+  tool.py
   model_default_payloads.json
   model_capabilities.json
   builtin_toolkits/
@@ -1030,6 +1040,7 @@ miso/
       __init__.py
       python_workspace_toolkit.py
 tests/
+  test_agent_team.py
   test_broth_core.py
   test_memory.py
   test_agent_core.py
@@ -1064,22 +1075,26 @@ Smoke tests 依赖环境变量：
 
 ## 边界与注意事项
 
-1. 入口类是 `broth`，不是 `agent`。建议 `from miso import broth as Broth`。
-2. Ollama 当前只支持文本输入；image/pdf 会在前置校验阶段抛错。
-3. `response_format` 在 Anthropic 路径不会自动注入 schema 指令，主要靠本地 parse 兜底。
-4. `observe=True` 触发的是“工具结果复核子回合”，会额外消耗 token。
-5. 工具名冲突时以后注册 toolkit 为准，建议在多 toolkit 组合时避免重名。
-6. `python_workspace_toolkit` 默认可在工作区内创建/删除/移动文件，生产场景建议最小化 `workspace_root` 范围。
-7. `requires_confirmation` 标记的工具在未提供 `on_tool_confirm` 回调时会自动放行，不会阻塞执行。
-8. MCP 工具如果带 `annotations.destructiveHint = true`，会自动标记为需要确认。
-9. memory 默认是进程内会话存储（`InMemorySessionStore`），进程重启后不会自动恢复历史。
-10. summary 触发使用字符启发式 token 估算（`ceil(chars/4)`），是稳定近似值，不是 provider 官方 tokenizer 精算值。
+1. 推荐入口是 `Agent` / `Team`；`broth` 保留为底层 runtime 和兼容 API，旧代码仍可继续 `from miso import broth as Broth`。
+2. `Team` 负责 multi-agent 编排；`Agent` 本身不持有 team 级共享状态。
+3. tools 和 memory 默认是 agent-local；跨 agent 信息交换主要通过 channel、handoff 和显式 artifact/message。
+4. Ollama 当前只支持文本输入；image/pdf 会在前置校验阶段抛错。
+5. `response_format` 在 Anthropic 路径不会自动注入 schema 指令，主要靠本地 parse 兜底。
+6. `observe=True` 触发的是“工具结果复核子回合”，会额外消耗 token。
+7. 工具名冲突时以后注册 toolkit 为准，建议在多 toolkit 组合时避免重名。
+8. `python_workspace_toolkit` 默认可在工作区内创建/删除/移动文件，生产场景建议最小化 `workspace_root` 范围。
+9. `requires_confirmation` 标记的工具在未提供 `on_tool_confirm` 回调时会自动放行，不会阻塞执行。
+10. MCP 工具如果带 `annotations.destructiveHint = true`，会自动标记为需要确认。
+11. memory 默认是进程内会话存储（`InMemorySessionStore`），进程重启后不会自动恢复历史。
+12. summary 触发使用字符启发式 token 估算（`ceil(chars/4)`），是稳定近似值，不是 provider 官方 tokenizer 精算值。
 
 ---
 
 如果你准备基于 miso 二次开发，建议优先阅读：
 
-1. `miso/broth.py`（主循环与 provider 适配）
-2. `miso/memory.py`（session memory 与 context window 策略）
-3. `miso/tool.py`（工具抽象）
-4. `miso/builtin_toolkits/python_workspace_toolkit/python_workspace_toolkit.py`（可直接落地的工具实现）
+1. `miso/agent.py`（高层单 agent API）
+2. `miso/team.py`（多 agent 编排与 channels）
+3. `miso/broth.py`（主循环与 provider 适配）
+4. `miso/memory.py`（session memory 与 context window 策略）
+5. `miso/tool.py`（工具抽象）
+6. `miso/builtin_toolkits/python_workspace_toolkit/python_workspace_toolkit.py`（可直接落地的工具实现）
