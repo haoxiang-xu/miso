@@ -45,6 +45,17 @@ class response_format:
             f"The JSON must conform to this schema:\n{schema_str}"
         )
 
+    def to_gemini(self) -> dict[str, Any]:
+        """Return Gemini-compatible structured output config.
+
+        Returns a dict with ``response_mime_type`` and ``response_schema``
+        suitable for passing into Gemini's ``generation_config``.
+        """
+        return {
+            "response_mime_type": "application/json",
+            "response_schema": deepcopy(self.schema),
+        }
+
     def parse(self, content: str | dict[str, Any]) -> dict[str, Any]:
         if isinstance(content, dict):
             parsed = deepcopy(content)

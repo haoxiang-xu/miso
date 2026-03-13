@@ -23,6 +23,11 @@ try:
 except ImportError:  # pragma: no cover
     Anthropic = None  # type: ignore[assignment,misc]
 
+try:
+    from google import genai as google_genai
+except ImportError:  # pragma: no cover
+    google_genai = None  # type: ignore[assignment]
+
 from .response_format import response_format
 from .tool import toolkit as base_toolkit
 from .memory import MemoryManager
@@ -949,6 +954,142 @@ class broth:
             projected.append(out_message)
         return projected
 
+    def _project_canonical_to_gemini(self, canonical_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Convert canonical messages to Gemini ``contents`` format.
+
+        Gemini uses ``role: "model"`` instead of ``"assistant"`` and supports
+        ``parts`` lists containing text, inline_data (images/PDFs), function_call,
+        and function_response items.
+        """
+        projected: list[dict[str, Any]] = []
+        for message in canonical_messages:
+            if not isinstance(message, dict) or "role" not in message:
+                projected.append(copy.deepcopy(message))
+                continue
+
+            role = message.get("role", "")
+            # System messages are handled separately (system_instruction) — skip.
+            if role == "system":
+                continue
+            # Map "assistant" -> "model"
+            if role == "assistant":
+                role = "model"
+
+            content = message.get("content", "")
+            if isinstance(content, str):
+                projected.append({"role": role, "parts": [{"text": content}]})
+                continue
+
+            if not isinstance(content, list):
+                projected.append({"role": role, "parts": [{"text": str(content)}]})
+                continue
+
+            parts: list[dict[str, Any]] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+
+                if block_type == "text":
+                    text = block.get("text", "")
+                    parts.append({"text": text if isinstance(text, str) else str(text)})
+                    continue
+
+                if block_type == "image":
+                    source = block.get("source", {})
+                    if not isinstance(source, dict):
+                        raise ValueError(
+                            "error: image block requires object field 'source'. "
+                            "( broth -> _project_canonical_to_gemini )"
+                        )
+                    source_type = source.get("type")
+                    if source_type == "url":
+                        url = source.get("url", "")
+                        # Gemini supports file_data for URIs
+                        parts.append({
+                            "file_data": {
+                                "file_uri": url,
+                                "mime_type": source.get("media_type", "image/jpeg"),
+                            },
+                        })
+                        continue
+                    if source_type == "base64":
+                        parts.append({
+                            "inline_data": {
+                                "mime_type": source.get("media_type", "image/jpeg"),
+                                "data": source.get("data", ""),
+                            },
+                        })
+                        continue
+                    raise ValueError(
+                        "error: image source.type must be 'url' or 'base64'. "
+                        "( broth -> _project_canonical_to_gemini )"
+                    )
+
+                if block_type == "pdf":
+                    source = block.get("source", {})
+                    if not isinstance(source, dict):
+                        raise ValueError(
+                            "error: pdf block requires object field 'source'. "
+                            "( broth -> _project_canonical_to_gemini )"
+                        )
+                    source_type = source.get("type")
+                    if source_type == "url":
+                        parts.append({
+                            "file_data": {
+                                "file_uri": source.get("url", ""),
+                                "mime_type": "application/pdf",
+                            },
+                        })
+                        continue
+                    if source_type == "base64":
+                        parts.append({
+                            "inline_data": {
+                                "mime_type": "application/pdf",
+                                "data": source.get("data", ""),
+                            },
+                        })
+                        continue
+                    if source_type == "file_id":
+                        raise ValueError(
+                            "error: pdf source.type 'file_id' is OpenAI-specific and not supported by Gemini. "
+                            "( broth -> _project_canonical_to_gemini )"
+                        )
+                    raise ValueError(
+                        "error: pdf source.type must be 'url' or 'base64'. "
+                        "( broth -> _project_canonical_to_gemini )"
+                    )
+
+                # Gemini tool_use / tool_result blocks from prior turns
+                if block_type == "tool_use":
+                    parts.append({
+                        "function_call": {
+                            "name": block.get("name", ""),
+                            "args": block.get("input", {}),
+                        },
+                    })
+                    continue
+
+                if block_type == "tool_result":
+                    raw_content = block.get("content", "")
+                    try:
+                        response_val = json.loads(raw_content) if isinstance(raw_content, str) and raw_content.strip() else {"result": raw_content}
+                    except (json.JSONDecodeError, ValueError):
+                        response_val = {"result": raw_content}
+                    parts.append({
+                        "function_response": {
+                            "name": block.get("name", "unknown"),
+                            "response": response_val if isinstance(response_val, dict) else {"result": response_val},
+                        },
+                    })
+                    continue
+
+                parts.append(copy.deepcopy(block))
+
+            if parts:
+                projected.append({"role": role, "parts": parts})
+        return projected
+
     def _project_canonical_messages_for_provider(
         self,
         canonical_messages: list[dict[str, Any]],
@@ -959,6 +1100,8 @@ class broth:
             return self._project_canonical_to_anthropic(canonical_messages)
         if self.provider == "ollama":
             return self._project_canonical_to_ollama(canonical_messages)
+        if self.provider == "gemini":
+            return self._project_canonical_to_gemini(canonical_messages)
         return copy.deepcopy(canonical_messages)
 
     def run(
@@ -1419,6 +1562,18 @@ class broth:
             )
         if self.provider == "anthropic":
             return self._anthropic_fetch_once(
+                messages=messages,
+                payload=payload,
+                response_format=response_format,
+                callback=callback,
+                verbose=verbose,
+                run_id=run_id,
+                iteration=iteration,
+                toolkit=toolkit,
+                emit_stream=emit_stream,
+            )
+        if self.provider == "gemini":
+            return self._gemini_fetch_once(
                 messages=messages,
                 payload=payload,
                 response_format=response_format,
@@ -1973,6 +2128,197 @@ class broth:
             consumed_tokens=consumed_tokens,
         )
 
+    def _gemini_fetch_once(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        payload: dict[str, Any],
+        response_format: response_format | None,
+        callback: Callable[[dict[str, Any]], None] | None,
+        verbose: bool,
+        run_id: str,
+        iteration: int,
+        toolkit: base_toolkit,
+        emit_stream: bool,
+    ) -> ProviderTurnResult:
+        if google_genai is None:
+            raise ImportError("google-genai package is required for gemini provider — pip install google-genai")
+        if not self.api_key:
+            raise ValueError("error: api_key is required for gemini provider")
+
+        client = google_genai.Client(api_key=self.api_key)
+        request_payload = self._merged_payload(payload)
+
+        # ── separate system instruction from messages ──────────────────────
+        system_instruction: str | None = None
+        chat_contents: list[dict[str, Any]] = []
+        # System messages were already stripped by _project_canonical_to_gemini,
+        # but if raw messages contain system roles (e.g. from observation pipeline),
+        # extract them here.
+        for msg in messages:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                system_instruction = msg.get("content", "")
+            else:
+                chat_contents.append(msg)
+
+        # ── build tools for Gemini format ──────────────────────────────────
+        tools_json = toolkit.to_json()
+        gemini_tools = None
+        supports_tools = bool(self._model_capability("supports_tools", True))
+        if tools_json and supports_tools:
+            function_declarations = []
+            for t in tools_json:
+                func_decl: dict[str, Any] = {
+                    "name": t.get("name", ""),
+                    "description": t.get("description", ""),
+                }
+                params = t.get("parameters")
+                if params:
+                    func_decl["parameters"] = params
+                function_declarations.append(func_decl)
+            gemini_tools = [{"function_declarations": function_declarations}]
+
+        # ── build generation config ────────────────────────────────────────
+        generation_config: dict[str, Any] = {}
+        for key in ("temperature", "top_p", "top_k", "max_output_tokens"):
+            if key in request_payload:
+                generation_config[key] = request_payload[key]
+
+        if response_format is not None:
+            gemini_format = response_format.to_gemini()
+            generation_config["response_mime_type"] = gemini_format.get("response_mime_type", "application/json")
+            generation_config["response_schema"] = gemini_format.get("response_schema")
+
+        # ── build request kwargs ───────────────────────────────────────────
+        request_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "contents": chat_contents,
+        }
+        if system_instruction:
+            request_kwargs["config"] = {
+                "system_instruction": system_instruction,
+            }
+        else:
+            request_kwargs["config"] = {}
+
+        if generation_config:
+            request_kwargs["config"].update(generation_config)
+        if gemini_tools:
+            request_kwargs["config"]["tools"] = gemini_tools
+
+        self._emit_request_messages(
+            callback=callback,
+            run_id=run_id,
+            iteration=iteration,
+            provider="gemini",
+            messages=chat_contents,
+            system=system_instruction if isinstance(system_instruction, str) else None,
+        )
+
+        # ── stream response ────────────────────────────────────────────────
+        collected_chunks: list[str] = []
+        tool_calls: list[ToolCall] = []
+        assistant_messages: list[dict[str, Any]] = []
+        final_text_parts: list[str] = []
+        consumed_tokens = 0
+
+        try:
+            response_stream = client.models.generate_content_stream(**request_kwargs)
+            for chunk in response_stream:
+                # Extract usage metadata
+                usage_meta = getattr(chunk, "usage_metadata", None)
+                if usage_meta:
+                    total = getattr(usage_meta, "total_token_count", 0) or 0
+                    if total > consumed_tokens:
+                        consumed_tokens = total
+
+                candidates = getattr(chunk, "candidates", None) or []
+                for candidate in candidates:
+                    content = getattr(candidate, "content", None)
+                    if content is None:
+                        continue
+                    parts = getattr(content, "parts", None) or []
+                    for part in parts:
+                        # Text part
+                        text = getattr(part, "text", None)
+                        if text:
+                            collected_chunks.append(text)
+                            if verbose and clear_output is not None:
+                                clear_output(wait=True)
+                                print("".join(collected_chunks))
+                            if emit_stream:
+                                self._emit(
+                                    callback,
+                                    "token_delta",
+                                    run_id,
+                                    iteration=iteration,
+                                    provider="gemini",
+                                    delta=text,
+                                    accumulated_text="".join(collected_chunks),
+                                )
+                            continue
+
+                        # Function call part
+                        fn_call = getattr(part, "function_call", None)
+                        if fn_call:
+                            fn_name = getattr(fn_call, "name", "") or ""
+                            fn_args = getattr(fn_call, "args", {}) or {}
+                            # Convert to regular dict if it's a proto MapComposite
+                            if not isinstance(fn_args, dict):
+                                try:
+                                    fn_args = dict(fn_args)
+                                except Exception:
+                                    fn_args = {}
+                            call_id = str(uuid.uuid4())
+                            tool_calls.append(ToolCall(
+                                call_id=call_id,
+                                name=fn_name,
+                                arguments=fn_args,
+                            ))
+                            continue
+        except Exception as exc:
+            if collected_chunks:
+                # Partial text received before error — return what we have
+                full_text = "".join(collected_chunks).strip()
+                return ProviderTurnResult(
+                    assistant_messages=[{"role": "assistant", "content": full_text}],
+                    tool_calls=[],
+                    final_text=full_text,
+                    consumed_tokens=consumed_tokens,
+                )
+            raise ValueError(f"error: Gemini API call failed: {exc} ( broth -> _gemini_fetch_once )") from exc
+
+        # ── assemble result ────────────────────────────────────────────────
+        full_text = "".join(collected_chunks).strip()
+        if full_text:
+            final_text_parts.append(full_text)
+
+        if tool_calls:
+            # Build assistant message with function_call parts for conversation history
+            assistant_parts: list[dict[str, Any]] = []
+            if full_text:
+                assistant_parts.append({"type": "text", "text": full_text})
+            for tc in tool_calls:
+                assistant_parts.append({
+                    "type": "tool_use",
+                    "id": tc.call_id,
+                    "name": tc.name,
+                    "input": tc.arguments if isinstance(tc.arguments, dict) else {},
+                })
+            assistant_messages.append({
+                "role": "assistant",
+                "content": assistant_parts,
+            })
+        elif full_text:
+            assistant_messages.append({"role": "assistant", "content": full_text})
+
+        return ProviderTurnResult(
+            assistant_messages=assistant_messages,
+            tool_calls=tool_calls,
+            final_text="".join(final_text_parts).strip(),
+            consumed_tokens=consumed_tokens,
+        )
+
     def _execute_tool_calls(
         self,
         *,
@@ -2066,6 +2412,20 @@ class broth:
                         "type": "tool_result",
                         "tool_use_id": tool_call.call_id,
                         "content": content,
+                    }],
+                }
+            elif self.provider == "gemini":
+                try:
+                    response_val = json.loads(content) if content.strip() else {}
+                except (json.JSONDecodeError, ValueError):
+                    response_val = {"result": content}
+                tool_message = {
+                    "role": "user",
+                    "parts": [{
+                        "function_response": {
+                            "name": tool_call.name,
+                            "response": response_val if isinstance(response_val, dict) else {"result": response_val},
+                        },
                     }],
                 }
             else:
@@ -2193,6 +2553,8 @@ class broth:
             observe_payload["num_predict"] = OBSERVATION_MAX_OUTPUT_TOKENS
         if self.provider == "anthropic":
             observe_payload["max_tokens"] = OBSERVATION_MAX_OUTPUT_TOKENS
+        if self.provider == "gemini":
+            observe_payload["max_output_tokens"] = OBSERVATION_MAX_OUTPUT_TOKENS
         return observe_payload
 
     def _build_memory_summary_payload(self, max_summary_chars: int) -> dict[str, Any]:
@@ -2205,6 +2567,8 @@ class broth:
             summary_payload["num_predict"] = max_output_tokens
         if self.provider == "anthropic":
             summary_payload["max_tokens"] = max_output_tokens
+        if self.provider == "gemini":
+            summary_payload["max_output_tokens"] = max_output_tokens
         return summary_payload
 
     def _generate_memory_summary(
@@ -2296,6 +2660,8 @@ class broth:
             extraction_payload["num_predict"] = max_output_tokens
         if self.provider == "anthropic":
             extraction_payload["max_tokens"] = max_output_tokens
+        if self.provider == "gemini":
+            extraction_payload["max_output_tokens"] = max_output_tokens
         return extraction_payload
 
     def _extract_long_term_memory(
