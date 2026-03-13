@@ -1,12 +1,11 @@
 import tempfile
-from pathlib import Path
 
-from miso import broth as Broth, build_builtin_toolkit, python_workspace_toolkit
+from miso import broth as Broth, build_builtin_toolkit, terminal_toolkit, workspace_toolkit
 
 
-def test_builtin_toolkit_registers_expected_tools():
+def test_workspace_toolkit_registers_expected_tools():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = python_workspace_toolkit(workspace_root=tmp, include_python_runtime=True)
+        toolkit = workspace_toolkit(workspace_root=tmp)
 
         names = set(toolkit.tools.keys())
         # file-level
@@ -29,35 +28,34 @@ def test_builtin_toolkit_registers_expected_tools():
         assert "copy_lines" in names
         assert "move_lines" in names
         assert "search_and_replace" in names
-        # python runtime
-        assert "python_runtime_init" in names
-        assert "python_runtime_install" in names
-        assert "python_runtime_run" in names
-        assert "python_runtime_reset" in names
-        # terminal runtime
-        assert "terminal_exec" in names
-        assert "terminal_session_open" in names
-        assert "terminal_session_write" in names
-        assert "terminal_session_close" in names
-
-
-def test_builtin_toolkit_terminal_runtime_can_be_disabled():
-    with tempfile.TemporaryDirectory() as tmp:
-        tk = python_workspace_toolkit(
-            workspace_root=tmp,
-            include_python_runtime=False,
-            include_terminal_runtime=False,
-        )
-        names = set(tk.tools.keys())
         assert "terminal_exec" not in names
         assert "terminal_session_open" not in names
         assert "terminal_session_write" not in names
         assert "terminal_session_close" not in names
+        assert "python_runtime_init" not in names
+        assert "python_runtime_install" not in names
+        assert "python_runtime_run" not in names
+        assert "python_runtime_reset" not in names
 
 
-def test_builtin_toolkit_file_ops_and_search():
+def test_build_builtin_toolkit_returns_workspace_toolkit():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = python_workspace_toolkit(workspace_root=tmp, include_python_runtime=False)
+        tk = build_builtin_toolkit(workspace_root=tmp)
+        assert isinstance(tk, workspace_toolkit)
+        assert "read_file" in tk.tools
+        assert "terminal_exec" not in tk.tools
+
+
+def test_workspace_toolkit_methods_are_declared_on_class_for_ui_discovery():
+    assert "read_file" in workspace_toolkit.__dict__
+    assert "write_file" in workspace_toolkit.__dict__
+    assert "read_lines" in workspace_toolkit.__dict__
+    assert "search_and_replace" in workspace_toolkit.__dict__
+
+
+def test_workspace_toolkit_file_ops_and_search():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = workspace_toolkit(workspace_root=tmp)
 
         write_result = toolkit.execute(
             "write_file",
@@ -78,109 +76,9 @@ def test_builtin_toolkit_file_ops_and_search():
         assert len(search_result["matches"]) == 2
 
 
-def test_builtin_toolkit_python_runtime_run_code():
-    with tempfile.TemporaryDirectory() as tmp:
-        toolkit = python_workspace_toolkit(workspace_root=tmp, include_python_runtime=True)
-
-        init_result = toolkit.execute("python_runtime_init", {"reset": True})
-        assert init_result.get("created") is True
-
-        run_result = toolkit.execute(
-            "python_runtime_run",
-            {"code": "print('runtime-ok')", "timeout_seconds": 10},
-        )
-        assert run_result.get("returncode") == 0
-        assert "runtime-ok" in run_result.get("stdout", "")
-
-
-def test_terminal_exec_basic():
-    with tempfile.TemporaryDirectory() as tmp:
-        tk = python_workspace_toolkit(workspace_root=tmp, include_python_runtime=False)
-        result = tk.execute("terminal_exec", {"command": "echo terminal-ok"})
-        assert result["ok"] is True
-        assert result["returncode"] == 0
-        assert "terminal-ok" in result["stdout"]
-        assert result["timed_out"] is False
-
-
-def test_terminal_exec_rejects_cwd_outside_workspace():
-    with tempfile.TemporaryDirectory() as tmp:
-        tk = python_workspace_toolkit(workspace_root=tmp, include_python_runtime=False)
-        result = tk.execute("terminal_exec", {"command": "echo hi", "cwd": "../"})
-        assert result["ok"] is False
-        assert "outside workspace_root" in result["error"]
-
-
-def test_terminal_exec_blocks_strict_commands():
-    with tempfile.TemporaryDirectory() as tmp:
-        tk = python_workspace_toolkit(workspace_root=tmp, include_python_runtime=False)
-        result = tk.execute("terminal_exec", {"command": "curl https://example.com"})
-        assert result["ok"] is False
-        assert "blocked by strict mode" in result["error"]
-
-
-def test_terminal_exec_timeout():
-    with tempfile.TemporaryDirectory() as tmp:
-        tk = python_workspace_toolkit(workspace_root=tmp, include_python_runtime=False)
-        result = tk.execute("terminal_exec", {"command": "sleep 2", "timeout_seconds": 1})
-        assert result["ok"] is False
-        assert result["timed_out"] is True
-        assert "timed out" in result["error"]
-
-
-def test_terminal_exec_truncates_output():
-    with tempfile.TemporaryDirectory() as tmp:
-        tk = python_workspace_toolkit(workspace_root=tmp, include_python_runtime=False)
-        result = tk.execute(
-            "terminal_exec",
-            {"command": "printf " + "x" * 200, "max_output_chars": 20},
-        )
-        assert result["ok"] is True
-        assert result["truncated"] is True
-        assert len(result["stdout"]) <= 20
-
-
-def test_terminal_session_open_write_close():
-    with tempfile.TemporaryDirectory() as tmp:
-        tk = python_workspace_toolkit(workspace_root=tmp, include_python_runtime=False)
-
-        opened = tk.execute("terminal_session_open", {"shell": "/bin/sh"})
-        assert opened["ok"] is True
-        sid = opened["session_id"]
-
-        written = tk.execute(
-            "terminal_session_write",
-            {"session_id": sid, "input": "echo session-ok\n", "yield_time_ms": 300},
-        )
-        assert written["ok"] is True
-        assert "session-ok" in written["stdout"]
-
-        closed = tk.execute("terminal_session_close", {"session_id": sid})
-        assert closed["ok"] is True
-
-
-def test_terminal_session_invalid_session_id():
-    with tempfile.TemporaryDirectory() as tmp:
-        tk = python_workspace_toolkit(workspace_root=tmp, include_python_runtime=False)
-        result = tk.execute("terminal_session_write", {"session_id": "missing", "input": "echo x\n"})
-        assert result["ok"] is False
-        assert "session not found" in result["error"]
-
-
-def test_terminal_session_write_after_close_errors():
-    with tempfile.TemporaryDirectory() as tmp:
-        tk = python_workspace_toolkit(workspace_root=tmp, include_python_runtime=False)
-        opened = tk.execute("terminal_session_open", {"shell": "/bin/sh"})
-        sid = opened["session_id"]
-        tk.execute("terminal_session_close", {"session_id": sid})
-        result = tk.execute("terminal_session_write", {"session_id": sid, "input": "echo x\n"})
-        assert result["ok"] is False
-        assert "session not found" in result["error"]
-
-
 def test_line_level_read_insert_replace_delete():
     with tempfile.TemporaryDirectory() as tmp:
-        tk = python_workspace_toolkit(workspace_root=tmp, include_python_runtime=False)
+        tk = workspace_toolkit(workspace_root=tmp)
 
         # Create a file with 5 lines
         tk.execute("write_file", {"path": "lines.txt", "content": "L1\nL2\nL3\nL4\nL5\n"})
@@ -212,7 +110,7 @@ def test_line_level_read_insert_replace_delete():
 
 def test_copy_lines_and_move_lines():
     with tempfile.TemporaryDirectory() as tmp:
-        tk = python_workspace_toolkit(workspace_root=tmp, include_python_runtime=False)
+        tk = workspace_toolkit(workspace_root=tmp)
 
         tk.execute("write_file", {"path": "m.txt", "content": "A\nB\nC\nD\n"})
 
@@ -232,7 +130,7 @@ def test_copy_lines_and_move_lines():
 
 def test_search_and_replace():
     with tempfile.TemporaryDirectory() as tmp:
-        tk = python_workspace_toolkit(workspace_root=tmp, include_python_runtime=False)
+        tk = workspace_toolkit(workspace_root=tmp)
 
         tk.execute("write_file", {"path": "sr.txt", "content": "foo bar foo baz foo\n"})
 
@@ -251,7 +149,7 @@ def test_search_and_replace():
 
 def test_file_create_delete_copy_move_exists():
     with tempfile.TemporaryDirectory() as tmp:
-        tk = python_workspace_toolkit(workspace_root=tmp, include_python_runtime=False)
+        tk = workspace_toolkit(workspace_root=tmp)
 
         # create
         result = tk.execute("create_file", {"path": "new.txt", "content": "hello"})
@@ -293,12 +191,10 @@ def test_agent_uses_empty_toolkit_by_default():
 
 def test_agent_add_multiple_toolkits():
     """Agent can hold multiple toolkits simultaneously."""
-    import tempfile
-
     with tempfile.TemporaryDirectory() as tmp:
         agent = Broth()
-        ws = python_workspace_toolkit(workspace_root=tmp, include_python_runtime=False)
-        ws_py = python_workspace_toolkit(workspace_root=tmp, include_python_runtime=True)
+        ws = workspace_toolkit(workspace_root=tmp)
+        term = terminal_toolkit(workspace_root=tmp)
 
         agent.add_toolkit(ws)
 
@@ -307,12 +203,13 @@ def test_agent_add_multiple_toolkits():
         assert "read_file" in names
         assert "write_file" in names
         assert "python_runtime_run" not in names
+        assert "terminal_exec" not in names
 
-        agent.add_toolkit(ws_py)
+        agent.add_toolkit(term)
         names = set(agent.toolkit.tools.keys())
-        assert "python_runtime_run" in names
+        assert "terminal_exec" in names
 
-        agent.remove_toolkit(ws_py)
+        agent.remove_toolkit(term)
         names_after = set(agent.toolkit.tools.keys())
         assert "read_file" in names_after
-        assert "python_runtime_run" not in names_after
+        assert "terminal_exec" not in names_after

@@ -9,7 +9,7 @@
 - 一个结构化输出层：`response_format`
 - 一个多模态输入规范层：`media` + canonical content blocks
 - 一个远程工具桥接层：`mcp`
-- 一个可直接落地的工作区工具包：`python_workspace_toolkit`
+- 两个可直接落地的内置工具包：`workspace_toolkit` / `terminal_toolkit`
 
 它支持 OpenAI / Anthropic / Ollama 三类 provider，并且尽量保持接口一致。
 
@@ -27,7 +27,7 @@
 8. [工具确认回调（`on_tool_confirm`）](#工具确认回调on_tool_confirm)
 9. [多模态输入规范（canonical blocks）](#多模态输入规范canonical-blocks)
 10. [`response_format` 结构化输出](#response_format-结构化输出)
-11. [内置工具包：`python_workspace_toolkit`](#内置工具包python_workspace_toolkit)
+11. [内置工具包：`workspace_toolkit`](#内置工具包workspace_toolkit)
 12. [MCP 工具桥接：`mcp`](#mcp-工具桥接mcp)
 13. [配置层：模型默认参数与能力矩阵](#配置层模型默认参数与能力矩阵)
 14. [回调事件与可观测性](#回调事件与可观测性)
@@ -138,8 +138,9 @@ print(bundle)
 - `media`
 - `mcp`
 - `builtin_toolkit`（内置 toolkit 基类）
-- `build_builtin_toolkit`（返回 `python_workspace_toolkit` 的 helper）
-- `python_workspace_toolkit`
+- `build_builtin_toolkit`（返回 `workspace_toolkit` 的 helper）
+- `workspace_toolkit`
+- `terminal_toolkit`
 
 ---
 
@@ -156,7 +157,8 @@ print(bundle)
 | `miso/media.py`                                   | `from_file` / `from_url`              | 生成 canonical 多模态输入块                                   |
 | `miso/mcp.py`                                     | `mcp(toolkit)`                        | 把 MCP Server 暴露成 miso toolkit                             |
 | `miso/builtin_toolkits/base.py`                   | `builtin_toolkit`                     | 工作区路径安全基类                                            |
-| `miso/builtin_toolkits/python_workspace_toolkit/` | `python_workspace_toolkit`            | 文件、目录、行级编辑、隔离 Python runtime                     |
+| `miso/builtin_toolkits/workspace_toolkit/`        | `workspace_toolkit`                   | 文件、目录、行级编辑                                          |
+| `miso/builtin_toolkits/terminal_toolkit/`         | `terminal_toolkit`                    | 仅暴露受限 terminal action                                    |
 | `miso/model_default_payloads.json`                | -                                     | 不同模型默认 payload                                          |
 | `miso/model_capabilities.json`                    | -                                     | 不同模型能力矩阵（tools、多模态、payload 白名单等）           |
 
@@ -659,27 +661,17 @@ fmt = response_format(
 
 ---
 
-## 内置工具包：`python_workspace_toolkit`
+## 内置工具包：`workspace_toolkit`
 
 入口：
 
 ```python
-from miso import python_workspace_toolkit, build_builtin_toolkit
+from miso import workspace_toolkit, build_builtin_toolkit
 
-tk = python_workspace_toolkit(
-    workspace_root=".",
-    include_python_runtime=True,
-    include_terminal_runtime=True,
-    terminal_strict_mode=True,
-)
+tk = workspace_toolkit(workspace_root=".")
 
 # 等价 helper
-tk2 = build_builtin_toolkit(
-    workspace_root=".",
-    include_python_runtime=True,
-    include_terminal_runtime=True,
-    terminal_strict_mode=True,
-)
+tk2 = build_builtin_toolkit(workspace_root=".")
 ```
 
 ### 1) 路径安全
@@ -718,14 +710,18 @@ tk2 = build_builtin_toolkit(
 - `move_lines`
 - `search_and_replace`
 
-Python 隔离运行时（`.miso_python_runtime`）：
+### 3) 如果需要 terminal action
 
-- `python_runtime_init`
-- `python_runtime_install`（`observe=True`）
-- `python_runtime_run`（`observe=True`）
-- `python_runtime_reset`
+```python
+from miso import terminal_toolkit
 
-Terminal 运行时（受限 shell）：
+term_tk = terminal_toolkit(
+    workspace_root=".",
+    terminal_strict_mode=True,
+)
+```
+
+`terminal_toolkit` 只注册以下 tools：
 
 - `terminal_exec`
 - `terminal_session_open`
@@ -871,20 +867,14 @@ messages, bundle = agent.run(
 )
 ```
 
-### 2) 内置工作区工具 + 隔离 runtime
+### 2) 内置工作区工具 + terminal 工具
 
 ```python
-from miso import broth as Broth, python_workspace_toolkit
+from miso import broth as Broth, terminal_toolkit, workspace_toolkit
 
 agent = Broth(provider="openai", model="gpt-5", api_key="YOUR_OPENAI_API_KEY")
-agent.add_toolkit(
-    python_workspace_toolkit(
-        workspace_root=".",
-        include_python_runtime=True,
-        include_terminal_runtime=True,
-        terminal_strict_mode=True,
-    )
-)
+agent.add_toolkit(workspace_toolkit(workspace_root="."))
+agent.add_toolkit(terminal_toolkit(workspace_root=".", terminal_strict_mode=True))
 
 messages, bundle = agent.run(
     messages=[{"role": "user", "content": "创建 demo.py，写入一个 hello 函数并运行它"}],
@@ -1036,9 +1026,9 @@ miso/
   builtin_toolkits/
     __init__.py
     base.py
-    python_workspace_toolkit/
+    workspace_toolkit/
       __init__.py
-      python_workspace_toolkit.py
+      workspace_toolkit.py
 tests/
   test_agent_team.py
   test_broth_core.py
@@ -1046,7 +1036,7 @@ tests/
   test_agent_core.py
   test_toolkit_design.py
   test_tool_confirmation.py
-  test_builtin_toolkit.py
+  test_workspace_toolkit.py
   test_mcp.py
   test_file_cache.py
   test_openai_family_smoke.py
@@ -1082,7 +1072,7 @@ Smoke tests 依赖环境变量：
 5. `response_format` 在 Anthropic 路径不会自动注入 schema 指令，主要靠本地 parse 兜底。
 6. `observe=True` 触发的是“工具结果复核子回合”，会额外消耗 token。
 7. 工具名冲突时以后注册 toolkit 为准，建议在多 toolkit 组合时避免重名。
-8. `python_workspace_toolkit` 默认可在工作区内创建/删除/移动文件，生产场景建议最小化 `workspace_root` 范围。
+8. `workspace_toolkit` 默认可在工作区内创建/删除/移动文件，生产场景建议最小化 `workspace_root` 范围。
 9. `requires_confirmation` 标记的工具在未提供 `on_tool_confirm` 回调时会自动放行，不会阻塞执行。
 10. MCP 工具如果带 `annotations.destructiveHint = true`，会自动标记为需要确认。
 11. memory 默认是进程内会话存储（`InMemorySessionStore`），进程重启后不会自动恢复历史。
@@ -1097,4 +1087,4 @@ Smoke tests 依赖环境变量：
 3. `miso/broth.py`（主循环与 provider 适配）
 4. `miso/memory.py`（session memory 与 context window 策略）
 5. `miso/tool.py`（工具抽象）
-6. `miso/builtin_toolkits/python_workspace_toolkit/python_workspace_toolkit.py`（可直接落地的工具实现）
+6. `miso/builtin_toolkits/workspace_toolkit/workspace_toolkit.py`（可直接落地的工具实现）

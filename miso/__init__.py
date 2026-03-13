@@ -10,7 +10,8 @@ from .tool import (
 from .builtin_toolkits import (
     builtin_toolkit,
     build_builtin_toolkit,
-    python_workspace_toolkit,
+    terminal_toolkit,
+    workspace_toolkit,
 )
 from .mcp import mcp
 from .response_format import response_format
@@ -48,7 +49,8 @@ __all__ = [
     "ToolConfirmationResponse",
     "builtin_toolkit",
     "build_builtin_toolkit",
-    "python_workspace_toolkit",
+    "workspace_toolkit",
+    "terminal_toolkit",
     "mcp",
     "response_format",
     "broth",
