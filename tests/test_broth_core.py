@@ -1,12 +1,14 @@
 import json
 import importlib
+from pathlib import Path
 
 import httpx
 import openai
 import pytest
 
-from miso import MemoryManager, broth as Broth, response_format, tool, toolkit
+from miso import MemoryManager, broth as Broth, response_format, tool, toolkit, workspace_toolkit
 from miso.broth import ProviderTurnResult, ToolCall
+from miso.workspace_pins import build_pin_record, save_workspace_pins
 
 
 def test_observation_injected_into_last_tool_message_and_callback_events():
@@ -399,6 +401,160 @@ def test_run_memory_hooks_tolerate_legacy_monkey_patches_without_memory_namespac
     assert commit_events[0]["applied"] is True
     assert [msg for msg in messages if msg.get("role") == "assistant"][-1]["content"] == "done"
     assert bundle["consumed_tokens"] == 5
+
+
+def test_workspace_pin_messages_inject_after_existing_system_messages_when_memory_store_is_reused(tmp_path):
+    manager = MemoryManager()
+    agent = Broth(memory_manager=manager)
+
+    file_path = tmp_path / "demo.py"
+    file_path.write_text(
+        "def target():\n"
+        "    return 1\n",
+        encoding="utf-8",
+    )
+    pin = build_pin_record(
+        path=file_path.resolve(),
+        lines=file_path.read_text(encoding="utf-8").splitlines(keepends=True),
+        start=1,
+        end=2,
+        start_with="def target():",
+    )
+    save_workspace_pins(manager.store, "pin-order-session", {}, [pin])
+
+    injected = agent._inject_workspace_pin_messages(
+        messages=[
+            {"role": "system", "content": "Base instructions"},
+            {"role": "system", "content": "[MEMORY SUMMARY]\nrecent facts"},
+            {"role": "user", "content": "latest question"},
+        ],
+        session_id="pin-order-session",
+    )
+
+    assert [msg["content"] for msg in injected[:4]] == [
+        "Base instructions",
+        "[MEMORY SUMMARY]\nrecent facts",
+        injected[2]["content"],
+        injected[3]["content"],
+    ]
+    assert injected[2]["content"].startswith("[PINNED SUMMARY]")
+    assert injected[3]["content"].startswith("[PINNED CONTENT]")
+    assert injected[4] == {"role": "user", "content": "latest question"}
+
+
+def test_broth_workspace_pins_persist_across_runs_without_memory_manager(tmp_path):
+    agent = Broth()
+    agent.provider = "ollama"
+    tk = workspace_toolkit(workspace_root=tmp_path)
+    agent.add_toolkit(tk)
+
+    file_path = Path(tmp_path) / "demo.py"
+    file_path.write_text(
+        "before\n"
+        "def target():\n"
+        "    return 1\n"
+        "after\n",
+        encoding="utf-8",
+    )
+
+    first_run_state = {"turn": 0}
+
+    def first_fetch_once(**kwargs):
+        del kwargs
+        first_run_state["turn"] += 1
+        if first_run_state["turn"] == 1:
+            return ProviderTurnResult(
+                assistant_messages=[
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "function": {
+                                    "name": "pin_file_context",
+                                    "arguments": json.dumps(
+                                        {
+                                            "path": "demo.py",
+                                            "start": 2,
+                                            "end": 3,
+                                            "start_with": "def target():",
+                                        }
+                                    ),
+                                },
+                            }
+                        ],
+                    }
+                ],
+                tool_calls=[
+                    ToolCall(
+                        call_id="call_1",
+                        name="pin_file_context",
+                        arguments={
+                            "path": "demo.py",
+                            "start": 2,
+                            "end": 3,
+                            "start_with": "def target():",
+                        },
+                    )
+                ],
+                final_text="",
+                consumed_tokens=8,
+            )
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "pinned"}],
+            tool_calls=[],
+            final_text="pinned",
+            consumed_tokens=4,
+        )
+
+    agent._fetch_once = first_fetch_once
+    agent.run(
+        messages=[
+            {"role": "system", "content": "Base instructions"},
+            {"role": "user", "content": "pin that function"},
+        ],
+        session_id="no-memory-pin-session",
+        max_iterations=2,
+    )
+
+    file_path.write_text(
+        "intro\n"
+        "before\n"
+        "def target():\n"
+        "    return 2\n"
+        "after\n",
+        encoding="utf-8",
+    )
+
+    captured_requests = []
+
+    def second_fetch_once(**kwargs):
+        captured_requests.append(kwargs["messages"])
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "done"}],
+            tool_calls=[],
+            final_text="done",
+            consumed_tokens=5,
+        )
+
+    agent._fetch_once = second_fetch_once
+    agent.run(
+        messages=[
+            {"role": "system", "content": "Base instructions"},
+            {"role": "user", "content": "use the pinned context"},
+        ],
+        session_id="no-memory-pin-session",
+        max_iterations=1,
+    )
+
+    request_messages = captured_requests[0]
+    assert request_messages[0] == {"role": "system", "content": "Base instructions"}
+    assert request_messages[1]["content"].startswith("[PINNED SUMMARY]")
+    assert "current=lines=3-4" in request_messages[1]["content"]
+    assert request_messages[2]["content"].startswith("[PINNED CONTENT]")
+    assert "return 2" in request_messages[2]["content"]
+    assert request_messages[3] == {"role": "user", "content": "use the pinned context"}
 
 
 def test_openai_run_emits_reasoning_event_and_tracks_reasoning_items():

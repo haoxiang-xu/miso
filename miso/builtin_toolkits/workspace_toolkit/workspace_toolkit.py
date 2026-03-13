@@ -6,6 +6,15 @@ from pathlib import Path
 from typing import Any
 
 from ..base import builtin_toolkit
+from ...workspace_pins import (
+    MAX_FULL_FILE_PIN_CHARS,
+    MAX_SESSION_PIN_COUNT,
+    build_pin_record,
+    find_duplicate_pin,
+    load_workspace_pins,
+    remove_pins,
+    save_workspace_pins,
+)
 
 
 class workspace_toolkit(builtin_toolkit):
@@ -16,6 +25,7 @@ class workspace_toolkit(builtin_toolkit):
         self._register_file_tools()
         self._register_directory_tools()
         self._register_line_tools()
+        self._register_pin_tools()
 
     def _read_lines(self, path: Path) -> list[str]:
         """Read a file and return lines *with* line endings preserved."""
@@ -36,6 +46,17 @@ class workspace_toolkit(builtin_toolkit):
         if start > total:
             return f"start ({start}) exceeds total lines ({total})"
         return None
+
+    def _require_pin_context(self) -> tuple[str, Any] | tuple[None, None]:
+        context = self.current_execution_context
+        if context is None or not context.session_id:
+            return None, {
+                "error": (
+                    "pin_file_context and unpin_file_context require an active session_id; "
+                    "retry inside a session-scoped run."
+                )
+            }
+        return context.session_id, context.session_store
 
     def _register_file_tools(self) -> None:
         self.register_many(
@@ -278,6 +299,93 @@ class workspace_toolkit(builtin_toolkit):
             self.copy_lines,
             self.move_lines,
             self.search_and_replace,
+        )
+
+    def _register_pin_tools(self) -> None:
+        self.register(
+            self.pin_file_context,
+            description=(
+                "Pin live workspace file context into the current session so future requests can re-read it. "
+                "Prefer the smallest necessary line range, avoid pinning whole large files, pass start_with for a "
+                "class or function declaration when possible, and unpin as soon as you no longer need it."
+            ),
+            parameters=[
+                {
+                    "name": "path",
+                    "description": "File path relative to workspace root.",
+                    "type_": "string",
+                    "required": True,
+                },
+                {
+                    "name": "start",
+                    "description": "Optional first line to pin (1-based, inclusive). Provide together with end.",
+                    "type_": "integer",
+                    "required": False,
+                },
+                {
+                    "name": "end",
+                    "description": "Optional last line to pin (1-based, inclusive). Provide together with start.",
+                    "type_": "integer",
+                    "required": False,
+                },
+                {
+                    "name": "start_with",
+                    "description": "Optional anchor text for the start of the pin. Prefer a declaration line.",
+                    "type_": "string",
+                    "required": False,
+                },
+                {
+                    "name": "end_with",
+                    "description": "Optional anchor text for the end of the pin.",
+                    "type_": "string",
+                    "required": False,
+                },
+                {
+                    "name": "reason",
+                    "description": "Optional short reason for keeping the pin.",
+                    "type_": "string",
+                    "required": False,
+                },
+            ],
+        )
+        self.register(
+            self.unpin_file_context,
+            description=(
+                "Remove previously pinned file context from the current session. Prefer pin_id when available, "
+                "use path plus start/end only as a fallback, and clear stale pins promptly."
+            ),
+            parameters=[
+                {
+                    "name": "pin_id",
+                    "description": "Exact pin identifier to remove. This takes priority over the fallback matchers.",
+                    "type_": "string",
+                    "required": False,
+                },
+                {
+                    "name": "path",
+                    "description": "Fallback file path relative to workspace root.",
+                    "type_": "string",
+                    "required": False,
+                },
+                {
+                    "name": "start",
+                    "description": "Fallback first line of the pinned range (1-based, inclusive).",
+                    "type_": "integer",
+                    "required": False,
+                },
+                {
+                    "name": "end",
+                    "description": "Fallback last line of the pinned range (1-based, inclusive).",
+                    "type_": "integer",
+                    "required": False,
+                },
+                {
+                    "name": "all",
+                    "description": "Remove every pin in the current session when no more specific selector is provided.",
+                    "type_": "boolean",
+                    "required": False,
+                },
+            ],
         )
 
     def read_lines(self, path: str, start: int = 1, end: int | None = None) -> dict[str, Any]:
@@ -543,6 +651,139 @@ class workspace_toolkit(builtin_toolkit):
             "replace": replace,
             "replacements_made": replacements_made,
             "bytes_written": len(new_content.encode("utf-8")),
+        }
+
+    def pin_file_context(
+        self,
+        path: str,
+        start: int | None = None,
+        end: int | None = None,
+        start_with: str | None = None,
+        end_with: str | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Pin a file or line range into the current session."""
+        session_id, store_or_error = self._require_pin_context()
+        if session_id is None:
+            return store_or_error
+        store = store_or_error
+
+        if (start is None) != (end is None):
+            return {"error": "start and end must be provided together when pinning a line range"}
+
+        target = self._resolve_workspace_path(path)
+        if not target.exists():
+            return {"error": f"file not found: {target}"}
+        if not target.is_file():
+            return {"error": f"not a file: {target}"}
+
+        lines = self._read_lines(target)
+        total_lines = len(lines)
+
+        if start is not None and end is not None:
+            err = self._validate_range(total_lines, start, end)
+            if err:
+                return {"error": err, "total_lines": total_lines}
+        else:
+            content_chars = len("".join(lines))
+            if content_chars > MAX_FULL_FILE_PIN_CHARS:
+                return {
+                    "error": "file too large to pin as a whole",
+                    "path": str(target),
+                    "mode": "file",
+                    "max_chars": MAX_FULL_FILE_PIN_CHARS,
+                    "file_chars": content_chars,
+                    "suggestion": (
+                        "Pin a smaller line range around the relevant class or function and pass start_with "
+                        "for the declaration line."
+                    ),
+                }
+
+        candidate = build_pin_record(
+            path=target,
+            lines=lines,
+            start=start,
+            end=end,
+            start_with=start_with,
+            end_with=end_with,
+            reason=reason,
+        )
+
+        state, pins = load_workspace_pins(store, session_id)
+        duplicate = find_duplicate_pin(pins, candidate)
+        if duplicate is not None:
+            return {
+                "pin_id": duplicate["pin_id"],
+                "path": duplicate["path"],
+                "mode": duplicate["mode"],
+                "created": False,
+                "duplicate": True,
+                "start": duplicate.get("start"),
+                "end": duplicate.get("end"),
+            }
+
+        if len(pins) >= MAX_SESSION_PIN_COUNT:
+            return {
+                "error": "session pin limit reached",
+                "pin_limit": MAX_SESSION_PIN_COUNT,
+                "existing_pin_count": len(pins),
+                "suggestion": "Unpin stale context before adding another pin.",
+            }
+
+        pins.append(candidate)
+        save_workspace_pins(store, session_id, state, pins)
+        return {
+            "pin_id": candidate["pin_id"],
+            "path": candidate["path"],
+            "mode": candidate["mode"],
+            "created": True,
+            "duplicate": False,
+            "start": candidate.get("start"),
+            "end": candidate.get("end"),
+            "reason": candidate.get("reason"),
+            "pin_count": len(pins),
+        }
+
+    def unpin_file_context(
+        self,
+        pin_id: str | None = None,
+        path: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        all: bool = False,
+    ) -> dict[str, Any]:
+        """Remove one or more pinned file contexts from the current session."""
+        session_id, store_or_error = self._require_pin_context()
+        if session_id is None:
+            return store_or_error
+        store = store_or_error
+
+        resolved_path: str | None = None
+        if path is not None:
+            resolved_path = str(self._resolve_workspace_path(path))
+
+        if not pin_id and resolved_path is None and not all:
+            return {
+                "error": "provide pin_id, path with start/end, or all=True",
+            }
+        if resolved_path is not None and ((start is None) != (end is None)):
+            return {"error": "start and end must be provided together when using the path fallback"}
+
+        state, pins = load_workspace_pins(store, session_id)
+        remaining, removed_ids = remove_pins(
+            pins,
+            pin_id=pin_id,
+            path=resolved_path,
+            start=start,
+            end=end,
+            remove_all=all and not pin_id and resolved_path is None,
+        )
+        if removed_ids:
+            save_workspace_pins(store, session_id, state, remaining)
+        return {
+            "removed": len(removed_ids),
+            "pin_ids": removed_ids,
+            "remaining_pin_count": len(remaining),
         }
 
 

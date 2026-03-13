@@ -1,6 +1,13 @@
 import tempfile
+from pathlib import Path
 
 from miso import broth as Broth, build_builtin_toolkit, terminal_toolkit, workspace_toolkit
+from miso.memory import InMemorySessionStore
+from miso.workspace_pins import (
+    MAX_FULL_FILE_PIN_CHARS,
+    WorkspacePinExecutionContext,
+    load_workspace_pins,
+)
 
 
 def test_workspace_toolkit_registers_expected_tools():
@@ -28,6 +35,8 @@ def test_workspace_toolkit_registers_expected_tools():
         assert "copy_lines" in names
         assert "move_lines" in names
         assert "search_and_replace" in names
+        assert "pin_file_context" in names
+        assert "unpin_file_context" in names
         assert "terminal_exec" not in names
         assert "terminal_session_open" not in names
         assert "terminal_session_write" not in names
@@ -51,6 +60,76 @@ def test_workspace_toolkit_methods_are_declared_on_class_for_ui_discovery():
     assert "write_file" in workspace_toolkit.__dict__
     assert "read_lines" in workspace_toolkit.__dict__
     assert "search_and_replace" in workspace_toolkit.__dict__
+    assert "pin_file_context" in workspace_toolkit.__dict__
+    assert "unpin_file_context" in workspace_toolkit.__dict__
+
+
+def test_workspace_pin_tools_use_explicit_descriptions():
+    with tempfile.TemporaryDirectory() as tmp:
+        tk = workspace_toolkit(workspace_root=tmp)
+
+        pin_description = tk.tools["pin_file_context"].description
+        unpin_description = tk.tools["unpin_file_context"].description
+
+        assert "Prefer the smallest necessary line range" in pin_description
+        assert "unpin as soon as you no longer need it" in pin_description
+        assert "pin_id" in unpin_description
+
+
+def test_workspace_pin_tools_require_active_session_id():
+    with tempfile.TemporaryDirectory() as tmp:
+        tk = workspace_toolkit(workspace_root=tmp)
+        Path(tmp, "demo.py").write_text("print('hello')\n", encoding="utf-8")
+
+        pin_result = tk.execute("pin_file_context", {"path": "demo.py"})
+        unpin_result = tk.execute("unpin_file_context", {"all": True})
+
+        assert "session_id" in pin_result["error"]
+        assert "session_id" in unpin_result["error"]
+
+
+def test_workspace_pin_file_context_deduplicates_and_unpins():
+    with tempfile.TemporaryDirectory() as tmp:
+        tk = workspace_toolkit(workspace_root=tmp)
+        file_path = Path(tmp, "demo.py")
+        file_path.write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+        store = InMemorySessionStore()
+        context = WorkspacePinExecutionContext(session_id="pin-session", session_store=store)
+        tk.push_execution_context(context)
+        try:
+            first = tk.execute("pin_file_context", {"path": "demo.py", "start": 2, "end": 3})
+            second = tk.execute("pin_file_context", {"path": "demo.py", "start": 2, "end": 3})
+            removed = tk.execute("unpin_file_context", {"pin_id": first["pin_id"]})
+        finally:
+            tk.pop_execution_context()
+
+        assert first["created"] is True
+        assert second["duplicate"] is True
+        assert second["pin_id"] == first["pin_id"]
+        assert removed["removed"] == 1
+
+        _, pins = load_workspace_pins(store, "pin-session")
+        assert pins == []
+
+
+def test_workspace_pin_file_context_rejects_oversized_whole_file_pin():
+    with tempfile.TemporaryDirectory() as tmp:
+        tk = workspace_toolkit(workspace_root=tmp)
+        file_path = Path(tmp, "large.txt")
+        file_path.write_text("A" * (MAX_FULL_FILE_PIN_CHARS + 1), encoding="utf-8")
+
+        store = InMemorySessionStore()
+        context = WorkspacePinExecutionContext(session_id="pin-session", session_store=store)
+        tk.push_execution_context(context)
+        try:
+            result = tk.execute("pin_file_context", {"path": "large.txt"})
+        finally:
+            tk.pop_execution_context()
+
+        assert result["error"] == "file too large to pin as a whole"
+        assert result["max_chars"] == MAX_FULL_FILE_PIN_CHARS
+        assert "Pin a smaller line range" in result["suggestion"]
 
 
 def test_workspace_toolkit_file_ops_and_search():

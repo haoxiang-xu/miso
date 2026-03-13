@@ -30,7 +30,8 @@ except ImportError:  # pragma: no cover
 
 from .response_format import response_format
 from .tool import toolkit as base_toolkit
-from .memory import MemoryManager
+from .memory import InMemorySessionStore, MemoryManager
+from .workspace_pins import WorkspacePinExecutionContext, build_pinned_prompt_messages
 
 try:
     from IPython.display import clear_output
@@ -104,6 +105,7 @@ class broth:
         # canonical seed messages for the current run (used in stale-file retry)
         self._last_canonical_seed: list[dict[str, Any]] = []
         self.memory_manager = memory_manager
+        self._workspace_pin_store: InMemorySessionStore | None = None
 
     def _call_with_supported_kwargs(self, func: Callable[..., Any], **kwargs: Any) -> Any:
         """Call a possibly monkey-patched callable, omitting unsupported kwargs."""
@@ -165,6 +167,51 @@ class broth:
             long_term_extractor=long_term_extractor,
         )
 
+    def _get_workspace_pin_store(self):
+        if self.memory_manager is not None and hasattr(self.memory_manager, "store"):
+            return self.memory_manager.store
+        if self._workspace_pin_store is None:
+            self._workspace_pin_store = InMemorySessionStore()
+        return self._workspace_pin_store
+
+    def _make_workspace_pin_context(
+        self,
+        *,
+        session_id: str | None,
+    ) -> WorkspacePinExecutionContext | None:
+        if not isinstance(session_id, str) or not session_id.strip():
+            return None
+        return WorkspacePinExecutionContext(
+            session_id=session_id,
+            session_store=self._get_workspace_pin_store(),
+        )
+
+    def _inject_workspace_pin_messages(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        session_id: str | None,
+    ) -> list[dict[str, Any]]:
+        context = self._make_workspace_pin_context(session_id=session_id)
+        if context is None:
+            return copy.deepcopy(messages)
+
+        pin_messages = build_pinned_prompt_messages(
+            store=context.session_store,
+            session_id=context.session_id,
+        )
+        if not pin_messages:
+            return copy.deepcopy(messages)
+
+        systems: list[dict[str, Any]] = []
+        non_system: list[dict[str, Any]] = []
+        for message in messages:
+            if isinstance(message, dict) and message.get("role") == "system":
+                systems.append(copy.deepcopy(message))
+            else:
+                non_system.append(copy.deepcopy(message))
+        return systems + pin_messages + non_system
+
     # ── toolkit property (backward compatibility) ──────────────────────────
 
     @property
@@ -212,7 +259,13 @@ class broth:
                 result = found
         return result
 
-    def _execute_from_toolkits(self, name: str, arguments) -> dict[str, Any]:
+    def _execute_from_toolkits(
+        self,
+        name: str,
+        arguments,
+        *,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
         """Execute a tool by name, searching all toolkits (last registered wins)."""
         target_toolkit = None
         for tk in self.toolkits:
@@ -220,7 +273,16 @@ class broth:
                 target_toolkit = tk
         if target_toolkit is None:
             return {"error": f"tool not found: {name}", "tool": name}
-        return target_toolkit.execute(name, arguments)
+        context = self._make_workspace_pin_context(session_id=session_id)
+        pushed_context = False
+        if context is not None and hasattr(target_toolkit, "push_execution_context"):
+            target_toolkit.push_execution_context(context)
+            pushed_context = True
+        try:
+            return target_toolkit.execute(name, arguments)
+        finally:
+            if pushed_context and hasattr(target_toolkit, "pop_execution_context"):
+                target_toolkit.pop_execution_context()
 
     def _load_default_payloads(self, path: str | Path) -> dict[str, dict[str, Any]]:
         file_path = Path(path)
@@ -1198,6 +1260,16 @@ class broth:
                 # With previous_response_id, OpenAI expects incremental input for each next turn.
                 request_messages = next_openai_input
                 request_previous_response_id = next_previous_response_id
+                if any(isinstance(msg, dict) and msg.get("role") is not None for msg in request_messages):
+                    request_messages = self._inject_workspace_pin_messages(
+                        messages=request_messages,
+                        session_id=session_id,
+                    )
+            else:
+                request_messages = self._inject_workspace_pin_messages(
+                    messages=request_messages,
+                    session_id=session_id,
+                )
 
             merged_toolkit = self.toolkit
 
@@ -1306,6 +1378,7 @@ class broth:
                     iteration=iteration,
                     callback=callback,
                     on_tool_confirm=effective_on_tool_confirm,
+                    session_id=session_id,
                 )
 
                 if should_observe and tool_messages:
@@ -2327,6 +2400,7 @@ class broth:
         iteration: int,
         callback: Callable[[dict[str, Any]], None] | None,
         on_tool_confirm: Callable | None = None,
+        session_id: str | None = None,
     ) -> tuple[list[dict[str, Any]], bool]:
         result_messages: list[dict[str, Any]] = []
         should_observe = False
@@ -2396,7 +2470,11 @@ class broth:
                     "reason": deny_reason or "User denied execution.",
                 }
             else:
-                tool_result = self._execute_from_toolkits(tool_call.name, effective_arguments)
+                tool_result = self._execute_from_toolkits(
+                    tool_call.name,
+                    effective_arguments,
+                    session_id=session_id,
+                )
             content = json.dumps(tool_result, default=str, ensure_ascii=False)
 
             if self.provider == "openai":
