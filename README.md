@@ -2,6 +2,7 @@
 
 `miso` 是一个轻量的 Python Agent Builder，核心目标是把“多轮工具调用代理”拆成可组合的最小部件：
 
+- 一个高层多代理 API：`Agent` / `Team`
 - 一个主循环引擎：`broth`
 - 一个会话记忆层：`memory`（`MemoryManager` + context window 策略）
 - 一套工具抽象：`tool` / `toolkit`
@@ -76,7 +77,38 @@ py -3.12 -m venv .venv
 pip install -r requirements.txt
 ```
 
-最小调用（OpenAI）：
+推荐入口（`Agent` / `Team`）：
+
+```python
+from miso import Agent, Team
+
+planner = Agent(
+    name="planner",
+    provider="openai",
+    model="gpt-5",
+    api_key="YOUR_OPENAI_API_KEY",
+    instructions="You plan work and coordinate the team.",
+)
+
+reviewer = Agent(
+    name="reviewer",
+    provider="openai",
+    model="gpt-5",
+    api_key="YOUR_OPENAI_API_KEY",
+    instructions="You review plans and call out risks.",
+)
+
+team = Team(
+    agents=[planner, reviewer],
+    owner="planner",
+    channels={"shared": ["planner", "reviewer"]},
+)
+
+result = team.run("给我一个最小可行发布计划")
+print(result["final"])
+```
+
+底层运行时（`Broth`）仍然保留，适合直接控制 provider/tool loop：
 
 ```python
 from miso import broth as Broth
@@ -95,6 +127,7 @@ print(bundle)
 
 当前包导出的主要符号：
 
+- `Agent` / `Team`：推荐的高层单 agent / multi-agent 入口
 - `broth`：主入口类
 - `MemoryManager` / `MemoryConfig`
 - `ContextStrategy` / `SessionStore` / `VectorStoreAdapter`
