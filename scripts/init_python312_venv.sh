@@ -22,6 +22,17 @@ resolve_python312() {
     fi
   done
 
+  for candidate in \
+    "$HOME/.conda/envs/py312/bin/python" \
+    "$HOME/.conda/envs/python312/bin/python" \
+    "$HOME/miniconda3/envs/py312/bin/python" \
+    "$HOME/anaconda3/envs/py312/bin/python"; do
+    if [[ -x "$candidate" ]] && is_python312 "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
   echo "Python 3.12.x is required but was not found." >&2
   echo "Install Python 3.12 and re-run this script." >&2
   return 1

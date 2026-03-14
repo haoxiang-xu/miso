@@ -13,7 +13,7 @@ function Test-Python312Command {
   )
 
   try {
-    $null = & $Command @Arguments -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)"
+    $null = & $Command @Arguments -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)" *> $null
     return ($LASTEXITCODE -eq 0)
   } catch {
     return $false
@@ -26,6 +26,21 @@ function Resolve-Python312Command {
       return @{
         Command = "py"
         Arguments = @("-3.12")
+      }
+    }
+  }
+
+  $homeDir = [Environment]::GetFolderPath("UserProfile")
+  foreach ($candidatePath in @(
+      (Join-Path $homeDir ".conda\envs\py312\python.exe"),
+      (Join-Path $homeDir ".conda\envs\python312\python.exe"),
+      (Join-Path $homeDir "miniconda3\envs\py312\python.exe"),
+      (Join-Path $homeDir "anaconda3\envs\py312\python.exe")
+    )) {
+    if ((Test-Path $candidatePath) -and (Test-Python312Command -Command $candidatePath)) {
+      return @{
+        Command = $candidatePath
+        Arguments = @()
       }
     }
   }
