@@ -83,6 +83,14 @@ def test_observation_injected_into_last_tool_message_and_callback_events():
     assert event_types.count("tool_result") == 2
     assert "observation" in event_types
     assert "final_message" in event_types
+    assert event_types.count("response_received") == 2
+    response_events = [evt for evt in events if evt["type"] == "response_received"]
+    assert response_events[0]["has_tool_calls"] is True
+    assert response_events[0]["bundle"]["consumed_tokens"] == 10
+    assert response_events[1]["has_tool_calls"] is False
+    assert response_events[1]["bundle"]["consumed_tokens"] == 21
+    run_completed = next(evt for evt in events if evt["type"] == "run_completed")
+    assert run_completed["bundle"] == bundle
 
 
 def test_response_format_parses_last_assistant_message():

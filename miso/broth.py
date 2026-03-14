@@ -1365,11 +1365,22 @@ class broth:
                     "reasoning",
                     run_id,
                     iteration=iteration,
-                    response_id=turn.response_id,
-                    reasoning_items=turn.reasoning_items,
-                )
+                        response_id=turn.response_id,
+                        reasoning_items=turn.reasoning_items,
+                    )
 
             conversation.extend(turn.assistant_messages)
+            self._emit(
+                callback,
+                "response_received",
+                run_id,
+                iteration=iteration,
+                response_id=turn.response_id,
+                has_tool_calls=bool(turn.tool_calls),
+                bundle=copy.deepcopy(
+                    self._build_bundle(total_consumed_tokens, last_turn_tokens)
+                ),
+            )
 
             if turn.tool_calls:
                 tool_messages, should_observe = self._execute_tool_calls(
@@ -1411,6 +1422,7 @@ class broth:
 
             self._apply_response_format(conversation, response_format)
             final_text = self._last_assistant_text(conversation)
+            bundle = self._build_bundle(total_consumed_tokens, last_turn_tokens)
             self._emit(
                 callback,
                 "final_message",
@@ -1418,7 +1430,13 @@ class broth:
                 iteration=iteration,
                 content=final_text,
             )
-            self._emit(callback, "run_completed", run_id, iteration=iteration)
+            self._emit(
+                callback,
+                "run_completed",
+                run_id,
+                iteration=iteration,
+                bundle=copy.deepcopy(bundle),
+            )
             self.last_consumed_tokens = total_consumed_tokens
             self.consumed_tokens += total_consumed_tokens
             if self.memory_manager is not None and session_id:
@@ -1451,7 +1469,6 @@ class broth:
                         applied=False,
                         fallback_reason=f"memory_commit_failed: {exc}",
                     )
-            bundle = self._build_bundle(total_consumed_tokens, last_turn_tokens)
             return conversation, bundle
 
         self._emit(callback, "run_max_iterations", run_id, iteration=max_loops)

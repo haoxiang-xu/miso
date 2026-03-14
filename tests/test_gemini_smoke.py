@@ -381,7 +381,13 @@ def test_gemini_run_end_to_end(monkeypatch):
     event_types = [e["type"] for e in captured_events]
     assert "run_started" in event_types
     assert "final_message" in event_types
+    assert "response_received" in event_types
     assert "run_completed" in event_types
+    response_received = next(e for e in captured_events if e["type"] == "response_received")
+    assert response_received["has_tool_calls"] is False
+    assert response_received["bundle"] == bundle
+    run_completed = next(e for e in captured_events if e["type"] == "run_completed")
+    assert run_completed["bundle"] == bundle
 
 
 # ── unit test: streaming callback events ───────────────────────────────────
