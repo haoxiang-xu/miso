@@ -1624,6 +1624,7 @@ class broth:
         toolkit: base_toolkit,
         emit_stream: bool,
         previous_response_id: str | None = None,
+        openai_text_format: dict[str, Any] | None = None,
     ) -> ProviderTurnResult:
         if self.provider == "openai":
             return self._openai_fetch_once(
@@ -1637,6 +1638,7 @@ class broth:
                 toolkit=toolkit,
                 emit_stream=emit_stream,
                 previous_response_id=previous_response_id,
+                openai_text_format=openai_text_format,
             )
         if self.provider == "ollama":
             return self._ollama_fetch_once(
@@ -1724,6 +1726,7 @@ class broth:
         toolkit: base_toolkit,
         emit_stream: bool,
         previous_response_id: str | None = None,
+        openai_text_format: dict[str, Any] | None = None,
         _allow_retry: bool = True,
     ) -> ProviderTurnResult:
         if not self.api_key:
@@ -1746,8 +1749,20 @@ class broth:
         if tools_json and supports_tools:
             request_kwargs["tools"] = tools_json
 
-        if response_format is not None:
-            request_kwargs["response_format"] = response_format.to_openai()
+        resolved_text_format = None
+        if isinstance(openai_text_format, dict):
+            resolved_text_format = copy.deepcopy(openai_text_format)
+        elif response_format is not None:
+            resolved_text_format = response_format.to_openai()
+
+        if isinstance(resolved_text_format, dict):
+            text_config = (
+                dict(request_kwargs["text"])
+                if isinstance(request_kwargs.get("text"), dict)
+                else {}
+            )
+            text_config["format"] = resolved_text_format
+            request_kwargs["text"] = text_config
 
         self._emit_request_messages(
             callback=callback,
@@ -1829,6 +1844,7 @@ class broth:
                 toolkit=toolkit,
                 emit_stream=emit_stream,
                 previous_response_id=previous_response_id,
+                openai_text_format=openai_text_format,
                 _allow_retry=False,
             )
 
@@ -2759,6 +2775,28 @@ class broth:
             extraction_payload["max_output_tokens"] = max_output_tokens
         return extraction_payload
 
+    def _parse_long_term_extraction_result(self, raw_text: str) -> dict[str, Any]:
+        payload_text = (raw_text or "").strip()
+        if not payload_text:
+            raise ValueError("long_term_extraction_invalid_json: empty response")
+
+        try:
+            parsed = json.loads(payload_text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"long_term_extraction_invalid_json: {exc.msg}") from exc
+
+        if not isinstance(parsed, dict):
+            raise ValueError(
+                f"long_term_extraction_invalid_top_level: expected JSON object, got {type(parsed).__name__}"
+            )
+
+        return {
+            "profile_patch": copy.deepcopy(parsed.get("profile_patch", {})),
+            "facts": copy.deepcopy(parsed.get("facts", [])),
+            "episodes": copy.deepcopy(parsed.get("episodes", [])),
+            "playbooks": copy.deepcopy(parsed.get("playbooks", [])),
+        }
+
     def _extract_long_term_memory(
         self,
         previous_profile: dict[str, Any],
@@ -2790,72 +2828,74 @@ class broth:
             transcript = transcript[-max_transcript_chars:]
 
         previous_profile_json = json.dumps(previous_profile or {}, ensure_ascii=False)
-        extraction_format = response_format(
-            name="long_term_memory_extraction",
-            schema={
-                "type": "object",
-                "properties": {
-                    "profile_patch": {
-                        "type": "object",
-                        "description": "Stable user identity, preferences, and long-lived constraints only.",
-                        "additionalProperties": True,
-                    },
-                    "facts": {
-                        "type": "array",
-                        "description": "Reusable long-term facts, project context, decisions, or entity relationships worth semantic recall later.",
-                        "items": {
+        extraction_format = None
+        if self.provider != "openai":
+            extraction_format = response_format(
+                name="long_term_memory_extraction",
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "profile_patch": {
                             "type": "object",
-                            "properties": {
-                                "subtype": {
-                                    "type": "string",
-                                    "enum": ["fact", "decision", "project_context", "entity", "event"],
+                            "description": "Stable user identity, preferences, and long-lived constraints only.",
+                            "additionalProperties": True,
+                        },
+                        "facts": {
+                            "type": "array",
+                            "description": "Reusable long-term facts, project context, decisions, or entity relationships worth semantic recall later.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "subtype": {
+                                        "type": "string",
+                                        "enum": ["fact", "decision", "project_context", "entity", "event"],
+                                    },
+                                    "text": {"type": "string"},
                                 },
-                                "text": {"type": "string"},
+                                "required": ["text"],
+                                "additionalProperties": False,
                             },
-                            "required": ["text"],
-                            "additionalProperties": False,
                         },
-                    },
-                    "episodes": {
-                        "type": "array",
-                        "description": "Past cases that include enough situation, action, and outcome detail to be reusable later.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "title": {"type": "string"},
-                                "situation": {"type": "string"},
-                                "action": {"type": "string"},
-                                "outcome": {"type": "string"},
-                            },
-                            "required": ["situation", "action", "outcome"],
-                            "additionalProperties": False,
-                        },
-                    },
-                    "playbooks": {
-                        "type": "array",
-                        "description": "Reusable workflows or procedures with trigger, goal, steps, and caveats.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "title": {"type": "string"},
-                                "trigger": {"type": "string"},
-                                "goal": {"type": "string"},
-                                "steps": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
+                        "episodes": {
+                            "type": "array",
+                            "description": "Past cases that include enough situation, action, and outcome detail to be reusable later.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": {"type": "string"},
+                                    "situation": {"type": "string"},
+                                    "action": {"type": "string"},
+                                    "outcome": {"type": "string"},
                                 },
-                                "caveats": {"type": "string"},
+                                "required": ["situation", "action", "outcome"],
+                                "additionalProperties": False,
                             },
-                            "required": ["trigger", "goal", "steps"],
-                            "additionalProperties": False,
+                        },
+                        "playbooks": {
+                            "type": "array",
+                            "description": "Reusable workflows or procedures with trigger, goal, steps, and caveats.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": {"type": "string"},
+                                    "trigger": {"type": "string"},
+                                    "goal": {"type": "string"},
+                                    "steps": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                    },
+                                    "caveats": {"type": "string"},
+                                },
+                                "required": ["trigger", "goal", "steps"],
+                                "additionalProperties": False,
+                            },
                         },
                     },
+                    "required": ["profile_patch", "facts", "episodes", "playbooks"],
+                    "additionalProperties": False,
                 },
-                "required": ["profile_patch", "facts", "episodes", "playbooks"],
-                "additionalProperties": False,
-            },
-            required=["profile_patch", "facts", "episodes", "playbooks"],
-        )
+                required=["profile_patch", "facts", "episodes", "playbooks"],
+            )
 
         extraction_system_prompt = (
             "You extract long-term memory for an AI assistant. "
@@ -2867,6 +2907,7 @@ class broth:
             f"Existing profile JSON:\n{previous_profile_json}\n\n"
             f"New conversation chunk:\n{transcript or '(none)'}\n\n"
             f"Return JSON only. Rules:\n"
+            f"- Return one top-level object with keys `profile_patch`, `facts`, `episodes`, and `playbooks`.\n"
             f"- `profile_patch` should be an object with only durable updates.\n"
             f"- Keep the updated profile compact enough to stay within roughly {max_profile_chars} characters when merged.\n"
             f"- `facts` should contain at most {max_fact_items} items.\n"
@@ -2890,6 +2931,7 @@ class broth:
                 max_playbook_items=max_playbook_items,
             ),
             response_format=extraction_format,
+            openai_text_format={"type": "json_object"} if self.provider == "openai" else None,
             callback=None,
             verbose=False,
             run_id="long_term_memory",
@@ -2902,7 +2944,7 @@ class broth:
             extraction_turn.final_text
             or self._last_assistant_text(extraction_turn.assistant_messages)
         ).strip()
-        return extraction_format.parse(raw_text)
+        return self._parse_long_term_extraction_result(raw_text)
 
     def _inject_observation(self, tool_message: dict[str, Any], observation: str):
         content_key = "content" if "content" in tool_message else "output"

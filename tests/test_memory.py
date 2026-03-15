@@ -567,6 +567,37 @@ def test_long_term_commit_indexes_only_new_complete_turns():
     assert manager.store.load("lt_incremental").get("long_term_indexed_until") == len(second_conversation)
 
 
+def test_long_term_commit_accepts_missing_optional_extraction_keys():
+    profile_store = _FakeLongTermProfileStore()
+    adapter = _FakeLongTermVectorAdapter()
+    manager = MemoryManager(
+        config=MemoryConfig(
+            long_term=LongTermMemoryConfig(
+                profile_store=profile_store,
+                vector_adapter=adapter,
+            )
+        )
+    )
+
+    manager.commit_messages(
+        "lt_missing_keys",
+        [
+            {"role": "user", "content": "Remember that I prefer weekly digests."},
+            {"role": "assistant", "content": "Okay."},
+        ],
+        memory_namespace="user_missing_keys",
+        model="gpt-5",
+        long_term_extractor=lambda *args: {
+            "facts": [{"text": "User prefers weekly digests."}],
+        },
+    )
+
+    assert profile_store.load("user_missing_keys") == {}
+    assert adapter.added[-1][1] == ["User prefers weekly digests."]
+    assert manager.last_commit_info.get("long_term_memory_indexed_count") == 1
+    assert manager.store.load("lt_missing_keys").get("long_term_indexed_until") == 2
+
+
 def test_long_term_profile_patch_merges_and_overrides_nested_keys():
     profile_store = _FakeLongTermProfileStore()
     adapter = _FakeLongTermVectorAdapter()
@@ -657,6 +688,37 @@ def test_long_term_recall_is_optional_and_non_blocking():
     )
     assert "long_term_vector_fallback_reason" in commit_manager.last_commit_info
     assert commit_manager.store.load("lt_commit_fail").get("long_term_indexed_until") is None
+
+
+def test_long_term_extractor_failure_preserves_pending_turns_for_retry():
+    manager = MemoryManager(
+        config=MemoryConfig(
+            long_term=LongTermMemoryConfig(
+                profile_store=_FakeLongTermProfileStore(),
+                vector_adapter=_FakeLongTermVectorAdapter(),
+            )
+        )
+    )
+
+    manager.commit_messages(
+        "lt_extract_fail",
+        [
+            {"role": "user", "content": "Remember this."},
+            {"role": "assistant", "content": "Okay."},
+        ],
+        memory_namespace="user_extract_fail",
+        model="gpt-5",
+        long_term_extractor=lambda *args: (_ for _ in ()).throw(
+            ValueError("long_term_extraction_invalid_json: expected value")
+        ),
+    )
+
+    assert "long_term_extraction_invalid_json" in manager.last_commit_info.get(
+        "long_term_extractor_fallback_reason", ""
+    )
+    state = manager.store.load("lt_extract_fail")
+    assert state.get("long_term_pending_turn_count") == 1
+    assert state.get("long_term_indexed_until") is None
 
 
 def test_long_term_memory_can_coexist_with_short_term_recall():

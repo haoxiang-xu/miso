@@ -703,6 +703,261 @@ def test_openai_fetch_once_forces_stream_true(monkeypatch):
     assert turn.final_text == "ok"
 
 
+def test_openai_fetch_once_places_response_format_under_text_config(monkeypatch):
+    agent = Broth()
+    agent.provider = "openai"
+    agent.model = "gpt-4.1"
+    agent.api_key = "test-key"
+
+    captured_kwargs = {}
+
+    class FakeOpenAIStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            yield type("Chunk", (), {
+                "type": "response.completed",
+                "response": type("Resp", (), {
+                    "id": "resp_text_format_test",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": '{"answer":"ok"}'}],
+                        }
+                    ],
+                })(),
+            })()
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return FakeOpenAIStream()
+
+    class FakeOpenAIClient:
+        def __init__(self, api_key):
+            self.api_key = api_key
+            self.responses = FakeResponses()
+
+    broth_module = importlib.import_module("miso.broth")
+    monkeypatch.setattr(broth_module, "OpenAI", FakeOpenAIClient)
+
+    fmt = response_format(
+        name="answer_format",
+        schema={
+            "type": "object",
+            "properties": {
+                "answer": {"type": "string"},
+            },
+            "required": ["answer"],
+            "additionalProperties": False,
+        },
+    )
+
+    turn = agent._openai_fetch_once(
+        messages=[{"role": "user", "content": "hi"}],
+        payload={},
+        response_format=fmt,
+        callback=None,
+        verbose=False,
+        run_id="run_text_format",
+        iteration=0,
+        toolkit=toolkit(),
+        emit_stream=False,
+        previous_response_id=None,
+    )
+
+    assert "response_format" not in captured_kwargs
+    assert captured_kwargs["text"]["format"] == fmt.to_openai()
+    assert turn.final_text == '{"answer":"ok"}'
+
+
+def test_openai_fetch_once_accepts_explicit_text_format_override(monkeypatch):
+    agent = Broth()
+    agent.provider = "openai"
+    agent.model = "gpt-4.1"
+    agent.api_key = "test-key"
+
+    captured_kwargs = {}
+
+    class FakeOpenAIStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            yield type("Chunk", (), {
+                "type": "response.completed",
+                "response": type("Resp", (), {
+                    "id": "resp_json_object_test",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": '{"ok":true}'}],
+                        }
+                    ],
+                })(),
+            })()
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return FakeOpenAIStream()
+
+    class FakeOpenAIClient:
+        def __init__(self, api_key):
+            self.api_key = api_key
+            self.responses = FakeResponses()
+
+    broth_module = importlib.import_module("miso.broth")
+    monkeypatch.setattr(broth_module, "OpenAI", FakeOpenAIClient)
+
+    turn = agent._openai_fetch_once(
+        messages=[{"role": "user", "content": "hi"}],
+        payload={},
+        response_format=None,
+        callback=None,
+        verbose=False,
+        run_id="run_json_object",
+        iteration=0,
+        toolkit=toolkit(),
+        emit_stream=False,
+        previous_response_id=None,
+        openai_text_format={"type": "json_object"},
+    )
+
+    assert "response_format" not in captured_kwargs
+    assert captured_kwargs["text"]["format"] == {"type": "json_object"}
+    assert turn.final_text == '{"ok":true}'
+
+
+def test_extract_long_term_memory_uses_json_object_for_openai():
+    agent = Broth(provider="openai", model="gpt-5")
+    captured_kwargs = {}
+
+    def fake_fetch_once(**kwargs):
+        captured_kwargs.update(kwargs)
+        return ProviderTurnResult(
+            assistant_messages=[{
+                "role": "assistant",
+                "content": '{"profile_patch":{"preferences":{"tone":"concise"}},"facts":[{"subtype":"fact","text":"User prefers concise answers."}]}',
+            }],
+            tool_calls=[],
+            final_text='{"profile_patch":{"preferences":{"tone":"concise"}},"facts":[{"subtype":"fact","text":"User prefers concise answers."}]}',
+        )
+
+    agent._fetch_once = fake_fetch_once
+
+    result = agent._extract_long_term_memory(
+        previous_profile={"preferences": {"language": "en"}},
+        messages=[
+            {"role": "user", "content": "Be concise."},
+            {"role": "assistant", "content": "Noted."},
+        ],
+        max_profile_chars=1200,
+        max_fact_items=6,
+        model="gpt-5",
+    )
+
+    assert captured_kwargs["response_format"] is None
+    assert captured_kwargs["openai_text_format"] == {"type": "json_object"}
+    assert result == {
+        "profile_patch": {"preferences": {"tone": "concise"}},
+        "facts": [{"subtype": "fact", "text": "User prefers concise answers."}],
+        "episodes": [],
+        "playbooks": [],
+    }
+
+
+def test_extract_long_term_memory_defaults_missing_keys():
+    agent = Broth(provider="openai", model="gpt-5")
+
+    def fake_fetch_once(**kwargs):
+        del kwargs
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": '{"facts":[{"text":"Keep weekly digests."}]}' }],
+            tool_calls=[],
+            final_text='{"facts":[{"text":"Keep weekly digests."}]}',
+        )
+
+    agent._fetch_once = fake_fetch_once
+
+    result = agent._extract_long_term_memory(
+        previous_profile={},
+        messages=[
+            {"role": "user", "content": "Remember weekly digests."},
+            {"role": "assistant", "content": "Okay."},
+        ],
+        max_profile_chars=1200,
+        max_fact_items=6,
+        model="gpt-5",
+    )
+
+    assert result == {
+        "profile_patch": {},
+        "facts": [{"text": "Keep weekly digests."}],
+        "episodes": [],
+        "playbooks": [],
+    }
+
+
+def test_extract_long_term_memory_rejects_invalid_json():
+    agent = Broth(provider="openai", model="gpt-5")
+
+    def fake_fetch_once(**kwargs):
+        del kwargs
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "not-json"}],
+            tool_calls=[],
+            final_text="not-json",
+        )
+
+    agent._fetch_once = fake_fetch_once
+
+    with pytest.raises(ValueError, match="long_term_extraction_invalid_json"):
+        agent._extract_long_term_memory(
+            previous_profile={},
+            messages=[
+                {"role": "user", "content": "Remember this."},
+                {"role": "assistant", "content": "Okay."},
+            ],
+            max_profile_chars=1200,
+            max_fact_items=6,
+            model="gpt-5",
+        )
+
+
+def test_extract_long_term_memory_rejects_non_object_json():
+    agent = Broth(provider="openai", model="gpt-5")
+
+    def fake_fetch_once(**kwargs):
+        del kwargs
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": '["not","an","object"]'}],
+            tool_calls=[],
+            final_text='["not","an","object"]',
+        )
+
+    agent._fetch_once = fake_fetch_once
+
+    with pytest.raises(ValueError, match="long_term_extraction_invalid_top_level"):
+        agent._extract_long_term_memory(
+            previous_profile={},
+            messages=[
+                {"role": "user", "content": "Remember this."},
+                {"role": "assistant", "content": "Okay."},
+            ],
+            max_profile_chars=1200,
+            max_fact_items=6,
+            model="gpt-5",
+        )
+
+
 def test_openai_fetch_once_normalizes_function_call_input_items(monkeypatch):
     agent = Broth()
     agent.provider = "openai"

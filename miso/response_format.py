@@ -27,10 +27,8 @@ class response_format:
     def to_openai(self) -> dict[str, Any]:
         return {
             "type": "json_schema",
-            "json_schema": {
-                "name": self.name,
-                "schema": self.schema,
-            },
+            "name": self.name,
+            "schema": deepcopy(self.schema),
         }
 
     def to_ollama(self) -> dict[str, Any]:
