@@ -12,6 +12,7 @@ from .builtin_toolkits import (
     build_builtin_toolkit,
     terminal_toolkit,
     workspace_toolkit,
+    external_api_toolkit,
 )
 from .mcp import mcp
 from .response_format import response_format
@@ -51,6 +52,7 @@ __all__ = [
     "build_builtin_toolkit",
     "workspace_toolkit",
     "terminal_toolkit",
+    "external_api_toolkit",
     "mcp",
     "response_format",
     "broth",
