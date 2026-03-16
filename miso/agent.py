@@ -258,6 +258,36 @@ class Agent:
             memory_namespace=memory_namespace,
         )
 
+    def resume_human_input(
+        self,
+        *,
+        conversation: list[dict[str, Any]],
+        continuation: dict[str, Any],
+        response: dict[str, Any] | Any,
+        payload: dict[str, Any] | None = None,
+        response_format: response_format | None = None,
+        callback: Callable[[dict[str, Any]], None] | None = None,
+        verbose: bool = False,
+        on_tool_confirm: Callable | None = None,
+        on_continuation_request: Callable | None = None,
+        session_id: str | None = None,
+        memory_namespace: str | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        engine = self._build_engine()
+        return engine.resume_human_input(
+            conversation=copy.deepcopy(conversation),
+            continuation=copy.deepcopy(continuation),
+            response=copy.deepcopy(response),
+            payload=self._merge_payload(payload) if payload is not None else None,
+            response_format=response_format or self.defaults.get("response_format"),
+            callback=callback,
+            verbose=verbose,
+            on_tool_confirm=on_tool_confirm or self.defaults.get("on_tool_confirm"),
+            on_continuation_request=on_continuation_request,
+            session_id=session_id,
+            memory_namespace=memory_namespace,
+        )
+
     def step(
         self,
         *,

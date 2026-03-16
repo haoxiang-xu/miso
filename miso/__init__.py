@@ -7,12 +7,18 @@ from .tool import (
     ToolConfirmationRequest,
     ToolConfirmationResponse,
 )
+from .human_input import (
+    HumanInputOption,
+    HumanInputRequest,
+    HumanInputResponse,
+)
 from .builtin_toolkits import (
     builtin_toolkit,
     build_builtin_toolkit,
     terminal_toolkit,
     workspace_toolkit,
     external_api_toolkit,
+    interaction_toolkit,
 )
 from .mcp import mcp
 from .response_format import response_format
@@ -48,11 +54,15 @@ __all__ = [
     "tool_decorator",
     "ToolConfirmationRequest",
     "ToolConfirmationResponse",
+    "HumanInputOption",
+    "HumanInputRequest",
+    "HumanInputResponse",
     "builtin_toolkit",
     "build_builtin_toolkit",
     "workspace_toolkit",
     "terminal_toolkit",
     "external_api_toolkit",
+    "interaction_toolkit",
     "mcp",
     "response_format",
     "broth",

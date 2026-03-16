@@ -5,6 +5,7 @@ from pathlib import Path
 from .base import builtin_toolkit
 from .terminal_toolkit import terminal_toolkit
 from .external_api_toolkit import external_api_toolkit
+from .interaction_toolkit import interaction_toolkit
 from .workspace_toolkit import workspace_toolkit
 
 
@@ -22,4 +23,5 @@ __all__ = [
     "workspace_toolkit",
     "terminal_toolkit",
     "external_api_toolkit",
+    "interaction_toolkit",
 ]

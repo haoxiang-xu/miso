@@ -9,7 +9,7 @@
 - 一个结构化输出层：`response_format`
 - 一个多模态输入规范层：`media` + canonical content blocks
 - 一个远程工具桥接层：`mcp`
-- 两个可直接落地的内置工具包：`workspace_toolkit` / `terminal_toolkit`
+- 三个可直接落地的内置工具包：`workspace_toolkit` / `terminal_toolkit` / `interaction_toolkit`
 
 它支持 OpenAI / Anthropic / Ollama 三类 provider，并且尽量保持接口一致。
 
@@ -25,17 +25,18 @@
 6. [Session Memory（Context Window 策略）](#session-memorycontext-window-策略)
 7. [工具系统（`tool` / `toolkit`）](#工具系统tool--toolkit)
 8. [工具确认回调（`on_tool_confirm`）](#工具确认回调on_tool_confirm)
-9. [多模态输入规范（canonical blocks）](#多模态输入规范canonical-blocks)
-10. [`response_format` 结构化输出](#response_format-结构化输出)
-11. [内置工具包：`workspace_toolkit`](#内置工具包workspace_toolkit)
-12. [MCP 工具桥接：`mcp`](#mcp-工具桥接mcp)
-13. [配置层：模型默认参数与能力矩阵](#配置层模型默认参数与能力矩阵)
-14. [回调事件与可观测性](#回调事件与可观测性)
-15. [Provider 差异对照](#provider-差异对照)
-16. [典型端到端示例](#典型端到端示例)
-17. [项目结构](#项目结构)
-18. [测试](#测试)
-19. [边界与注意事项](#边界与注意事项)
+9. [Human Input Primitive（selector）](#human-input-primitiveselector)
+10. [多模态输入规范（canonical blocks）](#多模态输入规范canonical-blocks)
+11. [`response_format` 结构化输出](#response_format-结构化输出)
+12. [内置工具包：`workspace_toolkit`](#内置工具包workspace_toolkit)
+13. [MCP 工具桥接：`mcp`](#mcp-工具桥接mcp)
+14. [配置层：模型默认参数与能力矩阵](#配置层模型默认参数与能力矩阵)
+15. [回调事件与可观测性](#回调事件与可观测性)
+16. [Provider 差异对照](#provider-差异对照)
+17. [典型端到端示例](#典型端到端示例)
+18. [项目结构](#项目结构)
+19. [测试](#测试)
+20. [边界与注意事项](#边界与注意事项)
 
 ---
 
@@ -134,6 +135,7 @@ print(bundle)
 - `LastNTurnsStrategy` / `SummaryTokenStrategy` / `HybridContextStrategy`
 - `tool_parameter` / `tool` / `toolkit` / `tool_decorator`
 - `ToolConfirmationRequest` / `ToolConfirmationResponse`
+- `HumanInputOption` / `HumanInputRequest` / `HumanInputResponse`
 - `response_format`
 - `media`
 - `mcp`
@@ -141,6 +143,7 @@ print(bundle)
 - `build_builtin_toolkit`（返回 `workspace_toolkit` 的 helper）
 - `workspace_toolkit`
 - `terminal_toolkit`
+- `interaction_toolkit`
 
 ---
 
@@ -261,6 +264,7 @@ flowchart LR
 
 返回 `bundle` 结构：
 
+- `model`: 本次 run 使用的模型名
 - `consumed_tokens`: 本次 run 累计 token
 - `max_context_window_tokens`: 从模型能力矩阵读取（可手动 override）
 - `context_window_used_pct`: 用“最后一轮 token 消耗 / max_context_window_tokens”计算
@@ -596,6 +600,94 @@ on_tool_confirm 存在?  ──No──→  直接执行（向后兼容，不会
 
 ---
 
+## Human Input Primitive（selector）
+
+当模型需要用户在若干候选项里做单选 / 多选，而不是继续猜测时，可以显式挂载 `interaction_toolkit()`。它会暴露一个保留 tool：`request_user_input`。
+
+它和 `on_tool_confirm` 的区别是：
+
+- `on_tool_confirm` 是“是否允许执行某个工具”
+- `interaction_toolkit` / `request_user_input` 是“向用户发起一个结构化问题，并等待用户提交答案”
+
+### 对外类型
+
+`miso/__init__.py` 导出：
+
+- `HumanInputOption`
+- `HumanInputRequest`
+- `HumanInputResponse`
+
+其中 selector v1 支持：
+
+- 单选：`selection_mode="single"`
+- 多选：`selection_mode="multiple"`
+- `allow_other=True` 时显示 `Other`
+- `__other__` 为保留 value，提交时必须配套 `other_text`
+
+### 运行时行为
+
+前置条件：
+
+- 需要显式挂载 `interaction_toolkit()`
+- 当前模型必须支持 tool calling
+- 当前版本不支持 non-tool fallback
+
+当模型调用 `request_user_input` 时：
+
+1. `run()` 不会继续执行普通 tool 流程
+2. 返回 bundle：
+   - `status="awaiting_human_input"`
+   - `human_input_request`
+   - `continuation`
+3. 发出 `human_input_requested` callback event
+4. 不会生成普通 `tool_result`
+5. 不会在挂起时触发 `memory_commit`
+
+前端 / 宿主负责渲染 selector，并保存 `continuation`。用户提交后，通过 `resume_human_input(...)` 继续同一个会话。
+
+### `run()` / `resume_human_input()` 示例
+
+```python
+from miso import broth as Broth, interaction_toolkit
+
+agent = Broth(provider="openai", model="gpt-5", api_key="YOUR_OPENAI_API_KEY")
+agent.add_toolkit(interaction_toolkit())
+
+messages, bundle = agent.run(
+    messages=[{"role": "user", "content": "帮我选一个前端框架，如果你不确定就问我。"}],
+    session_id="selector-demo",
+    payload={"store": True},
+    max_iterations=4,
+)
+
+if bundle["status"] == "awaiting_human_input":
+    request = bundle["human_input_request"]
+    # 这里由你的 UI 渲染 request["title"] / request["question"] / request["options"]
+
+    messages, bundle = agent.resume_human_input(
+        conversation=messages,
+        continuation=bundle["continuation"],
+        response={
+            "request_id": request["request_id"],
+            "selected_values": ["react", "__other__"],
+            "other_text": "SolidJS",
+        },
+        session_id="selector-demo",
+    )
+```
+
+### selector 约束
+
+- `request_user_input` 在 v1 中必须是该轮唯一的 tool call
+- `single` 默认 `min_selected=1`, `max_selected=1`
+- `multiple` 默认 `min_selected=1`
+- `Other` 只有在 `allow_other=True` 时可提交
+- 选择了 `__other__` 必须同时提交非空 `other_text`
+- 未挂载 `interaction_toolkit()` 时，该能力不会自动启用
+- 若模型 `supports_tools=false`，`run()` 会直接报错，不会静默降级
+
+---
+
 ## 多模态输入规范（canonical blocks）
 
 `miso` 在用户侧推荐统一格式：
@@ -811,6 +903,7 @@ with mcp(command="npx", args=["-y", "@modelcontextprotocol/server-filesystem", "
 - `tool_call`
 - `tool_confirmed`（工具通过确认，即将执行；含 `tool_name`, `call_id`）
 - `tool_denied`（工具被用户拒绝，跳过执行；含 `tool_name`, `call_id`, `reason`）
+- `human_input_requested`（发起 selector；含 `request_id`, `title`, `question`, `selection_mode`, `options`）
 - `tool_result`
 - `observation`
 - `memory_prepare`
@@ -821,6 +914,12 @@ with mcp(command="npx", args=["-y", "@modelcontextprotocol/server-filesystem", "
 - `run_max_iterations`
 
 事件含通用字段：`type`, `run_id`, `iteration`, `timestamp`，并附带上下文字段（如 `delta`, `tool_name`, `result`）。
+
+当 selector 挂起时，`run()` 返回的 bundle 会带：
+
+- `status="awaiting_human_input"`
+- `human_input_request`
+- `continuation`
 
 Memory 事件补充字段：
 
@@ -968,7 +1067,36 @@ messages, bundle = agent.run(
 )
 ```
 
-### 6) Session Memory（last-n + summary）
+### 6) Human Input Selector
+
+```python
+from miso import broth as Broth
+
+agent = Broth(provider="openai", model="gpt-5", api_key="YOUR_OPENAI_API_KEY")
+
+messages, bundle = agent.run(
+    messages=[{"role": "user", "content": "帮我从 React / Vue / Svelte 里选一个。如果信息不够，你可以直接让我选。"}],
+    session_id="selector-demo",
+    payload={"store": True},
+    max_iterations=4,
+)
+
+if bundle["status"] == "awaiting_human_input":
+    req = bundle["human_input_request"]
+
+    # 这里通常由前端渲染 selector；示例里直接伪造一次提交
+    messages, bundle = agent.resume_human_input(
+        conversation=messages,
+        continuation=bundle["continuation"],
+        response={
+            "request_id": req["request_id"],
+            "selected_values": ["svelte"],
+        },
+        session_id="selector-demo",
+    )
+```
+
+### 7) Session Memory（last-n + summary）
 
 ```python
 from miso import broth as Broth
