@@ -347,3 +347,426 @@ def test_team_owner_finalization_stops_even_when_other_agents_are_runnable():
     assert result["final"] == "ship it"
     assert result["stop_reason"] == "owner_finalized"
     assert worker_calls["count"] == 0
+
+
+def test_agent_subagent_tool_is_registered_only_when_enabled(monkeypatch):
+    instances = []
+
+    class FakeBroth:
+        def __init__(self, provider=None, model=None, api_key=None, memory_manager=None):
+            del provider, model, api_key, memory_manager
+            self.toolkit = None
+            instances.append(self)
+
+        def run(
+            self,
+            *,
+            messages,
+            payload,
+            response_format,
+            callback,
+            verbose,
+            max_iterations,
+            previous_response_id,
+            on_tool_confirm,
+            on_continuation_request,
+            session_id,
+            memory_namespace,
+        ):
+            del messages, payload, response_format, callback, verbose, max_iterations
+            del previous_response_id, on_tool_confirm, on_continuation_request, session_id, memory_namespace
+            return [{"role": "assistant", "content": "ok"}], {"consumed_tokens": 1}
+
+    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+
+    plain = Agent(name="plain")
+    plain.run("hello")
+    assert instances[0].toolkit.get("spawn_subagent") is None
+
+    enabled = Agent(name="enabled").enable_subagents()
+    enabled.run("hello")
+    assert instances[1].toolkit.get("spawn_subagent") is not None
+
+
+def test_spawn_subagent_inherits_parent_config_and_returns_output(monkeypatch):
+    instances = []
+
+    class FakeBroth:
+        def __init__(
+            self,
+            provider=None,
+            model=None,
+            api_key=None,
+            memory_manager=None,
+            extra_component=None,
+        ):
+            self.provider = provider
+            self.model = model
+            self.api_key = api_key
+            self.memory_manager = memory_manager
+            self.extra_component = extra_component
+            self.toolkit = None
+            self.max_iterations = 6
+            self.run_calls = []
+            instances.append(self)
+
+        def run(
+            self,
+            *,
+            messages,
+            payload,
+            response_format,
+            callback,
+            verbose,
+            max_iterations,
+            previous_response_id,
+            on_tool_confirm,
+            on_continuation_request,
+            session_id,
+            memory_namespace,
+        ):
+            self.run_calls.append({
+                "messages": messages,
+                "payload": payload,
+                "response_format": response_format,
+                "callback": callback,
+                "verbose": verbose,
+                "max_iterations": max_iterations,
+                "previous_response_id": previous_response_id,
+                "on_tool_confirm": on_tool_confirm,
+                "on_continuation_request": on_continuation_request,
+                "session_id": session_id,
+                "memory_namespace": memory_namespace,
+            })
+            user_text = messages[-1]["content"] if messages else ""
+            content = "child result" if user_text == "Investigate risk" else "root ok"
+            return messages + [{"role": "assistant", "content": content}], {"consumed_tokens": 7}
+
+    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+
+    memory = MemoryManager()
+
+    def echo(text: str):
+        return {"echo": text}
+
+    confirm_calls = []
+
+    def confirm(payload):
+        confirm_calls.append(payload)
+        return True
+
+    agent = Agent(
+        name="planner",
+        provider="openai",
+        model="gpt-5",
+        api_key="sk-test",
+        instructions="Be concise.",
+        tools=[echo],
+        short_term_memory=memory,
+        defaults={"payload": {"temperature": 0.1}},
+        broth_options={"extra_component": "router_v2", "max_iterations": 9},
+    ).enable_subagents()
+
+    agent.run(
+        "root task",
+        payload={"top_p": 0.3},
+        session_id="run-a",
+        memory_namespace="ns-a",
+        max_iterations=5,
+        on_tool_confirm=confirm,
+    )
+
+    root_instance = instances[0]
+    result = root_instance.toolkit.execute(
+        "spawn_subagent",
+        {"task": "Investigate risk", "role": "researcher", "instructions": "Use sources"},
+    )
+
+    assert confirm_calls == []
+    assert result["agent"] == "planner.researcher.1"
+    assert result["role"] == "researcher"
+    assert result["depth"] == 1
+    assert result["lineage"] == ["planner", "planner.researcher.1"]
+    assert result["output"] == "child result"
+    assert result["bundle"]["consumed_tokens"] == 7
+
+    child_instance = instances[1]
+    assert child_instance.provider == "openai"
+    assert child_instance.model == "gpt-5"
+    assert child_instance.api_key == "sk-test"
+    assert child_instance.memory_manager is memory
+    assert child_instance.extra_component == "router_v2"
+    assert child_instance.max_iterations == 9
+    assert child_instance.toolkit.execute("echo", {"text": "pong"}) == {"echo": "pong"}
+    assert child_instance.toolkit.get("spawn_subagent") is not None
+    assert child_instance.run_calls[0]["payload"] == {"temperature": 0.1, "top_p": 0.3}
+    assert child_instance.run_calls[0]["session_id"] == "run-a:planner.researcher.1"
+    assert child_instance.run_calls[0]["memory_namespace"] == "ns-a:planner.researcher.1"
+    assert child_instance.run_calls[0]["max_iterations"] == 5
+    assert child_instance.run_calls[0]["on_tool_confirm"] is confirm
+    child_system = child_instance.run_calls[0]["messages"][0]["content"]
+    assert "Be concise." in child_system
+    assert 'parent agent "planner"' in child_system
+    assert "Role: researcher" in child_system
+    assert "Depth: 1" in child_system
+    assert "Use sources" in child_system
+
+
+def test_spawn_subagent_supports_recursive_lineage_and_scoped_ids(monkeypatch):
+    instances = []
+
+    class FakeBroth:
+        def __init__(self, provider=None, model=None, api_key=None, memory_manager=None):
+            del provider, model, api_key, memory_manager
+            self.toolkit = None
+            self.run_calls = []
+            instances.append(self)
+
+        def run(
+            self,
+            *,
+            messages,
+            payload,
+            response_format,
+            callback,
+            verbose,
+            max_iterations,
+            previous_response_id,
+            on_tool_confirm,
+            on_continuation_request,
+            session_id,
+            memory_namespace,
+        ):
+            del payload, response_format, callback, verbose, max_iterations
+            del previous_response_id, on_tool_confirm, on_continuation_request
+            self.run_calls.append({
+                "messages": messages,
+                "session_id": session_id,
+                "memory_namespace": memory_namespace,
+            })
+            return messages + [{"role": "assistant", "content": f"done:{messages[-1]['content']}"}], {"consumed_tokens": 1}
+
+    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+
+    agent = Agent(name="planner").enable_subagents()
+    agent.run("root task", session_id="run-a", memory_namespace="ns-a")
+
+    root_instance = instances[0]
+    child = root_instance.toolkit.execute(
+        "spawn_subagent",
+        {"task": "Investigate risk", "role": "researcher"},
+    )
+    grandchild = instances[1].toolkit.execute(
+        "spawn_subagent",
+        {"task": "Review findings", "role": "critic"},
+    )
+
+    assert child["agent"] == "planner.researcher.1"
+    assert child["lineage"] == ["planner", "planner.researcher.1"]
+    assert grandchild["agent"] == "planner.researcher.1.critic.1"
+    assert grandchild["depth"] == 2
+    assert grandchild["lineage"] == [
+        "planner",
+        "planner.researcher.1",
+        "planner.researcher.1.critic.1",
+    ]
+    assert instances[2].run_calls[0]["session_id"] == "run-a:planner.researcher.1:planner.researcher.1.critic.1"
+    assert instances[2].run_calls[0]["memory_namespace"] == "ns-a:planner.researcher.1:planner.researcher.1.critic.1"
+
+
+def test_spawn_subagent_enforces_max_depth(monkeypatch):
+    instances = []
+
+    class FakeBroth:
+        def __init__(self, provider=None, model=None, api_key=None, memory_manager=None):
+            del provider, model, api_key, memory_manager
+            self.toolkit = None
+            instances.append(self)
+
+        def run(
+            self,
+            *,
+            messages,
+            payload,
+            response_format,
+            callback,
+            verbose,
+            max_iterations,
+            previous_response_id,
+            on_tool_confirm,
+            on_continuation_request,
+            session_id,
+            memory_namespace,
+        ):
+            del messages, payload, response_format, callback, verbose, max_iterations
+            del previous_response_id, on_tool_confirm, on_continuation_request, session_id, memory_namespace
+            return [{"role": "assistant", "content": "ok"}], {"consumed_tokens": 1}
+
+    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+
+    agent = Agent(name="planner").enable_subagents(max_depth=1)
+    agent.run("root")
+
+    root_instance = instances[0]
+    root_instance.toolkit.execute("spawn_subagent", {"task": "child", "role": "researcher"})
+    blocked = instances[1].toolkit.execute("spawn_subagent", {"task": "grandchild", "role": "critic"})
+
+    assert "max_depth" in blocked["error"]
+    assert blocked["agent"] == "planner.researcher.1"
+    assert blocked["depth"] == 2
+    assert len(instances) == 2
+
+
+def test_spawn_subagent_enforces_max_children_per_agent(monkeypatch):
+    instances = []
+
+    class FakeBroth:
+        def __init__(self, provider=None, model=None, api_key=None, memory_manager=None):
+            del provider, model, api_key, memory_manager
+            self.toolkit = None
+            instances.append(self)
+
+        def run(
+            self,
+            *,
+            messages,
+            payload,
+            response_format,
+            callback,
+            verbose,
+            max_iterations,
+            previous_response_id,
+            on_tool_confirm,
+            on_continuation_request,
+            session_id,
+            memory_namespace,
+        ):
+            del messages, payload, response_format, callback, verbose, max_iterations
+            del previous_response_id, on_tool_confirm, on_continuation_request, session_id, memory_namespace
+            return [{"role": "assistant", "content": "ok"}], {"consumed_tokens": 1}
+
+    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+
+    agent = Agent(name="planner").enable_subagents(max_children_per_agent=1)
+    agent.run("root")
+
+    root_instance = instances[0]
+    first = root_instance.toolkit.execute("spawn_subagent", {"task": "child-a", "role": "researcher"})
+    blocked = root_instance.toolkit.execute("spawn_subagent", {"task": "child-b", "role": "critic"})
+
+    assert first["agent"] == "planner.researcher.1"
+    assert "max_children_per_agent" in blocked["error"]
+    assert blocked["agent"] == "planner"
+    assert len(instances) == 2
+
+
+def test_spawn_subagent_enforces_max_total_subagents(monkeypatch):
+    instances = []
+
+    class FakeBroth:
+        def __init__(self, provider=None, model=None, api_key=None, memory_manager=None):
+            del provider, model, api_key, memory_manager
+            self.toolkit = None
+            instances.append(self)
+
+        def run(
+            self,
+            *,
+            messages,
+            payload,
+            response_format,
+            callback,
+            verbose,
+            max_iterations,
+            previous_response_id,
+            on_tool_confirm,
+            on_continuation_request,
+            session_id,
+            memory_namespace,
+        ):
+            del messages, payload, response_format, callback, verbose, max_iterations
+            del previous_response_id, on_tool_confirm, on_continuation_request, session_id, memory_namespace
+            return [{"role": "assistant", "content": "ok"}], {"consumed_tokens": 1}
+
+    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+
+    agent = Agent(name="planner").enable_subagents(max_total_subagents=2)
+    agent.run("root")
+
+    root_instance = instances[0]
+    root_instance.toolkit.execute("spawn_subagent", {"task": "child-a", "role": "researcher"})
+    root_instance.toolkit.execute("spawn_subagent", {"task": "child-b", "role": "critic"})
+    blocked = root_instance.toolkit.execute("spawn_subagent", {"task": "child-c", "role": "writer"})
+
+    assert "max_total_subagents" in blocked["error"]
+    assert blocked["agent"] == "planner"
+    assert len(instances) == 3
+
+
+def test_team_agents_can_use_subagents_without_registering_them(monkeypatch):
+    instances = []
+
+    class FakeBroth:
+        def __init__(self, provider=None, model=None, api_key=None, memory_manager=None):
+            del provider, model, api_key, memory_manager
+            self.toolkit = None
+            self.run_calls = []
+            instances.append(self)
+
+        def run(
+            self,
+            *,
+            messages,
+            payload,
+            response_format,
+            callback,
+            verbose,
+            max_iterations,
+            previous_response_id,
+            on_tool_confirm,
+            on_continuation_request,
+            session_id,
+            memory_namespace,
+        ):
+            del payload, callback, verbose, max_iterations, previous_response_id
+            del on_tool_confirm, on_continuation_request
+            self.run_calls.append({
+                "messages": messages,
+                "session_id": session_id,
+                "memory_namespace": memory_namespace,
+            })
+            if response_format is not None:
+                subagent = self.toolkit.execute(
+                    "spawn_subagent",
+                    {"task": "Investigate risk", "role": "researcher"},
+                )
+                content = json.dumps(
+                    {
+                        "publish": [],
+                        "handoff_to": "",
+                        "handoff_message": "",
+                        "final": f"owner saw {subagent['output']}",
+                        "idle": False,
+                        "artifacts": [],
+                    }
+                )
+                return messages + [{"role": "assistant", "content": content}], {"consumed_tokens": 2}
+            return [{"role": "assistant", "content": "delegated answer"}], {"consumed_tokens": 1}
+
+    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+
+    planner = Agent(name="planner").enable_subagents()
+    team = Team(
+        agents=[planner],
+        owner="planner",
+        channels={"shared": ["planner"]},
+    )
+
+    result = team.run("start", session_id="run-a", memory_namespace="ns-a")
+
+    scheduled = [event["agent"] for event in result["events"] if event["type"] == "scheduled"]
+    assert scheduled == ["planner"]
+    assert result["final"] == "owner saw delegated answer"
+    assert instances[1].run_calls[0]["session_id"] == "run-a:planner:planner.researcher.1"
+    assert instances[1].run_calls[0]["memory_namespace"] == "ns-a:planner:planner.researcher.1"
+    assert not any(event.get("agent") == "planner.researcher.1" for event in result["events"])

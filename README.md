@@ -110,6 +110,27 @@ result = team.run("给我一个最小可行发布计划")
 print(result["final"])
 ```
 
+同步式 subagent（运行时工具委派）：
+
+```python
+from miso import Agent
+
+coordinator = Agent(
+    name="coordinator",
+    provider="openai",
+    model="gpt-5",
+    api_key="YOUR_OPENAI_API_KEY",
+    instructions="Coordinate the work and delegate focused research when needed.",
+).enable_subagents()
+
+conversation, bundle = coordinator.run("先让一个 researcher 子代理调研发布风险，再给我结论。")
+
+print(conversation[-1]["content"])
+print(bundle)
+```
+
+启用后，agent 会在每次运行时动态注册 `spawn_subagent(task, role, instructions="")` 工具；子代理会继承父代理的模型、工具和 memory manager，并使用独立的 `session_id` / `memory_namespace` 分支运行。
+
 底层运行时（`Broth`）仍然保留，适合直接控制 provider/tool loop：
 
 ```python
