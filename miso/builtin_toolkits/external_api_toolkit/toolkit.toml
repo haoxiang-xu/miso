@@ -5,7 +5,9 @@ description = "Call external HTTP endpoints with basic GET and POST requests."
 factory = "miso.builtin_toolkits.external_api_toolkit:external_api_toolkit"
 version = "1.0.0"
 readme = "README.md"
-icon = "icon.svg"
+icon = "global"
+color = "#0f172a"
+backgroundcolor = "#ccfbf1"
 tags = ["builtin", "http", "api"]
 
 [display]

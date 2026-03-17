@@ -5,7 +5,9 @@ description = "Read, create, and edit files and directories inside a workspace r
 factory = "miso.builtin_toolkits.workspace_toolkit:workspace_toolkit"
 version = "1.0.0"
 readme = "README.md"
-icon = "icon.svg"
+icon = "folder"
+color = "#0f172a"
+backgroundcolor = "#dbeafe"
 tags = ["builtin", "workspace", "files", "editing"]
 
 [display]

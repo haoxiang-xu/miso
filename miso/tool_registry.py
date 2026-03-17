@@ -85,6 +85,25 @@ def _resolve_asset(root: Path, relative_path: str, *, label: str, required_suffi
     return candidate
 
 
+def _looks_like_icon_asset(value: str) -> bool:
+    return Path(value).suffix.lower() in _ICON_SUFFIXES
+
+
+def _require_builtin_icon_field(
+    section: dict[str, Any],
+    key: str,
+    manifest_path: Path,
+    *,
+    icon_name: str,
+) -> str:
+    value = section.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            f"{manifest_path}: builtin toolkit icon '{icon_name}' requires non-empty '{key}'"
+        )
+    return value.strip()
+
+
 def _import_object(import_path: str, import_roots: Sequence[Path] = ()) -> Any:
     if ":" not in import_path:
         raise ValueError(f"invalid import path '{import_path}'; expected 'module:attribute'")
@@ -204,7 +223,8 @@ class ToolDescriptor:
     name: str
     title: str
     description: str
-    icon_path: Path
+    icon_path: Path | None
+    icon: "IconDescriptor"
     hidden: bool = False
     requires_confirmation: bool = False
     observe: bool = False
@@ -214,10 +234,51 @@ class ToolDescriptor:
             "name": self.name,
             "title": self.title,
             "description": self.description,
-            "icon_path": str(self.icon_path),
+            "icon_path": str(self.icon_path) if self.icon_path else "",
+            "icon": self.icon.to_summary(),
             "hidden": self.hidden,
             "requires_confirmation": self.requires_confirmation,
             "observe": self.observe,
+        }
+
+
+@dataclass
+class IconDescriptor:
+    type: str
+    path: Path | None = None
+    name: str | None = None
+    color: str | None = None
+    background_color: str | None = None
+
+    @classmethod
+    def from_file(cls, path: Path) -> "IconDescriptor":
+        return cls(type="file", path=path)
+
+    @classmethod
+    def from_builtin(
+        cls,
+        name: str,
+        color: str,
+        background_color: str,
+    ) -> "IconDescriptor":
+        return cls(
+            type="builtin",
+            name=name,
+            color=color,
+            background_color=background_color,
+        )
+
+    def to_summary(self) -> dict[str, Any]:
+        if self.type == "file":
+            return {
+                "type": "file",
+                "path": str(self.path) if self.path else "",
+            }
+        return {
+            "type": "builtin",
+            "name": self.name or "",
+            "color": self.color or "",
+            "background_color": self.background_color or "",
         }
 
 
@@ -232,7 +293,8 @@ class ToolkitDescriptor:
     manifest_path: Path
     root_path: Path
     readme_path: Path
-    icon_path: Path
+    icon_path: Path | None
+    icon: IconDescriptor
     source: str
     display_category: str | None = None
     display_order: int = 0
@@ -260,7 +322,8 @@ class ToolkitDescriptor:
             "manifest_path": str(self.manifest_path),
             "root_path": str(self.root_path),
             "readme_path": str(self.readme_path),
-            "icon_path": str(self.icon_path),
+            "icon_path": str(self.icon_path) if self.icon_path else "",
+            "icon": self.icon.to_summary(),
             "tool_count": len(self.tools),
             "display": {
                 "category": self.display_category,
@@ -280,6 +343,36 @@ class ToolkitDescriptor:
         payload = self.to_summary(include_tools=include_tools)
         payload["readme_markdown"] = _read_markdown(self.readme_path)
         return payload
+
+
+def _resolve_toolkit_icon(
+    root: Path,
+    toolkit_section: dict[str, Any],
+    manifest_path: Path,
+) -> tuple[Path | None, IconDescriptor]:
+    icon_value = _require_str(toolkit_section, "icon", manifest_path)
+    if _looks_like_icon_asset(icon_value):
+        icon_path = _resolve_asset(
+            root,
+            icon_value,
+            label=f"{manifest_path}: toolkit icon",
+            required_suffixes=_ICON_SUFFIXES,
+        )
+        return icon_path, IconDescriptor.from_file(icon_path)
+
+    color = _require_builtin_icon_field(
+        toolkit_section,
+        "color",
+        manifest_path,
+        icon_name=icon_value,
+    )
+    background_color = _require_builtin_icon_field(
+        toolkit_section,
+        "backgroundcolor",
+        manifest_path,
+        icon_name=icon_value,
+    )
+    return None, IconDescriptor.from_builtin(icon_value, color, background_color)
 
 
 class ToolkitRegistry:
@@ -456,12 +549,7 @@ class ToolkitRegistry:
             _require_str(toolkit_section, "readme", manifest_path),
             label=f"{manifest_path}: toolkit readme",
         )
-        icon_path = _resolve_asset(
-            root_path,
-            _require_str(toolkit_section, "icon", manifest_path),
-            label=f"{manifest_path}: toolkit icon",
-            required_suffixes=_ICON_SUFFIXES,
-        )
+        icon_path, icon = _resolve_toolkit_icon(root_path, toolkit_section, manifest_path)
 
         tools: dict[str, ToolDescriptor] = {}
         for tool_item in tools_section:
@@ -476,21 +564,23 @@ class ToolkitRegistry:
                     "document tools in the toolkit README instead"
                 )
             tool_icon_rel = _optional_str(tool_item, "icon")
-            tool_icon_path = (
-                _resolve_asset(
+            if tool_icon_rel is not None:
+                tool_icon_path = _resolve_asset(
                     root_path,
                     tool_icon_rel,
                     label=f"{manifest_path}: tool icon for '{tool_name}'",
                     required_suffixes=_ICON_SUFFIXES,
                 )
-                if tool_icon_rel is not None
-                else icon_path
-            )
+                tool_icon = IconDescriptor.from_file(tool_icon_path)
+            else:
+                tool_icon_path = icon_path
+                tool_icon = icon
             tools[tool_name] = ToolDescriptor(
                 name=tool_name,
                 title=_optional_str(tool_item, "title") or tool_name,
                 description=_require_str(tool_item, "description", manifest_path),
                 icon_path=tool_icon_path,
+                icon=tool_icon,
                 hidden=_coerce_bool(tool_item.get("hidden"), default=False),
                 requires_confirmation=_coerce_bool(tool_item.get("requires_confirmation"), default=False),
                 observe=_coerce_bool(tool_item.get("observe"), default=False),
@@ -507,6 +597,7 @@ class ToolkitRegistry:
             root_path=root_path,
             readme_path=readme_path,
             icon_path=icon_path,
+            icon=icon,
             source=source,
             display_category=_optional_str(display_section, "category"),
             display_order=_optional_int(display_section, "order", default=0),

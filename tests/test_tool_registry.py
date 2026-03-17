@@ -23,6 +23,9 @@ def _write_toolkit_package(
     include_toolkit_readme: bool = True,
     include_toolkit_icon: bool = True,
     include_tool_readme_field: bool = False,
+    toolkit_icon_value: str = "icon.svg",
+    toolkit_color: str | None = None,
+    toolkit_backgroundcolor: str | None = None,
 ) -> Path:
     package_dir = root / package_name
     package_dir.mkdir(parents=True, exist_ok=True)
@@ -56,6 +59,12 @@ class DemoToolkit(toolkit):
 
     if include_manifest:
         tool_readme_line = 'readme = "tools/echo/README.md"\n' if include_tool_readme_field else ""
+        color_line = f'color = "{toolkit_color}"\n' if toolkit_color is not None else ""
+        background_line = (
+            f'backgroundcolor = "{toolkit_backgroundcolor}"\n'
+            if toolkit_backgroundcolor is not None
+            else ""
+        )
         (package_dir / "toolkit.toml").write_text(
             f"""
 [toolkit]
@@ -65,8 +74,8 @@ description = "Local test toolkit."
 factory = "{package_name}:DemoToolkit"
 version = "1.0.0"
 readme = "README.md"
-icon = "icon.svg"
-tags = ["local", "test"]
+icon = "{toolkit_icon_value}"
+{color_line}{background_line}tags = ["local", "test"]
 
 [display]
 category = "local"
@@ -118,6 +127,7 @@ def test_get_toolkit_metadata_returns_full_markdown_and_inherited_tool_icon():
     assert toolkit_metadata["readme_markdown"].startswith("# workspace_toolkit")
     assert tool_metadata["toolkit"]["readme_markdown"].startswith("# workspace_toolkit")
     assert tool_metadata["tool"]["icon_path"] == tool_metadata["toolkit"]["icon_path"]
+    assert tool_metadata["tool"]["icon"] == tool_metadata["toolkit"]["icon"]
 
 
 def test_list_toolkits_payload_is_json_serializable():
@@ -149,6 +159,43 @@ def test_local_root_validates_missing_toolkit_icon(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(tmp_path))
 
     with pytest.raises(ValueError, match="toolkit icon not found"):
+        ToolkitRegistry(ToolRegistryConfig(include_builtin=False, local_roots=[tmp_path]))
+
+
+def test_local_root_supports_builtin_toolkit_icon_with_colors(tmp_path, monkeypatch):
+    _write_toolkit_package(
+        tmp_path,
+        toolkit_icon_value="terminal",
+        toolkit_color="#0f172a",
+        toolkit_backgroundcolor="#bae6fd",
+        include_toolkit_icon=False,
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    registry = ToolkitRegistry(ToolRegistryConfig(include_builtin=False, local_roots=[tmp_path]))
+    summary = registry.require("demo").to_summary()
+    tool_summary = summary["tools"][0]
+
+    assert summary["icon_path"] == ""
+    assert summary["icon"] == {
+        "type": "builtin",
+        "name": "terminal",
+        "color": "#0f172a",
+        "background_color": "#bae6fd",
+    }
+    assert tool_summary["icon_path"] == ""
+    assert tool_summary["icon"] == summary["icon"]
+
+
+def test_local_root_builtin_toolkit_icon_requires_colors(tmp_path, monkeypatch):
+    _write_toolkit_package(
+        tmp_path,
+        toolkit_icon_value="terminal",
+        include_toolkit_icon=False,
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    with pytest.raises(ValueError, match="builtin toolkit icon 'terminal' requires non-empty 'color'"):
         ToolkitRegistry(ToolRegistryConfig(include_builtin=False, local_roots=[tmp_path]))
 
 

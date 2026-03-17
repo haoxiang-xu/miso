@@ -5,7 +5,9 @@ description = "Expose structured user-interaction tools for choice-based clarifi
 factory = "miso.builtin_toolkits.interaction_toolkit:interaction_toolkit"
 version = "1.0.0"
 readme = "README.md"
-icon = "icon.svg"
+icon = "mouse"
+color = "#0f172a"
+backgroundcolor = "#fef3c7"
 tags = ["builtin", "interaction", "user-input"]
 
 [display]
