@@ -1,7 +1,28 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-labelledby="title">
-  <title>Workspace Toolkit</title>
-  <rect x="8" y="8" width="80" height="80" rx="18" fill="#0F766E"/>
-  <path d="M28 31h18l6 8h16v26H28V31z" fill="#CCFBF1"/>
-  <path d="M28 39h40v26H28V39z" fill="#99F6E4"/>
-  <path d="M36 47h24M36 54h18" stroke="#115E59" stroke-linecap="round" stroke-width="4"/>
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g clip-path="url(#clip0_215_3)">
+<rect width="16" height="16" rx="5" fill="url(#paint0_linear_215_3)"/>
+<path d="M8.75445 5.08824H12.0926C12.6449 5.08824 13.0926 5.53595 13.0926 6.08824V7.59091V10.5C13.0926 11.6046 12.1972 12.5 11.0926 12.5H5.14815H2.5V5C2.5 4.44772 2.94772 4 3.5 4H6.24555C6.41252 4 6.57684 4.04181 6.7235 4.12161L8.2765 4.96662C8.42316 5.04643 8.58748 5.08824 8.75445 5.08824Z" fill="#99F6E4"/>
+<g filter="url(#filter0_d_215_3)">
+<path d="M12.9132 6.5H3.95115C3.43338 6.5 3.00124 6.89522 2.95512 7.41093L2.5 12.5H12.5799C13.1 12.5 13.5332 12.1013 13.5764 11.583L13.9097 7.58305C13.9583 7.00003 13.4982 6.5 12.9132 6.5Z" fill="#99F6E4"/>
+</g>
+</g>
+<defs>
+<filter id="filter0_d_215_3" x="-3.5" y="0.5" width="23.4133" height="18" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+<feFlood flood-opacity="0" result="BackgroundImageFix"/>
+<feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+<feOffset/>
+<feGaussianBlur stdDeviation="3"/>
+<feComposite in2="hardAlpha" operator="out"/>
+<feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.36 0"/>
+<feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_215_3"/>
+<feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_215_3" result="shape"/>
+</filter>
+<linearGradient id="paint0_linear_215_3" x1="15" y1="-1" x2="3" y2="13" gradientUnits="userSpaceOnUse">
+<stop stop-color="#1AC0B3"/>
+<stop offset="1" stop-color="#1FA398"/>
+</linearGradient>
+<clipPath id="clip0_215_3">
+<rect width="16" height="16" fill="white"/>
+</clipPath>
+</defs>
 </svg>
