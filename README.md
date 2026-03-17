@@ -4,14 +4,15 @@
 
 - 一个高层多代理 API：`Agent` / `Team`
 - 一个主循环引擎：`broth`
-- 一个会话记忆层：`memory`（`MemoryManager` + context window 策略）
+- 一个会话记忆层：`memory`（short-term context window + optional long-term memory）
 - 一套工具抽象：`tool` / `toolkit`
 - 一个结构化输出层：`response_format`
 - 一个多模态输入规范层：`media` + canonical content blocks
 - 一个远程工具桥接层：`mcp`
-- 三个可直接落地的内置工具包：`workspace_toolkit` / `terminal_toolkit` / `interaction_toolkit`
+- 一个 toolkit registry：`tool_registry`（manifest 扫描、元数据与插件发现）
+- 四个可直接落地的内置工具包：`workspace_toolkit` / `terminal_toolkit` / `external_api_toolkit` / `interaction_toolkit`
 
-它支持 OpenAI / Anthropic / Ollama 三类 provider，并且尽量保持接口一致。
+它支持 OpenAI / Anthropic / Gemini / Ollama 四类 provider，并且尽量保持接口一致。
 
 ---
 
@@ -130,15 +131,20 @@ print(bundle)
 
 - `Agent` / `Team`：推荐的高层单 agent / multi-agent 入口
 - `broth`：底层 runtime engine / 兼容入口
-- `MemoryManager` / `MemoryConfig`
+- `MemoryManager` / `MemoryConfig` / `LongTermMemoryConfig`
 - `ContextStrategy` / `SessionStore` / `VectorStoreAdapter`
+- `LongTermProfileStore` / `LongTermVectorAdapter`
 - `LastNTurnsStrategy` / `SummaryTokenStrategy` / `HybridContextStrategy`
+- `JsonFileLongTermProfileStore`
+- `QdrantLongTermVectorAdapter` / `build_default_long_term_qdrant_vector_adapter`
+- `build_openai_embed_fn`
 - `tool_parameter` / `tool` / `toolkit` / `tool_decorator`
 - `ToolConfirmationRequest` / `ToolConfirmationResponse`
 - `HumanInputOption` / `HumanInputRequest` / `HumanInputResponse`
 - `response_format`
 - `media`
 - `mcp`
+- `ToolDescriptor` / `ToolkitDescriptor`
 - `ToolRegistryConfig` / `ToolkitRegistry`
 - `list_toolkits` / `get_toolkit_metadata`
 - `builtin_toolkit`（内置 toolkit 基类）
@@ -158,11 +164,14 @@ print(bundle)
 | `miso/team.py`                                    | `Team`                                | 多 agent 编排、channel 调度、handoff、owner finalize          |
 | `miso/broth.py`                                   | `broth`                               | 底层执行引擎：provider 适配、工具调用闭环、token 统计、回调事件 |
 | `miso/memory.py`                                  | `MemoryManager` / 策略协议            | session memory、context window 裁剪、summary、可选向量召回     |
+| `miso/memory_qdrant.py`                           | `QdrantVectorAdapter` / `QdrantLongTermVectorAdapter` | Qdrant 向量适配与 OpenAI embedding helper         |
 | `miso/tool.py`                                    | `tool_parameter` / `tool` / `toolkit` | 工具 schema 推断、工具注册、工具执行                          |
 | `miso/tool_registry.py`                           | `ToolkitRegistry`                     | toolkit metadata 扫描、校验、只读 registry 输出               |
+| `miso/human_input.py`                             | `HumanInputRequest` / `HumanInputResponse` | selector 请求/响应协议与 runtime 约定                   |
 | `miso/response_format.py`                         | `response_format`                     | JSON Schema 输出约束与解析                                    |
 | `miso/media.py`                                   | `from_file` / `from_url`              | 生成 canonical 多模态输入块                                   |
 | `miso/mcp.py`                                     | `mcp(toolkit)`                        | 把 MCP Server 暴露成 miso toolkit                             |
+| `miso/workspace_pins.py`                          | `WorkspacePinExecutionContext`        | session 级 pinned context 注入与 live reload                  |
 | `miso/builtin_toolkits/base.py`                   | `builtin_toolkit`                     | 工作区路径安全基类                                            |
 | `miso/builtin_toolkits/workspace_toolkit/`        | `workspace_toolkit`                   | 文件、目录、行级编辑                                          |
 | `miso/builtin_toolkits/terminal_toolkit/`         | `terminal_toolkit`                    | 仅暴露受限 terminal action                                    |
@@ -936,15 +945,15 @@ Memory 事件补充字段：
 
 ## Provider 差异对照
 
-| 维度                   | OpenAI                          | Anthropic                   | Ollama                            |
-| ---------------------- | ------------------------------- | --------------------------- | --------------------------------- |
-| 主要调用接口           | `OpenAI.responses.create`       | `Anthropic.messages.stream` | `http://localhost:11434/api/chat` |
-| 是否强制流式           | 是                              | 使用 stream API             | 是                                |
-| 多模态输入             | text/image/pdf                  | text/image/pdf              | text only                         |
-| 工具调用               | function_call                   | tool_use                    | tool_calls                        |
-| `previous_response_id` | 支持（能力矩阵允许时）          | 不支持                      | 不支持                            |
-| 结构化输出透传         | `response_format`               | 当前未透传（本地 parse）    | `format`                          |
-| PDF base64 处理        | 可上传 Files API 并缓存 file_id | 直接 document/base64        | 不支持                            |
+| 维度                   | OpenAI                          | Anthropic                   | Gemini                                                  | Ollama                            |
+| ---------------------- | ------------------------------- | --------------------------- | ------------------------------------------------------- | --------------------------------- |
+| 主要调用接口           | `OpenAI.responses.create`       | `Anthropic.messages.stream` | `google.genai.Client.models.generate_content_stream`    | `http://localhost:11434/api/chat` |
+| 是否强制流式           | 是                              | 使用 stream API             | 是                                                      | 是                                |
+| 多模态输入             | text/image/pdf                  | text/image/pdf              | text/image/pdf                                          | text only                         |
+| 工具调用               | function_call                   | tool_use                    | function_call                                           | tool_calls                        |
+| `previous_response_id` | 支持（能力矩阵允许时）          | 不支持                      | 不支持                                                  | 不支持                            |
+| 结构化输出透传         | `response_format`               | 当前未透传（本地 parse）    | `response_schema` + `response_mime_type`                | `format`                          |
+| PDF base64 处理        | 可上传 Files API 并缓存 file_id | 直接 document/base64        | `inline_data`（base64）或 `file_data`（URL）            | 不支持                            |
 
 ---
 
@@ -1149,33 +1158,56 @@ miso/
   _agent_shared.py
   agent.py
   broth.py
+  human_input.py
   memory.py
+  memory_qdrant.py
   media.py
   mcp.py
   response_format.py
   team.py
   tool.py
+  tool_registry.py
+  workspace_pins.py
   model_default_payloads.json
   model_capabilities.json
   builtin_toolkits/
     __init__.py
+    _terminal_runtime.py
     base.py
+    external_api_toolkit/
+      __init__.py
+      external_api_toolkit.py
+    interaction_toolkit/
+      __init__.py
+      interaction_toolkit.py
+    terminal_toolkit/
+      __init__.py
+      terminal_toolkit.py
     workspace_toolkit/
       __init__.py
       workspace_toolkit.py
+scripts/
+  init_python312_venv.sh
+  init_python312_venv.ps1
 tests/
-  test_agent_team.py
-  test_broth_core.py
-  test_memory.py
   test_agent_core.py
-  test_toolkit_design.py
-  test_tool_confirmation.py
-  test_workspace_toolkit.py
-  test_mcp.py
-  test_file_cache.py
-  test_openai_family_smoke.py
+  test_agent_team.py
   test_anthropic_smoke.py
+  test_broth_core.py
+  test_file_cache.py
+  test_gemini_smoke.py
+  test_human_input.py
+  test_mcp.py
+  test_memory.py
+  test_memory_qdrant_openai_embed.py
   test_ollama_smoke.py
+  test_openai_family_smoke.py
+  test_terminal_toolkit.py
+  test_tool_confirmation.py
+  test_tool_registry.py
+  test_toolkit_design.py
+  test_workspace_pins.py
+  test_workspace_toolkit.py
 ```
 
 ---
@@ -1192,6 +1224,7 @@ Smoke tests 依赖环境变量：
 
 - OpenAI: `OPENAI_API_KEY`, `OPENAI_MODEL`
 - Anthropic: `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`
+- Gemini: `GEMINI_API_KEY` 或 `GOOGLE_API_KEY`，以及 `GEMINI_MODEL`
 - Ollama: 本地服务 `http://localhost:11434`，可选 `OLLAMA_MODEL`
 - MCP smoke: `MCP_SMOKE=1` 且本机可用 `npx`
 
