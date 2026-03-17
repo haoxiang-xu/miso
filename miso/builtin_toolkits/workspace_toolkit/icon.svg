@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-labelledby="title">
+  <title>Workspace Toolkit</title>
+  <rect x="8" y="8" width="80" height="80" rx="18" fill="#0F766E"/>
+  <path d="M28 31h18l6 8h16v26H28V31z" fill="#CCFBF1"/>
+  <path d="M28 39h40v26H28V39z" fill="#99F6E4"/>
+  <path d="M36 47h24M36 54h18" stroke="#115E59" stroke-linecap="round" stroke-width="4"/>
+</svg>

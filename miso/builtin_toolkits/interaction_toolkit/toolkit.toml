@@ -1,0 +1,25 @@
+[toolkit]
+id = "interaction"
+name = "Interaction Toolkit"
+description = "Expose structured user-interaction tools for choice-based clarification flows."
+factory = "miso.builtin_toolkits.interaction_toolkit:interaction_toolkit"
+version = "1.0.0"
+readme = "README.md"
+icon = "icon.svg"
+tags = ["builtin", "interaction", "user-input"]
+
+[display]
+category = "builtin"
+order = 40
+hidden = false
+
+[compat]
+python = ">=3.9"
+miso = ">=0"
+
+[[tools]]
+name = "request_user_input"
+title = "Request User Input"
+description = "Ask the user a structured multiple-choice question and suspend the run."
+observe = false
+requires_confirmation = false

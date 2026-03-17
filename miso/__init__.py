@@ -21,6 +21,14 @@ from .builtin_toolkits import (
     interaction_toolkit,
 )
 from .mcp import mcp
+from .tool_registry import (
+    ToolDescriptor,
+    ToolRegistryConfig,
+    ToolkitDescriptor,
+    ToolkitRegistry,
+    get_toolkit_metadata,
+    list_toolkits,
+)
 from .response_format import response_format
 from .broth import broth
 from .agent import Agent
@@ -64,6 +72,12 @@ __all__ = [
     "external_api_toolkit",
     "interaction_toolkit",
     "mcp",
+    "ToolDescriptor",
+    "ToolRegistryConfig",
+    "ToolkitDescriptor",
+    "ToolkitRegistry",
+    "list_toolkits",
+    "get_toolkit_metadata",
     "response_format",
     "broth",
     "Agent",

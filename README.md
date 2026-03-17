@@ -139,10 +139,13 @@ print(bundle)
 - `response_format`
 - `media`
 - `mcp`
+- `ToolRegistryConfig` / `ToolkitRegistry`
+- `list_toolkits` / `get_toolkit_metadata`
 - `builtin_toolkit`（内置 toolkit 基类）
 - `build_builtin_toolkit`（返回 `workspace_toolkit` 的 helper）
 - `workspace_toolkit`
 - `terminal_toolkit`
+- `external_api_toolkit`
 - `interaction_toolkit`
 
 ---
@@ -156,12 +159,15 @@ print(bundle)
 | `miso/broth.py`                                   | `broth`                               | 底层执行引擎：provider 适配、工具调用闭环、token 统计、回调事件 |
 | `miso/memory.py`                                  | `MemoryManager` / 策略协议            | session memory、context window 裁剪、summary、可选向量召回     |
 | `miso/tool.py`                                    | `tool_parameter` / `tool` / `toolkit` | 工具 schema 推断、工具注册、工具执行                          |
+| `miso/tool_registry.py`                           | `ToolkitRegistry`                     | toolkit metadata 扫描、校验、只读 registry 输出               |
 | `miso/response_format.py`                         | `response_format`                     | JSON Schema 输出约束与解析                                    |
 | `miso/media.py`                                   | `from_file` / `from_url`              | 生成 canonical 多模态输入块                                   |
 | `miso/mcp.py`                                     | `mcp(toolkit)`                        | 把 MCP Server 暴露成 miso toolkit                             |
 | `miso/builtin_toolkits/base.py`                   | `builtin_toolkit`                     | 工作区路径安全基类                                            |
 | `miso/builtin_toolkits/workspace_toolkit/`        | `workspace_toolkit`                   | 文件、目录、行级编辑                                          |
 | `miso/builtin_toolkits/terminal_toolkit/`         | `terminal_toolkit`                    | 仅暴露受限 terminal action                                    |
+| `miso/builtin_toolkits/external_api_toolkit/`     | `external_api_toolkit`                | 基础 HTTP GET / POST 请求                                     |
+| `miso/builtin_toolkits/interaction_toolkit/`      | `interaction_toolkit`                 | 结构化用户交互                                                |
 | `miso/model_default_payloads.json`                | -                                     | 不同模型默认 payload                                          |
 | `miso/model_capabilities.json`                    | -                                     | 不同模型能力矩阵（tools、多模态、payload 白名单等）           |
 
