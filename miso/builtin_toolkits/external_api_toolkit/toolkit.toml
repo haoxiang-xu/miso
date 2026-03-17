@@ -6,8 +6,8 @@ factory = "miso.builtin_toolkits.external_api_toolkit:external_api_toolkit"
 version = "1.0.0"
 readme = "README.md"
 icon = "global"
-color = "#0f172a"
-backgroundcolor = "#ccfbf1"
+color = "#f0fdfa"
+backgroundcolor = "#14b8a6"
 tags = ["builtin", "http", "api"]
 
 [display]

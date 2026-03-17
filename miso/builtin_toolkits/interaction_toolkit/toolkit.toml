@@ -6,8 +6,8 @@ factory = "miso.builtin_toolkits.interaction_toolkit:interaction_toolkit"
 version = "1.0.0"
 readme = "README.md"
 icon = "mouse"
-color = "#0f172a"
-backgroundcolor = "#fef3c7"
+color = "#422006"
+backgroundcolor = "#f59e0b"
 tags = ["builtin", "interaction", "user-input"]
 
 [display]

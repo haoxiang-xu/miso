@@ -6,8 +6,8 @@ factory = "miso.builtin_toolkits.workspace_toolkit:workspace_toolkit"
 version = "1.0.0"
 readme = "README.md"
 icon = "folder"
-color = "#0f172a"
-backgroundcolor = "#dbeafe"
+color = "#eff6ff"
+backgroundcolor = "#2563eb"
 tags = ["builtin", "workspace", "files", "editing"]
 
 [display]
