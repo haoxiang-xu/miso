@@ -392,7 +392,7 @@ class MyVectorAdapter:
     def add_texts(self, *, session_id, texts, metadatas):
         ...
 
-    def similarity_search(self, *, session_id, query, k):
+    def similarity_search(self, *, session_id, query, k, min_score=None):
         # 兼容两种返回格式：
         # 1) list[str]
         # 2) list[{
@@ -405,6 +405,7 @@ memory = MemoryManager(
     config=MemoryConfig(
         vector_adapter=MyVectorAdapter(),
         vector_top_k=4,
+        vector_min_score=0.75,  # optional
     )
 )
 ```
@@ -438,6 +439,7 @@ memory = MemoryManager(
     config=MemoryConfig(
         vector_adapter=vector_adapter,
         vector_top_k=4,
+        vector_min_score=0.75,  # optional
     )
 )
 ```
@@ -450,13 +452,14 @@ Recall 来自你注入的 `VectorStoreAdapter`，流程如下：
    - 每个 turn 的 embedding 文本格式：`user: ...\\nassistant: ...`
    - metadata 会携带 `messages`（仅 `user/assistant`）以及 `turn_start_index` / `turn_end_index`
    - 不完整的尾 turn 不会提前入库，会在后续 commit 自动补齐
-2. 在下一次 `prepare_messages(...)` 阶段，memory 会取“最新一条 user 消息”作为 query，调用 `similarity_search(session_id, query, k)`。
+2. 在下一次 `prepare_messages(...)` 阶段，memory 会取“最新一条 user 消息”作为 query，调用 `similarity_search(session_id, query, k, min_score=None)`。
 3. 若返回结果非空，会被注入为一条 system 消息，格式为：
    - 第一行固定标记：`[Recall messages]`
    - 第二行开始为严格 JSON message array 字符串（`[{"role":"user|assistant","content":"..."}]`）
    - 若 hit 里带 `messages`，会优先使用 `messages`
    - 旧格式（`list[str]` / `{"text","role"}`）仍兼容，并会回退推断角色
-4. 若未配置 adapter、没有 user query、检索报错或结果为空，则跳过 recall，不影响主流程。
+4. 若配置了 `vector_min_score`，adapter 应只返回分数不低于该阈值的命中；long-term retrieval 同理支持 `vector_min_score` / `episode_min_score` / `playbook_min_score`。
+5. 若未配置 adapter、没有 user query、检索报错或结果为空，则跳过 recall，不影响主流程。
 
 注意：
 

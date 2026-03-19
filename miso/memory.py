@@ -39,6 +39,7 @@ class VectorStoreAdapter(Protocol):
         session_id: str,
         query: str,
         k: int,
+        min_score: float | None = None,
     ) -> list[str | dict[str, Any]]:
         ...
 
@@ -70,6 +71,7 @@ class LongTermVectorAdapter(Protocol):
         query: str,
         k: int,
         filters: dict[str, Any] | None = None,
+        min_score: float | None = None,
     ) -> list[dict[str, Any]]:
         ...
 
@@ -140,8 +142,11 @@ class LongTermMemoryConfig:
     vector_adapter: LongTermVectorAdapter | None = None
     extractor: LongTermExtractor | None = None
     vector_top_k: int = 4
+    vector_min_score: float | None = None
     episode_top_k: int = 2
+    episode_min_score: float | None = None
     playbook_top_k: int = 2
+    playbook_min_score: float | None = None
     max_profile_chars: int = 1200
     max_fact_items: int = 6
     max_episode_items: int = 3
@@ -161,6 +166,7 @@ class MemoryConfig:
     summary_target_pct: float = 0.45
     max_summary_chars: int = 2400
     vector_top_k: int = 4
+    vector_min_score: float | None = None
     vector_adapter: VectorStoreAdapter | None = None
     long_term: LongTermMemoryConfig | None = None
 
@@ -997,6 +1003,54 @@ def _call_long_term_extractor(
     )
 
 
+def _call_vector_similarity_search(
+    adapter: VectorStoreAdapter,
+    *,
+    session_id: str,
+    query: str,
+    k: int,
+    min_score: float | None,
+) -> list[str | dict[str, Any]]:
+    try:
+        parameters = inspect.signature(adapter.similarity_search).parameters
+    except Exception:
+        parameters = {}
+
+    kwargs: dict[str, Any] = {
+        "session_id": session_id,
+        "query": query,
+        "k": k,
+    }
+    if "min_score" in parameters:
+        kwargs["min_score"] = min_score
+    return adapter.similarity_search(**kwargs)
+
+
+def _call_long_term_similarity_search(
+    adapter: LongTermVectorAdapter,
+    *,
+    namespace: str,
+    query: str,
+    k: int,
+    filters: dict[str, Any] | None = None,
+    min_score: float | None,
+) -> list[dict[str, Any]]:
+    try:
+        parameters = inspect.signature(adapter.similarity_search).parameters
+    except Exception:
+        parameters = {}
+
+    kwargs: dict[str, Any] = {
+        "namespace": namespace,
+        "query": query,
+        "k": k,
+        "filters": filters,
+    }
+    if "min_score" in parameters:
+        kwargs["min_score"] = min_score
+    return adapter.similarity_search(**kwargs)
+
+
 def _current_timestamp() -> str:
     from datetime import datetime, timezone
 
@@ -1147,11 +1201,13 @@ class HybridContextStrategy:
         summary_strategy: SummaryTokenStrategy,
         last_n_strategy: LastNTurnsStrategy,
         vector_top_k: int = 4,
+        vector_min_score: float | None = None,
         vector_adapter: VectorStoreAdapter | None = None,
     ):
         self.summary_strategy = summary_strategy
         self.last_n_strategy = last_n_strategy
         self.vector_top_k = max(0, int(vector_top_k))
+        self.vector_min_score = float(vector_min_score) if vector_min_score is not None else None
         self.vector_adapter = vector_adapter
 
     def prepare(
@@ -1187,10 +1243,12 @@ class HybridContextStrategy:
 
         memory_meta = state.setdefault("_memory_meta", {})
         try:
-            recalled = adapter.similarity_search(
+            recalled = _call_vector_similarity_search(
+                adapter,
                 session_id=session_id,
                 query=query,
                 k=self.vector_top_k,
+                min_score=self.vector_min_score,
             )
         except Exception as exc:
             memory_meta["vector_fallback_reason"] = f"vector_search_failed: {exc}"
@@ -1240,6 +1298,7 @@ class MemoryManager:
             ),
             last_n_strategy=LastNTurnsStrategy(last_n_turns=self.config.last_n_turns),
             vector_top_k=self.config.vector_top_k,
+            vector_min_score=self.config.vector_min_score,
             vector_adapter=self.config.vector_adapter,
         )
         self._last_prepare_info: dict[str, Any] = {}
@@ -1324,11 +1383,17 @@ class MemoryManager:
         if query and long_term.vector_adapter is not None:
             try:
                 if long_term.vector_top_k > 0:
-                    recalled_facts = long_term.vector_adapter.similarity_search(
+                    recalled_facts = _call_long_term_similarity_search(
+                        long_term.vector_adapter,
                         namespace=namespace,
                         query=query,
                         k=long_term.vector_top_k,
                         filters={"memory_type": "fact"},
+                        min_score=(
+                            float(long_term.vector_min_score)
+                            if long_term.vector_min_score is not None
+                            else None
+                        ),
                     )
                 else:
                     recalled_facts = []
@@ -1355,11 +1420,17 @@ class MemoryManager:
             and _should_recall_episode_memories(query)
         ):
             try:
-                recalled_episodes = long_term.vector_adapter.similarity_search(
+                recalled_episodes = _call_long_term_similarity_search(
+                    long_term.vector_adapter,
                     namespace=namespace,
                     query=query,
                     k=long_term.episode_top_k,
                     filters={"memory_type": "episode"},
+                    min_score=(
+                        float(long_term.episode_min_score)
+                        if long_term.episode_min_score is not None
+                        else None
+                    ),
                 )
             except Exception as exc:
                 memory_meta["long_term_episode_fallback_reason"] = f"episode_search_failed: {exc}"
@@ -1383,11 +1454,17 @@ class MemoryManager:
             and _should_recall_playbooks(query)
         ):
             try:
-                recalled_playbooks = long_term.vector_adapter.similarity_search(
+                recalled_playbooks = _call_long_term_similarity_search(
+                    long_term.vector_adapter,
                     namespace=namespace,
                     query=query,
                     k=long_term.playbook_top_k,
                     filters={"memory_type": "playbook"},
+                    min_score=(
+                        float(long_term.playbook_min_score)
+                        if long_term.playbook_min_score is not None
+                        else None
+                    ),
                 )
             except Exception as exc:
                 memory_meta["long_term_playbook_fallback_reason"] = f"playbook_search_failed: {exc}"

@@ -129,6 +129,120 @@ def test_run_returns_awaiting_human_input_and_emits_request_event():
     assert all(event["type"] != "run_completed" for event in events)
 
 
+def test_run_accepts_legacy_execute_tool_calls_tuple():
+    agent = Broth()
+    agent.provider = "openai"
+
+    state = {"turn": 0}
+    tool_call = ToolCall(
+        call_id="call_1",
+        name="get_weather",
+        arguments={"city": "SF"},
+    )
+    tool_message = agent._build_tool_message(
+        tool_call=tool_call,
+        tool_result={"temp": 72},
+    )
+
+    def fake_fetch_once(**kwargs):
+        state["turn"] += 1
+        if state["turn"] == 1:
+            return ProviderTurnResult(
+                assistant_messages=[
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "get_weather",
+                        "arguments": json.dumps({"city": "SF"}),
+                    }
+                ],
+                tool_calls=[tool_call],
+                final_text="",
+                response_id="resp_1",
+                consumed_tokens=5,
+            )
+
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "72F"}],
+            tool_calls=[],
+            final_text="72F",
+            response_id="resp_2",
+            consumed_tokens=3,
+        )
+
+    agent._fetch_once = fake_fetch_once
+    agent._execute_tool_calls = lambda **kwargs: ([tool_message], False)
+
+    messages, bundle = agent.run(
+        messages=[{"role": "user", "content": "weather?"}],
+        max_iterations=3,
+    )
+
+    assert bundle["status"] == "completed"
+    assert bundle["consumed_tokens"] == 8
+    assert messages[-1]["content"] == "72F"
+
+
+def test_run_accepts_legacy_execute_tool_calls_human_input_tuple():
+    agent = Broth()
+    agent.provider = "openai"
+    agent.toolkit = interaction_toolkit()
+
+    def fake_fetch_once(**kwargs):
+        return ProviderTurnResult(
+            assistant_messages=[
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "request_user_input",
+                    "arguments": json.dumps(_selector_args()),
+                }
+            ],
+            tool_calls=[
+                ToolCall(
+                    call_id="call_1",
+                    name="request_user_input",
+                    arguments=json.dumps(_selector_args()),
+                )
+            ],
+            final_text="",
+            response_id="resp_1",
+            consumed_tokens=11,
+        )
+
+    legacy_request = {
+        "request_id": "call_1",
+        "kind": "selector",
+        "title": "Pick a framework",
+        "question": "Which framework should we use?",
+        "selection_mode": "single",
+        "options": [
+            {"label": "React", "value": "react"},
+            {"label": "Vue", "value": "vue"},
+        ],
+        "allow_other": False,
+        "other_label": "Other",
+        "other_placeholder": "",
+        "min_selected": 1,
+        "max_selected": 1,
+    }
+
+    agent._fetch_once = fake_fetch_once
+    agent._execute_tool_calls = lambda **kwargs: ([], False, True, legacy_request)
+
+    messages, bundle = agent.run(
+        messages=[{"role": "user", "content": "help me choose"}],
+        previous_response_id="prev_0",
+        payload={"store": True},
+        max_iterations=3,
+    )
+
+    assert bundle["status"] == "awaiting_human_input"
+    assert bundle["human_input_request"]["request_id"] == "call_1"
+    assert bundle["continuation"]["previous_response_id"] == "resp_1"
+    assert messages[-1]["type"] == "function_call"
+
+
 def test_resume_human_input_openai_uses_previous_response_id_and_function_call_output():
     agent = Broth()
     agent.provider = "openai"

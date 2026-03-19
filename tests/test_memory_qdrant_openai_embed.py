@@ -4,7 +4,12 @@ import types
 import pytest
 
 from miso.memory import LongTermMemoryConfig, MemoryConfig, MemoryManager
-from miso.memory_qdrant import build_default_long_term_qdrant_vector_adapter, build_openai_embed_fn
+from miso.memory_qdrant import (
+    QdrantLongTermVectorAdapter,
+    QdrantVectorAdapter,
+    build_default_long_term_qdrant_vector_adapter,
+    build_openai_embed_fn,
+)
 
 
 class _FakeEmbeddingsAPI:
@@ -27,6 +32,28 @@ class _FakeOpenAI:
         self.api_key = api_key
         self.embeddings = _FakeEmbeddingsAPI()
         type(self).instances.append(self)
+
+
+class _FakeQdrantClient:
+    def __init__(self, results):
+        self.results = list(results)
+        self.collection_names: set[str] = set()
+        self.last_search_kwargs = None
+
+    def get_collections(self):
+        collections = [types.SimpleNamespace(name=name) for name in sorted(self.collection_names)]
+        return types.SimpleNamespace(collections=collections)
+
+    def create_collection(self, *, collection_name, vectors_config):
+        del vectors_config
+        self.collection_names.add(collection_name)
+
+    def upsert(self, *, collection_name, points):
+        del collection_name, points
+
+    def search(self, **kwargs):
+        self.last_search_kwargs = dict(kwargs)
+        return list(self.results)
 
 
 @pytest.fixture
@@ -128,8 +155,8 @@ def test_memory_manager_keeps_custom_long_term_vector_adapter_without_default_bu
         def add_texts(self, *, namespace, texts, metadatas):
             del namespace, texts, metadatas
 
-        def similarity_search(self, *, namespace, query, k, filters=None):
-            del namespace, query, k, filters
+        def similarity_search(self, *, namespace, query, k, filters=None, min_score=None):
+            del namespace, query, k, filters, min_score
             return []
 
     custom_adapter = _CustomAdapter()
@@ -149,3 +176,74 @@ def test_memory_manager_keeps_custom_long_term_vector_adapter_without_default_bu
     monkeypatch.setattr("miso.memory_qdrant.build_default_long_term_qdrant_vector_adapter", _explode)
     manager.ensure_long_term_components()
     assert manager.config.long_term.vector_adapter is custom_adapter
+
+
+def test_qdrant_vector_adapter_applies_min_score_threshold():
+    client = _FakeQdrantClient(
+        results=[
+            types.SimpleNamespace(
+                payload={
+                    "messages": [{"role": "user", "content": "low"}],
+                    "text": "low",
+                },
+                score=0.31,
+            ),
+            types.SimpleNamespace(
+                payload={
+                    "messages": [{"role": "assistant", "content": "high"}],
+                    "text": "high",
+                },
+                score=0.94,
+            ),
+        ]
+    )
+    client.collection_names.add("chat_session_a")
+    adapter = QdrantVectorAdapter(
+        client=client,
+        embed_fn=lambda texts: [[float(idx), float(idx) + 0.5] for idx, _ in enumerate(texts, start=1)],
+        vector_size=2,
+    )
+
+    recalled = adapter.similarity_search(
+        session_id="session-a",
+        query="hello",
+        k=4,
+        min_score=0.8,
+    )
+
+    assert [item["text"] for item in recalled] == ["high"]
+    assert recalled[0]["score"] == 0.94
+    assert client.last_search_kwargs["limit"] == 4
+
+
+def test_qdrant_long_term_vector_adapter_applies_min_score_threshold():
+    client = _FakeQdrantClient(
+        results=[
+            types.SimpleNamespace(
+                payload={"memory_type": "fact", "text": "low fact"},
+                score=0.52,
+            ),
+            types.SimpleNamespace(
+                payload={"memory_type": "fact", "text": "high fact"},
+                score=0.9,
+            ),
+        ]
+    )
+    client.collection_names.add("long_term_user_a")
+    adapter = QdrantLongTermVectorAdapter(
+        client=client,
+        embed_fn=lambda texts: [[float(idx), float(idx) + 0.5] for idx, _ in enumerate(texts, start=1)],
+        vector_size=2,
+    )
+
+    recalled = adapter.similarity_search(
+        namespace="user-a",
+        query="remember this",
+        k=3,
+        min_score=0.8,
+    )
+
+    assert [item["text"] for item in recalled] == ["high fact"]
+    assert recalled[0]["score"] == 0.9
+    assert client.last_search_kwargs["limit"] == 3
+    assert client.last_search_kwargs["query_filter"] is None

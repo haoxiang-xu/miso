@@ -14,26 +14,38 @@ from miso.memory import (
 
 
 class _FakeVectorAdapter:
-    def __init__(self, *, fail_search: bool = False):
+    def __init__(self, *, fail_search: bool = False, search_results: list[str | dict[str, Any]] | None = None):
         self.fail_search = fail_search
+        self.search_results = search_results
         self.added: list[tuple[str, list[str], list[dict[str, Any]]]] = []
-        self.searches: list[tuple[str, str, int]] = []
+        self.searches: list[tuple[str, str, int, float | None]] = []
 
     def add_texts(self, *, session_id, texts, metadatas):
         self.added.append((session_id, list(texts), [dict(meta) for meta in metadatas]))
 
-    def similarity_search(self, *, session_id, query, k):
-        self.searches.append((session_id, query, k))
+    def similarity_search(self, *, session_id, query, k, min_score=None):
+        self.searches.append((session_id, query, k, min_score))
         if self.fail_search:
             raise RuntimeError("vector search failed")
-        return [
+        results = self.search_results if self.search_results is not None else [
             {
                 "messages": [
                     {"role": "user", "content": f"recall-user:{query}"},
                     {"role": "assistant", "content": f"recall-assistant:{query}"},
-                ]
+                ],
+                "score": 1.0,
             },
         ]
+        recalled: list[str | dict[str, Any]] = []
+        for item in results:
+            if isinstance(item, dict):
+                score = item.get("score")
+                if min_score is not None and (not isinstance(score, (int, float)) or float(score) < float(min_score)):
+                    continue
+                recalled.append(json.loads(json.dumps(item, ensure_ascii=False)))
+                continue
+            recalled.append(item)
+        return recalled
 
 
 class _FakeLongTermProfileStore:
@@ -58,7 +70,7 @@ class _FakeLongTermVectorAdapter:
         self.fail_search = fail_search
         self.fail_add = fail_add
         self.added: list[tuple[str, list[str], list[dict[str, Any]]]] = []
-        self.searches: list[tuple[str, str, int, dict[str, Any] | None]] = []
+        self.searches: list[tuple[str, str, int, dict[str, Any] | None, float | None]] = []
         self.records: dict[str, list[dict[str, Any]]] = {}
 
     def add_texts(self, *, namespace, texts, metadatas):
@@ -69,8 +81,8 @@ class _FakeLongTermVectorAdapter:
         for text, metadata in zip(texts, metadatas):
             bucket.append({"text": text, **dict(metadata)})
 
-    def similarity_search(self, *, namespace, query, k, filters=None):
-        self.searches.append((namespace, query, k, filters))
+    def similarity_search(self, *, namespace, query, k, filters=None, min_score=None):
+        self.searches.append((namespace, query, k, filters, min_score))
         if self.fail_search:
             raise RuntimeError("long-term search failed")
         items = [dict(item) for item in self.records.get(namespace, [])]
@@ -78,6 +90,13 @@ class _FakeLongTermVectorAdapter:
             filtered = []
             for item in items:
                 if all(item.get(key) == value for key, value in filters.items()):
+                    filtered.append(item)
+            items = filtered
+        if min_score is not None:
+            filtered = []
+            for item in items:
+                score = item.get("score", 1.0)
+                if isinstance(score, (int, float)) and float(score) >= float(min_score):
                     filtered.append(item)
             items = filtered
         return items[:k]
@@ -298,6 +317,57 @@ def test_vector_recall_is_optional_and_non_blocking():
     )
     assert isinstance(fallback_prepared, list)
     assert "vector_fallback_reason" in failing_manager.last_prepare_info
+
+
+def test_vector_recall_applies_min_score_threshold():
+    adapter = _FakeVectorAdapter(
+        search_results=[
+            {
+                "messages": [
+                    {"role": "user", "content": "low-score-user"},
+                    {"role": "assistant", "content": "low-score-assistant"},
+                ],
+                "score": 0.41,
+            },
+            {
+                "messages": [
+                    {"role": "user", "content": "high-score-user"},
+                    {"role": "assistant", "content": "high-score-assistant"},
+                ],
+                "score": 0.93,
+            },
+        ]
+    )
+    manager = MemoryManager(
+        config=MemoryConfig(
+            vector_adapter=adapter,
+            vector_top_k=4,
+            vector_min_score=0.8,
+        )
+    )
+    session_id = "s_vector_threshold"
+
+    manager.commit_messages(
+        session_id,
+        [
+            {"role": "user", "content": "project needs redis cache"},
+            {"role": "assistant", "content": "noted"},
+        ],
+    )
+
+    prepared = manager.prepare_messages(
+        session_id,
+        [{"role": "user", "content": "what cache did we pick?"}],
+        max_context_window_tokens=20_000,
+        model="gpt-5",
+        summary_generator=lambda prev, msgs, max_chars, model: prev,
+    )
+
+    assert adapter.searches[-1] == (session_id, "what cache did we pick?", 4, 0.8)
+    assert _extract_recall_json_message_array(prepared) == [
+        {"role": "user", "content": "high-score-user"},
+        {"role": "assistant", "content": "high-score-assistant"},
+    ]
 
 
 def test_vector_recall_remains_compatible_with_legacy_string_results():
@@ -961,3 +1031,79 @@ def test_long_term_prepare_can_recall_typed_memory_blocks():
     assert [item["text"] for item in facts_payload] == ["Project uses Qdrant for long-term memory."]
     assert episodes_payload[0]["outcome"] == "User accepted the design."
     assert playbooks_payload[0]["trigger"] == "Need to debug memory integration."
+
+
+def test_long_term_recall_applies_per_type_min_scores():
+    profile_store = _FakeLongTermProfileStore()
+    adapter = _FakeLongTermVectorAdapter()
+    manager = MemoryManager(
+        config=MemoryConfig(
+            long_term=LongTermMemoryConfig(
+                profile_store=profile_store,
+                vector_adapter=adapter,
+                vector_top_k=4,
+                vector_min_score=0.8,
+                episode_top_k=2,
+                episode_min_score=0.85,
+                playbook_top_k=2,
+                playbook_min_score=0.9,
+            )
+        )
+    )
+    adapter.records["typed_user"] = [
+        {"memory_type": "fact", "text": "Low-confidence fact", "score": 0.45},
+        {"memory_type": "fact", "text": "High-confidence fact", "score": 0.91},
+        {
+            "memory_type": "episode",
+            "situation": "Old low-score episode",
+            "action": "Did something",
+            "outcome": "Low confidence",
+            "text": "Situation: Old low-score episode\nAction: Did something\nOutcome: Low confidence",
+            "score": 0.62,
+        },
+        {
+            "memory_type": "episode",
+            "situation": "Recent high-score episode",
+            "action": "Explained the debugging path",
+            "outcome": "Worked",
+            "text": "Situation: Recent high-score episode\nAction: Explained the debugging path\nOutcome: Worked",
+            "score": 0.89,
+        },
+        {
+            "memory_type": "playbook",
+            "trigger": "Low-score playbook",
+            "goal": "Do the wrong thing",
+            "steps": ["guess"],
+            "text": "Trigger: Low-score playbook\nGoal: Do the wrong thing\nSteps:\n1. guess",
+            "score": 0.72,
+        },
+        {
+            "memory_type": "playbook",
+            "trigger": "High-score playbook",
+            "goal": "Debug memory retrieval",
+            "steps": ["Inspect memory.py", "Inspect memory_qdrant.py"],
+            "text": "Trigger: High-score playbook\nGoal: Debug memory retrieval\nSteps:\n1. Inspect memory.py\n2. Inspect memory_qdrant.py",
+            "score": 0.95,
+        },
+    ]
+
+    prepared = manager.prepare_messages(
+        "typed_session",
+        [{"role": "user", "content": "how do we debug this memory workflow again?"}],
+        max_context_window_tokens=20_000,
+        model="gpt-5",
+        memory_namespace="typed_user",
+    )
+
+    facts_payload = _extract_tagged_json_payload(prepared, "[MEMORY_FACTS]")
+    episodes_payload = _extract_tagged_json_payload(prepared, "[MEMORY_EPISODES]")
+    playbooks_payload = _extract_tagged_json_payload(prepared, "[MEMORY_PLAYBOOKS]")
+
+    assert [item["text"] for item in facts_payload] == ["High-confidence fact"]
+    assert [item["outcome"] for item in episodes_payload] == ["Worked"]
+    assert [item["trigger"] for item in playbooks_payload] == ["High-score playbook"]
+    assert adapter.searches == [
+        ("typed_user", "how do we debug this memory workflow again?", 4, {"memory_type": "fact"}, 0.8),
+        ("typed_user", "how do we debug this memory workflow again?", 2, {"memory_type": "episode"}, 0.85),
+        ("typed_user", "how do we debug this memory workflow again?", 2, {"memory_type": "playbook"}, 0.9),
+    ]

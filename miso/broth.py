@@ -89,6 +89,12 @@ class ToolExecutionOutcome:
     awaiting_human_input: bool = False
     human_input_request: HumanInputRequest | None = None
 
+    def __iter__(self):
+        # Backward compatibility for callers that still unpack the legacy
+        # `(result_messages, should_observe)` tuple shape.
+        yield self.result_messages
+        yield self.should_observe
+
 class broth:
     def __init__(
         self,
@@ -1515,13 +1521,15 @@ class broth:
             )
 
             if turn.tool_calls:
-                execution = self._execute_tool_calls(
-                    tool_calls=turn.tool_calls,
-                    run_id=run_id,
-                    iteration=iteration,
-                    callback=callback,
-                    on_tool_confirm=on_tool_confirm,
-                    session_id=session_id,
+                execution = self._coerce_tool_execution_outcome(
+                    self._execute_tool_calls(
+                        tool_calls=turn.tool_calls,
+                        run_id=run_id,
+                        iteration=iteration,
+                        callback=callback,
+                        on_tool_confirm=on_tool_confirm,
+                        session_id=session_id,
+                    )
                 )
 
                 if execution.awaiting_human_input and execution.human_input_request is not None:
@@ -2943,6 +2951,42 @@ class broth:
         return ToolExecutionOutcome(
             result_messages=result_messages,
             should_observe=should_observe,
+        )
+
+    def _coerce_tool_execution_outcome(
+        self,
+        execution: ToolExecutionOutcome | tuple[Any, ...] | list[Any],
+    ) -> ToolExecutionOutcome:
+        if isinstance(execution, ToolExecutionOutcome):
+            return execution
+
+        if isinstance(execution, (tuple, list)):
+            if len(execution) == 2:
+                result_messages, should_observe = execution
+                return ToolExecutionOutcome(
+                    result_messages=list(result_messages or []),
+                    should_observe=bool(should_observe),
+                )
+
+            if len(execution) == 4:
+                result_messages, should_observe, awaiting_human_input, human_input_request = execution
+                request = human_input_request
+                if isinstance(request, dict):
+                    request = HumanInputRequest.from_dict(request)
+                elif request is not None and not isinstance(request, HumanInputRequest):
+                    raise TypeError(
+                        "legacy _execute_tool_calls human_input_request must be a HumanInputRequest or dict"
+                    )
+                return ToolExecutionOutcome(
+                    result_messages=list(result_messages or []),
+                    should_observe=bool(should_observe),
+                    awaiting_human_input=bool(awaiting_human_input),
+                    human_input_request=request,
+                )
+
+        raise TypeError(
+            "_execute_tool_calls must return ToolExecutionOutcome or a legacy tuple/list "
+            "of (result_messages, should_observe)"
         )
 
     def _observe_tool_batch(
