@@ -371,7 +371,7 @@ class broth:
         supports_tools = bool(self._model_capability("supports_tools", True))
         if has_human_input_tool and not supports_tools:
             raise ValueError(
-                "interaction_toolkit requires a tool-calling model; "
+                "ask_user_toolkit requires a tool-calling model; "
                 f"model '{self.model}' does not support tools and automatic fallback is not supported."
             )
 

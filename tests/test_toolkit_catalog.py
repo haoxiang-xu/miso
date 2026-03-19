@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from miso import Agent, ToolkitCatalogConfig, broth as Broth, interaction_toolkit, tool, toolkit
+from miso import Agent, ToolkitCatalogConfig, broth as Broth, ask_user_toolkit, tool, toolkit
 from miso.builtin_toolkits.terminal_toolkit import terminal_toolkit as TerminalToolkitClass
 from miso.broth import ProviderTurnResult, ToolCall
 
@@ -316,7 +316,7 @@ def test_catalog_resume_preserves_cached_terminal_toolkit_instances_across_human
         }
     )
     agent.provider = "ollama"
-    agent.toolkit = interaction_toolkit()
+    agent.toolkit = ask_user_toolkit()
 
     seen_tool_names: list[list[str]] = []
     state = {"turn": 0}

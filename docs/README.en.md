@@ -13,7 +13,7 @@
 - A remote tool bridge layer: `mcp`
 - A toolkit registry layer: `tool_registry` (manifest scanning, metadata, plugin discovery)
 - A toolkit catalog layer: `toolkit_catalog` (registry-backed lazy toolkit activation)
-- Four built-in toolkits you can use directly: `workspace_toolkit` / `terminal_toolkit` / `external_api_toolkit` / `interaction_toolkit`
+- Four built-in toolkits you can use directly: `workspace_toolkit` / `terminal_toolkit` / `external_api_toolkit` / `ask_user_toolkit`
 
 It supports four provider families, with as much interface consistency as possible: OpenAI / Anthropic / Gemini / Ollama.
 
@@ -179,7 +179,7 @@ The package currently exports these main symbols:
 - `workspace_toolkit`
 - `terminal_toolkit`
 - `external_api_toolkit`
-- `interaction_toolkit`
+- `ask_user_toolkit`
 
 ---
 
@@ -204,7 +204,7 @@ The package currently exports these main symbols:
 | `miso/builtin_toolkits/workspace_toolkit/` | `workspace_toolkit` | File, directory, and line-level editing tools |
 | `miso/builtin_toolkits/terminal_toolkit/` | `terminal_toolkit` | Restricted terminal actions only |
 | `miso/builtin_toolkits/external_api_toolkit/` | `external_api_toolkit` | Basic HTTP GET / POST requests |
-| `miso/builtin_toolkits/interaction_toolkit/` | `interaction_toolkit` | Structured user interaction |
+| `miso/builtin_toolkits/ask_user_toolkit/` | `ask_user_toolkit` | Structured user interaction |
 | `miso/model_default_payloads.json` | - | Default payloads per model |
 | `miso/model_capabilities.json` | - | Model capability matrix: tools, multimodal inputs, payload allowlists, and more |
 
@@ -652,12 +652,12 @@ Key design principles:
 
 ## Human Input Primitive (selector)
 
-When the model needs the user to pick one or more options instead of continuing to guess, you can explicitly attach `interaction_toolkit()`. It exposes a reserved tool: `request_user_input`.
+When the model needs the user to pick one or more options instead of continuing to guess, you can explicitly attach `ask_user_toolkit()`. It exposes a reserved tool: `request_user_input`.
 
 The difference from `on_tool_confirm` is:
 
 - `on_tool_confirm` is about "whether a tool execution is allowed"
-- `interaction_toolkit` / `request_user_input` is about "ask the user a structured question and wait for an answer"
+- `ask_user_toolkit` / `request_user_input` is about "ask the user a structured question and wait for an answer"
 
 ### Public types
 
@@ -678,7 +678,7 @@ Selector v1 supports:
 
 Prerequisites:
 
-- You must explicitly attach `interaction_toolkit()`
+- You must explicitly attach `ask_user_toolkit()`
 - The current model must support tool calling
 - The current version does not support a non-tool fallback
 
@@ -698,10 +698,10 @@ The host / frontend is responsible for rendering the selector and storing the `c
 ### `run()` / `resume_human_input()` example
 
 ```python
-from miso import broth as Broth, interaction_toolkit
+from miso import broth as Broth, ask_user_toolkit
 
 agent = Broth(provider="openai", model="gpt-5", api_key="YOUR_OPENAI_API_KEY")
-agent.add_toolkit(interaction_toolkit())
+agent.add_toolkit(ask_user_toolkit())
 
 messages, bundle = agent.run(
     messages=[{"role": "user", "content": "Help me pick a frontend framework. If you are unsure, ask me directly."}],
@@ -733,7 +733,7 @@ if bundle["status"] == "awaiting_human_input":
 - `multiple` defaults to `min_selected=1`
 - `Other` can only be submitted when `allow_other=True`
 - Selecting `__other__` requires a non-empty `other_text`
-- Without `interaction_toolkit()`, this capability is not enabled automatically
+- Without `ask_user_toolkit()`, this capability is not enabled automatically
 - If `supports_tools=false` for the model, `run()` fails directly rather than silently degrading
 
 ---
@@ -1271,9 +1271,9 @@ miso/
     external_api_toolkit/
       __init__.py
       external_api_toolkit.py
-    interaction_toolkit/
+    ask_user_toolkit/
       __init__.py
-      interaction_toolkit.py
+      ask_user_toolkit.py
     terminal_toolkit/
       __init__.py
       terminal_toolkit.py

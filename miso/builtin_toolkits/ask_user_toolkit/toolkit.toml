@@ -1,14 +1,14 @@
 [toolkit]
-id = "interaction"
-name = "Interaction Toolkit"
-description = "Expose structured user-interaction tools for choice-based clarification flows."
-factory = "miso.builtin_toolkits.interaction_toolkit:interaction_toolkit"
+id = "ask_user"
+name = "Ask User Toolkit"
+description = "Expose structured user-question tools for choice-based clarification flows."
+factory = "miso.builtin_toolkits.ask_user_toolkit:ask_user_toolkit"
 version = "1.0.0"
 readme = "README.md"
 icon = "mouse"
 color = "#422006"
 backgroundcolor = "#f59e0b"
-tags = ["builtin", "interaction", "user-input"]
+tags = ["builtin", "ask-user", "user-input"]
 
 [display]
 category = "builtin"

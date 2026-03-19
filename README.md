@@ -28,7 +28,7 @@
 - Python `3.12` with a repo-standard `.venv`
 - `requirements.txt`-managed dependencies
 - OpenAI, Anthropic, Gemini, and Ollama provider support
-- Built-in `workspace`, `terminal`, `external_api`, and `interaction` toolkits
+- Built-in `workspace`, `terminal`, `external_api`, and `ask_user` toolkits
 - `pytest` via [`run_tests.sh`](/Users/red/Desktop/GITRepo/miso/run_tests.sh)
 
 ## How To Set Up

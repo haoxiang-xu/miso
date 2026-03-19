@@ -13,7 +13,7 @@
 - 一个远程工具桥接层：`mcp`
 - 一个 toolkit registry：`tool_registry`（manifest 扫描、元数据与插件发现）
 - 一个 toolkit catalog 层：`toolkit_catalog`（registry-backed toolkit 的 lazy activation）
-- 四个可直接落地的内置工具包：`workspace_toolkit` / `terminal_toolkit` / `external_api_toolkit` / `interaction_toolkit`
+- 四个可直接落地的内置工具包：`workspace_toolkit` / `terminal_toolkit` / `external_api_toolkit` / `ask_user_toolkit`
 
 它支持 OpenAI / Anthropic / Gemini / Ollama 四类 provider，并且尽量保持接口一致。
 
@@ -177,7 +177,7 @@ print(bundle)
 - `workspace_toolkit`
 - `terminal_toolkit`
 - `external_api_toolkit`
-- `interaction_toolkit`
+- `ask_user_toolkit`
 
 ---
 
@@ -202,7 +202,7 @@ print(bundle)
 | `miso/builtin_toolkits/workspace_toolkit/`        | `workspace_toolkit`                   | 文件、目录、行级编辑                                          |
 | `miso/builtin_toolkits/terminal_toolkit/`         | `terminal_toolkit`                    | 仅暴露受限 terminal action                                    |
 | `miso/builtin_toolkits/external_api_toolkit/`     | `external_api_toolkit`                | 基础 HTTP GET / POST 请求                                     |
-| `miso/builtin_toolkits/interaction_toolkit/`      | `interaction_toolkit`                 | 结构化用户交互                                                |
+| `miso/builtin_toolkits/ask_user_toolkit/`      | `ask_user_toolkit`                 | 结构化用户交互                                                |
 | `miso/model_default_payloads.json`                | -                                     | 不同模型默认 payload                                          |
 | `miso/model_capabilities.json`                    | -                                     | 不同模型能力矩阵（tools、多模态、payload 白名单等）           |
 
@@ -649,12 +649,12 @@ on_tool_confirm 存在?  ──No──→  直接执行（向后兼容，不会
 
 ## Human Input Primitive（selector）
 
-当模型需要用户在若干候选项里做单选 / 多选，而不是继续猜测时，可以显式挂载 `interaction_toolkit()`。它会暴露一个保留 tool：`request_user_input`。
+当模型需要用户在若干候选项里做单选 / 多选，而不是继续猜测时，可以显式挂载 `ask_user_toolkit()`。它会暴露一个保留 tool：`request_user_input`。
 
 它和 `on_tool_confirm` 的区别是：
 
 - `on_tool_confirm` 是“是否允许执行某个工具”
-- `interaction_toolkit` / `request_user_input` 是“向用户发起一个结构化问题，并等待用户提交答案”
+- `ask_user_toolkit` / `request_user_input` 是“向用户发起一个结构化问题，并等待用户提交答案”
 
 ### 对外类型
 
@@ -675,7 +675,7 @@ on_tool_confirm 存在?  ──No──→  直接执行（向后兼容，不会
 
 前置条件：
 
-- 需要显式挂载 `interaction_toolkit()`
+- 需要显式挂载 `ask_user_toolkit()`
 - 当前模型必须支持 tool calling
 - 当前版本不支持 non-tool fallback
 
@@ -695,10 +695,10 @@ on_tool_confirm 存在?  ──No──→  直接执行（向后兼容，不会
 ### `run()` / `resume_human_input()` 示例
 
 ```python
-from miso import broth as Broth, interaction_toolkit
+from miso import broth as Broth, ask_user_toolkit
 
 agent = Broth(provider="openai", model="gpt-5", api_key="YOUR_OPENAI_API_KEY")
-agent.add_toolkit(interaction_toolkit())
+agent.add_toolkit(ask_user_toolkit())
 
 messages, bundle = agent.run(
     messages=[{"role": "user", "content": "帮我选一个前端框架，如果你不确定就问我。"}],
@@ -730,7 +730,7 @@ if bundle["status"] == "awaiting_human_input":
 - `multiple` 默认 `min_selected=1`
 - `Other` 只有在 `allow_other=True` 时可提交
 - 选择了 `__other__` 必须同时提交非空 `other_text`
-- 未挂载 `interaction_toolkit()` 时，该能力不会自动启用
+- 未挂载 `ask_user_toolkit()` 时，该能力不会自动启用
 - 若模型 `supports_tools=false`，`run()` 会直接报错，不会静默降级
 
 ---
@@ -1268,9 +1268,9 @@ miso/
     external_api_toolkit/
       __init__.py
       external_api_toolkit.py
-    interaction_toolkit/
+    ask_user_toolkit/
       __init__.py
-      interaction_toolkit.py
+      ask_user_toolkit.py
     terminal_toolkit/
       __init__.py
       terminal_toolkit.py

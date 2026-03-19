@@ -18,7 +18,7 @@ from .builtin_toolkits import (
     terminal_toolkit,
     workspace_toolkit,
     external_api_toolkit,
-    interaction_toolkit,
+    ask_user_toolkit,
 )
 from .mcp import mcp
 from .tool_registry import (
@@ -71,7 +71,7 @@ __all__ = [
     "workspace_toolkit",
     "terminal_toolkit",
     "external_api_toolkit",
-    "interaction_toolkit",
+    "ask_user_toolkit",
     "mcp",
     "ToolDescriptor",
     "ToolRegistryConfig",

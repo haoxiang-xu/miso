@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from miso import Agent, MemoryManager, broth as Broth, interaction_toolkit, tool, toolkit
+from miso import Agent, MemoryManager, broth as Broth, ask_user_toolkit, tool, toolkit
 from miso.broth import ProviderTurnResult, ToolCall
 
 
@@ -21,7 +21,7 @@ def _selector_args(**overrides):
     return payload
 
 
-def test_interaction_toolkit_is_explicitly_opt_in():
+def test_ask_user_toolkit_is_explicitly_opt_in():
     agent = Broth()
     agent.provider = "openai"
 
@@ -48,10 +48,10 @@ def test_interaction_toolkit_is_explicitly_opt_in():
     assert bundle["status"] == "completed"
 
 
-def test_interaction_toolkit_exposes_request_user_input_when_mounted():
+def test_ask_user_toolkit_exposes_request_user_input_when_mounted():
     agent = Broth()
     agent.provider = "openai"
-    agent.toolkit = interaction_toolkit()
+    agent.toolkit = ask_user_toolkit()
 
     seen_tool_names = []
 
@@ -79,7 +79,7 @@ def test_interaction_toolkit_exposes_request_user_input_when_mounted():
 def test_run_returns_awaiting_human_input_and_emits_request_event():
     agent = Broth()
     agent.provider = "openai"
-    agent.toolkit = interaction_toolkit()
+    agent.toolkit = ask_user_toolkit()
 
     def fake_fetch_once(**kwargs):
         return ProviderTurnResult(
@@ -186,7 +186,7 @@ def test_run_accepts_legacy_execute_tool_calls_tuple():
 def test_run_accepts_legacy_execute_tool_calls_human_input_tuple():
     agent = Broth()
     agent.provider = "openai"
-    agent.toolkit = interaction_toolkit()
+    agent.toolkit = ask_user_toolkit()
 
     def fake_fetch_once(**kwargs):
         return ProviderTurnResult(
@@ -246,7 +246,7 @@ def test_run_accepts_legacy_execute_tool_calls_human_input_tuple():
 def test_resume_human_input_openai_uses_previous_response_id_and_function_call_output():
     agent = Broth()
     agent.provider = "openai"
-    agent.toolkit = interaction_toolkit()
+    agent.toolkit = ask_user_toolkit()
 
     seen_previous_ids = []
     seen_messages = []
@@ -320,7 +320,7 @@ def test_resume_human_input_openai_uses_previous_response_id_and_function_call_o
 def test_resume_human_input_non_openai_uses_provider_native_tool_result():
     agent = Broth()
     agent.provider = "ollama"
-    agent.toolkit = interaction_toolkit()
+    agent.toolkit = ask_user_toolkit()
 
     seen_messages = []
     state = {"turn": 0}
@@ -393,7 +393,7 @@ def test_resume_human_input_non_openai_uses_provider_native_tool_result():
 def test_invalid_request_schema_returns_clear_tool_error_and_continues():
     agent = Broth()
     agent.provider = "ollama"
-    agent.toolkit = interaction_toolkit()
+    agent.toolkit = ask_user_toolkit()
 
     seen_messages = []
     state = {"turn": 0}
@@ -482,7 +482,7 @@ def test_invalid_request_schema_returns_clear_tool_error_and_continues():
 def test_resume_human_input_rejects_invalid_user_response(response_payload, error_text):
     agent = Broth()
     agent.provider = "openai"
-    agent.toolkit = interaction_toolkit()
+    agent.toolkit = ask_user_toolkit()
 
     def fake_fetch_once(**kwargs):
         return ProviderTurnResult(
@@ -525,7 +525,7 @@ def test_suspended_run_skips_memory_commit_until_resume():
     manager = MemoryManager()
     agent = Broth(memory_manager=manager)
     agent.provider = "openai"
-    agent.toolkit = interaction_toolkit()
+    agent.toolkit = ask_user_toolkit()
 
     state = {"turn": 0}
 
@@ -597,7 +597,7 @@ def test_mixed_batch_with_request_user_input_returns_errors_without_executing_ot
 
     call_log = []
     safe_tool = tool(name="safe_action", func=lambda: call_log.append("called") or {"ok": True}, parameters=[])
-    agent.toolkit = interaction_toolkit()
+    agent.toolkit = ask_user_toolkit()
     agent.add_toolkit(toolkit({safe_tool.name: safe_tool}))
 
     seen_messages = []
@@ -664,7 +664,7 @@ def test_mixed_batch_with_request_user_input_returns_errors_without_executing_ot
     assert messages[-1]["content"] == "done"
 
 
-def test_interaction_toolkit_fails_fast_when_model_does_not_support_tools():
+def test_ask_user_toolkit_fails_fast_when_model_does_not_support_tools():
     agent = Broth()
     agent.provider = "openai"
     agent.model = "no-tools-model"
@@ -672,21 +672,21 @@ def test_interaction_toolkit_fails_fast_when_model_does_not_support_tools():
         "supports_tools": False,
         "max_context_window_tokens": 0,
     }
-    agent.toolkit = interaction_toolkit()
+    agent.toolkit = ask_user_toolkit()
 
     def fake_fetch_once(**kwargs):
         raise AssertionError("_fetch_once should not be called when tools are unsupported")
 
     agent._fetch_once = fake_fetch_once
 
-    with pytest.raises(ValueError, match="interaction_toolkit requires a tool-calling model"):
+    with pytest.raises(ValueError, match="ask_user_toolkit requires a tool-calling model"):
         agent.run(
             messages=[{"role": "user", "content": "help me choose"}],
             max_iterations=1,
         )
 
 
-def test_models_without_tool_support_are_unaffected_when_interaction_toolkit_is_not_mounted():
+def test_models_without_tool_support_are_unaffected_when_ask_user_toolkit_is_not_mounted():
     agent = Broth()
     agent.provider = "openai"
     agent.model = "no-tools-model"

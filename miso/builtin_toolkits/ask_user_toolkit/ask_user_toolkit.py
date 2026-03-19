@@ -4,8 +4,8 @@ from ...human_input import build_request_user_input_tool
 from ...tool import toolkit
 
 
-class interaction_toolkit(toolkit):
-    """Toolkit that exposes structured user-interaction tools."""
+class ask_user_toolkit(toolkit):
+    """Toolkit that exposes structured user-question tools."""
 
     def __init__(self):
         super().__init__()
@@ -28,4 +28,4 @@ class interaction_toolkit(toolkit):
         }
 
 
-__all__ = ["interaction_toolkit"]
+__all__ = ["ask_user_toolkit"]
