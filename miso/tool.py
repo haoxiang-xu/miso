@@ -482,15 +482,22 @@ class ToolConfirmationRequest:
     call_id: str
     arguments: dict[str, Any]
     description: str = ""
+    interact_type: str = "confirmation"
+    interact_config: dict[str, Any] | list[Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "type": "tool_confirmation_request",
             "tool_name": self.tool_name,
             "call_id": self.call_id,
             "arguments": self.arguments,
             "description": self.description,
         }
+        if self.interact_type != "confirmation":
+            d["interact_type"] = self.interact_type
+        if self.interact_config is not None:
+            d["interact_config"] = self.interact_config
+        return d
 
 
 @dataclass

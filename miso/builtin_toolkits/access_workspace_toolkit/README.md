@@ -1,13 +1,13 @@
-# workspace_toolkit
+# access_workspace_toolkit
 
-`workspace_toolkit` 是一个只负责工作区文件、目录和行级编辑的内置工具包。
+`access_workspace_toolkit` 是一个只负责工作区文件、目录和行级编辑的内置工具包。
 
 ## 用法
 
 ```python
-from miso import workspace_toolkit
+from miso import access_workspace_toolkit
 
-tk = workspace_toolkit(workspace_root=".")
+tk = access_workspace_toolkit(workspace_root=".")
 ```
 
 ## 工具清单
@@ -34,4 +34,4 @@ tk = workspace_toolkit(workspace_root=".")
 
 - 只暴露工作区内的文件与文本编辑能力。
 - 保留原有 tool 名称、参数和返回结构，避免影响前端展示和审批逻辑。
-- 需要 terminal 时，与 `terminal_toolkit` 组合使用。
+- 需要 terminal 时，与 `run_terminal_toolkit` 组合使用。

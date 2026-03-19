@@ -6,7 +6,7 @@ import httpx
 import openai
 import pytest
 
-from miso import MemoryManager, broth as Broth, response_format, tool, toolkit, workspace_toolkit
+from miso import MemoryManager, broth as Broth, response_format, tool, toolkit, access_workspace_toolkit
 from miso.broth import ProviderTurnResult, ToolCall
 from miso.workspace_pins import build_pin_record, save_workspace_pins
 
@@ -455,7 +455,7 @@ def test_workspace_pin_messages_inject_after_existing_system_messages_when_memor
 def test_broth_workspace_pins_persist_across_runs_without_memory_manager(tmp_path):
     agent = Broth()
     agent.provider = "ollama"
-    tk = workspace_toolkit(workspace_root=tmp_path)
+    tk = access_workspace_toolkit(workspace_root=tmp_path)
     agent.add_toolkit(tk)
 
     file_path = Path(tmp_path) / "demo.py"

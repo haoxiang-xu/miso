@@ -13,7 +13,7 @@
 - A remote tool bridge layer: `mcp`
 - A toolkit registry layer: `tool_registry` (manifest scanning, metadata, plugin discovery)
 - A toolkit catalog layer: `toolkit_catalog` (registry-backed lazy toolkit activation)
-- Four built-in toolkits you can use directly: `workspace_toolkit` / `terminal_toolkit` / `external_api_toolkit` / `ask_user_toolkit`
+- Four built-in toolkits you can use directly: `access_workspace_toolkit` / `run_terminal_toolkit` / `external_api_toolkit` / `ask_user_toolkit`
 
 It supports four provider families, with as much interface consistency as possible: OpenAI / Anthropic / Gemini / Ollama.
 
@@ -32,7 +32,7 @@ It supports four provider families, with as much interface consistency as possib
 9. [Human Input Primitive (selector)](#human-input-primitive-selector)
 10. [Multimodal Input Specification (canonical blocks)](#multimodal-input-specification-canonical-blocks)
 11. [Structured Output with `response_format`](#structured-output-with-response_format)
-12. [Built-in Toolkit: `workspace_toolkit`](#built-in-toolkit-workspace_toolkit)
+12. [Built-in Toolkit: `access_workspace_toolkit`](#built-in-toolkit-access_workspace_toolkit)
 13. [Toolkit Catalog (Lazy Activation)](#toolkit-catalog-lazy-activation)
 14. [MCP Toolkit Bridge: `mcp`](#mcp-toolkit-bridge-mcp)
 15. [Configuration Layer: Model Default Payloads and Capability Matrix](#configuration-layer-model-default-payloads-and-capability-matrix)
@@ -175,9 +175,9 @@ The package currently exports these main symbols:
 - `ToolRegistryConfig` / `ToolkitRegistry` / `ToolkitCatalogConfig`
 - `list_toolkits` / `get_toolkit_metadata`
 - `builtin_toolkit` (built-in toolkit base class)
-- `build_builtin_toolkit` (helper that returns `workspace_toolkit`)
-- `workspace_toolkit`
-- `terminal_toolkit`
+- `build_builtin_toolkit` (helper that returns `access_workspace_toolkit`)
+- `access_workspace_toolkit`
+- `run_terminal_toolkit`
 - `external_api_toolkit`
 - `ask_user_toolkit`
 
@@ -201,8 +201,8 @@ The package currently exports these main symbols:
 | `miso/mcp.py` | `mcp(toolkit)` | Expose an MCP server as a `miso` toolkit |
 | `miso/workspace_pins.py` | `WorkspacePinExecutionContext` | Session-scoped pinned context injection and live reload |
 | `miso/builtin_toolkits/base.py` | `builtin_toolkit` | Workspace-root safety base class |
-| `miso/builtin_toolkits/workspace_toolkit/` | `workspace_toolkit` | File, directory, and line-level editing tools |
-| `miso/builtin_toolkits/terminal_toolkit/` | `terminal_toolkit` | Restricted terminal actions only |
+| `miso/builtin_toolkits/access_workspace_toolkit/` | `access_workspace_toolkit` | File, directory, and line-level editing tools |
+| `miso/builtin_toolkits/run_terminal_toolkit/` | `run_terminal_toolkit` | Restricted terminal actions only |
 | `miso/builtin_toolkits/external_api_toolkit/` | `external_api_toolkit` | Basic HTTP GET / POST requests |
 | `miso/builtin_toolkits/ask_user_toolkit/` | `ask_user_toolkit` | Structured user interaction |
 | `miso/model_default_payloads.json` | - | Default payloads per model |
@@ -803,14 +803,14 @@ Behavior details:
 
 ---
 
-## Built-in Toolkit: `workspace_toolkit`
+## Built-in Toolkit: `access_workspace_toolkit`
 
 Entrypoint:
 
 ```python
-from miso import workspace_toolkit, build_builtin_toolkit
+from miso import access_workspace_toolkit, build_builtin_toolkit
 
-tk = workspace_toolkit(workspace_root=".")
+tk = access_workspace_toolkit(workspace_root=".")
 
 # Equivalent helper
 tk2 = build_builtin_toolkit(workspace_root=".")
@@ -855,15 +855,15 @@ Line-level editing (1-based line numbers):
 ### 3) If you need terminal actions
 
 ```python
-from miso import terminal_toolkit
+from miso import run_terminal_toolkit
 
-term_tk = terminal_toolkit(
+term_tk = run_terminal_toolkit(
     workspace_root=".",
     terminal_strict_mode=True,
 )
 ```
 
-`terminal_toolkit` only registers these tools:
+`run_terminal_toolkit` only registers these tools:
 
 - `terminal_exec`
 - `terminal_session_open`
@@ -1077,11 +1077,11 @@ messages, bundle = agent.run(
 ### 2) Built-in workspace toolkit + terminal toolkit
 
 ```python
-from miso import broth as Broth, terminal_toolkit, workspace_toolkit
+from miso import broth as Broth, run_terminal_toolkit, access_workspace_toolkit
 
 agent = Broth(provider="openai", model="gpt-5", api_key="YOUR_OPENAI_API_KEY")
-agent.add_toolkit(workspace_toolkit(workspace_root="."))
-agent.add_toolkit(terminal_toolkit(workspace_root=".", terminal_strict_mode=True))
+agent.add_toolkit(access_workspace_toolkit(workspace_root="."))
+agent.add_toolkit(run_terminal_toolkit(workspace_root=".", terminal_strict_mode=True))
 
 messages, bundle = agent.run(
     messages=[{"role": "user", "content": "Create demo.py, write a hello function into it, then run it"}],
@@ -1274,12 +1274,12 @@ miso/
     ask_user_toolkit/
       __init__.py
       ask_user_toolkit.py
-    terminal_toolkit/
+    run_terminal_toolkit/
       __init__.py
-      terminal_toolkit.py
-    workspace_toolkit/
+      run_terminal_toolkit.py
+    access_workspace_toolkit/
       __init__.py
-      workspace_toolkit.py
+      access_workspace_toolkit.py
 scripts/
   init_python312_venv.sh
   init_python312_venv.ps1
@@ -1296,13 +1296,13 @@ tests/
   test_memory_qdrant_openai_embed.py
   test_ollama_smoke.py
   test_openai_family_smoke.py
-  test_terminal_toolkit.py
+  test_run_terminal_toolkit.py
   test_tool_confirmation.py
   test_tool_registry.py
   test_toolkit_catalog.py
   test_toolkit_design.py
   test_workspace_pins.py
-  test_workspace_toolkit.py
+  test_access_workspace_toolkit.py
 ```
 
 ---
@@ -1334,7 +1334,7 @@ Smoke tests depend on environment variables:
 5. On the Anthropic path, `response_format` does not auto-inject schema instructions yet; it mainly relies on local parse as fallback.
 6. `observe=True` triggers an extra "tool result review" sub-turn and therefore consumes more tokens.
 7. If tool names collide, later-registered toolkits win; avoid duplicate names when composing multiple toolkits.
-8. `workspace_toolkit` can create/delete/move files inside the workspace by default; in production, keep `workspace_root` as small as possible.
+8. `access_workspace_toolkit` can create/delete/move files inside the workspace by default; in production, keep `workspace_root` as small as possible.
 9. Tools marked `requires_confirmation` are automatically allowed when no `on_tool_confirm` callback is supplied; execution will not block.
 10. If an MCP tool has `annotations.destructiveHint = true`, it is automatically marked as requiring confirmation.
 11. Memory defaults to in-process session storage (`InMemorySessionStore`); history is not automatically restored after a process restart.
@@ -1353,4 +1353,4 @@ If you plan to build on top of `miso`, start here:
 3. `miso/broth.py` (main loop and provider adapters)
 4. `miso/memory.py` (session memory and context window strategies)
 5. `miso/tool.py` (tool abstraction)
-6. `miso/builtin_toolkits/workspace_toolkit/workspace_toolkit.py` (directly usable toolkit implementation)
+6. `miso/builtin_toolkits/access_workspace_toolkit/access_workspace_toolkit.py` (directly usable toolkit implementation)

@@ -15,6 +15,8 @@ from .human_input import (
 from .builtin_toolkits import (
     builtin_toolkit,
     build_builtin_toolkit,
+    access_workspace_toolkit,
+    run_terminal_toolkit,
     terminal_toolkit,
     workspace_toolkit,
     external_api_toolkit,
@@ -68,6 +70,8 @@ __all__ = [
     "HumanInputResponse",
     "builtin_toolkit",
     "build_builtin_toolkit",
+    "access_workspace_toolkit",
+    "run_terminal_toolkit",
     "workspace_toolkit",
     "terminal_toolkit",
     "external_api_toolkit",

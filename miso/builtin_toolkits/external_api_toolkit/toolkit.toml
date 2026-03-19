@@ -1,6 +1,6 @@
 [toolkit]
 id = "external_api"
-name = "External API Toolkit"
+name = "External API"
 description = "Call external HTTP endpoints with basic GET and POST requests."
 factory = "miso.builtin_toolkits.external_api_toolkit:external_api_toolkit"
 version = "1.0.0"

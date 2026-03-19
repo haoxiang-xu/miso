@@ -1,8 +1,8 @@
 [toolkit]
 id = "workspace"
-name = "Workspace Toolkit"
+name = "Access Workspace"
 description = "Read, create, and edit files and directories inside a workspace root."
-factory = "miso.builtin_toolkits.workspace_toolkit:workspace_toolkit"
+factory = "miso.builtin_toolkits.access_workspace_toolkit:access_workspace_toolkit"
 version = "1.0.0"
 readme = "README.md"
 icon = "folder"

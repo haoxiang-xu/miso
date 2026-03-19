@@ -113,19 +113,19 @@ def test_builtin_registry_lists_expected_toolkits_and_tools():
     registry = ToolkitRegistry()
     toolkit_ids = {item["id"] for item in registry.list_toolkits(include_tools=False)}
 
-    assert toolkit_ids == {"workspace", "terminal", "external_api", "ask_user"}
+    assert toolkit_ids == {"workspace", "terminal", "external_api", "ask_user_question"}
     assert registry.require("workspace").to_summary()["tool_count"] == 19
     assert registry.require("terminal").to_summary()["tool_count"] == 4
     assert registry.require("external_api").to_summary()["tool_count"] == 2
-    assert registry.require("ask_user").to_summary()["tool_count"] == 1
+    assert registry.require("ask_user_question").to_summary()["tool_count"] == 1
 
 
 def test_get_toolkit_metadata_returns_full_markdown_and_inherited_tool_icon():
     toolkit_metadata = get_toolkit_metadata("workspace")
     tool_metadata = get_toolkit_metadata("workspace", "read_file")
 
-    assert toolkit_metadata["readme_markdown"].startswith("# workspace_toolkit")
-    assert tool_metadata["toolkit"]["readme_markdown"].startswith("# workspace_toolkit")
+    assert toolkit_metadata["readme_markdown"].startswith("# access_workspace_toolkit")
+    assert tool_metadata["toolkit"]["readme_markdown"].startswith("# access_workspace_toolkit")
     assert tool_metadata["tool"]["icon_path"] == tool_metadata["toolkit"]["icon_path"]
     assert tool_metadata["tool"]["icon"] == tool_metadata["toolkit"]["icon"]
 
@@ -135,7 +135,7 @@ def test_list_toolkits_payload_is_json_serializable():
     encoded = json.dumps(payload)
 
     assert "workspace" in encoded
-    assert "ask_user" in encoded
+    assert "ask_user_question" in encoded
 
 
 def test_local_root_requires_a_manifest(tmp_path):

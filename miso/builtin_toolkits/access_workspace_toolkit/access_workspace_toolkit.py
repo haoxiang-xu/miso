@@ -17,8 +17,8 @@ from ...workspace_pins import (
 )
 
 
-class workspace_toolkit(builtin_toolkit):
-    """Workspace toolkit for files, directories, and line-level editing."""
+class access_workspace_toolkit(builtin_toolkit):
+    """Toolkit for accessing workspace files, directories, and line-level edits."""
 
     def __init__(self, *, workspace_root: str | Path | None = None):
         super().__init__(workspace_root=workspace_root)
@@ -787,4 +787,6 @@ class workspace_toolkit(builtin_toolkit):
         }
 
 
-__all__ = ["workspace_toolkit"]
+workspace_toolkit = access_workspace_toolkit
+
+__all__ = ["access_workspace_toolkit", "workspace_toolkit"]

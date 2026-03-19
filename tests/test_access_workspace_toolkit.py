@@ -1,7 +1,13 @@
 import tempfile
 from pathlib import Path
 
-from miso import broth as Broth, build_builtin_toolkit, terminal_toolkit, workspace_toolkit
+from miso import (
+    access_workspace_toolkit,
+    broth as Broth,
+    build_builtin_toolkit,
+    run_terminal_toolkit,
+    workspace_toolkit,
+)
 from miso.memory import InMemorySessionStore
 from miso.workspace_pins import (
     MAX_FULL_FILE_PIN_CHARS,
@@ -10,9 +16,13 @@ from miso.workspace_pins import (
 )
 
 
-def test_workspace_toolkit_registers_expected_tools():
+def test_access_workspace_toolkit_alias_is_preserved():
+    assert workspace_toolkit is access_workspace_toolkit
+
+
+def test_access_workspace_toolkit_registers_expected_tools():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = workspace_toolkit(workspace_root=tmp)
+        toolkit = access_workspace_toolkit(workspace_root=tmp)
 
         names = set(toolkit.tools.keys())
         # file-level
@@ -47,26 +57,26 @@ def test_workspace_toolkit_registers_expected_tools():
         assert "python_runtime_reset" not in names
 
 
-def test_build_builtin_toolkit_returns_workspace_toolkit():
+def test_build_builtin_toolkit_returns_access_workspace_toolkit():
     with tempfile.TemporaryDirectory() as tmp:
         tk = build_builtin_toolkit(workspace_root=tmp)
-        assert isinstance(tk, workspace_toolkit)
+        assert isinstance(tk, access_workspace_toolkit)
         assert "read_file" in tk.tools
         assert "terminal_exec" not in tk.tools
 
 
-def test_workspace_toolkit_methods_are_declared_on_class_for_ui_discovery():
-    assert "read_file" in workspace_toolkit.__dict__
-    assert "write_file" in workspace_toolkit.__dict__
-    assert "read_lines" in workspace_toolkit.__dict__
-    assert "search_and_replace" in workspace_toolkit.__dict__
-    assert "pin_file_context" in workspace_toolkit.__dict__
-    assert "unpin_file_context" in workspace_toolkit.__dict__
+def test_access_workspace_toolkit_methods_are_declared_on_class_for_ui_discovery():
+    assert "read_file" in access_workspace_toolkit.__dict__
+    assert "write_file" in access_workspace_toolkit.__dict__
+    assert "read_lines" in access_workspace_toolkit.__dict__
+    assert "search_and_replace" in access_workspace_toolkit.__dict__
+    assert "pin_file_context" in access_workspace_toolkit.__dict__
+    assert "unpin_file_context" in access_workspace_toolkit.__dict__
 
 
 def test_workspace_pin_tools_use_explicit_descriptions():
     with tempfile.TemporaryDirectory() as tmp:
-        tk = workspace_toolkit(workspace_root=tmp)
+        tk = access_workspace_toolkit(workspace_root=tmp)
 
         pin_description = tk.tools["pin_file_context"].description
         unpin_description = tk.tools["unpin_file_context"].description
@@ -78,7 +88,7 @@ def test_workspace_pin_tools_use_explicit_descriptions():
 
 def test_workspace_pin_tools_require_active_session_id():
     with tempfile.TemporaryDirectory() as tmp:
-        tk = workspace_toolkit(workspace_root=tmp)
+        tk = access_workspace_toolkit(workspace_root=tmp)
         Path(tmp, "demo.py").write_text("print('hello')\n", encoding="utf-8")
 
         pin_result = tk.execute("pin_file_context", {"path": "demo.py"})
@@ -90,7 +100,7 @@ def test_workspace_pin_tools_require_active_session_id():
 
 def test_workspace_pin_file_context_deduplicates_and_unpins():
     with tempfile.TemporaryDirectory() as tmp:
-        tk = workspace_toolkit(workspace_root=tmp)
+        tk = access_workspace_toolkit(workspace_root=tmp)
         file_path = Path(tmp, "demo.py")
         file_path.write_text("one\ntwo\nthree\n", encoding="utf-8")
 
@@ -115,7 +125,7 @@ def test_workspace_pin_file_context_deduplicates_and_unpins():
 
 def test_workspace_pin_file_context_rejects_oversized_whole_file_pin():
     with tempfile.TemporaryDirectory() as tmp:
-        tk = workspace_toolkit(workspace_root=tmp)
+        tk = access_workspace_toolkit(workspace_root=tmp)
         file_path = Path(tmp, "large.txt")
         file_path.write_text("A" * (MAX_FULL_FILE_PIN_CHARS + 1), encoding="utf-8")
 
@@ -132,9 +142,9 @@ def test_workspace_pin_file_context_rejects_oversized_whole_file_pin():
         assert "Pin a smaller line range" in result["suggestion"]
 
 
-def test_workspace_toolkit_file_ops_and_search():
+def test_access_workspace_toolkit_file_ops_and_search():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = workspace_toolkit(workspace_root=tmp)
+        toolkit = access_workspace_toolkit(workspace_root=tmp)
 
         write_result = toolkit.execute(
             "write_file",
@@ -157,7 +167,7 @@ def test_workspace_toolkit_file_ops_and_search():
 
 def test_line_level_read_insert_replace_delete():
     with tempfile.TemporaryDirectory() as tmp:
-        tk = workspace_toolkit(workspace_root=tmp)
+        tk = access_workspace_toolkit(workspace_root=tmp)
 
         # Create a file with 5 lines
         tk.execute("write_file", {"path": "lines.txt", "content": "L1\nL2\nL3\nL4\nL5\n"})
@@ -189,7 +199,7 @@ def test_line_level_read_insert_replace_delete():
 
 def test_copy_lines_and_move_lines():
     with tempfile.TemporaryDirectory() as tmp:
-        tk = workspace_toolkit(workspace_root=tmp)
+        tk = access_workspace_toolkit(workspace_root=tmp)
 
         tk.execute("write_file", {"path": "m.txt", "content": "A\nB\nC\nD\n"})
 
@@ -209,7 +219,7 @@ def test_copy_lines_and_move_lines():
 
 def test_search_and_replace():
     with tempfile.TemporaryDirectory() as tmp:
-        tk = workspace_toolkit(workspace_root=tmp)
+        tk = access_workspace_toolkit(workspace_root=tmp)
 
         tk.execute("write_file", {"path": "sr.txt", "content": "foo bar foo baz foo\n"})
 
@@ -228,7 +238,7 @@ def test_search_and_replace():
 
 def test_file_create_delete_copy_move_exists():
     with tempfile.TemporaryDirectory() as tmp:
-        tk = workspace_toolkit(workspace_root=tmp)
+        tk = access_workspace_toolkit(workspace_root=tmp)
 
         # create
         result = tk.execute("create_file", {"path": "new.txt", "content": "hello"})
@@ -272,8 +282,8 @@ def test_agent_add_multiple_toolkits():
     """Agent can hold multiple toolkits simultaneously."""
     with tempfile.TemporaryDirectory() as tmp:
         agent = Broth()
-        ws = workspace_toolkit(workspace_root=tmp)
-        term = terminal_toolkit(workspace_root=tmp)
+        ws = access_workspace_toolkit(workspace_root=tmp)
+        term = run_terminal_toolkit(workspace_root=tmp)
 
         agent.add_toolkit(ws)
 

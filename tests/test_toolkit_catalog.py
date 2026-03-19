@@ -3,7 +3,7 @@ import json
 import pytest
 
 from miso import Agent, ToolkitCatalogConfig, broth as Broth, ask_user_toolkit, tool, toolkit
-from miso.builtin_toolkits.terminal_toolkit import terminal_toolkit as TerminalToolkitClass
+from miso.builtin_toolkits.run_terminal_toolkit import run_terminal_toolkit as RunTerminalToolkitClass
 from miso.broth import ProviderTurnResult, ToolCall
 
 
@@ -309,7 +309,7 @@ def test_catalog_mode_keeps_anonymous_eager_toolkits_callable_but_excludes_them_
     assert payloads[1] == {"hello": "world"}
 
 
-def test_catalog_resume_preserves_cached_terminal_toolkit_instances_across_human_input_pause():
+def test_catalog_resume_preserves_cached_run_terminal_toolkit_instances_across_human_input_pause():
     agent = Broth(
         toolkit_catalog_config={
             "managed_toolkit_ids": ["terminal"],
@@ -386,7 +386,7 @@ def test_catalog_shutdown_is_called_for_managed_toolkits_on_completion(monkeypat
     def fake_shutdown(self):
         shutdown_calls.append("terminal")
 
-    monkeypatch.setattr(TerminalToolkitClass, "shutdown", fake_shutdown)
+    monkeypatch.setattr(RunTerminalToolkitClass, "shutdown", fake_shutdown)
 
     agent = Broth(
         toolkit_catalog_config={

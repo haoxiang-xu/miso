@@ -1,8 +1,8 @@
 [toolkit]
 id = "terminal"
-name = "Terminal Toolkit"
+name = "Run Terminal"
 description = "Run restricted shell commands and manage persistent shell sessions."
-factory = "miso.builtin_toolkits.terminal_toolkit:terminal_toolkit"
+factory = "miso.builtin_toolkits.run_terminal_toolkit:run_terminal_toolkit"
 version = "1.0.0"
 readme = "README.md"
 icon = "icon.svg"
