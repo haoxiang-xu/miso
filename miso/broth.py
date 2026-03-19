@@ -36,6 +36,12 @@ except ImportError:  # pragma: no cover
     google_genai = None  # type: ignore[assignment]
 
 from .tool import toolkit as base_toolkit
+from .toolkit_catalog import (
+    ToolkitCatalogConfig,
+    ToolkitCatalogRuntime,
+    build_visible_toolkits,
+    extract_toolkit_catalog_token,
+)
 from .workspace_pins import WorkspacePinExecutionContext, build_pinned_prompt_messages
 
 try:
@@ -103,6 +109,7 @@ class broth:
         model: str | None = None,
         api_key: str | None = None,
         memory_manager: MemoryManager | None = None,
+        toolkit_catalog_config: ToolkitCatalogConfig | dict[str, Any] | None = None,
     ):
         self.api_key = api_key
         self.provider = provider or "openai"
@@ -125,6 +132,8 @@ class broth:
         self._last_canonical_seed: list[dict[str, Any]] = []
         self.memory_manager = memory_manager
         self._workspace_pin_store: InMemorySessionStore | None = None
+        self.toolkit_catalog_config = ToolkitCatalogConfig.coerce(toolkit_catalog_config)
+        self._suspended_toolkit_catalog_runs: dict[str, ToolkitCatalogRuntime] = {}
 
     def _call_with_supported_kwargs(self, func: Callable[..., Any], **kwargs: Any) -> Any:
         """Call a possibly monkey-patched callable, omitting unsupported kwargs."""
@@ -269,10 +278,10 @@ class broth:
                 merged[t.get("name", "")] = t
         return list(merged.values())
 
-    def _find_tool(self, name: str):
+    def _find_tool(self, name: str, *, toolkits: list[base_toolkit] | None = None):
         """Look up a tool by name across all toolkits (last registered wins)."""
         result = None
-        for tk in self.toolkits:
+        for tk in toolkits or self.toolkits:
             found = tk.get(name)
             if found is not None:
                 result = found
@@ -284,10 +293,11 @@ class broth:
         arguments,
         *,
         session_id: str | None = None,
+        toolkits: list[base_toolkit] | None = None,
     ) -> dict[str, Any]:
         """Execute a tool by name, searching all toolkits (last registered wins)."""
         target_toolkit = None
-        for tk in self.toolkits:
+        for tk in toolkits or self.toolkits:
             if tk.get(name) is not None:
                 target_toolkit = tk
         if target_toolkit is None:
@@ -303,12 +313,58 @@ class broth:
             if pushed_context and hasattr(target_toolkit, "pop_execution_context"):
                 target_toolkit.pop_execution_context()
 
-    def _build_runtime_toolkit(self) -> base_toolkit:
+    def _build_runtime_toolkit(self, *, toolkits: list[base_toolkit] | None = None) -> base_toolkit:
         runtime_toolkit = base_toolkit()
-        for tk in self.toolkits:
+        for tk in toolkits or self.toolkits:
             for tool_obj in tk.tools.values():
                 runtime_toolkit.register(tool_obj)
         return runtime_toolkit
+
+    def _build_toolkit_catalog_runtime(self) -> ToolkitCatalogRuntime | None:
+        if self.toolkit_catalog_config is None:
+            return None
+        return ToolkitCatalogRuntime(
+            config=self.toolkit_catalog_config,
+            eager_toolkits=list(self.toolkits),
+        )
+
+    def _stash_suspended_toolkit_catalog_runtime(self, runtime: ToolkitCatalogRuntime) -> dict[str, Any]:
+        payload = runtime.build_continuation_state()
+        state_token = extract_toolkit_catalog_token(payload)
+        if state_token:
+            self._suspended_toolkit_catalog_runs[state_token] = runtime
+        return payload
+
+    def _take_suspended_toolkit_catalog_runtime(self, state_token: str) -> ToolkitCatalogRuntime | None:
+        return self._suspended_toolkit_catalog_runs.pop(state_token, None)
+
+    def _put_suspended_toolkit_catalog_runtime(
+        self,
+        state_token: str,
+        runtime: ToolkitCatalogRuntime,
+    ) -> None:
+        if state_token:
+            self._suspended_toolkit_catalog_runs[state_token] = runtime
+
+    def _restore_toolkit_catalog_runtime(
+        self,
+        continuation: dict[str, Any],
+    ) -> ToolkitCatalogRuntime | None:
+        catalog_payload = continuation.get("toolkit_catalog")
+        if not isinstance(catalog_payload, dict):
+            return None
+
+        state_token = extract_toolkit_catalog_token(catalog_payload)
+        if state_token is None:
+            raise ValueError("continuation toolkit_catalog payload is missing a valid state_token")
+
+        runtime = self._take_suspended_toolkit_catalog_runtime(state_token)
+        if runtime is None:
+            raise ValueError(
+                "toolkit catalog continuation state is unavailable in this process; "
+                "the suspended run cannot be resumed"
+            )
+        return runtime
 
     def _validate_runtime_toolkit_support(self, runtime_toolkit: base_toolkit) -> None:
         has_human_input_tool = runtime_toolkit.get(REQUEST_USER_INPUT_TOOL_NAME) is not None
@@ -552,6 +608,7 @@ class broth:
         memory_namespace: str | None,
         consumed_tokens: int,
         last_turn_tokens: int,
+        toolkit_catalog: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "type": "human_input_continuation",
@@ -571,6 +628,7 @@ class broth:
             "memory_namespace": memory_namespace,
             "consumed_tokens": consumed_tokens,
             "last_turn_tokens": last_turn_tokens,
+            "toolkit_catalog": copy.deepcopy(toolkit_catalog),
         }
 
     def _canonicalize_seed_messages(self, messages) -> list[dict[str, Any]]:
@@ -1379,262 +1437,278 @@ class broth:
         iteration: int = 0,
         total_consumed_tokens: int = 0,
         last_turn_tokens: int = 0,
+        toolkit_catalog_runtime: ToolkitCatalogRuntime | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        runtime_toolkit = self._build_runtime_toolkit()
-        self._validate_runtime_toolkit_support(runtime_toolkit)
+        catalog_suspended = False
+        try:
+            while True:
+                visible_toolkits = build_visible_toolkits(
+                    eager_toolkits=list(self.toolkits),
+                    catalog_runtime=toolkit_catalog_runtime,
+                )
+                runtime_toolkit = self._build_runtime_toolkit(toolkits=visible_toolkits)
+                self._validate_runtime_toolkit_support(runtime_toolkit)
 
-        while True:
-            if iteration >= max_loops:
-                if on_continuation_request is not None:
-                    resp = on_continuation_request({"iteration": max_loops})
-                    if resp and resp.get("approved"):
-                        extra = max(1, int(resp.get("extra_iterations", 10)))
-                        max_loops += extra
+                if iteration >= max_loops:
+                    if on_continuation_request is not None:
+                        resp = on_continuation_request({"iteration": max_loops})
+                        if resp and resp.get("approved"):
+                            extra = max(1, int(resp.get("extra_iterations", 10)))
+                            max_loops += extra
+                        else:
+                            break
                     else:
                         break
-                else:
-                    break
 
-            self._emit(callback, "iteration_started", run_id, iteration=iteration)
-            request_messages = conversation
-            request_previous_response_id = None
-            if self.provider == "openai" and use_openai_previous_response_chain:
-                request_messages = next_openai_input
-                request_previous_response_id = next_previous_response_id
-                if any(isinstance(msg, dict) and msg.get("role") is not None for msg in request_messages):
+                self._emit(callback, "iteration_started", run_id, iteration=iteration)
+                request_messages = conversation
+                request_previous_response_id = None
+                if self.provider == "openai" and use_openai_previous_response_chain:
+                    request_messages = next_openai_input
+                    request_previous_response_id = next_previous_response_id
+                    if any(isinstance(msg, dict) and msg.get("role") is not None for msg in request_messages):
+                        request_messages = self._inject_workspace_pin_messages(
+                            messages=request_messages,
+                            session_id=session_id,
+                        )
+                else:
                     request_messages = self._inject_workspace_pin_messages(
                         messages=request_messages,
                         session_id=session_id,
                     )
-            else:
-                request_messages = self._inject_workspace_pin_messages(
-                    messages=request_messages,
-                    session_id=session_id,
-                )
 
-            try:
-                turn = self._fetch_once(
-                    messages=request_messages,
-                    payload=payload,
-                    response_format=response_format_obj,
-                    callback=callback,
-                    verbose=verbose,
-                    run_id=run_id,
-                    iteration=iteration,
-                    toolkit=runtime_toolkit,
-                    emit_stream=True,
-                    previous_response_id=request_previous_response_id,
-                )
-            except openai.BadRequestError as exc:
-                should_fallback = (
-                    self.provider == "openai"
-                    and use_openai_previous_response_chain
-                    and bool(request_previous_response_id)
-                    and self._is_previous_response_not_found_error(exc)
-                )
-                if not should_fallback:
-                    raise
+                try:
+                    turn = self._fetch_once(
+                        messages=request_messages,
+                        payload=payload,
+                        response_format=response_format_obj,
+                        callback=callback,
+                        verbose=verbose,
+                        run_id=run_id,
+                        iteration=iteration,
+                        toolkit=runtime_toolkit,
+                        emit_stream=True,
+                        previous_response_id=request_previous_response_id,
+                    )
+                except openai.BadRequestError as exc:
+                    should_fallback = (
+                        self.provider == "openai"
+                        and use_openai_previous_response_chain
+                        and bool(request_previous_response_id)
+                        and self._is_previous_response_not_found_error(exc)
+                    )
+                    if not should_fallback:
+                        raise
 
+                    self._emit(
+                        callback,
+                        "previous_response_fallback",
+                        run_id,
+                        iteration=iteration,
+                        reason="previous_response_not_found",
+                        previous_response_id=request_previous_response_id,
+                    )
+                    use_openai_previous_response_chain = False
+                    next_previous_response_id = None
+
+                    output_call_ids = {
+                        m.get("call_id")
+                        for m in request_messages
+                        if isinstance(m, dict) and m.get("type") == "function_call_output"
+                    }
+                    if output_call_ids:
+                        systems = [
+                            m for m in conversation
+                            if isinstance(m, dict) and m.get("role") == "system"
+                        ]
+                        user_msgs = [
+                            m for m in conversation
+                            if isinstance(m, dict) and m.get("role") == "user"
+                        ]
+                        last_user = [user_msgs[-1]] if user_msgs else []
+                        matched_calls = [
+                            m for m in conversation
+                            if isinstance(m, dict)
+                            and m.get("type") == "function_call"
+                            and m.get("call_id") in output_call_ids
+                        ]
+                        fallback_messages = systems + last_user + matched_calls + list(request_messages)
+                    else:
+                        fallback_messages = conversation
+
+                    turn = self._fetch_once(
+                        messages=fallback_messages,
+                        payload=payload,
+                        response_format=response_format_obj,
+                        callback=callback,
+                        verbose=verbose,
+                        run_id=run_id,
+                        iteration=iteration,
+                        toolkit=runtime_toolkit,
+                        emit_stream=True,
+                        previous_response_id=None,
+                    )
+
+                if self.provider == "openai":
+                    next_previous_response_id = (
+                        turn.response_id if use_openai_previous_response_chain else None
+                    )
+                    self.last_response_id = turn.response_id
+                total_consumed_tokens += max(0, int(turn.consumed_tokens or 0))
+                last_turn_tokens = max(0, int(turn.consumed_tokens or 0))
+
+                if turn.reasoning_items:
+                    self.last_reasoning_items = copy.deepcopy(turn.reasoning_items)
+                    self._emit(
+                        callback,
+                        "reasoning",
+                        run_id,
+                        iteration=iteration,
+                        response_id=turn.response_id,
+                        reasoning_items=turn.reasoning_items,
+                    )
+
+                conversation.extend(turn.assistant_messages)
                 self._emit(
                     callback,
-                    "previous_response_fallback",
-                    run_id,
-                    iteration=iteration,
-                    reason="previous_response_not_found",
-                    previous_response_id=request_previous_response_id,
-                )
-                use_openai_previous_response_chain = False
-                next_previous_response_id = None
-
-                output_call_ids = {
-                    m.get("call_id")
-                    for m in request_messages
-                    if isinstance(m, dict) and m.get("type") == "function_call_output"
-                }
-                if output_call_ids:
-                    systems = [
-                        m for m in conversation
-                        if isinstance(m, dict) and m.get("role") == "system"
-                    ]
-                    user_msgs = [
-                        m for m in conversation
-                        if isinstance(m, dict) and m.get("role") == "user"
-                    ]
-                    last_user = [user_msgs[-1]] if user_msgs else []
-                    matched_calls = [
-                        m for m in conversation
-                        if isinstance(m, dict)
-                        and m.get("type") == "function_call"
-                        and m.get("call_id") in output_call_ids
-                    ]
-                    fallback_messages = systems + last_user + matched_calls + list(request_messages)
-                else:
-                    fallback_messages = conversation
-
-                turn = self._fetch_once(
-                    messages=fallback_messages,
-                    payload=payload,
-                    response_format=response_format_obj,
-                    callback=callback,
-                    verbose=verbose,
-                    run_id=run_id,
-                    iteration=iteration,
-                    toolkit=runtime_toolkit,
-                    emit_stream=True,
-                    previous_response_id=None,
-                )
-
-            if self.provider == "openai":
-                next_previous_response_id = (
-                    turn.response_id if use_openai_previous_response_chain else None
-                )
-                self.last_response_id = turn.response_id
-            total_consumed_tokens += max(0, int(turn.consumed_tokens or 0))
-            last_turn_tokens = max(0, int(turn.consumed_tokens or 0))
-
-            if turn.reasoning_items:
-                self.last_reasoning_items = copy.deepcopy(turn.reasoning_items)
-                self._emit(
-                    callback,
-                    "reasoning",
+                    "response_received",
                     run_id,
                     iteration=iteration,
                     response_id=turn.response_id,
-                    reasoning_items=turn.reasoning_items,
-                )
-
-            conversation.extend(turn.assistant_messages)
-            self._emit(
-                callback,
-                "response_received",
-                run_id,
-                iteration=iteration,
-                response_id=turn.response_id,
-                has_tool_calls=bool(turn.tool_calls),
+                    has_tool_calls=bool(turn.tool_calls),
                 bundle=copy.deepcopy(
                     self._build_bundle(
                         total_consumed_tokens,
                         last_turn_tokens,
-                        status="running",
+                        status="running" if turn.tool_calls else "completed",
                     )
                 ),
             )
 
-            if turn.tool_calls:
-                execution = self._coerce_tool_execution_outcome(
-                    self._execute_tool_calls(
-                        tool_calls=turn.tool_calls,
-                        run_id=run_id,
-                        iteration=iteration,
-                        callback=callback,
-                        on_tool_confirm=on_tool_confirm,
-                        session_id=session_id,
-                    )
-                )
-
-                if execution.awaiting_human_input and execution.human_input_request is not None:
-                    continuation = self._build_human_input_continuation(
-                        request=execution.human_input_request,
-                        payload=payload,
-                        response_format_obj=response_format_obj,
-                        iteration=iteration + 1,
-                        max_iterations=max_loops,
-                        previous_response_id=next_previous_response_id,
-                        use_openai_previous_response_chain=use_openai_previous_response_chain,
-                        session_id=session_id,
-                        memory_namespace=memory_namespace,
-                        consumed_tokens=total_consumed_tokens,
-                        last_turn_tokens=last_turn_tokens,
-                    )
-                    bundle = self._build_bundle(
-                        total_consumed_tokens,
-                        last_turn_tokens,
-                        status="awaiting_human_input",
-                        human_input_request=execution.human_input_request.to_dict(),
-                        continuation=continuation,
-                    )
-                    self.last_consumed_tokens = total_consumed_tokens
-                    self.consumed_tokens += total_consumed_tokens
-                    return conversation, bundle
-
-                tool_messages = execution.result_messages
-                if execution.should_observe and tool_messages:
-                    observation, observe_consumed_tokens = self._observe_tool_batch(
-                        full_messages=conversation,
-                        tool_messages=tool_messages,
-                        payload=payload,
-                    )
-                    total_consumed_tokens += max(0, int(observe_consumed_tokens or 0))
-                    if observation:
-                        self._inject_observation(tool_messages[-1], observation)
-                        self._emit(
-                            callback,
-                            "observation",
-                            run_id,
+                if turn.tool_calls:
+                    execution = self._coerce_tool_execution_outcome(
+                        self._execute_tool_calls(
+                            tool_calls=turn.tool_calls,
+                            run_id=run_id,
                             iteration=iteration,
-                            content=observation,
+                            callback=callback,
+                            on_tool_confirm=on_tool_confirm,
+                            session_id=session_id,
+                            toolkits=visible_toolkits,
                         )
+                    )
 
-                conversation.extend(tool_messages)
-                if self.provider == "openai" and use_openai_previous_response_chain:
-                    if next_previous_response_id:
-                        next_openai_input = copy.deepcopy(tool_messages)
-                    else:
-                        next_openai_input = copy.deepcopy(conversation)
-                self._emit(callback, "iteration_completed", run_id, iteration=iteration, has_tool_calls=True)
-                iteration += 1
-                continue
+                    if execution.awaiting_human_input and execution.human_input_request is not None:
+                        catalog_payload = None
+                        if toolkit_catalog_runtime is not None:
+                            catalog_payload = self._stash_suspended_toolkit_catalog_runtime(toolkit_catalog_runtime)
+                            catalog_suspended = True
+                        continuation = self._build_human_input_continuation(
+                            request=execution.human_input_request,
+                            payload=payload,
+                            response_format_obj=response_format_obj,
+                            iteration=iteration + 1,
+                            max_iterations=max_loops,
+                            previous_response_id=next_previous_response_id,
+                            use_openai_previous_response_chain=use_openai_previous_response_chain,
+                            session_id=session_id,
+                            memory_namespace=memory_namespace,
+                            consumed_tokens=total_consumed_tokens,
+                            last_turn_tokens=last_turn_tokens,
+                            toolkit_catalog=catalog_payload,
+                        )
+                        bundle = self._build_bundle(
+                            total_consumed_tokens,
+                            last_turn_tokens,
+                            status="awaiting_human_input",
+                            human_input_request=execution.human_input_request.to_dict(),
+                            continuation=continuation,
+                        )
+                        self.last_consumed_tokens = total_consumed_tokens
+                        self.consumed_tokens += total_consumed_tokens
+                        return conversation, bundle
 
-            self._apply_response_format(conversation, response_format_obj)
-            final_text = self._last_assistant_text(conversation)
-            bundle = self._build_bundle(
-                total_consumed_tokens,
-                last_turn_tokens,
-                status="completed",
-            )
-            self._emit(
-                callback,
-                "final_message",
-                run_id,
-                iteration=iteration,
-                content=final_text,
-            )
-            self._emit(
-                callback,
-                "run_completed",
-                run_id,
-                iteration=iteration,
-                bundle=copy.deepcopy(bundle),
-            )
+                    tool_messages = execution.result_messages
+                    if execution.should_observe and tool_messages:
+                        observation, observe_consumed_tokens = self._observe_tool_batch(
+                            full_messages=conversation,
+                            tool_messages=tool_messages,
+                            payload=payload,
+                        )
+                        total_consumed_tokens += max(0, int(observe_consumed_tokens or 0))
+                        if observation:
+                            self._inject_observation(tool_messages[-1], observation)
+                            self._emit(
+                                callback,
+                                "observation",
+                                run_id,
+                                iteration=iteration,
+                                content=observation,
+                            )
+
+                    conversation.extend(tool_messages)
+                    if self.provider == "openai" and use_openai_previous_response_chain:
+                        if next_previous_response_id:
+                            next_openai_input = copy.deepcopy(tool_messages)
+                        else:
+                            next_openai_input = copy.deepcopy(conversation)
+                    self._emit(callback, "iteration_completed", run_id, iteration=iteration, has_tool_calls=True)
+                    iteration += 1
+                    continue
+
+                self._apply_response_format(conversation, response_format_obj)
+                final_text = self._last_assistant_text(conversation)
+                bundle = self._build_bundle(
+                    total_consumed_tokens,
+                    last_turn_tokens,
+                    status="completed",
+                )
+                self._emit(
+                    callback,
+                    "final_message",
+                    run_id,
+                    iteration=iteration,
+                    content=final_text,
+                )
+                self._emit(
+                    callback,
+                    "run_completed",
+                    run_id,
+                    iteration=iteration,
+                    bundle=copy.deepcopy(bundle),
+                )
+                self.last_consumed_tokens = total_consumed_tokens
+                self.consumed_tokens += total_consumed_tokens
+                self._finalize_memory_commit(
+                    callback=callback,
+                    run_id=run_id,
+                    iteration=iteration,
+                    conversation=conversation,
+                    session_id=session_id,
+                    memory_namespace=memory_namespace,
+                )
+                return conversation, bundle
+
+            self._emit(callback, "run_max_iterations", run_id, iteration=max_loops)
             self.last_consumed_tokens = total_consumed_tokens
             self.consumed_tokens += total_consumed_tokens
             self._finalize_memory_commit(
                 callback=callback,
                 run_id=run_id,
-                iteration=iteration,
+                iteration=max_loops,
                 conversation=conversation,
                 session_id=session_id,
                 memory_namespace=memory_namespace,
             )
+            bundle = self._build_bundle(
+                total_consumed_tokens,
+                last_turn_tokens,
+                status="max_iterations",
+            )
             return conversation, bundle
-
-        self._emit(callback, "run_max_iterations", run_id, iteration=max_loops)
-        self.last_consumed_tokens = total_consumed_tokens
-        self.consumed_tokens += total_consumed_tokens
-        self._finalize_memory_commit(
-            callback=callback,
-            run_id=run_id,
-            iteration=max_loops,
-            conversation=conversation,
-            session_id=session_id,
-            memory_namespace=memory_namespace,
-        )
-        bundle = self._build_bundle(
-            total_consumed_tokens,
-            last_turn_tokens,
-            status="max_iterations",
-        )
-        return conversation, bundle
+        finally:
+            if toolkit_catalog_runtime is not None and not catalog_suspended:
+                toolkit_catalog_runtime.shutdown()
 
     def run(
         self,
@@ -1692,6 +1766,7 @@ class broth:
         payload = dict(payload or {})
         effective_payload = self._merged_payload(payload)
         max_loops = max_iterations or self.max_iterations
+        toolkit_catalog_runtime = self._build_toolkit_catalog_runtime()
         supports_prev = bool(self._model_capability("supports_previous_response_id", False))
         store_enabled = effective_payload.get("store") is not False
         use_openai_previous_response_chain = (
@@ -1721,6 +1796,7 @@ class broth:
             session_id=session_id,
             memory_namespace=memory_namespace,
             run_id=run_id,
+            toolkit_catalog_runtime=toolkit_catalog_runtime,
         )
 
     def resume_human_input(
@@ -1779,6 +1855,7 @@ class broth:
             if response_format is not None
             else self._deserialize_response_format(continuation.get("response_format"))
         )
+        toolkit_catalog_runtime = self._restore_toolkit_catalog_runtime(continuation)
         human_response = HumanInputResponse.from_raw(response, request=request)
         tool_call = ToolCall(
             call_id=str(continuation.get("call_id") or request.request_id),
@@ -1836,6 +1913,7 @@ class broth:
             iteration=start_iteration,
             total_consumed_tokens=total_consumed_tokens,
             last_turn_tokens=last_turn_tokens,
+            toolkit_catalog_runtime=toolkit_catalog_runtime,
         )
 
     def _emit(
@@ -2765,6 +2843,7 @@ class broth:
         callback: Callable[[dict[str, Any]], None] | None,
         on_tool_confirm: Callable | None = None,
         session_id: str | None = None,
+        toolkits: list[base_toolkit] | None = None,
     ) -> ToolExecutionOutcome:
         result_messages: list[dict[str, Any]] = []
         should_observe = False
@@ -2872,7 +2951,7 @@ class broth:
                     human_input_request=request,
                 )
 
-            tool_obj = self._find_tool(tool_call.name)
+            tool_obj = self._find_tool(tool_call.name, toolkits=toolkits)
             if tool_obj is not None and tool_obj.observe:
                 should_observe = True
 
@@ -2930,6 +3009,7 @@ class broth:
                     tool_call.name,
                     effective_arguments,
                     session_id=session_id,
+                    toolkits=toolkits,
                 )
             result_messages.append(
                 self._build_tool_message(

@@ -443,5 +443,9 @@ class _TerminalRuntime:
         )
         return result
 
+    def close_all_sessions(self) -> None:
+        for session_id in list(self.sessions):
+            self.close_session(session_id)
+
 
 __all__ = ["_TerminalRuntime"]

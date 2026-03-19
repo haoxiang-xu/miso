@@ -13,8 +13,9 @@ from .memory import LongTermMemoryConfig, MemoryConfig, MemoryManager
 from .response_format import response_format
 from .tool import tool as Tool
 from .tool import toolkit as Toolkit
+from .toolkit_catalog import ToolkitCatalogConfig, extract_toolkit_catalog_token
 
-_FORWARDED_BROTH_KEYS = {"provider", "model", "api_key", "memory_manager"}
+_FORWARDED_BROTH_KEYS = {"provider", "model", "api_key", "memory_manager", "toolkit_catalog_config"}
 
 if TYPE_CHECKING:
     from .team import Team
@@ -125,6 +126,7 @@ class Agent:
         long_term_memory: LongTermMemoryConfig | dict[str, Any] | None = None,
         defaults: dict[str, Any] | None = None,
         broth_options: dict[str, Any] | None = None,
+        toolkit_catalog_config: ToolkitCatalogConfig | dict[str, Any] | None = None,
     ):
         if not isinstance(name, str) or not name.strip():
             raise ValueError("Agent name is required")
@@ -137,6 +139,7 @@ class Agent:
         self.tools = list(tools or [])
         self.defaults = _deepcopy_dict(defaults)
         self.broth_options = _deepcopy_dict(broth_options)
+        self.toolkit_catalog_config = ToolkitCatalogConfig.coerce(toolkit_catalog_config)
         self.short_term_memory = short_term_memory
         self.long_term_memory = long_term_memory
         self.memory_manager = self._coerce_memory_manager(
@@ -144,6 +147,7 @@ class Agent:
             long_term_memory=long_term_memory,
         )
         self._subagent_config: _SubagentConfig | None = None
+        self._suspended_toolkit_catalog_runs: dict[str, Any] = {}
 
     def _coerce_memory_manager(
         self,
@@ -207,6 +211,46 @@ class Agent:
         )
         return self
 
+    def enable_toolkit_catalog(
+        self,
+        *,
+        managed_toolkit_ids: tuple[str, ...] | list[str] | None,
+        always_active_toolkit_ids: tuple[str, ...] | list[str] | None = None,
+        registry: dict[str, Any] | None = None,
+        readme_max_chars: int = 8000,
+    ) -> Agent:
+        self.toolkit_catalog_config = ToolkitCatalogConfig(
+            managed_toolkit_ids=managed_toolkit_ids,
+            always_active_toolkit_ids=always_active_toolkit_ids,
+            registry=registry,
+            readme_max_chars=readme_max_chars,
+        )
+        return self
+
+    def _toolkit_catalog_state_token(self, continuation: dict[str, Any] | None) -> str | None:
+        if not isinstance(continuation, dict):
+            return None
+        return extract_toolkit_catalog_token(continuation.get("toolkit_catalog"))
+
+    def _restore_toolkit_catalog_state_to_engine(self, engine: Broth, continuation: dict[str, Any] | None) -> None:
+        state_token = self._toolkit_catalog_state_token(continuation)
+        if state_token is None:
+            return
+        runtime = self._suspended_toolkit_catalog_runs.pop(state_token, None)
+        if runtime is not None:
+            engine._put_suspended_toolkit_catalog_runtime(state_token, runtime)
+
+    def _capture_toolkit_catalog_state_from_engine(self, engine: Broth, bundle: dict[str, Any] | None) -> None:
+        if not isinstance(bundle, dict):
+            return
+        continuation = bundle.get("continuation")
+        state_token = self._toolkit_catalog_state_token(continuation if isinstance(continuation, dict) else None)
+        if state_token is None:
+            return
+        runtime = engine._take_suspended_toolkit_catalog_runtime(state_token)
+        if runtime is not None:
+            self._suspended_toolkit_catalog_runs[state_token] = runtime
+
     def _build_agent_toolkit(self, *, runtime_context: _SubagentRuntime | None = None) -> Toolkit:
         merged = Toolkit()
         for item in self.tools:
@@ -231,6 +275,7 @@ class Agent:
             "model": self.model,
             "api_key": self.api_key,
             "memory_manager": self.memory_manager,
+            "toolkit_catalog_config": copy.deepcopy(self.toolkit_catalog_config),
         }
 
         try:
@@ -357,6 +402,7 @@ Return your result directly to the parent agent so it can continue coordinating 
             short_term_memory=self.memory_manager if self.memory_manager is not None else None,
             defaults=copy.deepcopy(self.defaults),
             broth_options=copy.deepcopy(self.broth_options),
+            toolkit_catalog_config=copy.deepcopy(self.toolkit_catalog_config),
         )
         if self._subagent_config is not None:
             child.enable_subagents(
@@ -625,7 +671,7 @@ Return your result directly to the parent agent so it can continue coordinating 
             runtime_context=runtime_context,
         )
         engine = self._build_engine(runtime_context=resolved_runtime)
-        return engine.run(
+        conversation_out, bundle = engine.run(
             messages=self._compose_messages(messages, extra_system_messages=extra_system_messages),
             payload=self._merge_payload(payload),
             response_format=response_format or self.defaults.get("response_format"),
@@ -644,6 +690,8 @@ Return your result directly to the parent agent so it can continue coordinating 
             session_id=session_id,
             memory_namespace=memory_namespace,
         )
+        self._capture_toolkit_catalog_state_from_engine(engine, bundle)
+        return conversation_out, bundle
 
     def resume_human_input(
         self,
@@ -703,7 +751,8 @@ Return your result directly to the parent agent so it can continue coordinating 
             runtime_context=runtime_context,
         )
         engine = self._build_engine(runtime_context=resolved_runtime)
-        return engine.resume_human_input(
+        self._restore_toolkit_catalog_state_to_engine(engine, continuation)
+        conversation_out, bundle = engine.resume_human_input(
             conversation=copy.deepcopy(conversation),
             continuation=copy.deepcopy(continuation),
             response=copy.deepcopy(response),
@@ -722,6 +771,8 @@ Return your result directly to the parent agent so it can continue coordinating 
             session_id=session_id,
             memory_namespace=memory_namespace,
         )
+        self._capture_toolkit_catalog_state_from_engine(engine, bundle)
+        return conversation_out, bundle
 
     def step(
         self,

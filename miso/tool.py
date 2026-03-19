@@ -464,6 +464,9 @@ class toolkit:
     def to_json(self) -> list[dict[str, Any]]:
         return [tool_obj.to_json() for tool_obj in self.tools.values()]
 
+    def shutdown(self) -> None:
+        return None
+
 # ── confirmation callback data structures ──────────────────────────────
 
 @dataclass

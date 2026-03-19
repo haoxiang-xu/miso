@@ -10,6 +10,7 @@
 - 一个多模态输入规范层：`media` + canonical content blocks
 - 一个远程工具桥接层：`mcp`
 - 一个 toolkit registry：`tool_registry`（manifest 扫描、元数据与插件发现）
+- 一个 toolkit catalog 层：`toolkit_catalog`（registry-backed toolkit 的 lazy activation）
 - 四个可直接落地的内置工具包：`workspace_toolkit` / `terminal_toolkit` / `external_api_toolkit` / `interaction_toolkit`
 
 它支持 OpenAI / Anthropic / Gemini / Ollama 四类 provider，并且尽量保持接口一致。
@@ -30,14 +31,15 @@
 10. [多模态输入规范（canonical blocks）](#多模态输入规范canonical-blocks)
 11. [`response_format` 结构化输出](#response_format-结构化输出)
 12. [内置工具包：`workspace_toolkit`](#内置工具包workspace_toolkit)
-13. [MCP 工具桥接：`mcp`](#mcp-工具桥接mcp)
-14. [配置层：模型默认参数与能力矩阵](#配置层模型默认参数与能力矩阵)
-15. [回调事件与可观测性](#回调事件与可观测性)
-16. [Provider 差异对照](#provider-差异对照)
-17. [典型端到端示例](#典型端到端示例)
-18. [项目结构](#项目结构)
-19. [测试](#测试)
-20. [边界与注意事项](#边界与注意事项)
+13. [Toolkit Catalog（Lazy Activation）](#toolkit-cataloglazy-activation)
+14. [MCP 工具桥接：`mcp`](#mcp-工具桥接mcp)
+15. [配置层：模型默认参数与能力矩阵](#配置层模型默认参数与能力矩阵)
+16. [回调事件与可观测性](#回调事件与可观测性)
+17. [Provider 差异对照](#provider-差异对照)
+18. [典型端到端示例](#典型端到端示例)
+19. [项目结构](#项目结构)
+20. [测试](#测试)
+21. [边界与注意事项](#边界与注意事项)
 
 ---
 
@@ -166,7 +168,7 @@ print(bundle)
 - `media`
 - `mcp`
 - `ToolDescriptor` / `ToolkitDescriptor`
-- `ToolRegistryConfig` / `ToolkitRegistry`
+- `ToolRegistryConfig` / `ToolkitRegistry` / `ToolkitCatalogConfig`
 - `list_toolkits` / `get_toolkit_metadata`
 - `builtin_toolkit`（内置 toolkit 基类）
 - `build_builtin_toolkit`（返回 `workspace_toolkit` 的 helper）
@@ -187,7 +189,8 @@ print(bundle)
 | `miso/memory.py`                                  | `MemoryManager` / 策略协议            | session memory、context window 裁剪、summary、可选向量召回     |
 | `miso/memory_qdrant.py`                           | `QdrantVectorAdapter` / `QdrantLongTermVectorAdapter` | Qdrant 向量适配与 OpenAI embedding helper         |
 | `miso/tool.py`                                    | `tool_parameter` / `tool` / `toolkit` | 工具 schema 推断、工具注册、工具执行                          |
-| `miso/tool_registry.py`                           | `ToolkitRegistry`                     | toolkit metadata 扫描、校验、只读 registry 输出               |
+| `miso/tool_registry.py`                           | `ToolkitRegistry`                     | toolkit metadata 扫描、校验、只读 registry 输出与按 id 实例化 |
+| `miso/toolkit_catalog.py`                         | `ToolkitCatalogConfig` / `ToolkitCatalogRuntime` | registry-backed toolkit 的 lazy activation、run 级激活状态与 continuation 恢复 |
 | `miso/human_input.py`                             | `HumanInputRequest` / `HumanInputResponse` | selector 请求/响应协议与 runtime 约定                   |
 | `miso/response_format.py`                         | `response_format`                     | JSON Schema 输出约束与解析                                    |
 | `miso/media.py`                                   | `from_file` / `from_url`              | 生成 canonical 多模态输入块                                   |
@@ -217,7 +220,7 @@ print(bundle)
 4. **Provider 投影层**：canonical -> provider 原生请求格式
 5. **Memory 预处理层（可选）**：按 `session_id` 合并历史并应用策略（summary / last-n / vector recall）
 6. **LLM 回合层**：`_fetch_once` 拉取一轮输出（流式）
-7. **工具执行层**：提取 tool calls -> 执行 toolkit -> 生成 tool result message
+7. **工具执行层**：提取 tool calls -> 在当前可见 toolkit 集合里执行 -> 生成 tool result message
 8. **观察层（可选）**：若工具标记 `observe=True`，触发一次“工具结果复核”
 9. **收敛层**：无 tool call 时应用 `response_format`，输出最终消息和 bundle
 10. **Memory 提交层（可选）**：将最终对话写回 session，并可写入向量索引
@@ -242,7 +245,7 @@ flowchart LR
     L -- "Yes" --> M["Commit conversation to session memory"]
     L -- "No" --> N["Return messages + bundle"]
     M --> N
-    I -- "Yes" --> O["Execute tool calls in toolkit(s)"]
+    I -- "Yes" --> O["Execute tool calls in current visible toolkit set"]
     O --> P{"Any tool.observe == True?"}
     P -- "No" --> Q["Append tool results to conversation"]
     P -- "Yes" --> R["Run observation sub-turn"]
@@ -523,6 +526,9 @@ def add(a: int, b: int = 2):
 - `tool()` 装饰器风格注册
 - `execute(name, arguments)`
 - `to_json()` 输出 provider 可消费的工具 schema 列表
+- `shutdown()` 生命周期 hook（默认 no-op；可用于回收运行态资源）
+
+如果 registry 里的 toolkit 数量很多，不必在每次 run 开头把它们全部暴露给模型；可以启用后文的 Toolkit Catalog 模式，让模型先看 summary / README，再按需激活具体 toolkit。
 
 ---
 
@@ -861,6 +867,64 @@ term_tk = terminal_toolkit(
 
 ---
 
+## Toolkit Catalog（Lazy Activation）
+
+当 registry-backed toolkit 越来越多时，最直接的成本不是 discovery，而是每轮 provider 请求都携带完整 tool schema。`ToolkitCatalogConfig` 提供了一个可选开启的 catalog 模式，把“发现 toolkit”和“真正暴露 toolkit tools”拆开：
+
+- 模型初始可见的是 eager tools、5 个固定 catalog tools，以及配置为 `always_active` 的 managed toolkit。
+- catalog v1 只管理 `ToolkitRegistry` 能发现的 toolkit；手工 `add_toolkit(...)` 的普通 toolkit 仍然保持 eager 行为。
+- 模型需要先调用 `toolkit_list` / `toolkit_describe` 查看描述，再用 `toolkit_activate` 激活目标 toolkit。
+- 激活或关闭会影响下一轮 provider 请求，不会在同一轮 tool call 中立刻改变 schema。
+
+### 公开配置
+
+```python
+from miso import Agent
+
+agent = Agent(
+    name="repo-agent",
+    provider="openai",
+    model="gpt-5",
+    api_key="YOUR_OPENAI_API_KEY",
+    instructions="先查看 toolkit catalog，再按需激活 workspace 或 terminal。",
+).enable_toolkit_catalog(
+    managed_toolkit_ids=["workspace", "terminal", "external_api"],
+    always_active_toolkit_ids=["workspace"],
+    readme_max_chars=4000,
+)
+
+messages, bundle = agent.run(
+    "先列出当前可用 toolkit，再决定是否激活 terminal。"
+)
+```
+
+底层 `Broth` 同样支持直接传入 `toolkit_catalog_config=ToolkitCatalogConfig(...)`。
+
+### 模型可见的 catalog tools
+
+- `toolkit_list`：返回受管 toolkit 的摘要列表，默认排除 `hidden=true` 的 descriptor。
+- `toolkit_describe(toolkit_id, tool_name=None)`：返回 toolkit 或单个 tool 的摘要；toolkit README 会按 `readme_max_chars` 截断，并带 `readme_truncated` 标记。
+- `toolkit_activate(toolkit_id)`：实例化并激活一个受管 toolkit；如果工具名和 eager tools 或其他 active toolkit 冲突，会返回结构化错误，不改动当前状态。
+- `toolkit_deactivate(toolkit_id)`：让 toolkit 从后续迭代的可见工具集中消失，但当前 run 内缓存实例保留，便于再次激活时复用。
+- `toolkit_list_active()`：返回当前 active toolkit 列表，以及它们是否为 `always_active`。
+
+### 运行语义
+
+- `managed_toolkit_ids` 是 catalog 白名单；为空会直接抛 `ValueError`。
+- `always_active_toolkit_ids` 必须是 `managed_toolkit_ids` 的子集；它们从第 0 轮开始可见，且不能被 `toolkit_deactivate` 关闭。
+- catalog-managed toolkit 的激活范围是单次 `run()`；新的 run 会重新回到“eager tools + catalog tools + always_active toolkit”的初始状态。
+- 如果 run 因 `request_user_input` 暂停，再通过 `resume_human_input(...)` 恢复，同一进程内会保留 active toolkit ids 和缓存实例。
+- 这份 continuation 状态是进程内的，不做持久化；如果进程退出，挂起的 catalog runtime 不会自动恢复。
+- 手工 attach 的 anonymous / custom toolkit 仍然可调用，但不会出现在 `toolkit_list` 里。
+
+### 与 registry 的关系
+
+- catalog 模式使用 `ToolkitRegistry` 做 manifest 扫描和按 id 实例化。
+- 配置中的未知 toolkit id 会在 engine setup 阶段直接失败，而不是等到模型运行时才报错。
+- `toolkit_describe` 返回的 README 仍然是 toolkit 级文档；v1 不做 per-tool markdown。
+
+---
+
 ## MCP 工具桥接：`mcp`
 
 `mcp` 类继承自 `toolkit`，可以把 MCP Server 的工具注册成 miso 可调用工具。
@@ -1191,6 +1255,7 @@ miso/
   team.py
   tool.py
   tool_registry.py
+  toolkit_catalog.py
   workspace_pins.py
   model_default_payloads.json
   model_capabilities.json
@@ -1229,6 +1294,7 @@ tests/
   test_terminal_toolkit.py
   test_tool_confirmation.py
   test_tool_registry.py
+  test_toolkit_catalog.py
   test_toolkit_design.py
   test_workspace_pins.py
   test_workspace_toolkit.py
@@ -1268,6 +1334,10 @@ Smoke tests 依赖环境变量：
 10. MCP 工具如果带 `annotations.destructiveHint = true`，会自动标记为需要确认。
 11. memory 默认是进程内会话存储（`InMemorySessionStore`），进程重启后不会自动恢复历史。
 12. summary 触发使用字符启发式 token 估算（`ceil(chars/4)`），是稳定近似值，不是 provider 官方 tokenizer 精算值。
+13. Toolkit Catalog 是 opt-in；未配置 `toolkit_catalog_config` 时，行为仍然是 eager 暴露当前已挂载 toolkit。
+14. Catalog v1 只管理 registry-backed toolkit；手工 attach 的 toolkit 保持 eager，且不会出现在 `toolkit_list`。
+15. `toolkit_activate` / `toolkit_deactivate` 影响的是下一轮 provider 请求；跨进程恢复 `resume_human_input` 时，不会自动找回挂起的 catalog runtime。
+16. `toolkit_describe` 会按 `readme_max_chars` 截断 README；激活冲突会返回结构化错误，而不是半激活状态。
 
 ---
 

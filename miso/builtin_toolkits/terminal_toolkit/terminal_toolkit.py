@@ -78,5 +78,8 @@ class terminal_toolkit(builtin_toolkit):
         """Close a persistent shell session and return final output."""
         return self.terminal_runtime.close_session(session_id=session_id)
 
+    def shutdown(self) -> None:
+        self.terminal_runtime.close_all_sessions()
+
 
 __all__ = ["terminal_toolkit"]

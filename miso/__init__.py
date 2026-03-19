@@ -29,6 +29,7 @@ from .tool_registry import (
     get_toolkit_metadata,
     list_toolkits,
 )
+from .toolkit_catalog import ToolkitCatalogConfig
 from .response_format import response_format
 from .broth import broth
 from .agent import Agent
@@ -78,6 +79,7 @@ __all__ = [
     "ToolkitRegistry",
     "list_toolkits",
     "get_toolkit_metadata",
+    "ToolkitCatalogConfig",
     "response_format",
     "broth",
     "Agent",

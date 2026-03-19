@@ -416,6 +416,24 @@ class ToolkitRegistry:
             "tool": tool_descriptor.to_summary(),
         }
 
+    def instantiate_toolkit(self, toolkit_id: str) -> RuntimeToolkit:
+        descriptor = self.require(toolkit_id)
+        factory = _import_object(descriptor.factory, descriptor.import_roots)
+        try:
+            runtime_toolkit = factory()
+        except TypeError as exc:
+            raise ValueError(
+                f"{descriptor.manifest_path}: toolkit factory '{descriptor.factory}' "
+                "must be callable without required arguments"
+            ) from exc
+
+        if not isinstance(runtime_toolkit, RuntimeToolkit):
+            raise ValueError(
+                f"{descriptor.manifest_path}: toolkit factory '{descriptor.factory}' "
+                "did not return a miso.tool.toolkit"
+            )
+        return runtime_toolkit
+
     def _sorted_toolkits(self) -> list[ToolkitDescriptor]:
         return sorted(
             self._toolkits.values(),
