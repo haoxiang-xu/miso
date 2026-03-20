@@ -1,17 +1,13 @@
 import os
 import json
 import importlib
-import sys
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-repo_root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(repo_root))
-
-from miso import broth as Broth, toolkit
-from miso.broth import ProviderTurnResult, ToolCall
+from miso.runtime import Broth
+from miso.tools import Toolkit
+from miso.runtime import ProviderTurnResult, ToolCall
 
 
 def _last_assistant_text(messages):
@@ -98,7 +94,7 @@ def test_gemini_fetch_once_streams_text(monkeypatch):
             self.models = FakeModels()
 
     # Patch google_genai in broth module
-    broth_module = importlib.import_module("miso.broth")
+    broth_module = importlib.import_module("miso.runtime.providers")
     fake_genai = MagicMock()
     fake_genai.Client = FakeClient
     monkeypatch.setattr(broth_module, "google_genai", fake_genai)
@@ -111,7 +107,7 @@ def test_gemini_fetch_once_streams_text(monkeypatch):
         verbose=False,
         run_id="run_gemini",
         iteration=0,
-        toolkit=toolkit(),
+        toolkit=Toolkit(),
         emit_stream=False,
     )
 
@@ -166,7 +162,7 @@ def test_gemini_fetch_once_parses_tool_calls(monkeypatch):
         def __init__(self, api_key):
             self.models = FakeModels()
 
-    broth_module = importlib.import_module("miso.broth")
+    broth_module = importlib.import_module("miso.runtime.providers")
     fake_genai = MagicMock()
     fake_genai.Client = FakeClient
     monkeypatch.setattr(broth_module, "google_genai", fake_genai)
@@ -179,7 +175,7 @@ def test_gemini_fetch_once_parses_tool_calls(monkeypatch):
         verbose=False,
         run_id="run_tool",
         iteration=0,
-        toolkit=toolkit(),
+        toolkit=Toolkit(),
         emit_stream=False,
     )
 
@@ -324,8 +320,8 @@ def test_gemini_tool_result_format():
 
     tool_calls = [ToolCall(call_id="c1", name="get_weather", arguments={"city": "SF"})]
 
-    tk = toolkit()
-    from miso import tool as Tool
+    tk = Toolkit()
+    from miso.tools import Tool
     t = Tool(name="get_weather", description="Get weather", parameters=[], func=lambda city: {"temp": 72})
     tk.register(t)
     a.add_toolkit(tk)
@@ -428,7 +424,7 @@ def test_gemini_streaming_callback(monkeypatch):
         def __init__(self, api_key):
             self.models = FakeModels()
 
-    broth_module = importlib.import_module("miso.broth")
+    broth_module = importlib.import_module("miso.runtime.providers")
     fake_genai = MagicMock()
     fake_genai.Client = FakeClient
     monkeypatch.setattr(broth_module, "google_genai", fake_genai)
@@ -447,7 +443,7 @@ def test_gemini_streaming_callback(monkeypatch):
         verbose=False,
         run_id="stream_test",
         iteration=0,
-        toolkit=toolkit(),
+        toolkit=Toolkit(),
         emit_stream=True,
     )
 

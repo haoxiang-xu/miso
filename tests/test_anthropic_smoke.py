@@ -1,16 +1,12 @@
 import os
 import json
 import importlib
-import sys
-from pathlib import Path
 
 import pytest
 
-repo_root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(repo_root))
-
-from miso import broth as Broth, toolkit
-from miso.broth import ProviderTurnResult, ToolCall
+from miso.runtime import Broth
+from miso.tools import Toolkit
+from miso.runtime import ProviderTurnResult, ToolCall
 
 
 def _last_assistant_text(messages):
@@ -113,7 +109,7 @@ def test_anthropic_fetch_once_uses_stream_method(monkeypatch):
             self.api_key = api_key
             self.messages = FakeMessages()
 
-    broth_module = importlib.import_module("miso.broth")
+    broth_module = importlib.import_module("miso.runtime.providers")
     monkeypatch.setattr(broth_module, "Anthropic", FakeAnthropicClient)
 
     turn = a._anthropic_fetch_once(
@@ -124,7 +120,7 @@ def test_anthropic_fetch_once_uses_stream_method(monkeypatch):
         verbose=False,
         run_id="run_stream",
         iteration=0,
-        toolkit=toolkit(),
+        toolkit=Toolkit(),
         emit_stream=False,
     )
 
@@ -194,7 +190,7 @@ def test_anthropic_fetch_once_parses_tool_calls(monkeypatch):
         def __init__(self, api_key):
             self.messages = FakeMessages()
 
-    broth_module = importlib.import_module("miso.broth")
+    broth_module = importlib.import_module("miso.runtime.providers")
     monkeypatch.setattr(broth_module, "Anthropic", FakeAnthropicClient)
 
     turn = a._anthropic_fetch_once(
@@ -205,7 +201,7 @@ def test_anthropic_fetch_once_parses_tool_calls(monkeypatch):
         verbose=False,
         run_id="run_tool",
         iteration=0,
-        toolkit=toolkit(),
+        toolkit=Toolkit(),
         emit_stream=False,
     )
 

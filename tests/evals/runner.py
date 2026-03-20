@@ -8,7 +8,9 @@ from typing import Any
 import re
 import time
 
-from miso import Agent, access_workspace_toolkit, ask_user_toolkit, external_api_toolkit, run_terminal_toolkit
+from miso import Agent
+from miso.toolkits import AskUserToolkit, ExternalAPIToolkit, TerminalToolkit, WorkspaceToolkit
+from miso.runtime.payloads import load_model_capabilities
 
 from .cases import build_eval_case, get_eval_case, list_eval_cases
 from .defaults import get_default_judge_model_spec
@@ -34,12 +36,9 @@ def _slugify(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9._-]+", "-", str(value or "").strip()).strip("-").lower() or "item"
 
 
-def _load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
 def _load_model_capabilities(repo_root: Path) -> dict[str, Any]:
-    return _load_json(repo_root / "miso" / "model_capabilities.json")
+    del repo_root
+    return load_model_capabilities()
 
 
 def _build_standard_payload(
@@ -96,22 +95,22 @@ def _build_candidate_tools(case: EvalCase, workspace_root: Path) -> list[Any]:
 
     for toolkit_name in allowed_toolkits:
         options = dict(toolkit_options.get(toolkit_name) or {})
-        if toolkit_name == "access_workspace_toolkit":
-            toolkits.append(access_workspace_toolkit(workspace_root=workspace_root))
+        if toolkit_name == "workspace":
+            toolkits.append(WorkspaceToolkit(workspace_root=workspace_root))
             continue
-        if toolkit_name == "run_terminal_toolkit":
+        if toolkit_name == "terminal":
             toolkits.append(
-                run_terminal_toolkit(
+                TerminalToolkit(
                     workspace_root=workspace_root,
                     terminal_strict_mode=bool(options.get("terminal_strict_mode", True)),
                 )
             )
             continue
-        if toolkit_name == "external_api_toolkit":
-            toolkits.append(external_api_toolkit(workspace_root=workspace_root))
+        if toolkit_name == "external_api":
+            toolkits.append(ExternalAPIToolkit(workspace_root=workspace_root))
             continue
-        if toolkit_name == "ask_user_toolkit":
-            toolkits.append(ask_user_toolkit())
+        if toolkit_name == "ask_user":
+            toolkits.append(AskUserToolkit())
             continue
         raise ValueError(f"unsupported toolkit for eval case '{case.id}': {toolkit_name}")
 

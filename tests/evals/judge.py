@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from miso import response_format
+from miso.schemas import ResponseFormat
 
 from .types import EvalCase, JudgeReport, RunArtifact
 
 
-def build_judge_response_format() -> response_format:
-    return response_format(
+def build_judge_response_format() -> ResponseFormat:
+    return ResponseFormat(
         name="judge_report",
         schema={
             "type": "object",

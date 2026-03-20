@@ -2,8 +2,8 @@ import os
 
 import pytest
 
-from miso import broth as Broth
-from miso.broth import ProviderTurnResult
+from miso.runtime import Broth
+from miso.runtime import ProviderTurnResult
 
 
 def _last_assistant_text(messages):

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import openai
-from miso import broth as Broth
+from miso.runtime import Broth
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +82,7 @@ def test_resolve_file_uploads_once_and_caches():
     data = _small_pdf_b64()
     fake_file = SimpleNamespace(id="file-abc123")
 
-    with patch("miso.broth.OpenAI") as MockOpenAI:
+    with patch("miso.runtime.providers.OpenAI") as MockOpenAI:
         mock_client = MagicMock()
         MockOpenAI.return_value = mock_client
         mock_client.files.create.return_value = fake_file
@@ -103,7 +103,7 @@ def test_resolve_file_different_data_uploads_separately():
     fake_a = SimpleNamespace(id="file-aaa")
     fake_b = SimpleNamespace(id="file-bbb")
 
-    with patch("miso.broth.OpenAI") as MockOpenAI:
+    with patch("miso.runtime.providers.OpenAI") as MockOpenAI:
         mock_client = MagicMock()
         MockOpenAI.return_value = mock_client
         mock_client.files.create.side_effect = [fake_a, fake_b]
@@ -122,7 +122,7 @@ def test_resolve_file_populates_reverse_cache():
     key = hashlib.sha256(data.encode()).hexdigest()
     fake_file = SimpleNamespace(id="file-rev-001")
 
-    with patch("miso.broth.OpenAI") as MockOpenAI:
+    with patch("miso.runtime.providers.OpenAI") as MockOpenAI:
         mock_client = MagicMock()
         MockOpenAI.return_value = mock_client
         mock_client.files.create.return_value = fake_file
@@ -211,7 +211,7 @@ def test_stale_file_id_triggers_retry_and_evicts_cache():
     agent._file_id_reverse["file-stale"] = key
 
     # Pre-seed canonical seed so the retry can re-project.
-    from miso.broth import ToolCall, ProviderTurnResult
+    from miso.runtime import ToolCall, ProviderTurnResult
     canonical_seed = [{"role": "user", "content": [{"type": "pdf", "source": {"type": "base64", "data": data}}]}]
     agent._last_canonical_seed = canonical_seed
 
@@ -234,7 +234,7 @@ def test_stale_file_id_triggers_retry_and_evicts_cache():
     fresh_id = "file-fresh"
     fresh_file = SimpleNamespace(id=fresh_id)
 
-    with patch("miso.broth.OpenAI") as MockOpenAI:
+    with patch("miso.runtime.providers.OpenAI") as MockOpenAI:
         mock_client = MagicMock()
         MockOpenAI.return_value = mock_client
         mock_client.files.create.return_value = fresh_file

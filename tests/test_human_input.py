@@ -2,9 +2,12 @@ import json
 
 import pytest
 
-from miso import Agent, MemoryManager, broth as Broth, ask_user_toolkit, tool, toolkit
-from miso.broth import ProviderTurnResult, ToolCall
-from miso.human_input import ASK_USER_QUESTION_TOOL_NAME
+from miso import Agent
+from miso.memory import MemoryManager
+from miso.runtime import Broth, ProviderTurnResult, ToolCall
+from miso.toolkits import AskUserToolkit
+from miso.tools import tool, Toolkit
+from miso.input import ASK_USER_QUESTION_TOOL_NAME
 
 
 def _selector_args(**overrides):
@@ -52,7 +55,7 @@ def test_ask_user_toolkit_is_explicitly_opt_in():
 def test_ask_user_toolkit_exposes_ask_user_question_when_mounted():
     agent = Broth()
     agent.provider = "openai"
-    agent.toolkit = ask_user_toolkit()
+    agent.toolkit = AskUserToolkit()
 
     seen_tool_names = []
 
@@ -78,7 +81,7 @@ def test_ask_user_toolkit_exposes_ask_user_question_when_mounted():
 
 
 def test_ask_user_question_description_encourages_asking_when_multiple_paths_exist():
-    tk = ask_user_toolkit()
+    tk = AskUserToolkit()
 
     tool_json = tk.to_json()[0]
     description = tool_json["description"]
@@ -97,7 +100,7 @@ def test_ask_user_question_description_encourages_asking_when_multiple_paths_exi
 def test_run_returns_awaiting_human_input_and_emits_request_event():
     agent = Broth()
     agent.provider = "openai"
-    agent.toolkit = ask_user_toolkit()
+    agent.toolkit = AskUserToolkit()
 
     def fake_fetch_once(**kwargs):
         return ProviderTurnResult(
@@ -204,7 +207,7 @@ def test_run_accepts_legacy_execute_tool_calls_tuple():
 def test_run_accepts_legacy_execute_tool_calls_human_input_tuple():
     agent = Broth()
     agent.provider = "openai"
-    agent.toolkit = ask_user_toolkit()
+    agent.toolkit = AskUserToolkit()
 
     def fake_fetch_once(**kwargs):
         return ProviderTurnResult(
@@ -264,7 +267,7 @@ def test_run_accepts_legacy_execute_tool_calls_human_input_tuple():
 def test_resume_human_input_openai_uses_previous_response_id_and_function_call_output():
     agent = Broth()
     agent.provider = "openai"
-    agent.toolkit = ask_user_toolkit()
+    agent.toolkit = AskUserToolkit()
 
     seen_previous_ids = []
     seen_messages = []
@@ -338,7 +341,7 @@ def test_resume_human_input_openai_uses_previous_response_id_and_function_call_o
 def test_resume_human_input_non_openai_uses_provider_native_tool_result():
     agent = Broth()
     agent.provider = "ollama"
-    agent.toolkit = ask_user_toolkit()
+    agent.toolkit = AskUserToolkit()
 
     seen_messages = []
     state = {"turn": 0}
@@ -411,7 +414,7 @@ def test_resume_human_input_non_openai_uses_provider_native_tool_result():
 def test_invalid_request_schema_returns_clear_tool_error_and_continues():
     agent = Broth()
     agent.provider = "ollama"
-    agent.toolkit = ask_user_toolkit()
+    agent.toolkit = AskUserToolkit()
 
     seen_messages = []
     state = {"turn": 0}
@@ -500,7 +503,7 @@ def test_invalid_request_schema_returns_clear_tool_error_and_continues():
 def test_resume_human_input_rejects_invalid_user_response(response_payload, error_text):
     agent = Broth()
     agent.provider = "openai"
-    agent.toolkit = ask_user_toolkit()
+    agent.toolkit = AskUserToolkit()
 
     def fake_fetch_once(**kwargs):
         return ProviderTurnResult(
@@ -543,7 +546,7 @@ def test_suspended_run_skips_memory_commit_until_resume():
     manager = MemoryManager()
     agent = Broth(memory_manager=manager)
     agent.provider = "openai"
-    agent.toolkit = ask_user_toolkit()
+    agent.toolkit = AskUserToolkit()
 
     state = {"turn": 0}
 
@@ -615,8 +618,8 @@ def test_mixed_batch_with_ask_user_question_returns_errors_without_executing_oth
 
     call_log = []
     safe_tool = tool(name="safe_action", func=lambda: call_log.append("called") or {"ok": True}, parameters=[])
-    agent.toolkit = ask_user_toolkit()
-    agent.add_toolkit(toolkit({safe_tool.name: safe_tool}))
+    agent.toolkit = AskUserToolkit()
+    agent.add_toolkit(Toolkit({safe_tool.name: safe_tool}))
 
     seen_messages = []
     state = {"turn": 0}
@@ -690,14 +693,14 @@ def test_ask_user_toolkit_fails_fast_when_model_does_not_support_tools():
         "supports_tools": False,
         "max_context_window_tokens": 0,
     }
-    agent.toolkit = ask_user_toolkit()
+    agent.toolkit = AskUserToolkit()
 
     def fake_fetch_once(**kwargs):
         raise AssertionError("_fetch_once should not be called when tools are unsupported")
 
     agent._fetch_once = fake_fetch_once
 
-    with pytest.raises(ValueError, match="ask_user_toolkit requires a tool-calling model"):
+    with pytest.raises(ValueError, match="AskUserToolkit requires a tool-calling model"):
         agent.run(
             messages=[{"role": "user", "content": "help me choose"}],
             max_iterations=1,
@@ -781,7 +784,7 @@ def test_agent_resume_human_input_forwards_to_broth(monkeypatch):
             del callback, verbose, on_tool_confirm, on_continuation_request
             return conversation + [{"role": "assistant", "content": "done"}], {"status": "completed"}
 
-    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+    monkeypatch.setattr("miso.agents.agent.Broth", FakeBroth)
 
     agent = Agent(name="planner", defaults={"payload": {"temperature": 0.1}})
     conversation, bundle = agent.resume_human_input(

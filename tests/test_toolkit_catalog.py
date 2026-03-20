@@ -2,9 +2,10 @@ import json
 
 import pytest
 
-from miso import Agent, ToolkitCatalogConfig, broth as Broth, ask_user_toolkit, tool, toolkit
-from miso.builtin_toolkits.run_terminal_toolkit import run_terminal_toolkit as RunTerminalToolkitClass
-from miso.broth import ProviderTurnResult, ToolCall
+from miso import Agent
+from miso.runtime import Broth, ProviderTurnResult, ToolCall
+from miso.toolkits import AskUserToolkit, TerminalToolkit
+from miso.tools import ToolkitCatalogConfig, tool, Toolkit
 
 
 def _tool_turn(call_id: str, name: str, arguments: dict[str, object]) -> ProviderTurnResult:
@@ -192,7 +193,7 @@ def test_catalog_activation_rejects_tool_name_collisions_with_eager_tools():
         func=lambda: {"ok": True},
         parameters=[],
     )
-    agent.toolkit = toolkit({eager_collision.name: eager_collision})
+    agent.toolkit = Toolkit({eager_collision.name: eager_collision})
 
     state = {"turn": 0}
 
@@ -280,7 +281,7 @@ def test_catalog_mode_keeps_anonymous_eager_toolkits_callable_but_excludes_them_
     )
     agent.provider = "ollama"
     manual_tool = tool(name="hello_manual", func=lambda: {"hello": "world"}, parameters=[])
-    agent.toolkit = toolkit({manual_tool.name: manual_tool})
+    agent.toolkit = Toolkit({manual_tool.name: manual_tool})
 
     seen_tool_names: list[list[str]] = []
     state = {"turn": 0}
@@ -316,7 +317,7 @@ def test_catalog_resume_preserves_cached_run_terminal_toolkit_instances_across_h
         }
     )
     agent.provider = "ollama"
-    agent.toolkit = ask_user_toolkit()
+    agent.toolkit = AskUserToolkit()
 
     seen_tool_names: list[list[str]] = []
     state = {"turn": 0}
@@ -386,7 +387,7 @@ def test_catalog_shutdown_is_called_for_managed_toolkits_on_completion(monkeypat
     def fake_shutdown(self):
         shutdown_calls.append("terminal")
 
-    monkeypatch.setattr(RunTerminalToolkitClass, "shutdown", fake_shutdown)
+    monkeypatch.setattr(TerminalToolkit, "shutdown", fake_shutdown)
 
     agent = Broth(
         toolkit_catalog_config={
@@ -432,7 +433,7 @@ def test_agent_enable_toolkit_catalog_forwards_config_to_broth(monkeypatch):
             del kwargs
             return [{"role": "assistant", "content": "done"}], {"status": "completed"}
 
-    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+    monkeypatch.setattr("miso.agents.agent.Broth", FakeBroth)
 
     agent = Agent(name="planner")
     agent.enable_toolkit_catalog(managed_toolkit_ids=["workspace"])

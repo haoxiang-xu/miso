@@ -1,14 +1,9 @@
 import os
-import sys
-from pathlib import Path
 
 import httpx
 import pytest
 
-repo_root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(repo_root))
-
-from miso import broth as Broth
+from miso.runtime import Broth
 
 
 def _ollama_tags(timeout=2.0):

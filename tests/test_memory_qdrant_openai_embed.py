@@ -4,7 +4,7 @@ import types
 import pytest
 
 from miso.memory import LongTermMemoryConfig, MemoryConfig, MemoryManager
-from miso.memory_qdrant import (
+from miso.memory.qdrant import (
     QdrantLongTermVectorAdapter,
     QdrantVectorAdapter,
     build_default_long_term_qdrant_vector_adapter,
@@ -141,7 +141,7 @@ def test_build_openai_embed_fn_rejects_unknown_model(monkeypatch, fake_openai_mo
 
 def test_build_default_long_term_qdrant_vector_adapter_requires_qdrant_client(monkeypatch, fake_openai_module):
     monkeypatch.setenv("OPENAI_API_KEY", "env-key")
-    monkeypatch.setattr("miso.memory_qdrant._QDRANT_AVAILABLE", False)
+    monkeypatch.setattr("miso.memory.qdrant._QDRANT_AVAILABLE", False)
 
     with pytest.raises(ValueError, match="qdrant-client.*default long-term vector storage"):
         build_default_long_term_qdrant_vector_adapter(
@@ -173,7 +173,7 @@ def test_memory_manager_keeps_custom_long_term_vector_adapter_without_default_bu
         del kwargs
         raise AssertionError("default builder should not be called")
 
-    monkeypatch.setattr("miso.memory_qdrant.build_default_long_term_qdrant_vector_adapter", _explode)
+    monkeypatch.setattr("miso.memory.qdrant.build_default_long_term_qdrant_vector_adapter", _explode)
     manager.ensure_long_term_components()
     assert manager.config.long_term.vector_adapter is custom_adapter
 

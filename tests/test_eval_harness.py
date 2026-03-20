@@ -163,8 +163,8 @@ def test_build_judge_messages_embeds_message_list():
         duration_seconds=1.0,
         workspace_mode=case.workspace_mode,
         workspace_source=case.workspace_source,
-        final_answer="See miso/agent.py and miso/broth.py.",
-        messages=[{"role": "assistant", "content": "See miso/agent.py and miso/broth.py."}],
+        final_answer="See src/miso/agents/agent.py and src/miso/runtime/engine.py.",
+        messages=[{"role": "assistant", "content": "See src/miso/agents/agent.py and src/miso/runtime/engine.py."}],
     )
 
     messages = build_judge_messages(case=case, run_artifact=run_artifact, rubric_weights=case.rubric_weights)
@@ -274,7 +274,7 @@ def test_run_single_model_eval_supports_notebook_defined_case(monkeypatch, tmp_p
         task_prompt="Inspect the repo and explain the structure.",
         workspace_mode="repo_copy",
         workspace_source=".",
-        allowed_toolkits=["access_workspace_toolkit"],
+        allowed_toolkits=["workspace"],
         toolkit_options={},
         rule_checks={"min_tool_calls": 0},
         candidate_instructions="Only use workspace tools.",
@@ -314,7 +314,7 @@ def test_run_single_model_eval_uses_central_default_judge_model(monkeypatch, tmp
         task_prompt="Inspect the repo and explain the structure.",
         workspace_mode="repo_copy",
         workspace_source=".",
-        allowed_toolkits=["access_workspace_toolkit"],
+        allowed_toolkits=["workspace"],
         toolkit_options={},
         rule_checks={"min_tool_calls": 0},
     )
@@ -448,7 +448,7 @@ def test_notebook_session_start_and_resume_round_trip(monkeypatch, tmp_path):
         task_prompt="Build a tetris game and ask when uncertain.",
         workspace_mode="persistent_test_folder",
         workspace_source=str(test_dir),
-        allowed_toolkits=["ask_user_toolkit", "access_workspace_toolkit", "run_terminal_toolkit"],
+        allowed_toolkits=["ask_user", "workspace", "terminal"],
         rule_checks={"required_tool_names": ["ask_user_question"]},
         candidate_instructions="Ask before deciding.",
     )

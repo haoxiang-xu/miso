@@ -2,19 +2,14 @@
 
 import asyncio
 import json
-import sys
 import threading
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-repo_root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(repo_root))
-
-from miso.mcp import mcp
-from miso.tool import toolkit
+from miso.toolkits import MCPToolkit
+from miso.tools import Toolkit
 
 
 # ── helpers: fake MCP objects ──────────────────────────────────────────────
@@ -51,30 +46,30 @@ def _make_fake_call_result_structured(data: dict, is_error: bool = False):
 
 class TestMcpInit:
     def test_stdio_transport_inferred(self):
-        m = mcp(command="echo", args=["hello"])
+        m = MCPToolkit(command="echo", args=["hello"])
         assert m._transport == "stdio"
         assert not m.connected
 
     def test_sse_transport_inferred(self):
-        m = mcp(url="http://localhost:8080/sse")
+        m = MCPToolkit(url="http://localhost:8080/sse")
         assert m._transport == "sse"
 
     def test_explicit_transport_override(self):
-        m = mcp(url="http://localhost:8080/mcp", transport="streamable_http")
+        m = MCPToolkit(url="http://localhost:8080/mcp", transport="streamable_http")
         assert m._transport == "streamable_http"
 
     def test_missing_args_raises(self):
         with pytest.raises(ValueError, match="requires either command"):
-            mcp()
+            MCPToolkit()
 
-    def test_inherits_toolkit(self):
-        m = mcp(command="echo")
-        assert isinstance(m, toolkit)
+    def test_inherits_Toolkit(self):
+        m = MCPToolkit(command="echo")
+        assert isinstance(m, Toolkit)
 
 
 class TestMcpToolConversion:
     def test_convert_mcp_tool_basic(self):
-        m = mcp(command="echo")
+        m = MCPToolkit(command="echo")
         fake_tool = _make_fake_tool(
             "read_file",
             "Read a file from disk",
@@ -96,7 +91,7 @@ class TestMcpToolConversion:
         assert converted.parameters[0].required is True
 
     def test_convert_mcp_tool_no_required(self):
-        m = mcp(command="echo")
+        m = MCPToolkit(command="echo")
         fake_tool = _make_fake_tool(
             "search",
             "Search for text",
@@ -114,14 +109,14 @@ class TestMcpToolConversion:
         assert all(not p.required for p in converted.parameters)
 
     def test_convert_mcp_tool_empty_schema(self):
-        m = mcp(command="echo")
+        m = MCPToolkit(command="echo")
         fake_tool = _make_fake_tool("ping", "Ping the server", {})
         converted = m._convert_mcp_tool(fake_tool)
         assert converted.name == "ping"
         assert len(converted.parameters) == 0
 
     def test_to_json_produces_valid_tool_definitions(self):
-        m = mcp(command="echo")
+        m = MCPToolkit(command="echo")
         fake_tool = _make_fake_tool(
             "greet",
             "Say hello",
@@ -148,28 +143,28 @@ class TestMcpToolConversion:
 class TestMcpResultParsing:
     def test_parse_text_result(self):
         result = _make_fake_call_result("hello world")
-        parsed = mcp._parse_call_result(result, "test_tool")
+        parsed = MCPToolkit(command="echo")._parse_call_result(result, "test_tool")
         assert parsed == {"result": "hello world"}
 
     def test_parse_json_text_result(self):
         result = _make_fake_call_result('{"count": 42}')
-        parsed = mcp._parse_call_result(result, "test_tool")
+        parsed = MCPToolkit(command="echo")._parse_call_result(result, "test_tool")
         assert parsed == {"count": 42}
 
     def test_parse_structured_result(self):
         result = _make_fake_call_result_structured({"files": ["a.txt", "b.txt"]})
-        parsed = mcp._parse_call_result(result, "test_tool")
+        parsed = MCPToolkit(command="echo")._parse_call_result(result, "test_tool")
         assert parsed == {"files": ["a.txt", "b.txt"]}
 
     def test_parse_error_result(self):
         result = _make_fake_call_result("file not found", is_error=True)
-        parsed = mcp._parse_call_result(result, "test_tool")
+        parsed = MCPToolkit(command="echo")._parse_call_result(result, "test_tool")
         assert "error" in parsed
         assert "file not found" in parsed["error"]
 
     def test_parse_empty_error(self):
         result = SimpleNamespace(isError=True, content=[], structuredContent=None)
-        parsed = mcp._parse_call_result(result, "test_tool")
+        parsed = MCPToolkit(command="echo")._parse_call_result(result, "test_tool")
         assert parsed["error"] == "unknown MCP error"
 
 
@@ -204,7 +199,7 @@ class TestMcpConnectDisconnect:
 
     def test_populate_tools_from_mock(self):
         """Verify _populate_tools correctly converts MCP tools."""
-        m = mcp(command="echo")
+        m = MCPToolkit(command="echo")
 
         fake_tools = [
             _make_fake_tool("tool_a", "Tool A", {
@@ -239,7 +234,7 @@ class TestMcpConnectDisconnect:
 
     def test_execute_calls_mcp_server(self):
         """Verify execute() forwards to the MCP session's call_tool."""
-        m = mcp(command="echo")
+        m = MCPToolkit(command="echo")
 
         call_result = _make_fake_call_result('{"status": "ok"}')
         captured_calls = []
@@ -251,7 +246,7 @@ class TestMcpConnectDisconnect:
         mock_session = MagicMock()
         mock_session.call_tool = fake_call_tool
 
-        from miso.tool import tool as Tool
+        from miso.tools import Tool
         m.tools["my_tool"] = Tool(name="my_tool", func=lambda: {}, parameters=[])
 
         loop, t, stop = self._start_loop_thread()
@@ -271,7 +266,7 @@ class TestMcpConnectDisconnect:
 
     def test_execute_parses_string_arguments(self):
         """Verify execute() handles string arguments correctly."""
-        m = mcp(command="echo")
+        m = MCPToolkit(command="echo")
 
         call_result = _make_fake_call_result("done")
         captured_calls = []
@@ -283,7 +278,7 @@ class TestMcpConnectDisconnect:
         mock_session = MagicMock()
         mock_session.call_tool = fake_call_tool
 
-        from miso.tool import tool as Tool
+        from miso.tools import Tool
         m.tools["ping"] = Tool(name="ping", func=lambda: {}, parameters=[])
 
         loop, t, stop = self._start_loop_thread()
@@ -301,31 +296,31 @@ class TestMcpConnectDisconnect:
 
     def test_execute_disconnected_falls_back_to_local(self):
         """When disconnected, execute() falls back to the parent toolkit."""
-        m = mcp(command="echo")
+        m = MCPToolkit(command="echo")
         result = m.execute("nonexistent", {})
         assert "error" in result
 
     def test_repr_disconnected(self):
-        m = mcp(command="npx", args=["-y", "my-server"])
+        m = MCPToolkit(command="npx", args=["-y", "my-server"])
         assert "disconnected" in repr(m)
         assert "npx" in repr(m)
 
     def test_repr_url(self):
-        m = mcp(url="http://localhost:3000/sse")
+        m = MCPToolkit(url="http://localhost:3000/sse")
         assert "http://localhost:3000/sse" in repr(m)
 
 
 class TestMcpWithAgent:
     """Test that mcp integrates with broth's multi-toolkit system."""
 
-    def test_agent_can_add_mcp_toolkit(self):
-        from miso import broth as Broth
+    def test_agent_can_add_mcp_Toolkit(self):
+        from miso.runtime import Broth
 
         a = Broth()
-        m = mcp(command="echo")
+        m = MCPToolkit(command="echo")
 
         # Register a fake tool manually (simulating what connect() does)
-        from miso.tool import tool as Tool
+        from miso.tools import Tool
         m.tools["mcp_tool"] = Tool(
             name="mcp_tool",
             func=lambda x="": {"echoed": x},
@@ -340,13 +335,13 @@ class TestMcpWithAgent:
         tool_names = [t["name"] for t in merged_json]
         assert "mcp_tool" in tool_names
 
-    def test_agent_find_tool_in_mcp_toolkit(self):
-        from miso import broth as Broth
+    def test_agent_find_tool_in_mcp_Toolkit(self):
+        from miso.runtime import Broth
 
         a = Broth()
-        m = mcp(command="echo")
+        m = MCPToolkit(command="echo")
 
-        from miso.tool import tool as Tool
+        from miso.tools import Tool
         m.tools["remote_tool"] = Tool(
             name="remote_tool",
             func=lambda: {"ok": True},
@@ -382,7 +377,7 @@ def test_mcp_stdio_smoke():
         test_file = Path(tmpdir) / "hello.txt"
         test_file.write_text("hello from miso")
 
-        with mcp(
+        with MCPToolkit(
             command="npx",
             args=["-y", "@modelcontextprotocol/server-filesystem", tmpdir],
         ) as server:

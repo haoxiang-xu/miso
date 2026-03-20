@@ -2,7 +2,9 @@ import json
 
 import pytest
 
-from miso import MemoryConfig, MemoryManager, access_workspace_toolkit, tool
+from miso.memory import MemoryConfig, MemoryManager
+from miso.toolkits import WorkspaceToolkit
+from miso.tools import tool
 
 
 def _build_openai_tool_turn(*, tool_name: str, call_id: str, arguments: dict, result: dict) -> list[dict]:
@@ -206,7 +208,7 @@ def test_deferred_compaction_keeps_latest_completed_turn_raw():
 
 
 def test_read_file_history_result_is_compacted_with_preview():
-    tk = access_workspace_toolkit(workspace_root=".")
+    tk = WorkspaceToolkit(workspace_root=".")
     manager = MemoryManager()
     session_id = "s_read_file_tool_compact"
     large_content = "header\n" + ("line\n" * 800) + "footer\n"
@@ -241,7 +243,7 @@ def test_read_file_history_result_is_compacted_with_preview():
 
 
 def test_write_file_history_arguments_are_compacted_by_tool_optimizer():
-    tk = access_workspace_toolkit(workspace_root=".")
+    tk = WorkspaceToolkit(workspace_root=".")
     manager = MemoryManager()
     session_id = "s_write_file_tool_compact"
     large_content = "A" * 2400

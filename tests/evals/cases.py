@@ -24,7 +24,7 @@ def build_eval_case(
         task_prompt=str(task_prompt),
         workspace_mode=str(workspace_mode).strip(),
         workspace_source=str(workspace_source).strip(),
-        allowed_toolkits=tuple(allowed_toolkits or ("access_workspace_toolkit", "run_terminal_toolkit")),
+        allowed_toolkits=tuple(allowed_toolkits or ("workspace", "terminal")),
         toolkit_options={
             str(key): dict(value or {})
             for key, value in dict(toolkit_options or {}).items()
@@ -59,16 +59,16 @@ def list_eval_cases(repo_root: str | Path) -> list[EvalCase]:
             ),
             rule_checks={
                 "required_paths": [
-                    "miso/agent.py",
-                    "miso/broth.py",
-                    "miso/response_format.py",
+                    "src/miso/agents/agent.py",
+                    "src/miso/runtime/engine.py",
+                    "src/miso/schemas/response.py",
                     "README.md",
                 ],
                 "required_substrings": [
                     "run_tests.sh",
-                    "access_workspace_toolkit",
-                    "run_terminal_toolkit",
-                    "response_format",
+                    "workspace",
+                    "terminal",
+                    "ResponseFormat",
                 ],
                 "required_any_substrings": [
                     ["Agent", "agent"],

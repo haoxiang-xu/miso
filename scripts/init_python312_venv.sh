@@ -3,7 +3,6 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="$ROOT_DIR/.venv"
-REQUIREMENTS_FILE="$ROOT_DIR/requirements.txt"
 
 is_python312() {
   local python_bin="$1"
@@ -52,7 +51,7 @@ if [[ ! -x "$VENV_DIR/bin/python" ]]; then
 fi
 
 "$VENV_DIR/bin/python" -m pip install --upgrade pip
-"$VENV_DIR/bin/python" -m pip install -r "$REQUIREMENTS_FILE"
+"$VENV_DIR/bin/python" -m pip install -e "${ROOT_DIR}[dev]"
 
 echo "Ready: $("$VENV_DIR/bin/python" --version 2>&1)"
 echo "Activate with: source .venv/bin/activate"

@@ -1,6 +1,7 @@
 import json
 
-from miso import Agent, MemoryManager, Team
+from miso import Agent, Team
+from miso.memory import MemoryManager
 
 
 def _step_result(*, publish=None, handoff=None, final="", idle=False):
@@ -63,7 +64,7 @@ def test_agent_run_builds_fresh_engine_with_local_tools_and_memory(monkeypatch):
             })
             return messages + [{"role": "assistant", "content": "ok"}], {"consumed_tokens": 1}
 
-    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+    monkeypatch.setattr("miso.agents.agent.Broth", FakeBroth)
 
     memory = MemoryManager()
 
@@ -155,7 +156,7 @@ def test_agent_step_parses_structured_multi_agent_response(monkeypatch):
             )
             return messages + [{"role": "assistant", "content": content}], {"consumed_tokens": 2}
 
-    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+    monkeypatch.setattr("miso.agents.agent.Broth", FakeBroth)
 
     agent = Agent(name="planner", instructions="Plan carefully.")
     result = agent.step(
@@ -199,7 +200,7 @@ def test_agent_as_tool_wraps_run_output(monkeypatch):
             del previous_response_id, on_tool_confirm, on_continuation_request, session_id, memory_namespace
             return [{"role": "assistant", "content": "delegated answer"}], {"consumed_tokens": 4}
 
-    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+    monkeypatch.setattr("miso.agents.agent.Broth", FakeBroth)
 
     agent = Agent(name="planner")
     delegated_tool = agent.as_tool(name="delegate_planner")
@@ -377,7 +378,7 @@ def test_agent_subagent_tool_is_registered_only_when_enabled(monkeypatch):
             del previous_response_id, on_tool_confirm, on_continuation_request, session_id, memory_namespace
             return [{"role": "assistant", "content": "ok"}], {"consumed_tokens": 1}
 
-    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+    monkeypatch.setattr("miso.agents.agent.Broth", FakeBroth)
 
     plain = Agent(name="plain")
     plain.run("hello")
@@ -442,7 +443,7 @@ def test_spawn_subagent_inherits_parent_config_and_returns_output(monkeypatch):
             content = "child result" if user_text == "Investigate risk" else "root ok"
             return messages + [{"role": "assistant", "content": content}], {"consumed_tokens": 7}
 
-    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+    monkeypatch.setattr("miso.agents.agent.Broth", FakeBroth)
 
     memory = MemoryManager()
 
@@ -546,7 +547,7 @@ def test_spawn_subagent_supports_recursive_lineage_and_scoped_ids(monkeypatch):
             })
             return messages + [{"role": "assistant", "content": f"done:{messages[-1]['content']}"}], {"consumed_tokens": 1}
 
-    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+    monkeypatch.setattr("miso.agents.agent.Broth", FakeBroth)
 
     agent = Agent(name="planner").enable_subagents()
     agent.run("root task", session_id="run-a", memory_namespace="ns-a")
@@ -602,7 +603,7 @@ def test_spawn_subagent_enforces_max_depth(monkeypatch):
             del previous_response_id, on_tool_confirm, on_continuation_request, session_id, memory_namespace
             return [{"role": "assistant", "content": "ok"}], {"consumed_tokens": 1}
 
-    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+    monkeypatch.setattr("miso.agents.agent.Broth", FakeBroth)
 
     agent = Agent(name="planner").enable_subagents(max_depth=1)
     agent.run("root")
@@ -645,7 +646,7 @@ def test_spawn_subagent_enforces_max_children_per_agent(monkeypatch):
             del previous_response_id, on_tool_confirm, on_continuation_request, session_id, memory_namespace
             return [{"role": "assistant", "content": "ok"}], {"consumed_tokens": 1}
 
-    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+    monkeypatch.setattr("miso.agents.agent.Broth", FakeBroth)
 
     agent = Agent(name="planner").enable_subagents(max_children_per_agent=1)
     agent.run("root")
@@ -688,7 +689,7 @@ def test_spawn_subagent_enforces_max_total_subagents(monkeypatch):
             del previous_response_id, on_tool_confirm, on_continuation_request, session_id, memory_namespace
             return [{"role": "assistant", "content": "ok"}], {"consumed_tokens": 1}
 
-    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+    monkeypatch.setattr("miso.agents.agent.Broth", FakeBroth)
 
     agent = Agent(name="planner").enable_subagents(max_total_subagents=2)
     agent.run("root")
@@ -753,7 +754,7 @@ def test_team_agents_can_use_subagents_without_registering_them(monkeypatch):
                 return messages + [{"role": "assistant", "content": content}], {"consumed_tokens": 2}
             return [{"role": "assistant", "content": "delegated answer"}], {"consumed_tokens": 1}
 
-    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+    monkeypatch.setattr("miso.agents.agent.Broth", FakeBroth)
 
     planner = Agent(name="planner").enable_subagents()
     team = Team(
