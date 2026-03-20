@@ -50,6 +50,10 @@ class TestMcpInit:
         assert m._transport == "stdio"
         assert not m.connected
 
+    def test_stdio_cwd_is_stored(self):
+        m = MCPToolkit(command="echo", args=["hello"], cwd="/tmp")
+        assert m._cwd == "/tmp"
+
     def test_sse_transport_inferred(self):
         m = MCPToolkit(url="http://localhost:8080/sse")
         assert m._transport == "sse"

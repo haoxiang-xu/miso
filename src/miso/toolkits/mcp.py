@@ -86,6 +86,7 @@ class MCPToolkit(Toolkit):
         command: str | None = None,
         args: list[str] | None = None,
         env: dict[str, str] | None = None,
+        cwd: str | None = None,
         url: str | None = None,
         headers: dict[str, str] | None = None,
         transport: str | None = None,
@@ -99,6 +100,7 @@ class MCPToolkit(Toolkit):
         self._command = command
         self._args = args or []
         self._env = env
+        self._cwd = cwd
         self._url = url
         self._headers = headers
 
@@ -253,6 +255,7 @@ class MCPToolkit(Toolkit):
                 command=self._command,
                 args=self._args,
                 env=self._env,
+                cwd=self._cwd,
             )
             return stdio_client(server_params)
 
@@ -373,7 +376,7 @@ class MCPToolkit(Toolkit):
 
     def __repr__(self) -> str:
         if self._transport == "stdio":
-            target = f"command={self._command!r} args={self._args!r}"
+            target = f"command={self._command!r} args={self._args!r} cwd={self._cwd!r}"
         else:
             target = f"url={self._url!r}"
         status = "connected" if self._connected else "disconnected"
