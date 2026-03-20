@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import hashlib
+import json
 import re
 import shutil
 from pathlib import Path
@@ -86,6 +88,11 @@ class WorkspaceToolkit(BuiltinToolkit):
             history_result_optimizer=self._compact_read_file_history_result,
         )
         self.register(
+            self.read_file_ast,
+            history_arguments_optimizer=self._compact_read_file_ast_history_arguments,
+            history_result_optimizer=self._compact_read_file_ast_history_result,
+        )
+        self.register(
             self.write_file,
             history_arguments_optimizer=self._compact_write_like_history_arguments,
         )
@@ -157,6 +164,127 @@ class WorkspaceToolkit(BuiltinToolkit):
             compacted["append"] = payload.get("append")
         return compacted
 
+    def _compact_read_file_ast_history_arguments(
+        self,
+        payload: Any,
+        context: ToolHistoryOptimizationContext,
+    ) -> Any:
+        if not isinstance(payload, dict):
+            return payload
+        compacted: dict[str, Any] = {}
+        for key in ("path", "max_nodes"):
+            if key in payload:
+                compacted[key] = payload[key]
+        if compacted != payload:
+            compacted["compacted"] = True
+        return compacted or {"compacted": True}
+
+    def _ast_history_preview(self, node: Any, *, limit: int = 8) -> dict[str, Any]:
+        if not isinstance(node, dict):
+            return {"type": type(node).__name__}
+        preview: dict[str, Any] = {"type": node.get("type")}
+        body = node.get("body")
+        if isinstance(body, list):
+            preview["body"] = body[:limit]
+            if len(body) > limit:
+                preview["body_truncated"] = True
+        elif body is not None:
+            preview["body"] = body
+        return preview
+
+    def _compact_read_file_ast_history_result(
+        self,
+        payload: Any,
+        context: ToolHistoryOptimizationContext,
+    ) -> Any:
+        if not isinstance(payload, dict) or "ast" not in payload:
+            return payload
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        if len(encoded) <= context.max_chars:
+            return payload
+        compacted = {
+            "path": payload.get("path"),
+            "language": payload.get("language"),
+            "node_count": payload.get("node_count"),
+            "returned_node_count": payload.get("returned_node_count"),
+            "truncated": payload.get("truncated"),
+            "ast": self._ast_history_preview(payload.get("ast")),
+            "compacted": True,
+        }
+        if "error" in payload:
+            compacted["error"] = payload.get("error")
+        if context.include_hash:
+            compacted["digest"] = hashlib.sha1(encoded.encode("utf-8", errors="replace")).hexdigest()
+        return compacted
+
+    def _count_python_ast_nodes(self, node: ast.AST) -> int:
+        return sum(1 for _ in ast.walk(node))
+
+    def _serialize_python_ast_list(
+        self,
+        values: list[Any],
+        *,
+        state: dict[str, Any],
+    ) -> list[Any]:
+        serialized: list[Any] = []
+        for value in values:
+            if state["truncated"]:
+                break
+            item = self._serialize_python_ast_value(value, state=state)
+            if item is not None:
+                serialized.append(item)
+        return serialized
+
+    def _serialize_python_ast_value(
+        self,
+        value: Any,
+        *,
+        state: dict[str, Any],
+    ) -> Any:
+        if state["truncated"]:
+            return None
+        if isinstance(value, ast.AST):
+            return self._serialize_python_ast_node(value, state=state)
+        if isinstance(value, list):
+            return self._serialize_python_ast_list(value, state=state)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            if isinstance(value, str) and len(value) > 200:
+                return self._preview_text(value, 100)
+            return value
+        return repr(value)
+
+    def _serialize_python_ast_node(
+        self,
+        node: ast.AST,
+        *,
+        state: dict[str, Any],
+    ) -> dict[str, Any]:
+        if state["emitted_nodes"] >= state["max_nodes"]:
+            state["truncated"] = True
+            return {
+                "type": node.__class__.__name__,
+                "truncated": True,
+            }
+
+        state["emitted_nodes"] += 1
+        data: dict[str, Any] = {"type": node.__class__.__name__}
+
+        for attr in ("lineno", "end_lineno", "col_offset", "end_col_offset"):
+            if hasattr(node, attr):
+                data[attr] = getattr(node, attr)
+
+        for field_name, field_value in ast.iter_fields(node):
+            if field_name == "ctx":
+                continue
+            serialized = self._serialize_python_ast_value(field_value, state=state)
+            if serialized in (None, [], {}):
+                continue
+            data[field_name] = serialized
+            if state["truncated"]:
+                break
+
+        return data
+
     def read_file(self, path: str, max_chars: int = 20000) -> dict[str, Any]:
         """Read entire UTF-8 text file from workspace.
 
@@ -180,6 +308,57 @@ class WorkspaceToolkit(BuiltinToolkit):
             "content": content,
             "total_lines": total_lines,
             "truncated": truncated,
+        }
+
+    def read_file_ast(self, path: str, max_nodes: int = 400) -> dict[str, Any]:
+        """Parse a Python source file and return a JSON-safe AST.
+
+        :param path: Relative or absolute path inside workspace.
+        :param max_nodes: Maximum AST nodes to serialize in the response.
+        """
+        target = self._resolve_workspace_path(path)
+        if not target.exists():
+            return {"error": f"file not found: {target}"}
+        if not target.is_file():
+            return {"error": f"not a file: {target}"}
+        if target.suffix != ".py":
+            return {
+                "error": "read_file_ast currently supports Python source files (.py) only",
+                "path": str(target),
+                "supported_extensions": [".py"],
+            }
+        if max_nodes < 1:
+            return {"error": "max_nodes must be >= 1", "path": str(target)}
+
+        source = target.read_text(encoding="utf-8", errors="replace")
+        try:
+            parsed = ast.parse(source, filename=str(target))
+        except SyntaxError as exc:
+            return {
+                "error": f"python syntax error: {exc.msg}",
+                "path": str(target),
+                "language": "python",
+                "line": exc.lineno,
+                "column": exc.offset,
+                "end_line": getattr(exc, "end_lineno", None),
+                "end_column": getattr(exc, "end_offset", None),
+            }
+
+        total_nodes = self._count_python_ast_nodes(parsed)
+        state = {
+            "max_nodes": max_nodes,
+            "emitted_nodes": 0,
+            "truncated": False,
+        }
+        serialized = self._serialize_python_ast_node(parsed, state=state)
+
+        return {
+            "path": str(target),
+            "language": "python",
+            "node_count": total_nodes,
+            "returned_node_count": state["emitted_nodes"],
+            "truncated": state["truncated"] or total_nodes > state["emitted_nodes"],
+            "ast": serialized,
         }
 
     def write_file(self, path: str, content: str, append: bool = False) -> dict[str, Any]:

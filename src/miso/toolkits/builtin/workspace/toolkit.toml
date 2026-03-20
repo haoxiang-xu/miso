@@ -111,6 +111,13 @@ observe = false
 requires_confirmation = false
 
 [[tools]]
+name = "read_file_ast"
+title = "Read File AST"
+description = "Parse a Python source file and return a JSON-safe AST."
+observe = false
+requires_confirmation = false
+
+[[tools]]
 name = "read_lines"
 title = "Read Lines"
 description = "Read a 1-based inclusive line range from a file."

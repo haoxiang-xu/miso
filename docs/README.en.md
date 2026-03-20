@@ -47,7 +47,7 @@ src/miso/
 
 ## Built-in Toolkits
 
-- `WorkspaceToolkit`: file, directory, line-edit, and workspace pin tools
+- `WorkspaceToolkit`: file, directory, Python AST, line-edit, and workspace pin tools
 - `TerminalToolkit`: restricted shell execution and persistent sessions
 - `ExternalAPIToolkit`: basic outbound HTTP access
 - `AskUserToolkit`: structured user-question suspension flow

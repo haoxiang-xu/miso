@@ -102,7 +102,7 @@ messages, bundle = runtime.run("Summarize this repo.", response_format=fmt)
 
 ## Built-in Toolkits
 
-- `WorkspaceToolkit`: workspace file and line editing
+- `WorkspaceToolkit`: workspace file, Python AST, and line editing
 - `TerminalToolkit`: restricted terminal execution and sessions
 - `ExternalAPIToolkit`: simple HTTP GET/POST tools
 - `AskUserToolkit`: structured user-question suspension flow

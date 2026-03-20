@@ -22,6 +22,7 @@ def test_access_workspace_toolkit_registers_expected_tools():
         names = set(toolkit.tools.keys())
         # file-level
         assert "read_file" in names
+        assert "read_file_ast" in names
         assert "write_file" in names
         assert "create_file" in names
         assert "delete_file" in names
@@ -57,11 +58,13 @@ def test_workspace_toolkit_builds_without_terminal_tools():
         tk = WorkspaceToolkit(workspace_root=tmp)
         assert isinstance(tk, WorkspaceToolkit)
         assert "read_file" in tk.tools
+        assert "read_file_ast" in tk.tools
         assert "terminal_exec" not in tk.tools
 
 
 def test_workspace_toolkit_methods_are_declared_on_class_for_ui_discovery():
     assert "read_file" in WorkspaceToolkit.__dict__
+    assert "read_file_ast" in WorkspaceToolkit.__dict__
     assert "write_file" in WorkspaceToolkit.__dict__
     assert "read_lines" in WorkspaceToolkit.__dict__
     assert "search_and_replace" in WorkspaceToolkit.__dict__
@@ -158,6 +161,50 @@ def test_access_workspace_toolkit_file_ops_and_search():
             {"pattern": "hello", "path": "notes", "max_results": 10},
         )
         assert len(search_result["matches"]) == 2
+
+
+def test_read_file_ast_parses_python_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = WorkspaceToolkit(workspace_root=tmp)
+        Path(tmp, "sample.py").write_text(
+            "import os\n\nclass Greeter:\n    def hello(self, name: str) -> str:\n        return f'hi {name}'\n",
+            encoding="utf-8",
+        )
+
+        result = toolkit.execute("read_file_ast", {"path": "sample.py"})
+
+        assert result["language"] == "python"
+        assert result["node_count"] >= result["returned_node_count"] >= 1
+        assert result["ast"]["type"] == "Module"
+        body = result["ast"]["body"]
+        assert body[0]["type"] == "Import"
+        assert body[1]["type"] == "ClassDef"
+        assert body[1]["name"] == "Greeter"
+        assert body[1]["body"][0]["type"] == "FunctionDef"
+        assert body[1]["body"][0]["name"] == "hello"
+
+
+def test_read_file_ast_rejects_non_python_files():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = WorkspaceToolkit(workspace_root=tmp)
+        Path(tmp, "notes.txt").write_text("hello\n", encoding="utf-8")
+
+        result = toolkit.execute("read_file_ast", {"path": "notes.txt"})
+
+        assert result["error"] == "read_file_ast currently supports Python source files (.py) only"
+        assert result["supported_extensions"] == [".py"]
+
+
+def test_read_file_ast_reports_python_syntax_errors():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = WorkspaceToolkit(workspace_root=tmp)
+        Path(tmp, "broken.py").write_text("def broken(:\n    pass\n", encoding="utf-8")
+
+        result = toolkit.execute("read_file_ast", {"path": "broken.py"})
+
+        assert result["language"] == "python"
+        assert result["error"].startswith("python syntax error:")
+        assert result["line"] == 1
 
 
 def test_line_level_read_insert_replace_delete():
