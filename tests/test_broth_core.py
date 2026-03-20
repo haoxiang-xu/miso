@@ -705,6 +705,69 @@ def test_openai_fetch_once_forces_stream_true(monkeypatch):
     assert turn.final_text == "ok"
 
 
+def test_openai_fetch_once_emits_request_messages_with_tool_names(monkeypatch):
+    agent = Broth()
+    agent.provider = "openai"
+    agent.model = "gpt-4.1"
+    agent.api_key = "test-key"
+
+    captured_kwargs = {}
+    events = []
+
+    class FakeOpenAIStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            yield type("Chunk", (), {
+                "type": "response.completed",
+                "response": type("Resp", (), {
+                    "id": "resp_tools_test",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "ok"}],
+                        }
+                    ],
+                })(),
+            })()
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return FakeOpenAIStream()
+
+    class FakeOpenAIClient:
+        def __init__(self, api_key):
+            self.api_key = api_key
+            self.responses = FakeResponses()
+
+    broth_module = importlib.import_module("miso.broth")
+    monkeypatch.setattr(broth_module, "OpenAI", FakeOpenAIClient)
+
+    echo_tool = tool(name="echo_tool", func=lambda: {"ok": True}, parameters=[])
+    turn = agent._openai_fetch_once(
+        messages=[{"role": "user", "content": "hi"}],
+        payload={},
+        response_format=None,
+        callback=events.append,
+        verbose=False,
+        run_id="run_tools",
+        iteration=0,
+        toolkit=toolkit({"echo_tool": echo_tool}),
+        emit_stream=False,
+        previous_response_id=None,
+    )
+
+    request_event = next(evt for evt in events if evt["type"] == "request_messages")
+    assert request_event["tool_names"] == ["echo_tool"]
+    assert captured_kwargs["tools"][0]["name"] == "echo_tool"
+    assert turn.final_text == "ok"
+
+
 def test_openai_fetch_once_places_response_format_under_text_config(monkeypatch):
     agent = Broth()
     agent.provider = "openai"

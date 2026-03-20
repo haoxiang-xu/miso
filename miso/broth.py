@@ -1948,6 +1948,7 @@ class broth:
         messages: list[dict[str, Any]],
         previous_response_id: str | None = None,
         system: str | None = None,
+        tool_names: list[str] | None = None,
     ) -> None:
         event_payload: dict[str, Any] = {
             "provider": provider,
@@ -1957,6 +1958,8 @@ class broth:
             event_payload["previous_response_id"] = previous_response_id
         if system is not None:
             event_payload["system"] = system
+        if tool_names:
+            event_payload["tool_names"] = list(tool_names)
         self._emit(
             callback,
             "request_messages",
@@ -1964,6 +1967,15 @@ class broth:
             iteration=iteration,
             **event_payload,
         )
+
+    @staticmethod
+    def _tool_names_for_trace(tools_json: list[dict[str, Any]] | None) -> list[str]:
+        tool_names: list[str] = []
+        for tool in tools_json or []:
+            name = str(tool.get("name", "")).strip()
+            if name:
+                tool_names.append(name)
+        return tool_names
 
     def _is_previous_response_not_found_error(self, exc: Exception) -> bool:
         """Return True when OpenAI reports an invalid previous_response_id.
@@ -2182,6 +2194,7 @@ class broth:
             provider="openai",
             messages=normalized_messages,
             previous_response_id=previous_response_id,
+            tool_names=self._tool_names_for_trace(tools_json),
         )
 
         collected_chunks: list[str] = []
@@ -2357,8 +2370,9 @@ class broth:
             "stream": True,
         }
 
+        tools_json = toolkit.to_json()
         tools = []
-        for tool in toolkit.to_json():
+        for tool in tools_json:
             if tool.get("type") == "function":
                 fn = {k: v for k, v in tool.items() if k != "type"}
                 tools.append({"type": "function", "function": fn})
@@ -2382,6 +2396,7 @@ class broth:
             iteration=iteration,
             provider="ollama",
             messages=request_body.get("messages", []),
+            tool_names=self._tool_names_for_trace(tools_json),
         )
 
         collected_chunks: list[str] = []
@@ -2523,6 +2538,7 @@ class broth:
             provider="anthropic",
             messages=chat_messages,
             system=system_prompt if isinstance(system_prompt, str) else None,
+            tool_names=self._tool_names_for_trace(tools_json),
         )
 
         # ── stream response ────────────────────────────────────────────────
@@ -2730,6 +2746,7 @@ class broth:
             provider="gemini",
             messages=chat_contents,
             system=system_instruction if isinstance(system_instruction, str) else None,
+            tool_names=self._tool_names_for_trace(tools_json),
         )
 
         # ── stream response ────────────────────────────────────────────────
