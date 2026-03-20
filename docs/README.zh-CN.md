@@ -164,6 +164,7 @@ print(bundle)
 - `QdrantLongTermVectorAdapter` / `build_default_long_term_qdrant_vector_adapter`
 - `build_openai_embed_fn`
 - `tool_parameter` / `tool` / `toolkit` / `tool_decorator`
+- `ToolHistoryOptimizationContext` / `NormalizedToolHistoryRecord` / `HistoryPayloadOptimizer`
 - `ToolConfirmationRequest` / `ToolConfirmationResponse`
 - `HumanInputOption` / `HumanInputRequest` / `HumanInputResponse`
 - `response_format`
@@ -188,9 +189,9 @@ print(bundle)
 | `miso/agent.py`                                   | `Agent`                               | 高层单 agent API；封装 tools/memory/defaults，并组合 `broth` |
 | `miso/team.py`                                    | `Team`                                | 多 agent 编排、channel 调度、handoff、owner finalize          |
 | `miso/broth.py`                                   | `broth`                               | 底层执行引擎：provider 适配、工具调用闭环、token 统计、回调事件 |
-| `miso/memory.py`                                  | `MemoryManager` / 策略协议            | session memory、context window 裁剪、summary、可选向量召回     |
+| `miso/memory.py`                                  | `MemoryManager` / 策略协议            | session memory、deferred tool-history compaction、context window 裁剪、summary、可选向量召回     |
 | `miso/memory_qdrant.py`                           | `QdrantVectorAdapter` / `QdrantLongTermVectorAdapter` | Qdrant 向量适配与 OpenAI embedding helper         |
-| `miso/tool.py`                                    | `tool_parameter` / `tool` / `toolkit` | 工具 schema 推断、工具注册、工具执行                          |
+| `miso/tool.py`                                    | `tool_parameter` / `tool` / `toolkit` | 工具 schema 推断、工具注册、工具执行、可选历史 payload optimizer |
 | `miso/tool_registry.py`                           | `ToolkitRegistry`                     | toolkit metadata 扫描、校验、只读 registry 输出与按 id 实例化 |
 | `miso/toolkit_catalog.py`                         | `ToolkitCatalogConfig` / `ToolkitCatalogRuntime` | registry-backed toolkit 的 lazy activation、run 级激活状态与 continuation 恢复 |
 | `miso/human_input.py`                             | `HumanInputRequest` / `HumanInputResponse` | selector 请求/响应协议与 runtime 约定                   |
@@ -378,9 +379,28 @@ messages, bundle = agent.run(
 - 触发条件：估算占比超过 `summary_trigger_pct`
 - 压缩目标：靠近 `summary_target_pct`
 - 裁剪方式：保留全部 `system` 消息 + 最近 `last_n_turns` 个 turn
+- deferred tool compaction 会在 summary / last-n 之前执行：最新一个已完成 turn 和当前 turn 保持原样，更老 turn 的 tool arguments / results 可在下一轮被压缩
 - 失败回退：summary 或 vector 异常不会中断主流程，会自动回退并继续
 
-### 3) 策略与扩展接口
+### 3) Deferred tool compaction
+
+`MemoryManager.prepare_messages(...)` 现在支持“保留一轮，下一轮再裁”的工具历史压缩视图：
+
+- `commit_messages(...)` 仍然把完整原始对话写回 session state
+- 下一次 `prepare_messages(...)` 会在这个原始历史之上生成 compacted view
+- provider 相关的消息结构拆解与回写由内部统一处理，tool 只接收规范化后的 payload
+- 默认只压更老的 turn；最新一个已完成 turn 保持完整，避免刚拿到的 tool output 立刻丢细节
+
+相关 `MemoryConfig` 参数：
+
+- `deferred_tool_compaction_enabled`
+- `deferred_tool_compaction_keep_completed_turns`
+- `deferred_tool_compaction_max_chars`
+- `deferred_tool_compaction_preview_chars`
+- `deferred_tool_compaction_include_tools`
+- `deferred_tool_compaction_hash_payloads`
+
+### 4) 策略与扩展接口
 
 - `SessionStore`：`load(session_id) / save(session_id, state)`
 - `ContextStrategy`：`prepare(...) / commit(...)`
@@ -388,7 +408,7 @@ messages, bundle = agent.run(
 - 默认存储：`InMemorySessionStore`（进程内）
 - 默认策略：`HybridContextStrategy`（内部组合 `SummaryTokenStrategy + LastNTurnsStrategy`）
 
-### 4) 自定义 vector adapter 示例
+### 5) 自定义 vector adapter 示例
 
 ```python
 from miso import MemoryManager, MemoryConfig
@@ -415,7 +435,7 @@ memory = MemoryManager(
 )
 ```
 
-### 5) OpenAI embedding 工厂（内置配置读取）
+### 6) OpenAI embedding 工厂（内置配置读取）
 
 `miso.memory_qdrant.build_openai_embed_fn(...)` 会从项目 JSON 配置构建 embedding 函数：
 
@@ -449,7 +469,7 @@ memory = MemoryManager(
 )
 ```
 
-### 6) Recall 如何生成
+### 7) Recall 如何生成
 
 Recall 来自你注入的 `VectorStoreAdapter`，流程如下：
 
@@ -471,12 +491,13 @@ Recall 来自你注入的 `VectorStoreAdapter`，流程如下：
 - `miso` 本身不内置 embedding/向量库实现；这些由你的 adapter 自己决定。
 - recall 内容是“可选附加上下文”，不会覆盖原始会话消息。
 
-### 7) 事件可观测性
+### 8) 事件可观测性
 
 启用 memory 后，`callback` 里会额外收到：
 
 - `memory_prepare`：是否应用 memory、裁剪前后估算 token、summary/vector 回退原因等
 - `memory_commit`：session 写回结果、写入消息条数、可选向量索引结果
+- `memory_prepare` 还可能包含 deferred compaction 字段，例如 `deferred_compaction_applied`、`deferred_compaction_turns_compacted`、`deferred_compaction_bytes_removed_estimate`
 
 ---
 
@@ -519,6 +540,28 @@ def add(a: int, b: int = 2):
 - 工具异常会包装成 `{"error": "...", "tool": tool_name}`
 - `observe=True` 标记工具在执行后触发"结果复核"子回合
 - `requires_confirmation=True` 标记工具在执行前需要用户确认（详见[工具确认回调](#工具确认回调on_tool_confirm)）
+- 工具可选实现 `history_arguments_optimizer` / `history_result_optimizer`，用于 deferred memory compaction 阶段压缩旧的参数或结果
+
+示例：
+
+```python
+from miso import tool
+
+def compact_old_args(payload, context):
+    return {
+        "compacted": True,
+        "tool": context.tool_name,
+        "kind": context.kind,
+    }
+
+archive_tool = tool(
+    name="archive_blob",
+    func=lambda path: {"ok": True},
+    history_arguments_optimizer=compact_old_args,
+)
+```
+
+这个 optimizer hook 只会在“下一轮压缩旧历史”时触发，不会改变当前轮工具执行时的原始返回。
 
 ### `toolkit`
 
@@ -838,6 +881,11 @@ tk2 = build_builtin_toolkit(workspace_root=".")
 - `list_directory`
 - `create_directory`
 - `search_text`（`observe=True`）
+
+`read_file`、`write_file`、`create_file` 也内置了第一版 history optimizer：
+
+- 老的 `read_file` 历史会保留 `path`、行数元信息和短 preview
+- 老的 `write_file` / `create_file` 历史会把大 `content` 压成 compact blob summary
 
 行级编辑（1-based 行号）：
 

@@ -166,6 +166,7 @@ The package currently exports these main symbols:
 - `QdrantLongTermVectorAdapter` / `build_default_long_term_qdrant_vector_adapter`
 - `build_openai_embed_fn`
 - `tool_parameter` / `tool` / `toolkit` / `tool_decorator`
+- `ToolHistoryOptimizationContext` / `NormalizedToolHistoryRecord` / `HistoryPayloadOptimizer`
 - `ToolConfirmationRequest` / `ToolConfirmationResponse`
 - `HumanInputOption` / `HumanInputRequest` / `HumanInputResponse`
 - `response_format`
@@ -190,9 +191,9 @@ The package currently exports these main symbols:
 | `miso/agent.py` | `Agent` | High-level single-agent API; wraps tools, memory, defaults, and composes `broth` |
 | `miso/team.py` | `Team` | Multi-agent orchestration, channel routing, handoff, owner finalization |
 | `miso/broth.py` | `broth` | Low-level execution engine: provider adapters, tool loop, token accounting, callback events |
-| `miso/memory.py` | `MemoryManager` / strategy protocols | Session memory, context window trimming, summaries, optional vector recall |
+| `miso/memory.py` | `MemoryManager` / strategy protocols | Session memory, deferred tool-history compaction, context window trimming, summaries, optional vector recall |
 | `miso/memory_qdrant.py` | `QdrantVectorAdapter` / `QdrantLongTermVectorAdapter` | Qdrant adapters and OpenAI embedding helper |
-| `miso/tool.py` | `tool_parameter` / `tool` / `toolkit` | Tool schema inference, registration, execution |
+| `miso/tool.py` | `tool_parameter` / `tool` / `toolkit` | Tool schema inference, registration, execution, optional history-payload optimizers |
 | `miso/tool_registry.py` | `ToolkitRegistry` | Toolkit metadata scanning, validation, read-only registry output, instantiation by id |
 | `miso/toolkit_catalog.py` | `ToolkitCatalogConfig` / `ToolkitCatalogRuntime` | Lazy activation for registry-backed toolkits, run-scoped activation state, continuation restore |
 | `miso/human_input.py` | `HumanInputRequest` / `HumanInputResponse` | Selector request/response protocol and runtime contract |
@@ -381,9 +382,28 @@ messages, bundle = agent.run(
 - Trigger condition: estimated usage exceeds `summary_trigger_pct`
 - Compression target: move closer to `summary_target_pct`
 - Trimming rule: keep all `system` messages + the latest `last_n_turns` turns
+- Deferred tool compaction runs before summary / last-n: the newest completed turn and the current turn stay raw, while older tool arguments/results can be compacted for the next run
 - Failure fallback: summary or vector failures do not interrupt the main flow; they automatically fall back and continue
 
-### 3) Strategy and extension interfaces
+### 3) Deferred tool compaction
+
+`MemoryManager.prepare_messages(...)` can compact old tool payloads without mutating the stored raw session transcript:
+
+- The full conversation is still written back during `commit_messages(...)`
+- The next `prepare_messages(...)` call builds a compacted view from that raw history
+- Compaction is provider-aware internally (`OpenAI` / `Anthropic` / `Gemini` / `Ollama`), but tools only receive normalized payloads
+- By default, only older turns are compacted; the latest completed turn is left untouched so the model can still reason over the freshest tool output in full
+
+Relevant `MemoryConfig` knobs:
+
+- `deferred_tool_compaction_enabled`
+- `deferred_tool_compaction_keep_completed_turns`
+- `deferred_tool_compaction_max_chars`
+- `deferred_tool_compaction_preview_chars`
+- `deferred_tool_compaction_include_tools`
+- `deferred_tool_compaction_hash_payloads`
+
+### 4) Strategy and extension interfaces
 
 - `SessionStore`: `load(session_id) / save(session_id, state)`
 - `ContextStrategy`: `prepare(...) / commit(...)`
@@ -391,7 +411,7 @@ messages, bundle = agent.run(
 - Default store: `InMemorySessionStore` (in-process only)
 - Default strategy: `HybridContextStrategy` (internally combines `SummaryTokenStrategy + LastNTurnsStrategy`)
 
-### 4) Custom vector adapter example
+### 5) Custom vector adapter example
 
 ```python
 from miso import MemoryManager, MemoryConfig
@@ -418,7 +438,7 @@ memory = MemoryManager(
 )
 ```
 
-### 5) OpenAI embedding factory (built-in config lookup)
+### 6) OpenAI embedding factory (built-in config lookup)
 
 `miso.memory_qdrant.build_openai_embed_fn(...)` builds an embedding function from the project's JSON config:
 
@@ -452,7 +472,7 @@ memory = MemoryManager(
 )
 ```
 
-### 6) How recall is generated
+### 7) How recall is generated
 
 Recall comes from the `VectorStoreAdapter` you inject. The flow is:
 
@@ -474,12 +494,13 @@ Notes:
 - `miso` itself does not ship an embedding or vector database implementation; your adapter decides that.
 - Recall content is optional additional context and never overrides the original session messages.
 
-### 7) Event observability
+### 8) Event observability
 
 When memory is enabled, callbacks receive extra events:
 
 - `memory_prepare`: whether memory was applied, estimated tokens before/after trimming, summary/vector fallback reasons, and so on
 - `memory_commit`: session writeback result, stored message count, optional vector indexing result
+- `memory_prepare` may also include deferred compaction fields such as `deferred_compaction_applied`, `deferred_compaction_turns_compacted`, and `deferred_compaction_bytes_removed_estimate`
 
 ---
 
@@ -522,6 +543,28 @@ Key capabilities:
 - Tool exceptions are wrapped as `{"error": "...", "tool": tool_name}`
 - `observe=True` marks a tool for a post-execution "result review" sub-turn
 - `requires_confirmation=True` marks a tool as needing user confirmation before execution (see [Tool Confirmation Callback](#tool-confirmation-callback-on_tool_confirm))
+- Tools can optionally provide `history_arguments_optimizer` and `history_result_optimizer` hooks for deferred memory compaction
+
+Example:
+
+```python
+from miso import tool
+
+def compact_old_args(payload, context):
+    return {
+        "compacted": True,
+        "tool": context.tool_name,
+        "kind": context.kind,
+    }
+
+archive_tool = tool(
+    name="archive_blob",
+    func=lambda path: {"ok": True},
+    history_arguments_optimizer=compact_old_args,
+)
+```
+
+The optimizer hook only runs during deferred compaction. It does not change the tool's live execution result in the current turn.
 
 ### `toolkit`
 
@@ -841,6 +884,11 @@ Directory-level:
 - `list_directory`
 - `create_directory`
 - `search_text` (`observe=True`)
+
+`read_file`, `write_file`, and `create_file` also ship with built-in history optimizers:
+
+- old `read_file` history keeps `path`, line metadata, and a short content preview
+- old `write_file` / `create_file` history replaces large `content` payloads with a compact blob summary
 
 Line-level editing (1-based line numbers):
 

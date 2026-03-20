@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 from pathlib import Path
 from typing import Any
 
 from ..base import builtin_toolkit
+from ...tool import ToolHistoryOptimizationContext
 from ...workspace_pins import (
     MAX_FULL_FILE_PIN_CHARS,
     MAX_SESSION_PIN_COUNT,
@@ -47,6 +49,25 @@ class access_workspace_toolkit(builtin_toolkit):
             return f"start ({start}) exceeds total lines ({total})"
         return None
 
+    def _preview_text(self, text: str, preview_chars: int) -> str:
+        if len(text) <= max(1, preview_chars * 2):
+            return text
+        head = text[:preview_chars]
+        tail = text[-preview_chars:]
+        omitted = len(text) - len(head) - len(tail)
+        return f"{head}\n... <omitted {omitted} chars> ...\n{tail}"
+
+    def _compact_text_blob(self, text: str, context: ToolHistoryOptimizationContext) -> dict[str, Any]:
+        compacted = {
+            "compacted": True,
+            "chars": len(text),
+            "lines": text.count("\n") + (0 if text.endswith("\n") else 1 if text else 0),
+            "preview": self._preview_text(text, context.preview_chars),
+        }
+        if context.include_hash:
+            compacted["digest"] = hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()
+        return compacted
+
     def _require_pin_context(self) -> tuple[str, Any] | tuple[None, None]:
         context = self.current_execution_context
         if context is None or not context.session_id:
@@ -59,15 +80,82 @@ class access_workspace_toolkit(builtin_toolkit):
         return context.session_id, context.session_store
 
     def _register_file_tools(self) -> None:
-        self.register_many(
+        self.register(
             self.read_file,
+            history_arguments_optimizer=self._compact_read_file_history_arguments,
+            history_result_optimizer=self._compact_read_file_history_result,
+        )
+        self.register(
             self.write_file,
+            history_arguments_optimizer=self._compact_write_like_history_arguments,
+        )
+        self.register(
             self.create_file,
+            history_arguments_optimizer=self._compact_write_like_history_arguments,
+        )
+        self.register_many(
             self.delete_file,
             self.copy_file,
             self.move_file,
             self.file_exists,
         )
+
+    def _compact_read_file_history_arguments(
+        self,
+        payload: Any,
+        context: ToolHistoryOptimizationContext,
+    ) -> Any:
+        if not isinstance(payload, dict):
+            return payload
+        compacted: dict[str, Any] = {}
+        for key in ("path", "max_chars", "start", "end"):
+            if key in payload:
+                compacted[key] = payload[key]
+        if compacted != payload:
+            compacted["compacted"] = True
+        return compacted or {"compacted": True}
+
+    def _compact_read_file_history_result(
+        self,
+        payload: Any,
+        context: ToolHistoryOptimizationContext,
+    ) -> Any:
+        if not isinstance(payload, dict):
+            return payload
+        content = payload.get("content")
+        if not isinstance(content, str):
+            return payload
+        if len(content) <= context.max_chars:
+            return payload
+        compacted = {
+            "path": payload.get("path"),
+            "total_lines": payload.get("total_lines"),
+            "truncated": payload.get("truncated"),
+            "content": self._preview_text(content, context.preview_chars),
+            "compacted": True,
+        }
+        if context.include_hash:
+            compacted["digest"] = hashlib.sha1(content.encode("utf-8", errors="replace")).hexdigest()
+        return compacted
+
+    def _compact_write_like_history_arguments(
+        self,
+        payload: Any,
+        context: ToolHistoryOptimizationContext,
+    ) -> Any:
+        if not isinstance(payload, dict):
+            return payload
+        content = payload.get("content")
+        if not isinstance(content, str) or not content:
+            return payload
+        compacted = {
+            "path": payload.get("path"),
+            "compacted": True,
+            "content": self._compact_text_blob(content, context),
+        }
+        if "append" in payload:
+            compacted["append"] = payload.get("append")
+        return compacted
 
     def read_file(self, path: str, max_chars: int = 20000) -> dict[str, Any]:
         """Read entire UTF-8 text file from workspace.

@@ -18,6 +18,7 @@
 - `Agent` and `Team` for single-agent and multi-agent workflows
 - `broth` as the runtime loop for provider calls and tool execution
 - `memory` for session context windows and optional long-term recall
+- deferred tool-history compaction that keeps the latest turn raw and trims older tool payloads on the next run
 - `tool` / `toolkit` abstractions for local and remote tools
 - `response_format` for schema-constrained output
 - `media` for canonical multimodal input blocks

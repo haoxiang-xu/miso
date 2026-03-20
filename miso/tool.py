@@ -179,6 +179,37 @@ class tool_parameter:
             json_parameter["items"] = {"type": "string"}
         return json_parameter
 
+
+@dataclass
+class ToolHistoryOptimizationContext:
+    tool_name: str
+    call_id: str
+    kind: str
+    provider: str
+    session_id: str
+    latest_messages: list[dict[str, Any]]
+    max_chars: int
+    preview_chars: int
+    include_hash: bool = True
+
+
+@dataclass
+class NormalizedToolHistoryRecord:
+    tool_name: str
+    call_id: str
+    kind: str
+    payload: Any
+    provider: str
+    message_index: int
+    location_type: str
+    payload_format: str
+    block_index: int | None = None
+    part_index: int | None = None
+    field_name: str | None = None
+
+
+HistoryPayloadOptimizer = Callable[[Any, ToolHistoryOptimizationContext], Any]
+
 class tool:
     def __init__(
         self,
@@ -188,6 +219,8 @@ class tool:
         parameters: list[tool_parameter | dict[str, Any]] | None = None,
         observe: bool = False,
         requires_confirmation: bool = False,
+        history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
+        history_result_optimizer: HistoryPayloadOptimizer | None = None,
     ):
         if callable(name) and func is None:
             func = name
@@ -198,6 +231,8 @@ class tool:
         self.func = func
         self.observe = observe
         self.requires_confirmation = requires_confirmation
+        self.history_arguments_optimizer = history_arguments_optimizer
+        self.history_result_optimizer = history_result_optimizer
         self.parameters = self._construct_parameters(parameters)
 
         if self.func is not None and not self.parameters:
@@ -220,6 +255,8 @@ class tool:
                 parameters=self.parameters or None,
                 observe=self.observe,
                 requires_confirmation=self.requires_confirmation,
+                history_arguments_optimizer=self.history_arguments_optimizer,
+                history_result_optimizer=self.history_result_optimizer,
             )
 
         if self.func is not None:
@@ -237,6 +274,8 @@ class tool:
         parameters: list[tool_parameter | dict[str, Any]] | None = None,
         observe: bool = False,
         requires_confirmation: bool = False,
+        history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
+        history_result_optimizer: HistoryPayloadOptimizer | None = None,
     ) -> "tool":
         summary, _ = _parse_docstring(func)
         return cls(
@@ -246,6 +285,8 @@ class tool:
             parameters=parameters,
             observe=observe,
             requires_confirmation=requires_confirmation,
+            history_arguments_optimizer=history_arguments_optimizer,
+            history_result_optimizer=history_result_optimizer,
         )
 
     def _construct_parameters(
@@ -356,6 +397,8 @@ def tool_decorator(
     parameters: list[tool_parameter | dict[str, Any]] | None = None,
     observe: bool = False,
     requires_confirmation: bool = False,
+    history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
+    history_result_optimizer: HistoryPayloadOptimizer | None = None,
 ):
     def decorator(func: Callable[..., Any]) -> tool:
         return tool.from_callable(
@@ -365,6 +408,8 @@ def tool_decorator(
             parameters=parameters,
             observe=observe,
             requires_confirmation=requires_confirmation,
+            history_arguments_optimizer=history_arguments_optimizer,
+            history_result_optimizer=history_result_optimizer,
         )
 
     return decorator
@@ -385,6 +430,8 @@ class toolkit:
         name: str | None = None,
         description: str | None = None,
         parameters: list[tool_parameter | dict[str, Any]] | None = None,
+        history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
+        history_result_optimizer: HistoryPayloadOptimizer | None = None,
     ) -> tool:
         if isinstance(tool_obj, tool):
             if name is not None:
@@ -397,6 +444,10 @@ class toolkit:
                 tool_obj.observe = observe
             if requires_confirmation is not None:
                 tool_obj.requires_confirmation = requires_confirmation
+            if history_arguments_optimizer is not None:
+                tool_obj.history_arguments_optimizer = history_arguments_optimizer
+            if history_result_optimizer is not None:
+                tool_obj.history_result_optimizer = history_result_optimizer
             self.tools[tool_obj.name] = tool_obj
             return tool_obj
 
@@ -408,6 +459,8 @@ class toolkit:
                 parameters=parameters,
                 observe=bool(observe),
                 requires_confirmation=bool(requires_confirmation),
+                history_arguments_optimizer=history_arguments_optimizer,
+                history_result_optimizer=history_result_optimizer,
             )
             self.tools[wrapped.name] = wrapped
             return wrapped
@@ -429,6 +482,8 @@ class toolkit:
         name: str | None = None,
         description: str | None = None,
         parameters: list[tool_parameter | dict[str, Any]] | None = None,
+        history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
+        history_result_optimizer: HistoryPayloadOptimizer | None = None,
     ):
         if func is not None:
             return self.register(
@@ -438,6 +493,8 @@ class toolkit:
                 name=name,
                 description=description,
                 parameters=parameters,
+                history_arguments_optimizer=history_arguments_optimizer,
+                history_result_optimizer=history_result_optimizer,
             )
 
         def decorator(inner: Callable[..., Any]) -> tool:
@@ -448,6 +505,8 @@ class toolkit:
                 name=name,
                 description=description,
                 parameters=parameters,
+                history_arguments_optimizer=history_arguments_optimizer,
+                history_result_optimizer=history_result_optimizer,
             )
 
         return decorator
@@ -535,6 +594,9 @@ class ToolConfirmationResponse:
 
 __all__ = [
     "tool_parameter",
+    "ToolHistoryOptimizationContext",
+    "NormalizedToolHistoryRecord",
+    "HistoryPayloadOptimizer",
     "tool",
     "toolkit",
     "tool_decorator",

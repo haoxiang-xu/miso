@@ -1,6 +1,9 @@
 # import --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- import #
 from .tool import (
     tool_parameter,
+    ToolHistoryOptimizationContext,
+    NormalizedToolHistoryRecord,
+    HistoryPayloadOptimizer,
     tool,
     toolkit,
     tool_decorator,
@@ -60,6 +63,9 @@ from . import media
 
 __all__ = [
     "tool_parameter",
+    "ToolHistoryOptimizationContext",
+    "NormalizedToolHistoryRecord",
+    "HistoryPayloadOptimizer",
     "tool",
     "toolkit",
     "tool_decorator",

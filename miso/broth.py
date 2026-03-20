@@ -173,6 +173,8 @@ class broth:
             model=model,
             summary_generator=summary_generator,
             memory_namespace=memory_namespace,
+            provider=self.provider,
+            tool_resolver=self._find_tool,
         )
 
     def _commit_memory_messages(
