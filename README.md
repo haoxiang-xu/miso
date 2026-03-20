@@ -111,3 +111,7 @@ Smoke tests use optional environment variables for provider-specific coverage:
 - [完整中文文档](./docs/README.zh-CN.md)
 
 The long-form manuals cover the public API surface, architecture, session memory, tool system, toolkit catalog, MCP bridge, provider differences, end-to-end examples, tests, and repo boundaries.
+
+## License
+
+This project is licensed under the Apache License 2.0. See [LICENSE](./LICENSE).

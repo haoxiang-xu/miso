@@ -35,6 +35,7 @@ pip-wheel-metadata/
 # Environment files
 .env
 .env.*
+!.env.example
 
 # IDE/editor folders
 .vscode/
