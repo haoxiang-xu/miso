@@ -76,6 +76,17 @@ def test_ask_user_toolkit_exposes_request_user_input_when_mounted():
     assert bundle["status"] == "completed"
 
 
+def test_request_user_input_description_encourages_asking_when_multiple_paths_exist():
+    tk = ask_user_toolkit()
+
+    tool_json = tk.to_json()[0]
+    description = tool_json["description"]
+
+    assert "Strongly prefer this" in description
+    assert "multiple plausible approaches" in description
+    assert "ask the user instead of silently guessing" in description
+
+
 def test_run_returns_awaiting_human_input_and_emits_request_event():
     agent = Broth()
     agent.provider = "openai"

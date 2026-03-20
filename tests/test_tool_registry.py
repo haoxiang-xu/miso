@@ -120,6 +120,15 @@ def test_builtin_registry_lists_expected_toolkits_and_tools():
     assert registry.require("ask_user_question").to_summary()["tool_count"] == 1
 
 
+def test_ask_user_toolkit_description_encourages_user_clarification():
+    registry = ToolkitRegistry()
+
+    summary = registry.require("ask_user_question").to_summary()
+
+    assert "Strongly prefer asking the user" in summary["description"]
+    assert "multiple plausible approaches" in summary["description"]
+
+
 def test_get_toolkit_metadata_returns_full_markdown_and_inherited_tool_icon():
     toolkit_metadata = get_toolkit_metadata("workspace")
     tool_metadata = get_toolkit_metadata("workspace", "read_file")

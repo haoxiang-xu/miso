@@ -696,11 +696,13 @@ Key design principles:
 ## Human Input Primitive (selector)
 
 When the model needs the user to pick one or more options instead of continuing to guess, you can explicitly attach `ask_user_toolkit()`. It exposes a reserved tool: `request_user_input`.
+It should be used aggressively when multiple plausible approaches, product directions, or implementation plans could all satisfy the request but would lead to materially different outcomes.
 
 The difference from `on_tool_confirm` is:
 
 - `on_tool_confirm` is about "whether a tool execution is allowed"
 - `ask_user_toolkit` / `request_user_input` is about "ask the user a structured question and wait for an answer"
+- Strong recommendation: when several reasonable paths exist, prefer asking the user over silently picking one
 
 ### Public types
 

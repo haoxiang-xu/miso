@@ -316,9 +316,10 @@ def build_request_user_input_tool() -> tool:
     return tool(
         name=REQUEST_USER_INPUT_TOOL_NAME,
         description=(
-            "Ask the user to choose from a structured selector UI. "
-            "Use this when the assistant needs a single-select or multi-select answer "
-            "instead of guessing. This request pauses the run until the user responds."
+            "Ask the user to choose from a structured selector UI and suspend the run until they respond. "
+            "Strongly prefer this whenever there are multiple plausible approaches, product directions, "
+            "technical stacks, UX choices, or requirement interpretations that would materially change the outcome. "
+            "When several reasonable paths exist, ask the user instead of silently guessing."
         ),
         func=lambda **_: {"error": "request_user_input is a reserved runtime tool and cannot be executed directly"},
         parameters=[

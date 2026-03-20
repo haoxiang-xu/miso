@@ -693,11 +693,13 @@ on_tool_confirm 存在?  ──No──→  直接执行（向后兼容，不会
 ## Human Input Primitive（selector）
 
 当模型需要用户在若干候选项里做单选 / 多选，而不是继续猜测时，可以显式挂载 `ask_user_toolkit()`。它会暴露一个保留 tool：`request_user_input`。
+只要存在多种都合理、但会把结果带向不同方向的 approach / 产品决策 / 实现方案，就应该尽量用它先问用户，而不是模型自己拍板。
 
 它和 `on_tool_confirm` 的区别是：
 
 - `on_tool_confirm` 是“是否允许执行某个工具”
 - `ask_user_toolkit` / `request_user_input` 是“向用户发起一个结构化问题，并等待用户提交答案”
+- 强烈建议：只要有多个合理路径，优先问用户，不要静默替用户做关键选择
 
 ### 对外类型
 

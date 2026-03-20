@@ -1,7 +1,7 @@
 [toolkit]
 id = "ask_user_question"
 name = "Ask User Question"
-description = "Expose structured user-question tools for choice-based clarification flows."
+description = "Expose structured user-question tools. Strongly prefer asking the user whenever multiple plausible approaches or decisions could materially change the result."
 factory = "miso.builtin_toolkits.ask_user_question_toolkit:ask_user_question_toolkit"
 version = "1.0.0"
 readme = "README.md"
@@ -22,6 +22,6 @@ miso = ">=0"
 [[tools]]
 name = "request_user_input"
 title = "Request User Input"
-description = "Ask the user a structured multiple-choice question and suspend the run."
+description = "Ask the user a structured selector question and suspend the run. Strongly prefer this whenever several plausible approaches could materially change the outcome; ask instead of guessing."
 observe = false
 requires_confirmation = false
