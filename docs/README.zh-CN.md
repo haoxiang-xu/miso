@@ -692,13 +692,13 @@ on_tool_confirm 存在?  ──No──→  直接执行（向后兼容，不会
 
 ## Human Input Primitive（selector）
 
-当模型需要用户在若干候选项里做单选 / 多选，而不是继续猜测时，可以显式挂载 `ask_user_toolkit()`。它会暴露一个保留 tool：`request_user_input`。
+当模型需要用户在若干候选项里做单选 / 多选，而不是继续猜测时，可以显式挂载 `ask_user_toolkit()`。它会暴露一个保留 tool：`ask_user_question`。
 只要存在多种都合理、但会把结果带向不同方向的 approach / 产品决策 / 实现方案，就应该尽量用它先问用户，而不是模型自己拍板。
 
 它和 `on_tool_confirm` 的区别是：
 
 - `on_tool_confirm` 是“是否允许执行某个工具”
-- `ask_user_toolkit` / `request_user_input` 是“向用户发起一个结构化问题，并等待用户提交答案”
+- `ask_user_toolkit` / `ask_user_question` 是“向用户发起一个结构化问题，并等待用户提交答案”
 - 强烈建议：只要有多个合理路径，优先问用户，不要静默替用户做关键选择
 
 ### 对外类型
@@ -724,7 +724,7 @@ on_tool_confirm 存在?  ──No──→  直接执行（向后兼容，不会
 - 当前模型必须支持 tool calling
 - 当前版本不支持 non-tool fallback
 
-当模型调用 `request_user_input` 时：
+当模型调用 `ask_user_question` 时：
 
 1. `run()` 不会继续执行普通 tool 流程
 2. 返回 bundle：
@@ -770,7 +770,7 @@ if bundle["status"] == "awaiting_human_input":
 
 ### selector 约束
 
-- `request_user_input` 在 v1 中必须是该轮唯一的 tool call
+- `ask_user_question` 在 v1 中必须是该轮唯一的 tool call
 - `single` 默认 `min_selected=1`, `max_selected=1`
 - `multiple` 默认 `min_selected=1`
 - `Other` 只有在 `allow_other=True` 时可提交
@@ -965,7 +965,7 @@ messages, bundle = agent.run(
 - `managed_toolkit_ids` 是 catalog 白名单；为空会直接抛 `ValueError`。
 - `always_active_toolkit_ids` 必须是 `managed_toolkit_ids` 的子集；它们从第 0 轮开始可见，且不能被 `toolkit_deactivate` 关闭。
 - catalog-managed toolkit 的激活范围是单次 `run()`；新的 run 会重新回到“eager tools + catalog tools + always_active toolkit”的初始状态。
-- 如果 run 因 `request_user_input` 暂停，再通过 `resume_human_input(...)` 恢复，同一进程内会保留 active toolkit ids 和缓存实例。
+- 如果 run 因 `ask_user_question` 暂停，再通过 `resume_human_input(...)` 恢复，同一进程内会保留 active toolkit ids 和缓存实例。
 - 这份 continuation 状态是进程内的，不做持久化；如果进程退出，挂起的 catalog runtime 不会自动恢复。
 - 手工 attach 的 anonymous / custom toolkit 仍然可调用，但不会出现在 `toolkit_list` 里。
 

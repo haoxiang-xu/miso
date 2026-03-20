@@ -13,7 +13,7 @@ tk = ask_user_toolkit()
 
 ## 工具清单
 
-- `request_user_input`
+- `ask_user_question`
 
 ## 设计意图
 

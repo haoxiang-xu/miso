@@ -7,7 +7,7 @@ Rules for this test:
 
 - the workspace root is this folder
 - the candidate model may use:
-  - `request_user_input`
+  - `ask_user_question`
   - workspace tools
   - terminal tools
 - if the model asks a question, the notebook saves a suspended session state

@@ -4,6 +4,7 @@ import pytest
 
 from miso import Agent, MemoryManager, broth as Broth, ask_user_toolkit, tool, toolkit
 from miso.broth import ProviderTurnResult, ToolCall
+from miso.human_input import ASK_USER_QUESTION_TOOL_NAME
 
 
 def _selector_args(**overrides):
@@ -44,11 +45,11 @@ def test_ask_user_toolkit_is_explicitly_opt_in():
         max_iterations=1,
     )
 
-    assert "request_user_input" not in seen_tool_names[0]
+    assert ASK_USER_QUESTION_TOOL_NAME not in seen_tool_names[0]
     assert bundle["status"] == "completed"
 
 
-def test_ask_user_toolkit_exposes_request_user_input_when_mounted():
+def test_ask_user_toolkit_exposes_ask_user_question_when_mounted():
     agent = Broth()
     agent.provider = "openai"
     agent.toolkit = ask_user_toolkit()
@@ -72,11 +73,11 @@ def test_ask_user_toolkit_exposes_request_user_input_when_mounted():
         max_iterations=1,
     )
 
-    assert "request_user_input" in seen_tool_names[0]
+    assert ASK_USER_QUESTION_TOOL_NAME in seen_tool_names[0]
     assert bundle["status"] == "completed"
 
 
-def test_request_user_input_description_encourages_asking_when_multiple_paths_exist():
+def test_ask_user_question_description_encourages_asking_when_multiple_paths_exist():
     tk = ask_user_toolkit()
 
     tool_json = tk.to_json()[0]
@@ -98,14 +99,14 @@ def test_run_returns_awaiting_human_input_and_emits_request_event():
                 {
                     "type": "function_call",
                     "call_id": "call_1",
-                    "name": "request_user_input",
+                    "name": ASK_USER_QUESTION_TOOL_NAME,
                     "arguments": json.dumps(_selector_args()),
                 }
             ],
             tool_calls=[
                 ToolCall(
                     call_id="call_1",
-                    name="request_user_input",
+                    name=ASK_USER_QUESTION_TOOL_NAME,
                     arguments=json.dumps(_selector_args()),
                 )
             ],
@@ -205,14 +206,14 @@ def test_run_accepts_legacy_execute_tool_calls_human_input_tuple():
                 {
                     "type": "function_call",
                     "call_id": "call_1",
-                    "name": "request_user_input",
+                    "name": ASK_USER_QUESTION_TOOL_NAME,
                     "arguments": json.dumps(_selector_args()),
                 }
             ],
             tool_calls=[
                 ToolCall(
                     call_id="call_1",
-                    name="request_user_input",
+                    name=ASK_USER_QUESTION_TOOL_NAME,
                     arguments=json.dumps(_selector_args()),
                 )
             ],
@@ -274,14 +275,14 @@ def test_resume_human_input_openai_uses_previous_response_id_and_function_call_o
                     {
                         "type": "function_call",
                         "call_id": "call_1",
-                        "name": "request_user_input",
+                        "name": "ask_user_question",
                         "arguments": json.dumps(_selector_args()),
                     }
                 ],
                 tool_calls=[
                     ToolCall(
                         call_id="call_1",
-                        name="request_user_input",
+                        name="ask_user_question",
                         arguments=json.dumps(_selector_args()),
                     )
                 ],
@@ -350,7 +351,7 @@ def test_resume_human_input_non_openai_uses_provider_native_tool_result():
                             {
                                 "id": "call_1",
                                 "function": {
-                                    "name": "request_user_input",
+                                    "name": "ask_user_question",
                                     "arguments": _selector_args(selection_mode="multiple", allow_other=True),
                                 },
                             }
@@ -360,7 +361,7 @@ def test_resume_human_input_non_openai_uses_provider_native_tool_result():
                 tool_calls=[
                     ToolCall(
                         call_id="call_1",
-                        name="request_user_input",
+                        name="ask_user_question",
                         arguments=_selector_args(selection_mode="multiple", allow_other=True),
                     )
                 ],
@@ -423,7 +424,7 @@ def test_invalid_request_schema_returns_clear_tool_error_and_continues():
                             {
                                 "id": "call_1",
                                 "function": {
-                                    "name": "request_user_input",
+                                    "name": "ask_user_question",
                                     "arguments": {
                                         "title": "Broken",
                                         "question": "Broken",
@@ -438,7 +439,7 @@ def test_invalid_request_schema_returns_clear_tool_error_and_continues():
                 tool_calls=[
                     ToolCall(
                         call_id="call_1",
-                        name="request_user_input",
+                        name="ask_user_question",
                         arguments={
                             "title": "Broken",
                             "question": "Broken",
@@ -467,7 +468,7 @@ def test_invalid_request_schema_returns_clear_tool_error_and_continues():
 
     tool_message = next(msg for msg in seen_messages[1] if msg.get("role") == "tool")
     payload = json.loads(tool_message["content"])
-    assert payload["tool"] == "request_user_input"
+    assert payload["tool"] == "ask_user_question"
     assert "options must be a non-empty array" in payload["error"]
     assert bundle["status"] == "completed"
     assert messages[-1]["content"] == "recovered"
@@ -501,14 +502,14 @@ def test_resume_human_input_rejects_invalid_user_response(response_payload, erro
                 {
                     "type": "function_call",
                     "call_id": "call_1",
-                    "name": "request_user_input",
+                    "name": "ask_user_question",
                     "arguments": json.dumps(_selector_args(allow_other=True)),
                 }
             ],
             tool_calls=[
                 ToolCall(
                     call_id="call_1",
-                    name="request_user_input",
+                    name="ask_user_question",
                     arguments=json.dumps(_selector_args(allow_other=True)),
                 )
             ],
@@ -549,14 +550,14 @@ def test_suspended_run_skips_memory_commit_until_resume():
                     {
                         "type": "function_call",
                         "call_id": "call_1",
-                        "name": "request_user_input",
+                        "name": "ask_user_question",
                         "arguments": json.dumps(_selector_args()),
                     }
                 ],
                 tool_calls=[
                     ToolCall(
                         call_id="call_1",
-                        name="request_user_input",
+                        name="ask_user_question",
                         arguments=json.dumps(_selector_args()),
                     )
                 ],
@@ -602,7 +603,7 @@ def test_suspended_run_skips_memory_commit_until_resume():
     assert resumed_messages[-1]["content"] == "done"
 
 
-def test_mixed_batch_with_request_user_input_returns_errors_without_executing_other_tools():
+def test_mixed_batch_with_ask_user_question_returns_errors_without_executing_other_tools():
     agent = Broth()
     agent.provider = "ollama"
 
@@ -628,7 +629,7 @@ def test_mixed_batch_with_request_user_input_returns_errors_without_executing_ot
                             {
                                 "id": "call_1",
                                 "function": {
-                                    "name": "request_user_input",
+                                    "name": "ask_user_question",
                                     "arguments": _selector_args(),
                                 },
                             },
@@ -643,7 +644,7 @@ def test_mixed_batch_with_request_user_input_returns_errors_without_executing_ot
                     }
                 ],
                 tool_calls=[
-                    ToolCall(call_id="call_1", name="request_user_input", arguments=_selector_args()),
+                    ToolCall(call_id="call_1", name="ask_user_question", arguments=_selector_args()),
                     ToolCall(call_id="call_2", name="safe_action", arguments={}),
                 ],
                 final_text="",
@@ -667,7 +668,7 @@ def test_mixed_batch_with_request_user_input_returns_errors_without_executing_ot
     tool_messages = [msg for msg in seen_messages[1] if msg.get("role") == "tool"]
     assert len(tool_messages) == 2
     assert all(
-        json.loads(msg["content"])["error"] == "request_user_input must be the only tool call in a turn"
+        json.loads(msg["content"])["error"] == "ask_user_question must be the only tool call in a turn"
         for msg in tool_messages
     )
     assert call_log == []

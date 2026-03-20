@@ -7,9 +7,13 @@ from typing import Any, Literal
 
 from .tool import _escape_control_chars_inside_json_strings, tool, tool_parameter
 
-REQUEST_USER_INPUT_TOOL_NAME = "request_user_input"
+ASK_USER_QUESTION_TOOL_NAME = "ask_user_question"
 HUMAN_INPUT_KIND_SELECTOR = "selector"
 HUMAN_INPUT_OTHER_VALUE = "__other__"
+
+
+def is_human_input_tool_name(name: Any) -> bool:
+    return name == ASK_USER_QUESTION_TOOL_NAME
 
 
 def _parse_tool_arguments(arguments: dict[str, Any] | str | None) -> dict[str, Any]:
@@ -301,7 +305,7 @@ class HumanInputResponse:
         }
 
 
-def build_request_user_input_tool() -> tool:
+def build_ask_user_question_tool() -> tool:
     option_item_schema = {
         "type": "object",
         "properties": {
@@ -314,14 +318,14 @@ def build_request_user_input_tool() -> tool:
     }
 
     return tool(
-        name=REQUEST_USER_INPUT_TOOL_NAME,
+        name=ASK_USER_QUESTION_TOOL_NAME,
         description=(
             "Ask the user to choose from a structured selector UI and suspend the run until they respond. "
             "Strongly prefer this whenever there are multiple plausible approaches, product directions, "
             "technical stacks, UX choices, or requirement interpretations that would materially change the outcome. "
             "When several reasonable paths exist, ask the user instead of silently guessing."
         ),
-        func=lambda **_: {"error": "request_user_input is a reserved runtime tool and cannot be executed directly"},
+        func=lambda **_: {"error": "ask_user_question is a reserved runtime tool and cannot be executed directly"},
         parameters=[
             tool_parameter(
                 name="title",
@@ -381,13 +385,13 @@ def build_request_user_input_tool() -> tool:
         ],
     )
 
-
 __all__ = [
-    "REQUEST_USER_INPUT_TOOL_NAME",
+    "ASK_USER_QUESTION_TOOL_NAME",
     "HUMAN_INPUT_KIND_SELECTOR",
     "HUMAN_INPUT_OTHER_VALUE",
     "HumanInputOption",
     "HumanInputRequest",
     "HumanInputResponse",
-    "build_request_user_input_tool",
+    "is_human_input_tool_name",
+    "build_ask_user_question_tool",
 ]

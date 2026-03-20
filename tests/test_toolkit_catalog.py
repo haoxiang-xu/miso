@@ -340,7 +340,7 @@ def test_catalog_resume_preserves_cached_run_terminal_toolkit_instances_across_h
             for payload in _tool_payloads(kwargs["messages"]):
                 if "session_id" in payload:
                     session["id"] = payload["session_id"]
-            return _tool_turn("call_3", "request_user_input", _selector_args())
+            return _tool_turn("call_3", "ask_user_question", _selector_args())
 
         if state["turn"] == 4:
             return _tool_turn(

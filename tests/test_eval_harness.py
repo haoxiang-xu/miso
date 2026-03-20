@@ -353,7 +353,7 @@ class FakeInteractiveAgent:
             callback(
                 {
                     "type": "tool_call",
-                    "tool_name": "request_user_input",
+                    "tool_name": "ask_user_question",
                     "arguments": {
                         "title": "Theme",
                         "question": "Pick a visual direction",
@@ -449,7 +449,7 @@ def test_notebook_session_start_and_resume_round_trip(monkeypatch, tmp_path):
         workspace_mode="persistent_test_folder",
         workspace_source=str(test_dir),
         allowed_toolkits=["ask_user_toolkit", "access_workspace_toolkit", "run_terminal_toolkit"],
-        rule_checks={"required_tool_names": ["request_user_input"]},
+        rule_checks={"required_tool_names": ["ask_user_question"]},
         candidate_instructions="Ask before deciding.",
     )
 

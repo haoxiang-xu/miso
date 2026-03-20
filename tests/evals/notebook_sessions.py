@@ -88,7 +88,7 @@ def _candidate_agent(
         api_key=api_key,
         instructions=case.candidate_instructions or (
             "Use the mounted tools carefully. Base claims on evidence. "
-            "Ask the user via request_user_input when the prompt says you must confirm decisions."
+            "Ask the user via ask_user_question when the prompt says you must confirm decisions."
         ),
         tools=_build_candidate_tools(case, workspace_root),
     )

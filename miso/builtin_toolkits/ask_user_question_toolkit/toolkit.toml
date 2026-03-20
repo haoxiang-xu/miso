@@ -20,8 +20,8 @@ python = ">=3.9"
 miso = ">=0"
 
 [[tools]]
-name = "request_user_input"
-title = "Request User Input"
+name = "ask_user_question"
+title = "Ask User Question"
 description = "Ask the user a structured selector question and suspend the run. Strongly prefer this whenever several plausible approaches could materially change the outcome; ask instead of guessing."
 observe = false
 requires_confirmation = false

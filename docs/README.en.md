@@ -695,13 +695,13 @@ Key design principles:
 
 ## Human Input Primitive (selector)
 
-When the model needs the user to pick one or more options instead of continuing to guess, you can explicitly attach `ask_user_toolkit()`. It exposes a reserved tool: `request_user_input`.
+When the model needs the user to pick one or more options instead of continuing to guess, you can explicitly attach `ask_user_toolkit()`. It exposes a reserved tool: `ask_user_question`.
 It should be used aggressively when multiple plausible approaches, product directions, or implementation plans could all satisfy the request but would lead to materially different outcomes.
 
 The difference from `on_tool_confirm` is:
 
 - `on_tool_confirm` is about "whether a tool execution is allowed"
-- `ask_user_toolkit` / `request_user_input` is about "ask the user a structured question and wait for an answer"
+- `ask_user_toolkit` / `ask_user_question` is about "ask the user a structured question and wait for an answer"
 - Strong recommendation: when several reasonable paths exist, prefer asking the user over silently picking one
 
 ### Public types
@@ -727,7 +727,7 @@ Prerequisites:
 - The current model must support tool calling
 - The current version does not support a non-tool fallback
 
-When the model calls `request_user_input`:
+When the model calls `ask_user_question`:
 
 1. `run()` does not continue through the normal tool flow
 2. The returned bundle contains:
@@ -773,7 +773,7 @@ if bundle["status"] == "awaiting_human_input":
 
 ### Selector constraints
 
-- In v1, `request_user_input` must be the only tool call in that iteration
+- In v1, `ask_user_question` must be the only tool call in that iteration
 - `single` defaults to `min_selected=1`, `max_selected=1`
 - `multiple` defaults to `min_selected=1`
 - `Other` can only be submitted when `allow_other=True`
@@ -968,7 +968,7 @@ The lower-level `Broth` also supports direct configuration via `toolkit_catalog_
 - `managed_toolkit_ids` is the catalog allowlist; an empty list raises `ValueError`
 - `always_active_toolkit_ids` must be a subset of `managed_toolkit_ids`; they are visible from iteration 0 and cannot be turned off via `toolkit_deactivate`
 - Activation scope is per `run()` for catalog-managed toolkits; each new run starts again from "eager tools + catalog tools + always-active toolkits"
-- If a run is suspended by `request_user_input` and later resumed via `resume_human_input(...)`, the active toolkit ids and cached instances are preserved in-process
+- If a run is suspended by `ask_user_question` and later resumed via `resume_human_input(...)`, the active toolkit ids and cached instances are preserved in-process
 - This continuation state is not persisted; if the process exits, a suspended catalog runtime is not automatically restored
 - Manually attached anonymous / custom toolkits still work, but do not appear in `toolkit_list`
 

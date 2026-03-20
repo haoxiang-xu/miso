@@ -17,9 +17,10 @@ import openai
 from openai import OpenAI
 
 from .human_input import (
+    ASK_USER_QUESTION_TOOL_NAME,
     HumanInputRequest,
     HumanInputResponse,
-    REQUEST_USER_INPUT_TOOL_NAME,
+    is_human_input_tool_name,
 )
 from .memory import InMemorySessionStore, MemoryManager
 from .response_format import response_format
@@ -369,7 +370,7 @@ class broth:
         return runtime
 
     def _validate_runtime_toolkit_support(self, runtime_toolkit: base_toolkit) -> None:
-        has_human_input_tool = runtime_toolkit.get(REQUEST_USER_INPUT_TOOL_NAME) is not None
+        has_human_input_tool = runtime_toolkit.get(ASK_USER_QUESTION_TOOL_NAME) is not None
         supports_tools = bool(self._model_capability("supports_tools", True))
         if has_human_input_tool and not supports_tools:
             raise ValueError(
@@ -1861,7 +1862,7 @@ class broth:
         human_response = HumanInputResponse.from_raw(response, request=request)
         tool_call = ToolCall(
             call_id=str(continuation.get("call_id") or request.request_id),
-            name=REQUEST_USER_INPUT_TOOL_NAME,
+            name=ASK_USER_QUESTION_TOOL_NAME,
             arguments={},
         )
         tool_message = self._build_tool_message(
@@ -2867,12 +2868,12 @@ class broth:
         result_messages: list[dict[str, Any]] = []
         should_observe = False
         includes_human_input = any(
-            tool_call.name == REQUEST_USER_INPUT_TOOL_NAME
+            is_human_input_tool_name(tool_call.name)
             for tool_call in tool_calls
         )
 
         if includes_human_input and len(tool_calls) > 1:
-            error_text = "request_user_input must be the only tool call in a turn"
+            error_text = "ask_user_question must be the only tool call in a turn"
             for tool_call in tool_calls:
                 self._emit(
                     callback,
@@ -2918,7 +2919,7 @@ class broth:
                 arguments=tool_call.arguments,
             )
 
-            if tool_call.name == REQUEST_USER_INPUT_TOOL_NAME:
+            if is_human_input_tool_name(tool_call.name):
                 try:
                     request = HumanInputRequest.from_tool_arguments(
                         tool_call.arguments,
