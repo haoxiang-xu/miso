@@ -309,9 +309,15 @@ def build_ask_user_question_tool() -> tool:
     option_item_schema = {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "description": "User-facing option label."},
+            "label": {
+                "type": "string",
+                "description": "User-facing label for a concrete answer the user can directly choose.",
+            },
             "value": {"type": "string", "description": "Stable option value returned to the assistant."},
-            "description": {"type": "string", "description": "Optional helper text for the user."},
+            "description": {
+                "type": "string",
+                "description": "Optional helper text clarifying what selecting this concrete answer means.",
+            },
         },
         "required": ["label", "value"],
         "additionalProperties": False,
@@ -323,19 +329,26 @@ def build_ask_user_question_tool() -> tool:
             "Ask the user to choose from a structured selector UI and suspend the run until they respond. "
             "Strongly prefer this whenever there are multiple plausible approaches, product directions, "
             "technical stacks, UX choices, or requirement interpretations that would materially change the outcome. "
+            "Ask for the smallest concrete decision that unblocks the work. "
+            "Do not ask meta-questions such as which aspects to discuss first. "
+            "The question must let the user directly choose an answer, and the options must be concrete candidate answers, "
+            "not categories, dimensions, or discussion topics. "
             "When several reasonable paths exist, ask the user instead of silently guessing."
         ),
         func=lambda **_: {"error": "ask_user_question is a reserved runtime tool and cannot be executed directly"},
         parameters=[
             tool_parameter(
                 name="title",
-                description="Short title shown above the selector.",
+                description="Short title naming the concrete decision being made.",
                 type_="string",
                 required=True,
             ),
             tool_parameter(
                 name="question",
-                description="Prompt shown to the user explaining what they should choose.",
+                description=(
+                    "Concrete user-facing question for the decision you need now. "
+                    "Ask for a direct answer, not which dimensions, topics, or categories to explore."
+                ),
                 type_="string",
                 required=True,
             ),
@@ -347,14 +360,17 @@ def build_ask_user_question_tool() -> tool:
             ),
             tool_parameter(
                 name="options",
-                description="Available options shown to the user.",
+                description=(
+                    "Concrete candidate answers shown to the user. "
+                    "Do not use categories, placeholders, or meta options such as 'platform', 'tech', or 'scope'."
+                ),
                 type_="array",
                 required=True,
                 items=option_item_schema,
             ),
             tool_parameter(
                 name="allow_other",
-                description="Whether to show an Other option that allows freeform input.",
+                description="Whether to allow a freeform concrete answer when the listed options are insufficient.",
                 type_="boolean",
                 required=False,
             ),
