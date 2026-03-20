@@ -7,8 +7,8 @@ from .._terminal_runtime import _TerminalRuntime
 from ..base import builtin_toolkit
 
 
-class terminal_toolkit(builtin_toolkit):
-    """Workspace-scoped toolkit that only exposes restricted terminal tools."""
+class run_terminal_toolkit(builtin_toolkit):
+    """Workspace-scoped toolkit that runs restricted terminal tools."""
 
     def __init__(
         self,
@@ -78,5 +78,10 @@ class terminal_toolkit(builtin_toolkit):
         """Close a persistent shell session and return final output."""
         return self.terminal_runtime.close_session(session_id=session_id)
 
+    def shutdown(self) -> None:
+        self.terminal_runtime.close_all_sessions()
 
-__all__ = ["terminal_toolkit"]
+
+terminal_toolkit = run_terminal_toolkit
+
+__all__ = ["run_terminal_toolkit", "terminal_toolkit"]

@@ -6,7 +6,7 @@ import httpx
 import openai
 import pytest
 
-from miso import MemoryManager, broth as Broth, response_format, tool, toolkit, workspace_toolkit
+from miso import MemoryManager, broth as Broth, response_format, tool, toolkit, access_workspace_toolkit
 from miso.broth import ProviderTurnResult, ToolCall
 from miso.workspace_pins import build_pin_record, save_workspace_pins
 
@@ -86,8 +86,10 @@ def test_observation_injected_into_last_tool_message_and_callback_events():
     assert event_types.count("response_received") == 2
     response_events = [evt for evt in events if evt["type"] == "response_received"]
     assert response_events[0]["has_tool_calls"] is True
+    assert response_events[0]["bundle"]["model"] == "gpt-5"
     assert response_events[0]["bundle"]["consumed_tokens"] == 10
     assert response_events[1]["has_tool_calls"] is False
+    assert response_events[1]["bundle"]["model"] == "gpt-5"
     assert response_events[1]["bundle"]["consumed_tokens"] == 21
     run_completed = next(evt for evt in events if evt["type"] == "run_completed")
     assert run_completed["bundle"] == bundle
@@ -453,7 +455,7 @@ def test_workspace_pin_messages_inject_after_existing_system_messages_when_memor
 def test_broth_workspace_pins_persist_across_runs_without_memory_manager(tmp_path):
     agent = Broth()
     agent.provider = "ollama"
-    tk = workspace_toolkit(workspace_root=tmp_path)
+    tk = access_workspace_toolkit(workspace_root=tmp_path)
     agent.add_toolkit(tk)
 
     file_path = Path(tmp_path) / "demo.py"
@@ -1304,6 +1306,7 @@ def test_bundle_contains_context_window_used_pct():
     a._fetch_once = fake_fetch_once
 
     _, bundle = a.run([{"role": "user", "content": "hello"}])
+    assert bundle["model"] == "deepseek-r1:14b"
     assert bundle["consumed_tokens"] == 8400      # cumulative: 2000 + 6400
     assert bundle["max_context_window_tokens"] == 128000
     assert bundle["context_window_used_pct"] == 5.0  # last turn: 6400/128000*100

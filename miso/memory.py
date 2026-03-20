@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import inspect
 import json
 import math
@@ -8,9 +9,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 
+from .tool import NormalizedToolHistoryRecord, ToolHistoryOptimizationContext
+
 
 SummaryGenerator = Callable[[str, list[dict[str, Any]], int, str], str]
 LongTermExtractor = Callable[..., dict[str, Any]]
+HistoryToolResolver = Callable[[str], Any]
 
 
 @runtime_checkable
@@ -39,6 +43,7 @@ class VectorStoreAdapter(Protocol):
         session_id: str,
         query: str,
         k: int,
+        min_score: float | None = None,
     ) -> list[str | dict[str, Any]]:
         ...
 
@@ -70,6 +75,7 @@ class LongTermVectorAdapter(Protocol):
         query: str,
         k: int,
         filters: dict[str, Any] | None = None,
+        min_score: float | None = None,
     ) -> list[dict[str, Any]]:
         ...
 
@@ -140,8 +146,11 @@ class LongTermMemoryConfig:
     vector_adapter: LongTermVectorAdapter | None = None
     extractor: LongTermExtractor | None = None
     vector_top_k: int = 4
+    vector_min_score: float | None = None
     episode_top_k: int = 2
+    episode_min_score: float | None = None
     playbook_top_k: int = 2
+    playbook_min_score: float | None = None
     max_profile_chars: int = 1200
     max_fact_items: int = 6
     max_episode_items: int = 3
@@ -161,8 +170,15 @@ class MemoryConfig:
     summary_target_pct: float = 0.45
     max_summary_chars: int = 2400
     vector_top_k: int = 4
+    vector_min_score: float | None = None
     vector_adapter: VectorStoreAdapter | None = None
     long_term: LongTermMemoryConfig | None = None
+    deferred_tool_compaction_enabled: bool = True
+    deferred_tool_compaction_keep_completed_turns: int = 1
+    deferred_tool_compaction_max_chars: int = 1200
+    deferred_tool_compaction_preview_chars: int = 160
+    deferred_tool_compaction_include_tools: list[str] | None = None
+    deferred_tool_compaction_hash_payloads: bool = True
 
 
 def _default_user_data_dir() -> Path:
@@ -520,11 +536,583 @@ def _split_turns(non_system_messages: list[dict[str, Any]]) -> list[list[dict[st
     return turns
 
 
+def _is_tool_result_like_message(message: dict[str, Any]) -> bool:
+    if not isinstance(message, dict):
+        return False
+    content = message.get("content")
+    if isinstance(content, list) and content:
+        if all(isinstance(block, dict) and block.get("type") == "tool_result" for block in content):
+            return True
+    parts = message.get("parts")
+    if isinstance(parts, list) and parts:
+        if all(isinstance(part, dict) and "function_response" in part for part in parts):
+            return True
+    return False
+
+
+def _split_turns_for_deferred_compaction(non_system_messages: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    turns: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    for msg in non_system_messages:
+        role = msg.get("role") if isinstance(msg, dict) else None
+        if role == "user" and current and not _is_tool_result_like_message(msg):
+            turns.append(current)
+            current = [copy.deepcopy(msg)]
+            continue
+        current.append(copy.deepcopy(msg))
+    if current:
+        turns.append(current)
+    return turns
+
+
 def _flatten_turns(turns: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
     flattened: list[dict[str, Any]] = []
     for turn in turns:
         flattened.extend(_deepcopy_messages(turn))
     return flattened
+
+
+def _safe_json_dumps(value: Any) -> str:
+    return json.dumps(value, default=str, ensure_ascii=False, sort_keys=True)
+
+
+def _count_text_lines(text: str) -> int:
+    if not text:
+        return 0
+    return text.count("\n") + (0 if text.endswith("\n") else 1)
+
+
+def _make_text_preview(text: str, preview_chars: int) -> str:
+    if len(text) <= max(1, preview_chars * 2):
+        return text
+    head = text[:preview_chars]
+    tail = text[-preview_chars:]
+    omitted = len(text) - len(head) - len(tail)
+    return f"{head}\n... <omitted {omitted} chars> ...\n{tail}"
+
+
+def _payload_digest(value: Any) -> str:
+    return hashlib.sha1(_safe_json_dumps(value).encode("utf-8", errors="replace")).hexdigest()
+
+
+def _safe_json_loads(text: str) -> Any | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    if stripped[0] not in "{[":
+        return None
+    try:
+        return json.loads(stripped)
+    except Exception:
+        return None
+
+
+def _normalize_tool_history_payload(raw_payload: Any) -> tuple[Any, str]:
+    if isinstance(raw_payload, str):
+        parsed = _safe_json_loads(raw_payload)
+        if isinstance(parsed, (dict, list)):
+            return parsed, "json_string"
+        return raw_payload, "raw_string"
+    return copy.deepcopy(raw_payload), "native"
+
+
+def _serialize_tool_history_payload(payload: Any, payload_format: str) -> Any:
+    if payload_format == "json_string":
+        return _safe_json_dumps(payload)
+    if payload_format == "raw_string":
+        if isinstance(payload, str):
+            return payload
+        return _safe_json_dumps(payload)
+    return copy.deepcopy(payload)
+
+
+def _shallow_preview_value(value: Any, preview_chars: int) -> Any:
+    if isinstance(value, str):
+        if len(value) <= preview_chars * 2:
+            return value
+        return {
+            "type": "string",
+            "chars": len(value),
+            "lines": _count_text_lines(value),
+            "preview": _make_text_preview(value, preview_chars),
+        }
+    if isinstance(value, dict):
+        return {
+            "type": "object",
+            "keys": list(value.keys())[:8],
+            "size_estimate_chars": len(_safe_json_dumps(value)),
+        }
+    if isinstance(value, list):
+        return {
+            "type": "array",
+            "length": len(value),
+            "preview_items": [_shallow_preview_value(item, preview_chars) for item in value[:3]],
+        }
+    return copy.deepcopy(value)
+
+
+def _generic_compact_tool_payload(payload: Any, context: ToolHistoryOptimizationContext) -> Any:
+    if isinstance(payload, dict) and payload.get("compacted") is True:
+        return copy.deepcopy(payload)
+
+    if isinstance(payload, str):
+        if len(payload) <= context.max_chars:
+            return payload
+        compacted = {
+            "compacted": True,
+            "original_type": "string",
+            "chars": len(payload),
+            "lines": _count_text_lines(payload),
+            "preview": _make_text_preview(payload, context.preview_chars),
+        }
+        if context.include_hash:
+            compacted["digest"] = _payload_digest(payload)
+        return compacted
+
+    if isinstance(payload, dict):
+        serialized = _safe_json_dumps(payload)
+        if len(serialized) <= context.max_chars:
+            return copy.deepcopy(payload)
+        compacted: dict[str, Any] = {
+            "compacted": True,
+            "original_type": "object",
+            "size_estimate_chars": len(serialized),
+            "keys": list(payload.keys())[:20],
+            "preview": {},
+        }
+        preview_items = list(payload.items())[:8]
+        compacted["preview"] = {
+            str(key): _shallow_preview_value(value, context.preview_chars)
+            for key, value in preview_items
+        }
+        if context.include_hash:
+            compacted["digest"] = _payload_digest(payload)
+        return compacted
+
+    if isinstance(payload, list):
+        serialized = _safe_json_dumps(payload)
+        if len(serialized) <= context.max_chars:
+            return copy.deepcopy(payload)
+        compacted = {
+            "compacted": True,
+            "original_type": "array",
+            "size_estimate_chars": len(serialized),
+            "length": len(payload),
+            "preview_items": [_shallow_preview_value(item, context.preview_chars) for item in payload[:5]],
+        }
+        if context.include_hash:
+            compacted["digest"] = _payload_digest(payload)
+        return compacted
+
+    return copy.deepcopy(payload)
+
+
+def _build_tool_call_name_map(messages: list[dict[str, Any]]) -> dict[str, str]:
+    call_map: dict[str, str] = {}
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+
+        if message.get("type") == "function_call":
+            call_id = message.get("call_id")
+            name = message.get("name")
+            if isinstance(call_id, str) and isinstance(name, str) and call_id and name:
+                call_map[call_id] = name
+
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                call_id = tool_call.get("id")
+                fn = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+                name = fn.get("name")
+                if isinstance(call_id, str) and isinstance(name, str) and call_id and name:
+                    call_map[call_id] = name
+
+        content = message.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") != "tool_use":
+                    continue
+                call_id = block.get("id")
+                name = block.get("name")
+                if isinstance(call_id, str) and isinstance(name, str) and call_id and name:
+                    call_map[call_id] = name
+    return call_map
+
+
+def _normalize_tool_history_records(
+    messages: list[dict[str, Any]],
+    *,
+    provider: str,
+    call_name_map: dict[str, str],
+) -> list[NormalizedToolHistoryRecord]:
+    records: list[NormalizedToolHistoryRecord] = []
+    for message_index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            continue
+
+        if message.get("type") == "function_call":
+            payload, payload_format = _normalize_tool_history_payload(message.get("arguments", "{}"))
+            records.append(
+                NormalizedToolHistoryRecord(
+                    tool_name=str(message.get("name") or ""),
+                    call_id=str(message.get("call_id") or ""),
+                    kind="arguments",
+                    payload=payload,
+                    provider=provider,
+                    message_index=message_index,
+                    location_type="openai_function_call",
+                    payload_format=payload_format,
+                    field_name="arguments",
+                )
+            )
+
+        if message.get("type") == "function_call_output":
+            call_id = str(message.get("call_id") or "")
+            payload, payload_format = _normalize_tool_history_payload(message.get("output", ""))
+            records.append(
+                NormalizedToolHistoryRecord(
+                    tool_name=call_name_map.get(call_id, ""),
+                    call_id=call_id,
+                    kind="result",
+                    payload=payload,
+                    provider=provider,
+                    message_index=message_index,
+                    location_type="openai_function_call_output",
+                    payload_format=payload_format,
+                    field_name="output",
+                )
+            )
+
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for block_index, tool_call in enumerate(tool_calls):
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+                payload, payload_format = _normalize_tool_history_payload(function.get("arguments", {}))
+                records.append(
+                    NormalizedToolHistoryRecord(
+                        tool_name=str(function.get("name") or ""),
+                        call_id=str(tool_call.get("id") or ""),
+                        kind="arguments",
+                        payload=payload,
+                        provider=provider,
+                        message_index=message_index,
+                        location_type="assistant_tool_calls",
+                        payload_format=payload_format,
+                        block_index=block_index,
+                        field_name="function.arguments",
+                    )
+                )
+
+        content = message.get("content")
+        if isinstance(content, list):
+            for block_index, block in enumerate(content):
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+                if block_type == "tool_use":
+                    payload, payload_format = _normalize_tool_history_payload(block.get("input", {}))
+                    records.append(
+                        NormalizedToolHistoryRecord(
+                            tool_name=str(block.get("name") or ""),
+                            call_id=str(block.get("id") or ""),
+                            kind="arguments",
+                            payload=payload,
+                            provider=provider,
+                            message_index=message_index,
+                            location_type="content_block_tool_use",
+                            payload_format=payload_format,
+                            block_index=block_index,
+                            field_name="input",
+                        )
+                    )
+                elif block_type == "tool_result":
+                    call_id = str(block.get("tool_use_id") or "")
+                    payload, payload_format = _normalize_tool_history_payload(block.get("content", ""))
+                    records.append(
+                        NormalizedToolHistoryRecord(
+                            tool_name=call_name_map.get(call_id, ""),
+                            call_id=call_id,
+                            kind="result",
+                            payload=payload,
+                            provider=provider,
+                            message_index=message_index,
+                            location_type="content_block_tool_result",
+                            payload_format=payload_format,
+                            block_index=block_index,
+                            field_name="content",
+                        )
+                    )
+
+        parts = message.get("parts")
+        if isinstance(parts, list):
+            for part_index, part in enumerate(parts):
+                if not isinstance(part, dict):
+                    continue
+                function_call = part.get("function_call")
+                if isinstance(function_call, dict):
+                    payload, payload_format = _normalize_tool_history_payload(function_call.get("args", {}))
+                    records.append(
+                        NormalizedToolHistoryRecord(
+                            tool_name=str(function_call.get("name") or ""),
+                            call_id=str(function_call.get("id") or part.get("id") or ""),
+                            kind="arguments",
+                            payload=payload,
+                            provider=provider,
+                            message_index=message_index,
+                            location_type="parts_function_call",
+                            payload_format=payload_format,
+                            part_index=part_index,
+                            field_name="function_call.args",
+                        )
+                    )
+                function_response = part.get("function_response")
+                if isinstance(function_response, dict):
+                    payload, payload_format = _normalize_tool_history_payload(function_response.get("response", {}))
+                    records.append(
+                        NormalizedToolHistoryRecord(
+                            tool_name=str(function_response.get("name") or ""),
+                            call_id=str(function_response.get("id") or part.get("id") or ""),
+                            kind="result",
+                            payload=payload,
+                            provider=provider,
+                            message_index=message_index,
+                            location_type="parts_function_response",
+                            payload_format=payload_format,
+                            part_index=part_index,
+                            field_name="function_response.response",
+                        )
+                    )
+
+        if message.get("role") == "tool" and "content" in message:
+            call_id = str(message.get("tool_call_id") or "")
+            payload, payload_format = _normalize_tool_history_payload(message.get("content", ""))
+            records.append(
+                NormalizedToolHistoryRecord(
+                    tool_name=call_name_map.get(call_id, ""),
+                    call_id=call_id,
+                    kind="result",
+                    payload=payload,
+                    provider=provider,
+                    message_index=message_index,
+                    location_type="role_tool_content",
+                    payload_format=payload_format,
+                    field_name="content",
+                )
+            )
+    return records
+
+
+def _coerce_object_field_payload(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, dict):
+        return copy.deepcopy(payload)
+    return {"value": copy.deepcopy(payload)}
+
+
+def _write_back_tool_history_payload(
+    messages: list[dict[str, Any]],
+    record: NormalizedToolHistoryRecord,
+    payload: Any,
+) -> None:
+    if record.message_index < 0 or record.message_index >= len(messages):
+        return
+    message = messages[record.message_index]
+    if not isinstance(message, dict):
+        return
+
+    serialized = _serialize_tool_history_payload(payload, record.payload_format)
+
+    if record.location_type == "openai_function_call":
+        message["arguments"] = serialized
+        return
+    if record.location_type == "openai_function_call_output":
+        message["output"] = serialized
+        return
+    if record.location_type == "assistant_tool_calls":
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list) or record.block_index is None or record.block_index >= len(tool_calls):
+            return
+        raw_tool_call = tool_calls[record.block_index]
+        if not isinstance(raw_tool_call, dict):
+            return
+        function = raw_tool_call.get("function")
+        if not isinstance(function, dict):
+            return
+        function["arguments"] = serialized
+        return
+    if record.location_type == "content_block_tool_use":
+        content = message.get("content")
+        if not isinstance(content, list) or record.block_index is None or record.block_index >= len(content):
+            return
+        block = content[record.block_index]
+        if not isinstance(block, dict):
+            return
+        block["input"] = _coerce_object_field_payload(serialized)
+        return
+    if record.location_type == "content_block_tool_result":
+        content = message.get("content")
+        if not isinstance(content, list) or record.block_index is None or record.block_index >= len(content):
+            return
+        block = content[record.block_index]
+        if not isinstance(block, dict):
+            return
+        block["content"] = serialized
+        return
+    if record.location_type == "parts_function_call":
+        parts = message.get("parts")
+        if not isinstance(parts, list) or record.part_index is None or record.part_index >= len(parts):
+            return
+        part = parts[record.part_index]
+        if not isinstance(part, dict):
+            return
+        function_call = part.get("function_call")
+        if not isinstance(function_call, dict):
+            return
+        function_call["args"] = _coerce_object_field_payload(serialized)
+        return
+    if record.location_type == "parts_function_response":
+        parts = message.get("parts")
+        if not isinstance(parts, list) or record.part_index is None or record.part_index >= len(parts):
+            return
+        part = parts[record.part_index]
+        if not isinstance(part, dict):
+            return
+        function_response = part.get("function_response")
+        if not isinstance(function_response, dict):
+            return
+        function_response["response"] = _coerce_object_field_payload(serialized)
+        return
+    if record.location_type == "role_tool_content":
+        message["content"] = serialized
+
+
+def _compact_tool_history_messages(
+    messages: list[dict[str, Any]],
+    *,
+    all_messages: list[dict[str, Any]],
+    latest_messages: list[dict[str, Any]],
+    provider: str,
+    session_id: str,
+    tool_resolver: HistoryToolResolver | None,
+    config: MemoryConfig,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    updated = _deepcopy_messages(messages)
+    if not updated:
+        return updated, {
+            "deferred_compaction_applied": False,
+            "deferred_compaction_message_count": 0,
+            "deferred_compaction_record_count": 0,
+            "deferred_compaction_bytes_removed_estimate": 0,
+        }
+
+    before_chars = len(_safe_json_dumps(updated))
+    include_tools = {
+        str(name).strip()
+        for name in (config.deferred_tool_compaction_include_tools or [])
+        if isinstance(name, str) and name.strip()
+    }
+    call_name_map = _build_tool_call_name_map(all_messages)
+    records = _normalize_tool_history_records(updated, provider=provider, call_name_map=call_name_map)
+    compacted_record_count = 0
+
+    for record in records:
+        if include_tools and record.tool_name not in include_tools:
+            continue
+
+        optimizer = None
+        if callable(tool_resolver):
+            tool_obj = tool_resolver(record.tool_name)
+            if tool_obj is not None:
+                optimizer = (
+                    getattr(tool_obj, "history_arguments_optimizer", None)
+                    if record.kind == "arguments"
+                    else getattr(tool_obj, "history_result_optimizer", None)
+                )
+
+        context = ToolHistoryOptimizationContext(
+            tool_name=record.tool_name,
+            call_id=record.call_id,
+            kind=record.kind,
+            provider=provider,
+            session_id=session_id,
+            latest_messages=_deepcopy_messages(latest_messages),
+            max_chars=max(64, int(config.deferred_tool_compaction_max_chars)),
+            preview_chars=max(32, int(config.deferred_tool_compaction_preview_chars)),
+            include_hash=bool(config.deferred_tool_compaction_hash_payloads),
+        )
+
+        try:
+            optimized = optimizer(copy.deepcopy(record.payload), context) if callable(optimizer) else _generic_compact_tool_payload(record.payload, context)
+        except Exception:
+            optimized = _generic_compact_tool_payload(record.payload, context)
+
+        if optimized != record.payload:
+            compacted_record_count += 1
+        _write_back_tool_history_payload(updated, record, optimized)
+
+    after_chars = len(_safe_json_dumps(updated))
+    return updated, {
+        "deferred_compaction_applied": compacted_record_count > 0,
+        "deferred_compaction_message_count": len(updated),
+        "deferred_compaction_record_count": compacted_record_count,
+        "deferred_compaction_bytes_removed_estimate": max(0, before_chars - after_chars),
+    }
+
+
+def _apply_deferred_tool_compaction(
+    messages: list[dict[str, Any]],
+    *,
+    provider: str,
+    session_id: str,
+    tool_resolver: HistoryToolResolver | None,
+    config: MemoryConfig,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    output = _deepcopy_messages(messages)
+    if not config.deferred_tool_compaction_enabled:
+        return output, {
+            "deferred_compaction_applied": False,
+            "deferred_compaction_skip_reason": "disabled",
+        }
+
+    systems, non_system = _split_system_and_non_system(output)
+    turns = _split_turns_for_deferred_compaction(non_system)
+    keep_completed_turns = max(0, int(config.deferred_tool_compaction_keep_completed_turns))
+    if len(turns) <= keep_completed_turns + 1:
+        return output, {
+            "deferred_compaction_applied": False,
+            "deferred_compaction_skip_reason": "insufficient_turns",
+        }
+
+    compacted_turn_count = max(0, len(turns) - keep_completed_turns - 1)
+    if compacted_turn_count <= 0:
+        return output, {
+            "deferred_compaction_applied": False,
+            "deferred_compaction_skip_reason": "no_older_turns",
+        }
+
+    old_turns = turns[:compacted_turn_count]
+    recent_turns = turns[compacted_turn_count:]
+    latest_messages = systems + _flatten_turns(recent_turns)
+    compacted_old_messages, stats = _compact_tool_history_messages(
+        _flatten_turns(old_turns),
+        all_messages=output,
+        latest_messages=latest_messages,
+        provider=provider,
+        session_id=session_id,
+        tool_resolver=tool_resolver,
+        config=config,
+    )
+    compacted_messages = systems + compacted_old_messages + _flatten_turns(recent_turns)
+    return compacted_messages, {
+        **stats,
+        "deferred_compaction_turns_compacted": compacted_turn_count,
+    }
 
 
 def _split_system_and_non_system(
@@ -997,6 +1585,54 @@ def _call_long_term_extractor(
     )
 
 
+def _call_vector_similarity_search(
+    adapter: VectorStoreAdapter,
+    *,
+    session_id: str,
+    query: str,
+    k: int,
+    min_score: float | None,
+) -> list[str | dict[str, Any]]:
+    try:
+        parameters = inspect.signature(adapter.similarity_search).parameters
+    except Exception:
+        parameters = {}
+
+    kwargs: dict[str, Any] = {
+        "session_id": session_id,
+        "query": query,
+        "k": k,
+    }
+    if "min_score" in parameters:
+        kwargs["min_score"] = min_score
+    return adapter.similarity_search(**kwargs)
+
+
+def _call_long_term_similarity_search(
+    adapter: LongTermVectorAdapter,
+    *,
+    namespace: str,
+    query: str,
+    k: int,
+    filters: dict[str, Any] | None = None,
+    min_score: float | None,
+) -> list[dict[str, Any]]:
+    try:
+        parameters = inspect.signature(adapter.similarity_search).parameters
+    except Exception:
+        parameters = {}
+
+    kwargs: dict[str, Any] = {
+        "namespace": namespace,
+        "query": query,
+        "k": k,
+        "filters": filters,
+    }
+    if "min_score" in parameters:
+        kwargs["min_score"] = min_score
+    return adapter.similarity_search(**kwargs)
+
+
 def _current_timestamp() -> str:
     from datetime import datetime, timezone
 
@@ -1147,11 +1783,13 @@ class HybridContextStrategy:
         summary_strategy: SummaryTokenStrategy,
         last_n_strategy: LastNTurnsStrategy,
         vector_top_k: int = 4,
+        vector_min_score: float | None = None,
         vector_adapter: VectorStoreAdapter | None = None,
     ):
         self.summary_strategy = summary_strategy
         self.last_n_strategy = last_n_strategy
         self.vector_top_k = max(0, int(vector_top_k))
+        self.vector_min_score = float(vector_min_score) if vector_min_score is not None else None
         self.vector_adapter = vector_adapter
 
     def prepare(
@@ -1187,10 +1825,12 @@ class HybridContextStrategy:
 
         memory_meta = state.setdefault("_memory_meta", {})
         try:
-            recalled = adapter.similarity_search(
+            recalled = _call_vector_similarity_search(
+                adapter,
                 session_id=session_id,
                 query=query,
                 k=self.vector_top_k,
+                min_score=self.vector_min_score,
             )
         except Exception as exc:
             memory_meta["vector_fallback_reason"] = f"vector_search_failed: {exc}"
@@ -1240,6 +1880,7 @@ class MemoryManager:
             ),
             last_n_strategy=LastNTurnsStrategy(last_n_turns=self.config.last_n_turns),
             vector_top_k=self.config.vector_top_k,
+            vector_min_score=self.config.vector_min_score,
             vector_adapter=self.config.vector_adapter,
         )
         self._last_prepare_info: dict[str, Any] = {}
@@ -1324,11 +1965,17 @@ class MemoryManager:
         if query and long_term.vector_adapter is not None:
             try:
                 if long_term.vector_top_k > 0:
-                    recalled_facts = long_term.vector_adapter.similarity_search(
+                    recalled_facts = _call_long_term_similarity_search(
+                        long_term.vector_adapter,
                         namespace=namespace,
                         query=query,
                         k=long_term.vector_top_k,
                         filters={"memory_type": "fact"},
+                        min_score=(
+                            float(long_term.vector_min_score)
+                            if long_term.vector_min_score is not None
+                            else None
+                        ),
                     )
                 else:
                     recalled_facts = []
@@ -1355,11 +2002,17 @@ class MemoryManager:
             and _should_recall_episode_memories(query)
         ):
             try:
-                recalled_episodes = long_term.vector_adapter.similarity_search(
+                recalled_episodes = _call_long_term_similarity_search(
+                    long_term.vector_adapter,
                     namespace=namespace,
                     query=query,
                     k=long_term.episode_top_k,
                     filters={"memory_type": "episode"},
+                    min_score=(
+                        float(long_term.episode_min_score)
+                        if long_term.episode_min_score is not None
+                        else None
+                    ),
                 )
             except Exception as exc:
                 memory_meta["long_term_episode_fallback_reason"] = f"episode_search_failed: {exc}"
@@ -1383,11 +2036,17 @@ class MemoryManager:
             and _should_recall_playbooks(query)
         ):
             try:
-                recalled_playbooks = long_term.vector_adapter.similarity_search(
+                recalled_playbooks = _call_long_term_similarity_search(
+                    long_term.vector_adapter,
                     namespace=namespace,
                     query=query,
                     k=long_term.playbook_top_k,
                     filters={"memory_type": "playbook"},
+                    min_score=(
+                        float(long_term.playbook_min_score)
+                        if long_term.playbook_min_score is not None
+                        else None
+                    ),
                 )
             except Exception as exc:
                 memory_meta["long_term_playbook_fallback_reason"] = f"playbook_search_failed: {exc}"
@@ -1417,6 +2076,8 @@ class MemoryManager:
         model: str,
         summary_generator: SummaryGenerator | None = None,
         memory_namespace: str | None = None,
+        provider: str | None = None,
+        tool_resolver: HistoryToolResolver | None = None,
     ) -> list[dict[str, Any]]:
         state = self.store.load(session_id) if session_id else {}
         history = state.get("messages", [])
@@ -1433,9 +2094,18 @@ class MemoryManager:
             state["_summary_generator"] = summary_generator
 
         try:
+            compacted_input, compaction_meta = _apply_deferred_tool_compaction(
+                merged,
+                provider=str(provider or ""),
+                session_id=session_id,
+                tool_resolver=tool_resolver,
+                config=self.config,
+            )
+            memory_meta = state.setdefault("_memory_meta", {})
+            memory_meta.update(compaction_meta)
             prepared = self.strategy.prepare(
                 state=state,
-                incoming=merged,
+                incoming=compacted_input,
                 max_context_window_tokens=max_context_window_tokens,
                 model=model,
             )

@@ -263,6 +263,7 @@ class QdrantVectorAdapter:
         session_id: str,
         query: str,
         k: int,
+        min_score: float | None = None,
     ) -> list[dict[str, Any]]:
         collection = self._collection_name(session_id)
         self._ensure_collection(collection)
@@ -276,6 +277,10 @@ class QdrantVectorAdapter:
         for result in results:
             payload = result.payload or {}
             item: dict[str, Any] = {}
+            score = getattr(result, "score", None)
+            if min_score is not None:
+                if not isinstance(score, (int, float)) or float(score) < float(min_score):
+                    continue
 
             raw_messages = payload.get("messages")
             if isinstance(raw_messages, list):
@@ -292,6 +297,9 @@ class QdrantVectorAdapter:
             index = payload.get("index")
             if isinstance(index, int):
                 item["index"] = index
+
+            if isinstance(score, (int, float)):
+                item["score"] = float(score)
 
             if item:
                 recalled.append(item)
@@ -363,6 +371,7 @@ class QdrantLongTermVectorAdapter:
         query: str,
         k: int,
         filters: dict[str, Any] | None = None,
+        min_score: float | None = None,
     ) -> list[dict[str, Any]]:
         collection = self._collection_name(namespace)
         self._ensure_collection(collection)
@@ -392,6 +401,9 @@ class QdrantLongTermVectorAdapter:
                 continue
             item = copy.deepcopy(payload)
             score = getattr(result, "score", None)
+            if min_score is not None:
+                if not isinstance(score, (int, float)) or float(score) < float(min_score):
+                    continue
             if isinstance(score, (int, float)):
                 item["score"] = float(score)
             if item:

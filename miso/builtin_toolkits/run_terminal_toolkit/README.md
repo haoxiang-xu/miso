@@ -1,14 +1,14 @@
-# terminal_toolkit
+# run_terminal_toolkit
 
-`terminal_toolkit` 是一个只暴露 terminal action 的内置工具包。  
-它使用共享的受限 terminal runtime，可与 `workspace_toolkit` 按需组合。
+`run_terminal_toolkit` 是一个只暴露 terminal action 的内置工具包。  
+它使用共享的受限 terminal runtime，可与 `access_workspace_toolkit` 按需组合。
 
 ## 用法
 
 ```python
-from miso import terminal_toolkit
+from miso import run_terminal_toolkit
 
-tk = terminal_toolkit(
+tk = run_terminal_toolkit(
     workspace_root=".",
     terminal_strict_mode=True,
 )

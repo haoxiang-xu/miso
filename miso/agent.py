@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import copy
 import inspect
+import re
+import uuid
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
 from ._agent_shared import as_text, normalize_mentions
@@ -10,8 +13,9 @@ from .memory import LongTermMemoryConfig, MemoryConfig, MemoryManager
 from .response_format import response_format
 from .tool import tool as Tool
 from .tool import toolkit as Toolkit
+from .toolkit_catalog import ToolkitCatalogConfig, extract_toolkit_catalog_token
 
-_FORWARDED_BROTH_KEYS = {"provider", "model", "api_key", "memory_manager"}
+_FORWARDED_BROTH_KEYS = {"provider", "model", "api_key", "memory_manager", "toolkit_catalog_config"}
 
 if TYPE_CHECKING:
     from .team import Team
@@ -67,6 +71,47 @@ def _make_step_response_format(agent_name: str) -> response_format:
     )
 
 
+@dataclass
+class _SubagentConfig:
+    tool_name: str
+    description: str | None
+    max_depth: int
+    max_children_per_agent: int
+    max_total_subagents: int
+
+
+@dataclass
+class _SubagentCounters:
+    total_created: int = 0
+    direct_children: dict[tuple[str, ...], int] = field(default_factory=dict)
+
+
+@dataclass
+class _SubagentRuntime:
+    config: _SubagentConfig
+    current_depth: int
+    lineage: tuple[str, ...]
+    counters: _SubagentCounters
+    current_session_id: str
+    current_memory_namespace: str
+    payload: dict[str, Any] | None
+    callback: Callable[[dict[str, Any]], None] | None
+    max_iterations: int | None
+    verbose: bool
+    on_tool_confirm: Callable | None
+    on_continuation_request: Callable | None
+
+
+def _slug_subagent_role(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", ".", str(value or "").strip().lower())
+    slug = re.sub(r"\.+", ".", slug).strip(".")
+    return slug or "subagent"
+
+
+def _join_instruction_parts(*parts: str) -> str:
+    return "\n\n".join(part.strip() for part in parts if isinstance(part, str) and part.strip())
+
+
 class Agent:
     def __init__(
         self,
@@ -81,6 +126,7 @@ class Agent:
         long_term_memory: LongTermMemoryConfig | dict[str, Any] | None = None,
         defaults: dict[str, Any] | None = None,
         broth_options: dict[str, Any] | None = None,
+        toolkit_catalog_config: ToolkitCatalogConfig | dict[str, Any] | None = None,
     ):
         if not isinstance(name, str) or not name.strip():
             raise ValueError("Agent name is required")
@@ -93,12 +139,15 @@ class Agent:
         self.tools = list(tools or [])
         self.defaults = _deepcopy_dict(defaults)
         self.broth_options = _deepcopy_dict(broth_options)
+        self.toolkit_catalog_config = ToolkitCatalogConfig.coerce(toolkit_catalog_config)
         self.short_term_memory = short_term_memory
         self.long_term_memory = long_term_memory
         self.memory_manager = self._coerce_memory_manager(
             short_term_memory=short_term_memory,
             long_term_memory=long_term_memory,
         )
+        self._subagent_config: _SubagentConfig | None = None
+        self._suspended_toolkit_catalog_runs: dict[str, Any] = {}
 
     def _coerce_memory_manager(
         self,
@@ -134,7 +183,75 @@ class Agent:
 
         return MemoryManager(config=config)
 
-    def _build_agent_toolkit(self) -> Toolkit:
+    def enable_subagents(
+        self,
+        *,
+        tool_name: str = "spawn_subagent",
+        description: str | None = None,
+        max_depth: int = 6,
+        max_children_per_agent: int = 10,
+        max_total_subagents: int = 100,
+    ) -> Agent:
+        tool_name = str(tool_name).strip()
+        if not tool_name:
+            raise ValueError("subagent tool_name must be a non-empty string")
+        if int(max_depth) < 1:
+            raise ValueError("subagent max_depth must be at least 1")
+        if int(max_children_per_agent) < 1:
+            raise ValueError("subagent max_children_per_agent must be at least 1")
+        if int(max_total_subagents) < 1:
+            raise ValueError("subagent max_total_subagents must be at least 1")
+
+        self._subagent_config = _SubagentConfig(
+            tool_name=tool_name,
+            description=description,
+            max_depth=int(max_depth),
+            max_children_per_agent=int(max_children_per_agent),
+            max_total_subagents=int(max_total_subagents),
+        )
+        return self
+
+    def enable_toolkit_catalog(
+        self,
+        *,
+        managed_toolkit_ids: tuple[str, ...] | list[str] | None,
+        always_active_toolkit_ids: tuple[str, ...] | list[str] | None = None,
+        registry: dict[str, Any] | None = None,
+        readme_max_chars: int = 8000,
+    ) -> Agent:
+        self.toolkit_catalog_config = ToolkitCatalogConfig(
+            managed_toolkit_ids=managed_toolkit_ids,
+            always_active_toolkit_ids=always_active_toolkit_ids,
+            registry=registry,
+            readme_max_chars=readme_max_chars,
+        )
+        return self
+
+    def _toolkit_catalog_state_token(self, continuation: dict[str, Any] | None) -> str | None:
+        if not isinstance(continuation, dict):
+            return None
+        return extract_toolkit_catalog_token(continuation.get("toolkit_catalog"))
+
+    def _restore_toolkit_catalog_state_to_engine(self, engine: Broth, continuation: dict[str, Any] | None) -> None:
+        state_token = self._toolkit_catalog_state_token(continuation)
+        if state_token is None:
+            return
+        runtime = self._suspended_toolkit_catalog_runs.pop(state_token, None)
+        if runtime is not None:
+            engine._put_suspended_toolkit_catalog_runtime(state_token, runtime)
+
+    def _capture_toolkit_catalog_state_from_engine(self, engine: Broth, bundle: dict[str, Any] | None) -> None:
+        if not isinstance(bundle, dict):
+            return
+        continuation = bundle.get("continuation")
+        state_token = self._toolkit_catalog_state_token(continuation if isinstance(continuation, dict) else None)
+        if state_token is None:
+            return
+        runtime = engine._take_suspended_toolkit_catalog_runtime(state_token)
+        if runtime is not None:
+            self._suspended_toolkit_catalog_runs[state_token] = runtime
+
+    def _build_agent_toolkit(self, *, runtime_context: _SubagentRuntime | None = None) -> Toolkit:
         merged = Toolkit()
         for item in self.tools:
             if isinstance(item, Toolkit):
@@ -148,14 +265,17 @@ class Agent:
                 merged.register(item)
                 continue
             raise TypeError(f"unsupported tool entry for Agent '{self.name}': {type(item).__name__}")
+        if runtime_context is not None and self._subagent_config is not None:
+            merged.register(self._build_subagent_tool(runtime_context))
         return merged
 
-    def _build_engine(self) -> Broth:
+    def _build_engine(self, *, runtime_context: _SubagentRuntime | None = None) -> Broth:
         core_kwargs: dict[str, Any] = {
             "provider": self.provider,
             "model": self.model,
             "api_key": self.api_key,
             "memory_manager": self.memory_manager,
+            "toolkit_catalog_config": copy.deepcopy(self.toolkit_catalog_config),
         }
 
         try:
@@ -184,12 +304,275 @@ class Agent:
             if hasattr(engine, key):
                 setattr(engine, key, copy.deepcopy(value))
 
-        engine.toolkit = self._build_agent_toolkit()
+        engine.toolkit = self._build_agent_toolkit(runtime_context=runtime_context)
 
         default_confirm = self.defaults.get("on_tool_confirm")
         if callable(default_confirm):
             engine.on_tool_confirm = default_confirm
         return engine
+
+    def _resolve_subagent_runtime(
+        self,
+        *,
+        payload: dict[str, Any] | None,
+        callback: Callable[[dict[str, Any]], None] | None,
+        verbose: bool,
+        max_iterations: int | None,
+        session_id: str | None,
+        memory_namespace: str | None,
+        on_tool_confirm: Callable | None,
+        on_continuation_request: Callable | None,
+        runtime_context: _SubagentRuntime | None,
+    ) -> _SubagentRuntime | None:
+        if runtime_context is not None:
+            return runtime_context
+        if self._subagent_config is None:
+            return None
+
+        runtime_session_id = session_id or str(uuid.uuid4())
+        runtime_memory_namespace = memory_namespace or runtime_session_id
+        return _SubagentRuntime(
+            config=self._subagent_config,
+            current_depth=0,
+            lineage=(self.name,),
+            counters=_SubagentCounters(),
+            current_session_id=runtime_session_id,
+            current_memory_namespace=runtime_memory_namespace,
+            payload=copy.deepcopy(payload) if payload is not None else None,
+            callback=callback,
+            max_iterations=max_iterations,
+            verbose=verbose,
+            on_tool_confirm=on_tool_confirm or self.defaults.get("on_tool_confirm"),
+            on_continuation_request=on_continuation_request,
+        )
+
+    def _compose_subagent_instructions(
+        self,
+        *,
+        role: str,
+        depth: int,
+        instructions: str,
+    ) -> str:
+        overlay = f"""
+You are a subagent created by parent agent "{self.name}".
+Role: {role}
+Depth: {depth}
+
+Complete only the delegated task provided by your parent.
+Return your result directly to the parent agent so it can continue coordinating the overall task.
+""".strip()
+        return _join_instruction_parts(self.instructions, overlay, instructions)
+
+    def _make_subagent_error(
+        self,
+        *,
+        message: str,
+        agent_name: str,
+        role: str,
+        depth: int,
+        lineage: tuple[str, ...],
+    ) -> dict[str, Any]:
+        return {
+            "error": message,
+            "agent": agent_name,
+            "role": role,
+            "depth": depth,
+            "lineage": list(lineage),
+        }
+
+    def _clone_for_subagent(
+        self,
+        *,
+        child_name: str,
+        role: str,
+        depth: int,
+        instructions: str,
+    ) -> Agent:
+        child = Agent(
+            name=child_name,
+            instructions=self._compose_subagent_instructions(
+                role=role,
+                depth=depth,
+                instructions=instructions,
+            ),
+            provider=self.provider,
+            model=self.model,
+            api_key=self.api_key,
+            tools=list(self.tools),
+            short_term_memory=self.memory_manager if self.memory_manager is not None else None,
+            defaults=copy.deepcopy(self.defaults),
+            broth_options=copy.deepcopy(self.broth_options),
+            toolkit_catalog_config=copy.deepcopy(self.toolkit_catalog_config),
+        )
+        if self._subagent_config is not None:
+            child.enable_subagents(
+                tool_name=self._subagent_config.tool_name,
+                description=self._subagent_config.description,
+                max_depth=self._subagent_config.max_depth,
+                max_children_per_agent=self._subagent_config.max_children_per_agent,
+                max_total_subagents=self._subagent_config.max_total_subagents,
+            )
+        return child
+
+    def _build_child_runtime(
+        self,
+        *,
+        runtime_context: _SubagentRuntime,
+        child_name: str,
+    ) -> _SubagentRuntime:
+        return _SubagentRuntime(
+            config=runtime_context.config,
+            current_depth=runtime_context.current_depth + 1,
+            lineage=runtime_context.lineage + (child_name,),
+            counters=runtime_context.counters,
+            current_session_id=f"{runtime_context.current_session_id}:{child_name}",
+            current_memory_namespace=f"{runtime_context.current_memory_namespace}:{child_name}",
+            payload=copy.deepcopy(runtime_context.payload) if runtime_context.payload is not None else None,
+            callback=runtime_context.callback,
+            max_iterations=runtime_context.max_iterations,
+            verbose=runtime_context.verbose,
+            on_tool_confirm=runtime_context.on_tool_confirm,
+            on_continuation_request=runtime_context.on_continuation_request,
+        )
+
+    def _spawn_subagent(
+        self,
+        *,
+        runtime_context: _SubagentRuntime,
+        task: str,
+        role: str,
+        instructions: str = "",
+    ) -> dict[str, Any]:
+        role_text = str(role or "").strip()
+        task_text = str(task or "").strip()
+        instructions_text = str(instructions or "").strip()
+        next_depth = runtime_context.current_depth + 1
+
+        if not role_text:
+            return self._make_subagent_error(
+                message="subagent role is required",
+                agent_name=self.name,
+                role="",
+                depth=next_depth,
+                lineage=runtime_context.lineage,
+            )
+        if not task_text:
+            return self._make_subagent_error(
+                message="subagent task is required",
+                agent_name=self.name,
+                role=role_text,
+                depth=next_depth,
+                lineage=runtime_context.lineage,
+            )
+
+        config = runtime_context.config
+        if next_depth > config.max_depth:
+            return self._make_subagent_error(
+                message=f"subagent max_depth exceeded: attempted depth {next_depth} > {config.max_depth}",
+                agent_name=self.name,
+                role=role_text,
+                depth=next_depth,
+                lineage=runtime_context.lineage,
+            )
+
+        lineage_key = runtime_context.lineage
+        current_children = runtime_context.counters.direct_children.get(lineage_key, 0)
+        if current_children >= config.max_children_per_agent:
+            return self._make_subagent_error(
+                message=(
+                    "subagent max_children_per_agent exceeded: "
+                    f"attempted child {current_children + 1} > {config.max_children_per_agent}"
+                ),
+                agent_name=self.name,
+                role=role_text,
+                depth=next_depth,
+                lineage=runtime_context.lineage,
+            )
+        if runtime_context.counters.total_created >= config.max_total_subagents:
+            return self._make_subagent_error(
+                message=(
+                    "subagent max_total_subagents exceeded: "
+                    f"attempted child {runtime_context.counters.total_created + 1} > {config.max_total_subagents}"
+                ),
+                agent_name=self.name,
+                role=role_text,
+                depth=next_depth,
+                lineage=runtime_context.lineage,
+            )
+
+        child_index = current_children + 1
+        child_name = f"{self.name}.{_slug_subagent_role(role_text)}.{child_index}"
+        runtime_context.counters.direct_children[lineage_key] = child_index
+        runtime_context.counters.total_created += 1
+
+        child_runtime = self._build_child_runtime(
+            runtime_context=runtime_context,
+            child_name=child_name,
+        )
+        child = self._clone_for_subagent(
+            child_name=child_name,
+            role=role_text,
+            depth=child_runtime.current_depth,
+            instructions=instructions_text,
+        )
+
+        try:
+            conversation, bundle = child._run_internal(
+                task_text,
+                payload=copy.deepcopy(child_runtime.payload) if child_runtime.payload is not None else None,
+                response_format=None,
+                callback=child_runtime.callback,
+                verbose=child_runtime.verbose,
+                max_iterations=child_runtime.max_iterations,
+                previous_response_id=None,
+                on_tool_confirm=child_runtime.on_tool_confirm,
+                on_continuation_request=child_runtime.on_continuation_request,
+                session_id=child_runtime.current_session_id,
+                memory_namespace=child_runtime.current_memory_namespace,
+                extra_system_messages=None,
+                runtime_context=child_runtime,
+            )
+        except Exception as exc:
+            return self._make_subagent_error(
+                message=str(exc),
+                agent_name=child_name,
+                role=role_text,
+                depth=child_runtime.current_depth,
+                lineage=child_runtime.lineage,
+            )
+
+        return {
+            "agent": child_name,
+            "role": role_text,
+            "depth": child_runtime.current_depth,
+            "lineage": list(child_runtime.lineage),
+            "output": child._extract_last_assistant_text(conversation),
+            "bundle": bundle,
+        }
+
+    def _build_subagent_tool(self, runtime_context: _SubagentRuntime) -> Tool:
+        config = runtime_context.config
+
+        def _delegate_subagent(task: str, role: str, instructions: str = "") -> dict[str, Any]:
+            """Run a delegated task through a dynamically created child agent.
+
+            Args:
+                task: The delegated task for the child agent.
+                role: The role the child agent should take on.
+                instructions: Extra instructions appended to the child agent prompt.
+            """
+            return self._spawn_subagent(
+                runtime_context=runtime_context,
+                task=task,
+                role=role,
+                instructions=instructions,
+            )
+
+        return Tool.from_callable(
+            _delegate_subagent,
+            name=config.tool_name,
+            description=config.description or "Create a child agent, run a delegated task, and return the result.",
+        )
 
     def _normalize_messages(self, messages: str | list[dict[str, Any]] | None) -> list[dict[str, Any]]:
         if messages is None:
@@ -243,20 +626,153 @@ class Agent:
         session_id: str | None = None,
         memory_namespace: str | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        engine = self._build_engine()
-        return engine.run(
-            messages=self._compose_messages(messages),
+        return self._run_internal(
+            messages,
+            payload=payload,
+            response_format=response_format,
+            callback=callback,
+            verbose=verbose,
+            max_iterations=max_iterations,
+            previous_response_id=previous_response_id,
+            on_tool_confirm=on_tool_confirm,
+            on_continuation_request=on_continuation_request,
+            session_id=session_id,
+            memory_namespace=memory_namespace,
+            extra_system_messages=None,
+            runtime_context=None,
+        )
+
+    def _run_internal(
+        self,
+        messages: str | list[dict[str, Any]] | None,
+        *,
+        payload: dict[str, Any] | None,
+        response_format: response_format | None,
+        callback: Callable[[dict[str, Any]], None] | None,
+        verbose: bool,
+        max_iterations: int | None,
+        previous_response_id: str | None,
+        on_tool_confirm: Callable | None,
+        on_continuation_request: Callable | None,
+        session_id: str | None,
+        memory_namespace: str | None,
+        extra_system_messages: list[str] | None,
+        runtime_context: _SubagentRuntime | None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        resolved_runtime = self._resolve_subagent_runtime(
+            payload=payload,
+            callback=callback,
+            verbose=verbose,
+            max_iterations=max_iterations,
+            session_id=session_id,
+            memory_namespace=memory_namespace,
+            on_tool_confirm=on_tool_confirm,
+            on_continuation_request=on_continuation_request,
+            runtime_context=runtime_context,
+        )
+        engine = self._build_engine(runtime_context=resolved_runtime)
+        conversation_out, bundle = engine.run(
+            messages=self._compose_messages(messages, extra_system_messages=extra_system_messages),
             payload=self._merge_payload(payload),
             response_format=response_format or self.defaults.get("response_format"),
             callback=callback,
             verbose=verbose,
             max_iterations=max_iterations,
             previous_response_id=previous_response_id,
-            on_tool_confirm=on_tool_confirm or self.defaults.get("on_tool_confirm"),
-            on_continuation_request=on_continuation_request,
+            on_tool_confirm=(
+                resolved_runtime.on_tool_confirm if resolved_runtime is not None
+                else on_tool_confirm or self.defaults.get("on_tool_confirm")
+            ),
+            on_continuation_request=(
+                resolved_runtime.on_continuation_request if resolved_runtime is not None
+                else on_continuation_request
+            ),
             session_id=session_id,
             memory_namespace=memory_namespace,
         )
+        self._capture_toolkit_catalog_state_from_engine(engine, bundle)
+        return conversation_out, bundle
+
+    def resume_human_input(
+        self,
+        *,
+        conversation: list[dict[str, Any]],
+        continuation: dict[str, Any],
+        response: dict[str, Any] | Any,
+        payload: dict[str, Any] | None = None,
+        response_format: response_format | None = None,
+        callback: Callable[[dict[str, Any]], None] | None = None,
+        verbose: bool = False,
+        on_tool_confirm: Callable | None = None,
+        on_continuation_request: Callable | None = None,
+        session_id: str | None = None,
+        memory_namespace: str | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        return self._resume_human_input_internal(
+            conversation=conversation,
+            continuation=continuation,
+            response=response,
+            payload=payload,
+            response_format=response_format,
+            callback=callback,
+            verbose=verbose,
+            on_tool_confirm=on_tool_confirm,
+            on_continuation_request=on_continuation_request,
+            session_id=session_id,
+            memory_namespace=memory_namespace,
+            runtime_context=None,
+        )
+
+    def _resume_human_input_internal(
+        self,
+        *,
+        conversation: list[dict[str, Any]],
+        continuation: dict[str, Any],
+        response: dict[str, Any] | Any,
+        payload: dict[str, Any] | None,
+        response_format: response_format | None,
+        callback: Callable[[dict[str, Any]], None] | None,
+        verbose: bool,
+        on_tool_confirm: Callable | None,
+        on_continuation_request: Callable | None,
+        session_id: str | None,
+        memory_namespace: str | None,
+        runtime_context: _SubagentRuntime | None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        resolved_runtime = self._resolve_subagent_runtime(
+            payload=payload,
+            callback=callback,
+            verbose=verbose,
+            max_iterations=None,
+            session_id=session_id,
+            memory_namespace=memory_namespace,
+            on_tool_confirm=on_tool_confirm,
+            on_continuation_request=on_continuation_request,
+            runtime_context=runtime_context,
+        )
+        engine = self._build_engine(runtime_context=resolved_runtime)
+        self._restore_toolkit_catalog_state_to_engine(engine, continuation)
+        conversation_out, bundle = engine.resume_human_input(
+            conversation=copy.deepcopy(conversation),
+            continuation=copy.deepcopy(continuation),
+            response=copy.deepcopy(response),
+            payload=self._merge_payload(payload) if payload is not None else None,
+            response_format=response_format or self.defaults.get("response_format"),
+            callback=callback,
+            verbose=verbose,
+            on_tool_confirm=(
+                resolved_runtime.on_tool_confirm if resolved_runtime is not None
+                else on_tool_confirm or self.defaults.get("on_tool_confirm")
+            ),
+            on_continuation_request=(
+                resolved_runtime.on_continuation_request if resolved_runtime is not None
+                else on_continuation_request
+            ),
+            session_id=session_id,
+            memory_namespace=memory_namespace,
+        )
+        self._capture_toolkit_catalog_state_from_engine(engine, bundle)
+        return conversation_out, bundle
 
     def step(
         self,
@@ -378,13 +894,9 @@ Rules:
         memory_namespace: str | None,
         response_format: response_format,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        engine = self._build_engine()
-        return engine.run(
-            messages=self._compose_messages(
-                [{"role": "user", "content": user_prompt}],
-                extra_system_messages=[coordination_prompt],
-            ),
-            payload=self._merge_payload(payload),
+        return self._run_internal(
+            [{"role": "user", "content": user_prompt}],
+            payload=payload,
             response_format=response_format,
             callback=callback,
             verbose=verbose,
@@ -394,6 +906,8 @@ Rules:
             on_continuation_request=None,
             session_id=session_id,
             memory_namespace=memory_namespace,
+            extra_system_messages=[coordination_prompt],
+            runtime_context=None,
         )
 
     def _format_envelopes(self, envelopes: list[dict[str, Any]]) -> str:

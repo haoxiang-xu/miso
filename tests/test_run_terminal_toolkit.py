@@ -1,19 +1,23 @@
 import tempfile
 
-from miso import broth as Broth, terminal_toolkit, workspace_toolkit
+from miso import access_workspace_toolkit, broth as Broth, run_terminal_toolkit, terminal_toolkit
 
 
 def test_terminal_tool_methods_are_declared_on_class_for_ui_discovery():
-    assert "terminal_exec" in terminal_toolkit.__dict__
-    assert "terminal_session_open" in terminal_toolkit.__dict__
-    assert "terminal_session_write" in terminal_toolkit.__dict__
-    assert "terminal_session_close" in terminal_toolkit.__dict__
-    assert "read_file" in workspace_toolkit.__dict__
+    assert "terminal_exec" in run_terminal_toolkit.__dict__
+    assert "terminal_session_open" in run_terminal_toolkit.__dict__
+    assert "terminal_session_write" in run_terminal_toolkit.__dict__
+    assert "terminal_session_close" in run_terminal_toolkit.__dict__
+    assert "read_file" in access_workspace_toolkit.__dict__
 
 
-def test_terminal_toolkit_registers_only_terminal_tools():
+def test_run_terminal_toolkit_alias_is_preserved():
+    assert terminal_toolkit is run_terminal_toolkit
+
+
+def test_run_terminal_toolkit_registers_only_terminal_tools():
     with tempfile.TemporaryDirectory() as tmp:
-        tk = terminal_toolkit(workspace_root=tmp)
+        tk = run_terminal_toolkit(workspace_root=tmp)
         assert set(tk.tools.keys()) == {
             "terminal_exec",
             "terminal_session_open",
@@ -22,9 +26,9 @@ def test_terminal_toolkit_registers_only_terminal_tools():
         }
 
 
-def test_terminal_toolkit_exec_and_session_workflow():
+def test_run_terminal_toolkit_exec_and_session_workflow():
     with tempfile.TemporaryDirectory() as tmp:
-        tk = terminal_toolkit(workspace_root=tmp)
+        tk = run_terminal_toolkit(workspace_root=tmp)
 
         exec_result = tk.execute("terminal_exec", {"command": "echo terminal-only"})
         assert exec_result["ok"] is True
@@ -48,19 +52,19 @@ def test_terminal_toolkit_exec_and_session_workflow():
         assert closed["ok"] is True
 
 
-def test_terminal_toolkit_strict_mode_blocks_disallowed_commands():
+def test_run_terminal_toolkit_strict_mode_blocks_disallowed_commands():
     with tempfile.TemporaryDirectory() as tmp:
-        tk = terminal_toolkit(workspace_root=tmp, terminal_strict_mode=True)
+        tk = run_terminal_toolkit(workspace_root=tmp, terminal_strict_mode=True)
         result = tk.execute("terminal_exec", {"command": "curl https://example.com"})
         assert result["ok"] is False
         assert "blocked by strict mode" in result["error"]
 
 
-def test_terminal_toolkit_can_be_composed_with_workspace_toolkit():
+def test_run_terminal_toolkit_can_be_composed_with_access_workspace_toolkit():
     with tempfile.TemporaryDirectory() as tmp:
         agent = Broth()
-        files = workspace_toolkit(workspace_root=tmp)
-        term = terminal_toolkit(workspace_root=tmp)
+        files = access_workspace_toolkit(workspace_root=tmp)
+        term = run_terminal_toolkit(workspace_root=tmp)
 
         agent.add_toolkit(files)
         agent.add_toolkit(term)
