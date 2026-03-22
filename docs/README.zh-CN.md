@@ -1,5 +1,7 @@
 # Miso 概览
 
+语言入口：[English](README.en.md) | [简体中文](README.zh-CN.md) | [首页](../README.md)
+
 `miso` 是一个 Python agent framework。第二阶段重构后，对外 API 收口，低层模块也都按职责拆开。
 
 ## 正式导入方式
