@@ -135,6 +135,8 @@ def _build_run_artifact(
     tool_usage = summarize_tool_usage(callback_events or [])
     token_usage = {
         "consumed_tokens": int((bundle or {}).get("consumed_tokens", 0) or 0),
+        "input_tokens": int((bundle or {}).get("input_tokens", 0) or 0),
+        "output_tokens": int((bundle or {}).get("output_tokens", 0) or 0),
         "context_window_used_pct": (bundle or {}).get("context_window_used_pct"),
         "max_context_window_tokens": (bundle or {}).get("max_context_window_tokens"),
     }
@@ -417,6 +419,8 @@ def run_benchmark_suite(
                 "blended_score": blended_score,
                 "duration_seconds": run_artifact.duration_seconds,
                 "consumed_tokens": run_artifact.token_usage.get("consumed_tokens"),
+                "input_tokens": run_artifact.token_usage.get("input_tokens"),
+                "output_tokens": run_artifact.token_usage.get("output_tokens"),
                 "tool_calls": run_artifact.tool_usage.get("total_calls"),
                 "run_artifact_path": str(run_path),
                 "judge_report_path": str(judge_path),
