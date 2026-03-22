@@ -104,7 +104,7 @@ messages, bundle = runtime.run("Summarize this repo.", response_format=fmt)
 
 - `WorkspaceToolkit`: workspace file, Python AST, and line editing
 - `TerminalToolkit`: restricted terminal execution and sessions
-- `ExternalAPIToolkit`: simple HTTP GET/POST tools
+- `ExternalAPIToolkit`: simple HTTP GET/POST tools plus read-only git commands
 - `AskUserToolkit`: structured user-question suspension flow
 - `MCPToolkit`: expose MCP servers as toolkits
 

@@ -49,7 +49,7 @@ src/miso/
 
 - `WorkspaceToolkit`: file, directory, Python AST, line-edit, and workspace pin tools
 - `TerminalToolkit`: restricted shell execution and persistent sessions
-- `ExternalAPIToolkit`: basic outbound HTTP access
+- `ExternalAPIToolkit`: basic outbound HTTP access plus read-only git commands
 - `AskUserToolkit`: structured user-question suspension flow
 - `MCPToolkit`: remote MCP server bridge
 
