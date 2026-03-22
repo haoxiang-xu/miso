@@ -28,11 +28,11 @@ class ExternalAPIToolkit(BuiltinToolkit):
             self.git_status,
             self.git_log,
             self.git_diff,
-            self.git_add,
-            self.git_commit,
-            self.git_checkout,
-            self.git_branch,
         )
+        self.register(self.git_add, requires_confirmation=True)
+        self.register(self.git_commit, requires_confirmation=True)
+        self.register(self.git_checkout, requires_confirmation=True)
+        self.register(self.git_branch, requires_confirmation=True)
 
     def _truncate_text(self, text: str, max_output_chars: int) -> tuple[str, bool]:
         if max_output_chars < 0:
