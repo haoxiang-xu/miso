@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Any
 
 from ..memory import SessionStore
+from .syntax import (
+    build_declaration_metadata,
+    find_declaration_by_name,
+    parse_source_bytes,
+)
 
 
 MAX_SESSION_PIN_COUNT = 8
@@ -64,7 +69,7 @@ def build_pin_record(
     total_lines = len(lines)
     if start is None or end is None:
         content = "".join(lines)
-        declaration = _extract_declaration_metadata(lines)
+        declaration = _empty_declaration_metadata()
         return {
             "pin_id": f"pin_{uuid.uuid4().hex[:10]}",
             "path": str(path),
@@ -90,7 +95,12 @@ def build_pin_record(
     selection = lines[start - 1 : end]
     start_anchor, start_anchor_offset = _resolve_anchor(selection, explicit=start_with, from_end=False)
     end_anchor, end_anchor_trailing_lines = _resolve_anchor(selection, explicit=end_with, from_end=True)
-    declaration = _extract_declaration_metadata(selection)
+    declaration = _extract_declaration_metadata(
+        path=path,
+        lines=lines,
+        start=start,
+        end=end,
+    )
 
     return {
         "pin_id": f"pin_{uuid.uuid4().hex[:10]}",
@@ -456,8 +466,26 @@ def _auto_anchor(lines: list[str], *, from_end: bool) -> str | None:
             return stripped[:MAX_ANCHOR_LENGTH]
     return None
 
+def _extract_declaration_metadata(
+    *,
+    path: Path,
+    lines: list[str],
+    start: int,
+    end: int,
+) -> dict[str, Any]:
+    content = "".join(lines)
+    metadata = build_declaration_metadata(
+        path,
+        source_bytes=content.encode("utf-8"),
+        start_line=start,
+        end_line=end,
+    )
+    if metadata.get("declaration_name"):
+        return metadata
+    return _extract_declaration_metadata_from_lines(lines[start - 1 : end])
 
-def _extract_declaration_metadata(lines: list[str]) -> dict[str, Any]:
+
+def _extract_declaration_metadata_from_lines(lines: list[str]) -> dict[str, Any]:
     for index, line in enumerate(lines[:12]):
         stripped = line.strip()
         if not stripped or stripped.startswith("@"):
@@ -466,20 +494,30 @@ def _extract_declaration_metadata(lines: list[str]) -> dict[str, Any]:
         if py_match:
             return {
                 "declaration_kind": "python",
+                "declaration_type": None,
                 "declaration_name": py_match.group(2),
                 "declaration_offset": index,
+                "declaration_end_offset": None,
             }
         js_match = _JS_DECLARATION_RE.match(line)
         if js_match:
             return {
                 "declaration_kind": "javascript",
+                "declaration_type": None,
                 "declaration_name": js_match.group(1),
                 "declaration_offset": index,
+                "declaration_end_offset": None,
             }
+    return _empty_declaration_metadata()
+
+
+def _empty_declaration_metadata() -> dict[str, Any]:
     return {
         "declaration_kind": None,
+        "declaration_type": None,
         "declaration_name": None,
         "declaration_offset": None,
+        "declaration_end_offset": None,
     }
 
 
@@ -671,14 +709,34 @@ def _find_declaration_match(
     end_anchor_trailing_lines: int,
 ) -> tuple[int, int] | None:
     declaration_kind = pin.get("declaration_kind")
+    declaration_type = pin.get("declaration_type")
     declaration_name = pin.get("declaration_name")
     declaration_offset = pin.get("declaration_offset")
+    declaration_end_offset = pin.get("declaration_end_offset")
 
-    if declaration_kind not in {"python", "javascript"}:
+    if not isinstance(declaration_kind, str) or not declaration_kind:
         return None
     if not isinstance(declaration_name, str) or not declaration_name:
         return None
-    if not isinstance(declaration_offset, int) or declaration_offset < 0:
+    if not isinstance(declaration_offset, int):
+        return None
+    if declaration_end_offset is not None and not isinstance(declaration_end_offset, int):
+        return None
+
+    candidate = _find_declaration_match_from_syntax(
+        lines=lines,
+        declaration_kind=declaration_kind,
+        declaration_type=declaration_type if isinstance(declaration_type, str) else None,
+        declaration_name=declaration_name,
+        declaration_offset=declaration_offset,
+        declaration_end_offset=declaration_end_offset if isinstance(declaration_end_offset, int) else 0,
+        original_start=original_start,
+        original_end=original_end,
+    )
+    if candidate is not None:
+        return candidate
+
+    if declaration_kind not in {"python", "javascript"}:
         return None
 
     candidates: list[tuple[int, int]] = []
@@ -714,6 +772,41 @@ def _find_declaration_match(
         if best_distance == second_distance:
             return None
     return candidates[0]
+
+
+def _find_declaration_match_from_syntax(
+    *,
+    lines: list[str],
+    declaration_kind: str,
+    declaration_type: str | None,
+    declaration_name: str,
+    declaration_offset: int,
+    declaration_end_offset: int,
+    original_start: int,
+    original_end: int,
+) -> tuple[int, int] | None:
+    source_bytes = "".join(lines).encode("utf-8")
+    parsed = parse_source_bytes(
+        Path("pin-context"),
+        source_bytes=source_bytes,
+        language=declaration_kind,
+    )
+    if parsed is None:
+        return None
+
+    candidate = find_declaration_by_name(
+        parsed,
+        name=declaration_name,
+        original_start=original_start,
+        original_end=original_end,
+        declaration_type=declaration_type,
+    )
+    if candidate is None:
+        return None
+
+    candidate_start = candidate.start_line - declaration_offset
+    candidate_end = candidate.end_line + declaration_end_offset
+    return candidate_start, candidate_end
 
 
 def _find_end_anchor_after(

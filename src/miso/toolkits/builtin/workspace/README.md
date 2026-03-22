@@ -1,6 +1,6 @@
 # Workspace Toolkit
 
-`WorkspaceToolkit` 提供工作区内的文件、目录、Python AST 读取和行级编辑能力。
+`WorkspaceToolkit` 提供工作区内的文件、目录、语言感知语法树读取和行级编辑能力。
 
 ## 用法
 
@@ -13,7 +13,7 @@ tk = WorkspaceToolkit(workspace_root=".")
 ## 包含的能力
 
 - 文件读取、写入、创建、删除、复制、移动
-- Python 文件 AST 结构读取（`read_file_ast`）
+- 支持多语言源码结构读取（`read_file_ast`，基于 syntax tree）
 - 目录列出与创建
 - 行级读取、插入、替换、删除、复制、移动
 - 文本搜索与批量替换

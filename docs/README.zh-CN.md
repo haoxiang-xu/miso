@@ -47,7 +47,7 @@ src/miso/
 
 ## 内置 Toolkits
 
-- `WorkspaceToolkit`：文件、目录、Python AST、行级编辑与 workspace pin
+- `WorkspaceToolkit`：文件、目录、多语言 syntax tree、行级编辑与 workspace pin
 - `TerminalToolkit`：受限 shell 执行与持久 session
 - `ExternalAPIToolkit`：基础外部 HTTP 调用
 - `AskUserToolkit`：结构化向用户提问并 suspend / resume

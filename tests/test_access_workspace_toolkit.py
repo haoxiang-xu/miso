@@ -163,6 +163,18 @@ def test_access_workspace_toolkit_file_ops_and_search():
         assert len(search_result["matches"]) == 2
 
 
+def _assert_syntax_tree_result(result: dict, language: str):
+    assert result["language"] == language
+    assert result["parser"] == "tree_sitter"
+    assert result["tree_kind"] == "concrete_syntax_tree"
+    assert result["node_count"] >= result["returned_node_count"] >= 1
+    assert result["truncated"] is False
+    assert result["has_syntax_errors"] is False
+    assert result["syntax_errors"] == []
+    assert isinstance(result["ast"], dict)
+    assert isinstance(result["ast"]["type"], str)
+
+
 def test_read_file_ast_parses_python_file():
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = WorkspaceToolkit(workspace_root=tmp)
@@ -173,26 +185,106 @@ def test_read_file_ast_parses_python_file():
 
         result = toolkit.execute("read_file_ast", {"path": "sample.py"})
 
-        assert result["language"] == "python"
-        assert result["node_count"] >= result["returned_node_count"] >= 1
-        assert result["ast"]["type"] == "Module"
-        body = result["ast"]["body"]
-        assert body[0]["type"] == "Import"
-        assert body[1]["type"] == "ClassDef"
-        assert body[1]["name"] == "Greeter"
-        assert body[1]["body"][0]["type"] == "FunctionDef"
-        assert body[1]["body"][0]["name"] == "hello"
+        _assert_syntax_tree_result(result, "python")
+        assert result["ast"]["type"] == "module"
+        children = result["ast"]["children"]
+        assert children[0]["type"] == "import_statement"
+        assert children[1]["type"] == "class_definition"
 
 
-def test_read_file_ast_rejects_non_python_files():
+def test_read_file_ast_parses_typescript_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = WorkspaceToolkit(workspace_root=tmp)
+        Path(tmp, "sample.ts").write_text(
+            "export function hello(name: string): string {\n  return `hi ${name}`;\n}\n",
+            encoding="utf-8",
+        )
+
+        result = toolkit.execute("read_file_ast", {"path": "sample.ts"})
+
+        _assert_syntax_tree_result(result, "typescript")
+        assert result["ast"]["type"] == "program"
+
+
+def test_read_file_ast_parses_rust_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = WorkspaceToolkit(workspace_root=tmp)
+        Path(tmp, "sample.rs").write_text(
+            "fn hello(name: &str) -> String {\n    format!(\"hi {}\", name)\n}\n",
+            encoding="utf-8",
+        )
+
+        result = toolkit.execute("read_file_ast", {"path": "sample.rs"})
+
+        _assert_syntax_tree_result(result, "rust")
+        assert result["ast"]["type"] == "source_file"
+
+
+def test_read_file_ast_parses_go_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = WorkspaceToolkit(workspace_root=tmp)
+        Path(tmp, "sample.go").write_text(
+            "package main\n\nfunc hello(name string) string {\n    return \"hi \" + name\n}\n",
+            encoding="utf-8",
+        )
+
+        result = toolkit.execute("read_file_ast", {"path": "sample.go"})
+
+        _assert_syntax_tree_result(result, "go")
+        assert result["ast"]["type"] == "source_file"
+
+
+def test_read_file_ast_detects_language_from_shebang():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = WorkspaceToolkit(workspace_root=tmp)
+        Path(tmp, "script").write_text(
+            "#!/usr/bin/env bash\necho hello\n",
+            encoding="utf-8",
+        )
+
+        result = toolkit.execute("read_file_ast", {"path": "script"})
+
+        _assert_syntax_tree_result(result, "bash")
+
+
+def test_read_file_ast_supports_language_override():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = WorkspaceToolkit(workspace_root=tmp)
+        Path(tmp, "snippet.custom").write_text(
+            "function greet(name) {\n  return `hi ${name}`;\n}\n",
+            encoding="utf-8",
+        )
+
+        result = toolkit.execute(
+            "read_file_ast",
+            {"path": "snippet.custom", "language": "javascript"},
+        )
+
+        _assert_syntax_tree_result(result, "javascript")
+
+
+def test_read_file_ast_rejects_unsupported_text_files():
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = WorkspaceToolkit(workspace_root=tmp)
         Path(tmp, "notes.txt").write_text("hello\n", encoding="utf-8")
 
         result = toolkit.execute("read_file_ast", {"path": "notes.txt"})
 
-        assert result["error"] == "read_file_ast currently supports Python source files (.py) only"
-        assert result["supported_extensions"] == [".py"]
+        assert result["language"] is None
+        assert result["error"] == "read_file_ast could not detect a supported language for this file"
+        assert "python" in result["supported_languages"]
+
+
+def test_read_file_ast_rejects_binary_files():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = WorkspaceToolkit(workspace_root=tmp)
+        Path(tmp, "blob.bin").write_bytes(b"\x00\x01\x02")
+
+        result = toolkit.execute("read_file_ast", {"path": "blob.bin"})
+
+        assert result["language"] is None
+        assert result["error"] == "read_file_ast does not support binary files"
+        assert "javascript" in result["supported_languages"]
 
 
 def test_read_file_ast_reports_python_syntax_errors():
@@ -203,8 +295,23 @@ def test_read_file_ast_reports_python_syntax_errors():
         result = toolkit.execute("read_file_ast", {"path": "broken.py"})
 
         assert result["language"] == "python"
-        assert result["error"].startswith("python syntax error:")
-        assert result["line"] == 1
+        assert result["parser"] == "tree_sitter"
+        assert result["has_syntax_errors"] is True
+        assert result["syntax_errors"][0]["start_line"] == 1
+        assert isinstance(result["ast"], dict)
+
+
+def test_read_file_ast_reports_javascript_syntax_errors():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = WorkspaceToolkit(workspace_root=tmp)
+        Path(tmp, "broken.js").write_text("function broken( {\n  return 1;\n}\n", encoding="utf-8")
+
+        result = toolkit.execute("read_file_ast", {"path": "broken.js"})
+
+        assert result["language"] == "javascript"
+        assert result["has_syntax_errors"] is True
+        assert result["syntax_errors"]
+        assert isinstance(result["ast"], dict)
 
 
 def test_line_level_read_insert_replace_delete():

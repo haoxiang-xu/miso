@@ -113,7 +113,7 @@ requires_confirmation = false
 [[tools]]
 name = "read_file_ast"
 title = "Read File AST"
-description = "Parse a Python source file and return a JSON-safe AST."
+description = "Parse a supported source file and return a JSON-safe syntax tree."
 observe = false
 requires_confirmation = false
 
