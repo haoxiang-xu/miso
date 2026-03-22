@@ -53,3 +53,31 @@ title = "Git Diff"
 description = "Run git diff with optional arguments inside the workspace."
 observe = false
 requires_confirmation = false
+
+[[tools]]
+name = "git_add"
+title = "Git Add"
+description = "Run git add with optional arguments inside the workspace."
+observe = false
+requires_confirmation = true
+
+[[tools]]
+name = "git_commit"
+title = "Git Commit"
+description = "Run git commit with a message and optional arguments inside the workspace."
+observe = false
+requires_confirmation = true
+
+[[tools]]
+name = "git_checkout"
+title = "Git Checkout"
+description = "Run git checkout with optional arguments inside the workspace."
+observe = false
+requires_confirmation = true
+
+[[tools]]
+name = "git_branch"
+title = "Git Branch"
+description = "Run git branch with optional arguments inside the workspace."
+observe = false
+requires_confirmation = true

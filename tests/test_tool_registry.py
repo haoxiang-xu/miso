@@ -116,7 +116,7 @@ def test_builtin_registry_lists_expected_toolkits_and_tools():
     assert toolkit_ids == {"workspace", "terminal", "external_api", "ask_user"}
     assert registry.require("workspace").to_summary()["tool_count"] == 20
     assert registry.require("terminal").to_summary()["tool_count"] == 4
-    assert registry.require("external_api").to_summary()["tool_count"] == 5
+    assert registry.require("external_api").to_summary()["tool_count"] == 9
     assert registry.require("ask_user").to_summary()["tool_count"] == 1
 
 

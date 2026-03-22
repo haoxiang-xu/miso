@@ -28,6 +28,10 @@ class ExternalAPIToolkit(BuiltinToolkit):
             self.git_status,
             self.git_log,
             self.git_diff,
+            self.git_add,
+            self.git_commit,
+            self.git_checkout,
+            self.git_branch,
         )
 
     def _truncate_text(self, text: str, max_output_chars: int) -> tuple[str, bool]:
@@ -245,6 +249,79 @@ class ExternalAPIToolkit(BuiltinToolkit):
         """Run ``git diff`` with optional arguments and return output."""
         return self._run_git_command(
             "diff",
+            args=args,
+            cwd=cwd,
+            timeout_seconds=timeout_seconds,
+            max_output_chars=max_output_chars,
+        )
+
+    def git_add(
+        self,
+        args: list[str] | None = None,
+        cwd: str = ".",
+        timeout_seconds: int = 30,
+        max_output_chars: int = 20000,
+    ) -> dict[str, Any]:
+        """Run ``git add`` with optional arguments and return output."""
+        return self._run_git_command(
+            "add",
+            args=args,
+            cwd=cwd,
+            timeout_seconds=timeout_seconds,
+            max_output_chars=max_output_chars,
+        )
+
+    def git_commit(
+        self,
+        message: str,
+        args: list[str] | None = None,
+        cwd: str = ".",
+        timeout_seconds: int = 30,
+        max_output_chars: int = 20000,
+    ) -> dict[str, Any]:
+        """Run ``git commit -m <message>`` with optional arguments and return output."""
+        if not isinstance(message, str) or not message.strip():
+            return {
+                "ok": False,
+                "error": "message is required",
+            }
+        commit_args = ["-m", message]
+        if args:
+            commit_args.extend(args)
+        return self._run_git_command(
+            "commit",
+            args=commit_args,
+            cwd=cwd,
+            timeout_seconds=timeout_seconds,
+            max_output_chars=max_output_chars,
+        )
+
+    def git_checkout(
+        self,
+        args: list[str] | None = None,
+        cwd: str = ".",
+        timeout_seconds: int = 30,
+        max_output_chars: int = 20000,
+    ) -> dict[str, Any]:
+        """Run ``git checkout`` with optional arguments and return output."""
+        return self._run_git_command(
+            "checkout",
+            args=args,
+            cwd=cwd,
+            timeout_seconds=timeout_seconds,
+            max_output_chars=max_output_chars,
+        )
+
+    def git_branch(
+        self,
+        args: list[str] | None = None,
+        cwd: str = ".",
+        timeout_seconds: int = 30,
+        max_output_chars: int = 20000,
+    ) -> dict[str, Any]:
+        """Run ``git branch`` with optional arguments and return output."""
+        return self._run_git_command(
+            "branch",
             args=args,
             cwd=cwd,
             timeout_seconds=timeout_seconds,
