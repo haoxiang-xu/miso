@@ -108,8 +108,8 @@ def test_catalog_activate_exposes_managed_tools_on_the_next_iteration():
     )
 
     assert "toolkit_activate" in seen_tool_names[0]
-    assert "read_file" not in seen_tool_names[0]
-    assert "read_file" in seen_tool_names[1]
+    assert "read_files" not in seen_tool_names[0]
+    assert "read_files" in seen_tool_names[1]
     assert bundle["status"] == "completed"
     payloads = _tool_payloads(messages)
     assert payloads[0]["ok"] is True
@@ -143,9 +143,9 @@ def test_catalog_deactivate_hides_managed_tools_on_the_next_iteration():
         max_iterations=4,
     )
 
-    assert "read_file" not in seen_tool_names[0]
-    assert "read_file" in seen_tool_names[1]
-    assert "read_file" not in seen_tool_names[2]
+    assert "read_files" not in seen_tool_names[0]
+    assert "read_files" in seen_tool_names[1]
+    assert "read_files" not in seen_tool_names[2]
     assert bundle["status"] == "completed"
 
 
@@ -175,8 +175,8 @@ def test_catalog_always_active_toolkits_are_visible_and_cannot_be_deactivated():
         max_iterations=3,
     )
 
-    assert "read_file" in seen_tool_names[0]
-    assert "read_file" in seen_tool_names[1]
+    assert "read_files" in seen_tool_names[0]
+    assert "read_files" in seen_tool_names[1]
     payloads = _tool_payloads(messages)
     assert "always_active" in payloads[0]["error"]
 

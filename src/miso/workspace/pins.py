@@ -474,12 +474,15 @@ def _extract_declaration_metadata(
     end: int,
 ) -> dict[str, Any]:
     content = "".join(lines)
-    metadata = build_declaration_metadata(
-        path,
-        source_bytes=content.encode("utf-8"),
-        start_line=start,
-        end_line=end,
-    )
+    try:
+        metadata = build_declaration_metadata(
+            path,
+            source_bytes=content.encode("utf-8"),
+            start_line=start,
+            end_line=end,
+        )
+    except RuntimeError:
+        metadata = _empty_declaration_metadata()
     if metadata.get("declaration_name"):
         return metadata
     return _extract_declaration_metadata_from_lines(lines[start - 1 : end])
@@ -786,11 +789,14 @@ def _find_declaration_match_from_syntax(
     original_end: int,
 ) -> tuple[int, int] | None:
     source_bytes = "".join(lines).encode("utf-8")
-    parsed = parse_source_bytes(
-        Path("pin-context"),
-        source_bytes=source_bytes,
-        language=declaration_kind,
-    )
+    try:
+        parsed = parse_source_bytes(
+            Path("pin-context"),
+            source_bytes=source_bytes,
+            language=declaration_kind,
+        )
+    except RuntimeError:
+        return None
     if parsed is None:
         return None
 

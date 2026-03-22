@@ -9,7 +9,7 @@ def test_terminal_tool_methods_are_declared_on_class_for_ui_discovery():
     assert "terminal_session_open" in TerminalToolkit.__dict__
     assert "terminal_session_write" in TerminalToolkit.__dict__
     assert "terminal_session_close" in TerminalToolkit.__dict__
-    assert "read_file" in WorkspaceToolkit.__dict__
+    assert "read_files" in WorkspaceToolkit.__dict__
 
 
 def test_terminal_toolkit_class_is_exposed():
@@ -71,6 +71,6 @@ def test_run_terminal_toolkit_can_be_composed_with_WorkspaceToolkit():
         agent.add_toolkit(term)
 
         names = set(agent.toolkit.tools.keys())
-        assert "read_file" in names
+        assert "read_files" in names
         assert "terminal_exec" in names
         assert "python_runtime_run" not in names

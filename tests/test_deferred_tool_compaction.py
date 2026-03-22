@@ -207,16 +207,42 @@ def test_deferred_compaction_keeps_latest_completed_turn_raw():
     assert json.loads(latest_call["arguments"]) == latest_arguments
 
 
-def test_read_file_history_result_is_compacted_with_preview():
+def test_read_files_history_result_is_compacted_with_preview():
     tk = WorkspaceToolkit(workspace_root=".")
     manager = MemoryManager()
-    session_id = "s_read_file_tool_compact"
+    session_id = "s_read_files_tool_compact"
     large_content = "header\n" + ("line\n" * 800) + "footer\n"
     history = _build_openai_tool_turn(
-        tool_name="read_file",
-        call_id="call_read_file",
-        arguments={"path": "notes.txt", "max_chars": 50000, "noise": "drop me"},
-        result={"path": "/tmp/notes.txt", "content": large_content, "total_lines": 802, "truncated": False},
+        tool_name="read_files",
+        call_id="call_read_files",
+        arguments={
+            "paths": ["notes.txt", "other.txt"],
+            "max_chars_per_file": 50000,
+            "max_total_chars": 80000,
+            "noise": "drop me",
+        },
+        result={
+            "files": [
+                {
+                    "requested_path": "notes.txt",
+                    "path": "/tmp/notes.txt",
+                    "content": large_content,
+                    "total_lines": 802,
+                    "truncated": False,
+                },
+                {
+                    "requested_path": "other.txt",
+                    "path": "/tmp/other.txt",
+                    "content": large_content,
+                    "total_lines": 802,
+                    "truncated": False,
+                },
+            ],
+            "requested_paths": 2,
+            "returned_files": 2,
+            "truncated": False,
+            "skipped_paths": [],
+        },
     ) + [{"role": "user", "content": "u2"}, {"role": "assistant", "content": "a2"}]
     manager.commit_messages(session_id, history)
 
@@ -229,17 +255,92 @@ def test_read_file_history_result_is_compacted_with_preview():
         tool_resolver=tk.get,
     )
 
-    function_call = next(msg for msg in prepared if msg.get("type") == "function_call" and msg.get("call_id") == "call_read_file")
-    function_output = next(msg for msg in prepared if msg.get("type") == "function_call_output" and msg.get("call_id") == "call_read_file")
+    function_call = next(msg for msg in prepared if msg.get("type") == "function_call" and msg.get("call_id") == "call_read_files")
+    function_output = next(msg for msg in prepared if msg.get("type") == "function_call_output" and msg.get("call_id") == "call_read_files")
     compacted_args = json.loads(function_call["arguments"])
     compacted_result = json.loads(function_output["output"])
 
-    assert compacted_args == {"path": "notes.txt", "max_chars": 50000, "compacted": True}
+    assert compacted_args == {
+        "paths": ["notes.txt", "other.txt"],
+        "max_chars_per_file": 50000,
+        "max_total_chars": 80000,
+        "compacted": True,
+    }
     assert compacted_result["compacted"] is True
-    assert compacted_result["path"] == "/tmp/notes.txt"
-    assert compacted_result["total_lines"] == 802
-    assert compacted_result["content"].startswith("header")
-    assert "footer" in compacted_result["content"]
+    assert compacted_result["requested_paths"] == 2
+    assert compacted_result["returned_files"] == 2
+    assert compacted_result["files"][0]["content"].startswith("header")
+    assert "footer" in compacted_result["files"][0]["content"]
+
+
+def test_list_directories_history_result_is_compacted_with_preview():
+    tk = WorkspaceToolkit(workspace_root=".")
+    manager = MemoryManager()
+    session_id = "s_list_directories_tool_compact"
+    entries = [f"src/file_{index}.py" for index in range(80)]
+    history = _build_openai_tool_turn(
+        tool_name="list_directories",
+        call_id="call_list_directories",
+        arguments={
+            "paths": ["src", "tests"],
+            "recursive": True,
+            "max_entries_per_directory": 200,
+            "max_total_entries": 400,
+            "noise": "drop me",
+        },
+        result={
+            "directories": [
+                {
+                    "requested_path": "src",
+                    "path": "/tmp/src",
+                    "entries": entries,
+                    "truncated": False,
+                },
+                {
+                    "requested_path": "tests",
+                    "path": "/tmp/tests",
+                    "entries": entries,
+                    "truncated": False,
+                },
+            ],
+            "requested_paths": 2,
+            "returned_directories": 2,
+            "truncated": False,
+            "skipped_paths": [],
+        },
+    ) + [{"role": "user", "content": "u2"}, {"role": "assistant", "content": "a2"}]
+    manager.commit_messages(session_id, history)
+
+    prepared = manager.prepare_messages(
+        session_id,
+        [{"role": "user", "content": "u3"}],
+        max_context_window_tokens=50_000,
+        model="gpt-5",
+        provider="openai",
+        tool_resolver=tk.get,
+    )
+
+    function_call = next(
+        msg for msg in prepared if msg.get("type") == "function_call" and msg.get("call_id") == "call_list_directories"
+    )
+    function_output = next(
+        msg for msg in prepared if msg.get("type") == "function_call_output" and msg.get("call_id") == "call_list_directories"
+    )
+    compacted_args = json.loads(function_call["arguments"])
+    compacted_result = json.loads(function_output["output"])
+
+    assert compacted_args == {
+        "paths": ["src", "tests"],
+        "recursive": True,
+        "max_entries_per_directory": 200,
+        "max_total_entries": 400,
+        "compacted": True,
+    }
+    assert compacted_result["compacted"] is True
+    assert compacted_result["requested_paths"] == 2
+    assert compacted_result["returned_directories"] == 2
+    assert compacted_result["directories"][0]["entry_count"] == 80
+    assert "... <omitted" in compacted_result["directories"][0]["entries"][10]
 
 
 def test_write_file_history_arguments_are_compacted_by_tool_optimizer():

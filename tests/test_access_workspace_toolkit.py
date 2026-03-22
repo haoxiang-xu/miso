@@ -11,6 +11,31 @@ from miso.workspace import (
 )
 
 
+def _read_single_file(toolkit: WorkspaceToolkit, path: str, max_chars_per_file: int = 20000) -> dict:
+    result = toolkit.execute(
+        "read_files",
+        {
+            "paths": [path],
+            "max_chars_per_file": max_chars_per_file,
+            "max_total_chars": max_chars_per_file,
+        },
+    )
+    return result["files"][0]
+
+
+def _list_single_directory(toolkit: WorkspaceToolkit, path: str, recursive: bool = False, max_entries: int = 200) -> dict:
+    result = toolkit.execute(
+        "list_directories",
+        {
+            "paths": [path],
+            "recursive": recursive,
+            "max_entries_per_directory": max_entries,
+            "max_total_entries": max_entries,
+        },
+    )
+    return result["directories"][0]
+
+
 def test_workspace_toolkit_class_is_exposed():
     assert WorkspaceToolkit.__name__ == "WorkspaceToolkit"
 
@@ -21,7 +46,7 @@ def test_access_workspace_toolkit_registers_expected_tools():
 
         names = set(toolkit.tools.keys())
         # file-level
-        assert "read_file" in names
+        assert "read_files" in names
         assert "read_file_ast" in names
         assert "write_file" in names
         assert "create_file" in names
@@ -30,7 +55,7 @@ def test_access_workspace_toolkit_registers_expected_tools():
         assert "move_file" in names
         assert "file_exists" in names
         # directory
-        assert "list_directory" in names
+        assert "list_directories" in names
         assert "create_directory" in names
         assert "search_text" in names
         # line-level
@@ -57,15 +82,26 @@ def test_workspace_toolkit_builds_without_terminal_tools():
     with tempfile.TemporaryDirectory() as tmp:
         tk = WorkspaceToolkit(workspace_root=tmp)
         assert isinstance(tk, WorkspaceToolkit)
-        assert "read_file" in tk.tools
+        assert "read_files" in tk.tools
         assert "read_file_ast" in tk.tools
         assert "terminal_exec" not in tk.tools
 
 
+def test_workspace_toolkit_does_not_expose_legacy_single_read_tools():
+    with tempfile.TemporaryDirectory() as tmp:
+        tk = WorkspaceToolkit(workspace_root=tmp)
+
+        assert "read_file" not in tk.tools
+        assert "list_directory" not in tk.tools
+        assert tk.execute("read_file", {"path": "demo.txt"})["error"] == "tool not found: read_file"
+        assert tk.execute("list_directory", {"path": "."})["error"] == "tool not found: list_directory"
+
+
 def test_workspace_toolkit_methods_are_declared_on_class_for_ui_discovery():
-    assert "read_file" in WorkspaceToolkit.__dict__
+    assert "read_files" in WorkspaceToolkit.__dict__
     assert "read_file_ast" in WorkspaceToolkit.__dict__
     assert "write_file" in WorkspaceToolkit.__dict__
+    assert "list_directories" in WorkspaceToolkit.__dict__
     assert "read_lines" in WorkspaceToolkit.__dict__
     assert "search_and_replace" in WorkspaceToolkit.__dict__
     assert "pin_file_context" in WorkspaceToolkit.__dict__
@@ -153,7 +189,7 @@ def test_access_workspace_toolkit_file_ops_and_search():
         )
         assert "error" not in write_result
 
-        read_result = toolkit.execute("read_file", {"path": "notes/test.txt"})
+        read_result = _read_single_file(toolkit, "notes/test.txt")
         assert "hello" in read_result["content"]
 
         search_result = toolkit.execute(
@@ -161,6 +197,58 @@ def test_access_workspace_toolkit_file_ops_and_search():
             {"pattern": "hello", "path": "notes", "max_results": 10},
         )
         assert len(search_result["matches"]) == 2
+
+
+def test_workspace_toolkit_batch_reads_and_directory_listing():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = WorkspaceToolkit(workspace_root=tmp)
+        Path(tmp, "notes").mkdir()
+        Path(tmp, "docs").mkdir()
+        Path(tmp, "notes", "a.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+        Path(tmp, "docs", "b.txt").write_text("gamma\n", encoding="utf-8")
+        Path(tmp, "docs", "nested").mkdir()
+        Path(tmp, "docs", "nested", "c.txt").write_text("delta\n", encoding="utf-8")
+
+        read_result = toolkit.execute(
+            "read_files",
+            {
+                "paths": ["notes/a.txt", "docs/b.txt", "missing.txt"],
+                "max_chars_per_file": 32,
+                "max_total_chars": 64,
+            },
+        )
+        assert read_result["requested_paths"] == 3
+        assert read_result["returned_files"] == 3
+        assert read_result["files"][0]["content"] == "alpha\nbeta\n"
+        assert read_result["files"][1]["content"] == "gamma\n"
+        assert "file not found" in read_result["files"][2]["error"]
+
+        list_result = toolkit.execute(
+            "list_directories",
+            {
+                "paths": ["notes", "docs"],
+                "recursive": True,
+                "max_entries_per_directory": 10,
+                "max_total_entries": 10,
+            },
+        )
+        assert list_result["requested_paths"] == 2
+        assert list_result["returned_directories"] == 2
+        assert "notes/a.txt" in list_result["directories"][0]["entries"]
+        assert "docs/b.txt" in list_result["directories"][1]["entries"]
+        assert "docs/nested/" in list_result["directories"][1]["entries"]
+        assert "docs/nested/c.txt" in list_result["directories"][1]["entries"]
+
+
+def test_list_directories_reject_file_path():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = WorkspaceToolkit(workspace_root=tmp)
+        file_path = Path(tmp, "single.txt")
+        file_path.write_text("hello\n", encoding="utf-8")
+
+        result = _list_single_directory(toolkit, "single.txt")
+
+        assert result["error"] == f"not a directory: {file_path.resolve()}"
 
 
 def _assert_syntax_tree_result(result: dict, language: str):
@@ -328,21 +416,21 @@ def test_line_level_read_insert_replace_delete():
 
         # insert before line 3
         tk.execute("insert_lines", {"path": "lines.txt", "line": 3, "content": "NEW\n"})
-        after_insert = tk.execute("read_file", {"path": "lines.txt"})
+        after_insert = _read_single_file(tk, "lines.txt")
         lines = after_insert["content"].splitlines()
         assert lines[2] == "NEW"
         assert len(lines) == 6
 
         # replace lines 1-2 with single line
         tk.execute("replace_lines", {"path": "lines.txt", "start": 1, "end": 2, "content": "REPLACED\n"})
-        after_replace = tk.execute("read_file", {"path": "lines.txt"})
+        after_replace = _read_single_file(tk, "lines.txt")
         lines = after_replace["content"].splitlines()
         assert lines[0] == "REPLACED"
         assert after_replace["total_lines"] == 5
 
         # delete line 1
         tk.execute("delete_lines", {"path": "lines.txt", "start": 1, "end": 1})
-        after_delete = tk.execute("read_file", {"path": "lines.txt"})
+        after_delete = _read_single_file(tk, "lines.txt")
         assert after_delete["total_lines"] == 4
 
 
@@ -354,14 +442,14 @@ def test_copy_lines_and_move_lines():
 
         # Copy lines 1-2 to before line 4
         tk.execute("copy_lines", {"path": "m.txt", "start": 1, "end": 2, "to_line": 5})
-        result = tk.execute("read_file", {"path": "m.txt"})
+        result = _read_single_file(tk, "m.txt")
         lines = result["content"].splitlines()
         assert lines == ["A", "B", "C", "D", "A", "B"]
 
         # Rewrite and test move
         tk.execute("write_file", {"path": "m.txt", "content": "A\nB\nC\nD\n"})
         tk.execute("move_lines", {"path": "m.txt", "start": 3, "end": 4, "to_line": 1})
-        result = tk.execute("read_file", {"path": "m.txt"})
+        result = _read_single_file(tk, "m.txt")
         lines = result["content"].splitlines()
         assert lines == ["C", "D", "A", "B"]
 
@@ -380,7 +468,7 @@ def test_search_and_replace():
         })
         assert result["replacements_made"] == 2
 
-        content = tk.execute("read_file", {"path": "sr.txt"})["content"]
+        content = _read_single_file(tk, "sr.txt")["content"]
         assert content.count("qux") == 2
         assert content.count("foo") == 1
 
@@ -438,7 +526,7 @@ def test_agent_add_multiple_toolkits():
 
         merged = agent.toolkit
         names = set(merged.tools.keys())
-        assert "read_file" in names
+        assert "read_files" in names
         assert "write_file" in names
         assert "python_runtime_run" not in names
         assert "terminal_exec" not in names
@@ -449,5 +537,5 @@ def test_agent_add_multiple_toolkits():
 
         agent.remove_toolkit(term)
         names_after = set(agent.toolkit.tools.keys())
-        assert "read_file" in names_after
+        assert "read_files" in names_after
         assert "terminal_exec" not in names_after
