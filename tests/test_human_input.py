@@ -2,8 +2,12 @@ import json
 
 import pytest
 
-from miso import Agent, MemoryManager, broth as Broth, ask_user_toolkit, tool, toolkit
-from miso.broth import ProviderTurnResult, ToolCall
+from miso import Agent
+from miso.memory import MemoryManager
+from miso.runtime import Broth, ProviderTurnResult, ToolCall
+from miso.toolkits import AskUserToolkit
+from miso.tools import tool, Toolkit
+from miso.input import ASK_USER_QUESTION_TOOL_NAME
 
 
 def _selector_args(**overrides):
@@ -44,14 +48,14 @@ def test_ask_user_toolkit_is_explicitly_opt_in():
         max_iterations=1,
     )
 
-    assert "request_user_input" not in seen_tool_names[0]
+    assert ASK_USER_QUESTION_TOOL_NAME not in seen_tool_names[0]
     assert bundle["status"] == "completed"
 
 
-def test_ask_user_toolkit_exposes_request_user_input_when_mounted():
+def test_ask_user_toolkit_exposes_ask_user_question_when_mounted():
     agent = Broth()
     agent.provider = "openai"
-    agent.toolkit = ask_user_toolkit()
+    agent.toolkit = AskUserToolkit()
 
     seen_tool_names = []
 
@@ -72,14 +76,31 @@ def test_ask_user_toolkit_exposes_request_user_input_when_mounted():
         max_iterations=1,
     )
 
-    assert "request_user_input" in seen_tool_names[0]
+    assert ASK_USER_QUESTION_TOOL_NAME in seen_tool_names[0]
     assert bundle["status"] == "completed"
+
+
+def test_ask_user_question_description_encourages_asking_when_multiple_paths_exist():
+    tk = AskUserToolkit()
+
+    tool_json = tk.to_json()[0]
+    description = tool_json["description"]
+    question_description = tool_json["parameters"]["properties"]["question"]["description"]
+    options_description = tool_json["parameters"]["properties"]["options"]["description"]
+
+    assert "Strongly prefer this" in description
+    assert "multiple plausible approaches" in description
+    assert "ask the user instead of silently guessing" in description
+    assert "Do not ask meta-questions" in description
+    assert "concrete candidate answers" in description
+    assert "not which dimensions" in question_description
+    assert "Do not use categories" in options_description
 
 
 def test_run_returns_awaiting_human_input_and_emits_request_event():
     agent = Broth()
     agent.provider = "openai"
-    agent.toolkit = ask_user_toolkit()
+    agent.toolkit = AskUserToolkit()
 
     def fake_fetch_once(**kwargs):
         return ProviderTurnResult(
@@ -87,20 +108,22 @@ def test_run_returns_awaiting_human_input_and_emits_request_event():
                 {
                     "type": "function_call",
                     "call_id": "call_1",
-                    "name": "request_user_input",
+                    "name": ASK_USER_QUESTION_TOOL_NAME,
                     "arguments": json.dumps(_selector_args()),
                 }
             ],
             tool_calls=[
                 ToolCall(
                     call_id="call_1",
-                    name="request_user_input",
+                    name=ASK_USER_QUESTION_TOOL_NAME,
                     arguments=json.dumps(_selector_args()),
                 )
             ],
             final_text="",
             response_id="resp_1",
             consumed_tokens=11,
+            input_tokens=7,
+            output_tokens=4,
         )
 
     agent._fetch_once = fake_fetch_once
@@ -116,10 +139,18 @@ def test_run_returns_awaiting_human_input_and_emits_request_event():
 
     assert bundle["status"] == "awaiting_human_input"
     assert bundle["consumed_tokens"] == 11
+    assert bundle["input_tokens"] == 7
+    assert bundle["output_tokens"] == 4
     assert bundle["human_input_request"]["request_id"] == "call_1"
     assert bundle["human_input_request"]["selection_mode"] == "single"
     assert bundle["continuation"]["previous_response_id"] == "resp_1"
     assert bundle["continuation"]["iteration"] == 1
+    assert bundle["continuation"]["consumed_tokens"] == 11
+    assert bundle["continuation"]["input_tokens"] == 7
+    assert bundle["continuation"]["output_tokens"] == 4
+    assert bundle["continuation"]["last_turn_tokens"] == 11
+    assert bundle["continuation"]["last_turn_input_tokens"] == 7
+    assert bundle["continuation"]["last_turn_output_tokens"] == 4
     assert messages[-1]["type"] == "function_call"
     assert not any(event["type"] == "tool_result" for event in events)
     human_input_event = next(event for event in events if event["type"] == "human_input_requested")
@@ -186,7 +217,7 @@ def test_run_accepts_legacy_execute_tool_calls_tuple():
 def test_run_accepts_legacy_execute_tool_calls_human_input_tuple():
     agent = Broth()
     agent.provider = "openai"
-    agent.toolkit = ask_user_toolkit()
+    agent.toolkit = AskUserToolkit()
 
     def fake_fetch_once(**kwargs):
         return ProviderTurnResult(
@@ -194,14 +225,14 @@ def test_run_accepts_legacy_execute_tool_calls_human_input_tuple():
                 {
                     "type": "function_call",
                     "call_id": "call_1",
-                    "name": "request_user_input",
+                    "name": ASK_USER_QUESTION_TOOL_NAME,
                     "arguments": json.dumps(_selector_args()),
                 }
             ],
             tool_calls=[
                 ToolCall(
                     call_id="call_1",
-                    name="request_user_input",
+                    name=ASK_USER_QUESTION_TOOL_NAME,
                     arguments=json.dumps(_selector_args()),
                 )
             ],
@@ -246,7 +277,7 @@ def test_run_accepts_legacy_execute_tool_calls_human_input_tuple():
 def test_resume_human_input_openai_uses_previous_response_id_and_function_call_output():
     agent = Broth()
     agent.provider = "openai"
-    agent.toolkit = ask_user_toolkit()
+    agent.toolkit = AskUserToolkit()
 
     seen_previous_ids = []
     seen_messages = []
@@ -263,20 +294,22 @@ def test_resume_human_input_openai_uses_previous_response_id_and_function_call_o
                     {
                         "type": "function_call",
                         "call_id": "call_1",
-                        "name": "request_user_input",
+                        "name": "ask_user_question",
                         "arguments": json.dumps(_selector_args()),
                     }
                 ],
                 tool_calls=[
                     ToolCall(
                         call_id="call_1",
-                        name="request_user_input",
+                        name="ask_user_question",
                         arguments=json.dumps(_selector_args()),
                     )
                 ],
                 final_text="",
                 response_id="resp_1",
                 consumed_tokens=11,
+                input_tokens=7,
+                output_tokens=4,
             )
 
         return ProviderTurnResult(
@@ -285,6 +318,8 @@ def test_resume_human_input_openai_uses_previous_response_id_and_function_call_o
             final_text="React selected",
             response_id="resp_2",
             consumed_tokens=7,
+            input_tokens=4,
+            output_tokens=3,
         )
 
     agent._fetch_once = fake_fetch_once
@@ -314,13 +349,15 @@ def test_resume_human_input_openai_uses_previous_response_id_and_function_call_o
     }
     assert resumed_bundle["status"] == "completed"
     assert resumed_bundle["consumed_tokens"] == 18
+    assert resumed_bundle["input_tokens"] == 11
+    assert resumed_bundle["output_tokens"] == 7
     assert resumed_messages[-1]["content"] == "React selected"
 
 
 def test_resume_human_input_non_openai_uses_provider_native_tool_result():
     agent = Broth()
     agent.provider = "ollama"
-    agent.toolkit = ask_user_toolkit()
+    agent.toolkit = AskUserToolkit()
 
     seen_messages = []
     state = {"turn": 0}
@@ -339,7 +376,7 @@ def test_resume_human_input_non_openai_uses_provider_native_tool_result():
                             {
                                 "id": "call_1",
                                 "function": {
-                                    "name": "request_user_input",
+                                    "name": "ask_user_question",
                                     "arguments": _selector_args(selection_mode="multiple", allow_other=True),
                                 },
                             }
@@ -349,7 +386,7 @@ def test_resume_human_input_non_openai_uses_provider_native_tool_result():
                 tool_calls=[
                     ToolCall(
                         call_id="call_1",
-                        name="request_user_input",
+                        name="ask_user_question",
                         arguments=_selector_args(selection_mode="multiple", allow_other=True),
                     )
                 ],
@@ -393,7 +430,7 @@ def test_resume_human_input_non_openai_uses_provider_native_tool_result():
 def test_invalid_request_schema_returns_clear_tool_error_and_continues():
     agent = Broth()
     agent.provider = "ollama"
-    agent.toolkit = ask_user_toolkit()
+    agent.toolkit = AskUserToolkit()
 
     seen_messages = []
     state = {"turn": 0}
@@ -412,7 +449,7 @@ def test_invalid_request_schema_returns_clear_tool_error_and_continues():
                             {
                                 "id": "call_1",
                                 "function": {
-                                    "name": "request_user_input",
+                                    "name": "ask_user_question",
                                     "arguments": {
                                         "title": "Broken",
                                         "question": "Broken",
@@ -427,7 +464,7 @@ def test_invalid_request_schema_returns_clear_tool_error_and_continues():
                 tool_calls=[
                     ToolCall(
                         call_id="call_1",
-                        name="request_user_input",
+                        name="ask_user_question",
                         arguments={
                             "title": "Broken",
                             "question": "Broken",
@@ -456,7 +493,7 @@ def test_invalid_request_schema_returns_clear_tool_error_and_continues():
 
     tool_message = next(msg for msg in seen_messages[1] if msg.get("role") == "tool")
     payload = json.loads(tool_message["content"])
-    assert payload["tool"] == "request_user_input"
+    assert payload["tool"] == "ask_user_question"
     assert "options must be a non-empty array" in payload["error"]
     assert bundle["status"] == "completed"
     assert messages[-1]["content"] == "recovered"
@@ -482,7 +519,7 @@ def test_invalid_request_schema_returns_clear_tool_error_and_continues():
 def test_resume_human_input_rejects_invalid_user_response(response_payload, error_text):
     agent = Broth()
     agent.provider = "openai"
-    agent.toolkit = ask_user_toolkit()
+    agent.toolkit = AskUserToolkit()
 
     def fake_fetch_once(**kwargs):
         return ProviderTurnResult(
@@ -490,14 +527,14 @@ def test_resume_human_input_rejects_invalid_user_response(response_payload, erro
                 {
                     "type": "function_call",
                     "call_id": "call_1",
-                    "name": "request_user_input",
+                    "name": "ask_user_question",
                     "arguments": json.dumps(_selector_args(allow_other=True)),
                 }
             ],
             tool_calls=[
                 ToolCall(
                     call_id="call_1",
-                    name="request_user_input",
+                    name="ask_user_question",
                     arguments=json.dumps(_selector_args(allow_other=True)),
                 )
             ],
@@ -525,7 +562,7 @@ def test_suspended_run_skips_memory_commit_until_resume():
     manager = MemoryManager()
     agent = Broth(memory_manager=manager)
     agent.provider = "openai"
-    agent.toolkit = ask_user_toolkit()
+    agent.toolkit = AskUserToolkit()
 
     state = {"turn": 0}
 
@@ -538,14 +575,14 @@ def test_suspended_run_skips_memory_commit_until_resume():
                     {
                         "type": "function_call",
                         "call_id": "call_1",
-                        "name": "request_user_input",
+                        "name": "ask_user_question",
                         "arguments": json.dumps(_selector_args()),
                     }
                 ],
                 tool_calls=[
                     ToolCall(
                         call_id="call_1",
-                        name="request_user_input",
+                        name="ask_user_question",
                         arguments=json.dumps(_selector_args()),
                     )
                 ],
@@ -591,14 +628,14 @@ def test_suspended_run_skips_memory_commit_until_resume():
     assert resumed_messages[-1]["content"] == "done"
 
 
-def test_mixed_batch_with_request_user_input_returns_errors_without_executing_other_tools():
+def test_mixed_batch_with_ask_user_question_returns_errors_without_executing_other_tools():
     agent = Broth()
     agent.provider = "ollama"
 
     call_log = []
     safe_tool = tool(name="safe_action", func=lambda: call_log.append("called") or {"ok": True}, parameters=[])
-    agent.toolkit = ask_user_toolkit()
-    agent.add_toolkit(toolkit({safe_tool.name: safe_tool}))
+    agent.toolkit = AskUserToolkit()
+    agent.add_toolkit(Toolkit({safe_tool.name: safe_tool}))
 
     seen_messages = []
     state = {"turn": 0}
@@ -617,7 +654,7 @@ def test_mixed_batch_with_request_user_input_returns_errors_without_executing_ot
                             {
                                 "id": "call_1",
                                 "function": {
-                                    "name": "request_user_input",
+                                    "name": "ask_user_question",
                                     "arguments": _selector_args(),
                                 },
                             },
@@ -632,7 +669,7 @@ def test_mixed_batch_with_request_user_input_returns_errors_without_executing_ot
                     }
                 ],
                 tool_calls=[
-                    ToolCall(call_id="call_1", name="request_user_input", arguments=_selector_args()),
+                    ToolCall(call_id="call_1", name="ask_user_question", arguments=_selector_args()),
                     ToolCall(call_id="call_2", name="safe_action", arguments={}),
                 ],
                 final_text="",
@@ -656,7 +693,7 @@ def test_mixed_batch_with_request_user_input_returns_errors_without_executing_ot
     tool_messages = [msg for msg in seen_messages[1] if msg.get("role") == "tool"]
     assert len(tool_messages) == 2
     assert all(
-        json.loads(msg["content"])["error"] == "request_user_input must be the only tool call in a turn"
+        json.loads(msg["content"])["error"] == "ask_user_question must be the only tool call in a turn"
         for msg in tool_messages
     )
     assert call_log == []
@@ -672,14 +709,14 @@ def test_ask_user_toolkit_fails_fast_when_model_does_not_support_tools():
         "supports_tools": False,
         "max_context_window_tokens": 0,
     }
-    agent.toolkit = ask_user_toolkit()
+    agent.toolkit = AskUserToolkit()
 
     def fake_fetch_once(**kwargs):
         raise AssertionError("_fetch_once should not be called when tools are unsupported")
 
     agent._fetch_once = fake_fetch_once
 
-    with pytest.raises(ValueError, match="ask_user_toolkit requires a tool-calling model"):
+    with pytest.raises(ValueError, match="AskUserToolkit requires a tool-calling model"):
         agent.run(
             messages=[{"role": "user", "content": "help me choose"}],
             max_iterations=1,
@@ -763,7 +800,7 @@ def test_agent_resume_human_input_forwards_to_broth(monkeypatch):
             del callback, verbose, on_tool_confirm, on_continuation_request
             return conversation + [{"role": "assistant", "content": "done"}], {"status": "completed"}
 
-    monkeypatch.setattr("miso.agent.Broth", FakeBroth)
+    monkeypatch.setattr("miso.agents.agent.Broth", FakeBroth)
 
     agent = Agent(name="planner", defaults={"payload": {"temperature": 0.1}})
     conversation, bundle = agent.resume_human_input(

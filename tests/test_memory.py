@@ -1,8 +1,8 @@
 import json
 from typing import Any
 
-from miso import broth as Broth
-from miso.broth import ProviderTurnResult
+from miso.runtime import Broth
+from miso.runtime import ProviderTurnResult
 from miso.memory import (
     HybridContextStrategy,
     LastNTurnsStrategy,

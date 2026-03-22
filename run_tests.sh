@@ -30,4 +30,13 @@ if ! "$VENV_PY" -m pytest --version >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! "$VENV_PY" - <<'PY' >/dev/null 2>&1
+import miso
+PY
+then
+  echo "miso is not installed in editable mode."
+  echo "Run ./scripts/init_python312_venv.sh to install the package."
+  exit 1
+fi
+
 exec "$VENV_PY" -m pytest -q tests "$@"

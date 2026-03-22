@@ -5,8 +5,10 @@ import httpx
 import openai
 import pytest
 
-from miso import broth as Broth, response_format, tool, toolkit
-from miso.broth import ProviderTurnResult, ToolCall
+from miso.runtime import Broth
+from miso.schemas import ResponseFormat
+from miso.tools import tool, Toolkit
+from miso.runtime import ProviderTurnResult, ToolCall
 
 
 def test_observation_injected_into_last_tool_message_and_callback_events():
@@ -15,7 +17,7 @@ def test_observation_injected_into_last_tool_message_and_callback_events():
 
     observed_tool = tool(name="need_observe", func=lambda: {"value": 1}, observe=True, parameters=[])
     plain_tool = tool(name="plain_tool", func=lambda: {"value": 2}, observe=False, parameters=[])
-    agent.toolkit = toolkit({
+    agent.toolkit = Toolkit({
         observed_tool.name: observed_tool,
         plain_tool.name: plain_tool,
     })
@@ -29,6 +31,8 @@ def test_observation_injected_into_last_tool_message_and_callback_events():
                 tool_calls=[],
                 final_text="检查通过，继续下一步。",
                 consumed_tokens=4,
+                input_tokens=1,
+                output_tokens=3,
             )
 
         state["turn"] += 1
@@ -51,6 +55,8 @@ def test_observation_injected_into_last_tool_message_and_callback_events():
                 ],
                 final_text="",
                 consumed_tokens=10,
+                input_tokens=6,
+                output_tokens=4,
             )
 
         return ProviderTurnResult(
@@ -58,6 +64,8 @@ def test_observation_injected_into_last_tool_message_and_callback_events():
             tool_calls=[],
             final_text="done",
             consumed_tokens=7,
+            input_tokens=5,
+            output_tokens=2,
         )
 
     agent._fetch_once = fake_fetch_once
@@ -72,6 +80,8 @@ def test_observation_injected_into_last_tool_message_and_callback_events():
     tool_messages = [msg for msg in messages if isinstance(msg, dict) and msg.get("role") == "tool"]
     assert len(tool_messages) == 2
     assert bundle["consumed_tokens"] == 21
+    assert bundle["input_tokens"] == 12
+    assert bundle["output_tokens"] == 9
 
     last_tool_payload = json.loads(tool_messages[-1]["content"])
     assert last_tool_payload["observation"] == "检查通过，继续下一步。"
@@ -86,9 +96,13 @@ def test_observation_injected_into_last_tool_message_and_callback_events():
     assert response_events[0]["has_tool_calls"] is True
     assert response_events[0]["bundle"]["model"] == "gpt-5"
     assert response_events[0]["bundle"]["consumed_tokens"] == 10
+    assert response_events[0]["bundle"]["input_tokens"] == 6
+    assert response_events[0]["bundle"]["output_tokens"] == 4
     assert response_events[1]["has_tool_calls"] is False
     assert response_events[1]["bundle"]["model"] == "gpt-5"
     assert response_events[1]["bundle"]["consumed_tokens"] == 21
+    assert response_events[1]["bundle"]["input_tokens"] == 12
+    assert response_events[1]["bundle"]["output_tokens"] == 9
     run_completed = next(evt for evt in events if evt["type"] == "run_completed")
     assert run_completed["bundle"] == bundle
 
@@ -106,7 +120,7 @@ def test_response_format_parses_last_assistant_message():
 
     agent._fetch_once = fake_fetch_once
 
-    fmt = response_format(
+    fmt = ResponseFormat(
         name="answer_format",
         schema={
             "type": "object",
@@ -470,7 +484,7 @@ def test_openai_fetch_once_forces_stream_true(monkeypatch):
             self.api_key = api_key
             self.responses = FakeResponses()
 
-    broth_module = importlib.import_module("miso.broth")
+    broth_module = importlib.import_module("miso.runtime.providers")
     monkeypatch.setattr(broth_module, "OpenAI", FakeOpenAIClient)
 
     turn = agent._openai_fetch_once(
@@ -481,7 +495,7 @@ def test_openai_fetch_once_forces_stream_true(monkeypatch):
         verbose=False,
         run_id="run_stream",
         iteration=0,
-        toolkit=toolkit(),
+        toolkit=Toolkit(),
         emit_stream=False,
         previous_response_id=None,
     )
@@ -529,10 +543,10 @@ def test_openai_fetch_once_places_response_format_under_text_config(monkeypatch)
             self.api_key = api_key
             self.responses = FakeResponses()
 
-    broth_module = importlib.import_module("miso.broth")
+    broth_module = importlib.import_module("miso.runtime.providers")
     monkeypatch.setattr(broth_module, "OpenAI", FakeOpenAIClient)
 
-    fmt = response_format(
+    fmt = ResponseFormat(
         name="answer_format",
         schema={
             "type": "object",
@@ -552,7 +566,7 @@ def test_openai_fetch_once_places_response_format_under_text_config(monkeypatch)
         verbose=False,
         run_id="run_text_format",
         iteration=0,
-        toolkit=toolkit(),
+        toolkit=Toolkit(),
         emit_stream=False,
         previous_response_id=None,
     )
@@ -601,7 +615,7 @@ def test_openai_fetch_once_normalizes_function_call_input_items(monkeypatch):
             self.api_key = api_key
             self.responses = FakeResponses()
 
-    broth_module = importlib.import_module("miso.broth")
+    broth_module = importlib.import_module("miso.runtime.providers")
     monkeypatch.setattr(broth_module, "OpenAI", FakeOpenAIClient)
 
     turn = agent._openai_fetch_once(
@@ -621,7 +635,7 @@ def test_openai_fetch_once_normalizes_function_call_input_items(monkeypatch):
         verbose=False,
         run_id="run_norm",
         iteration=0,
-        toolkit=toolkit(),
+        toolkit=Toolkit(),
         emit_stream=False,
         previous_response_id=None,
     )
@@ -672,7 +686,7 @@ def test_openai_fetch_once_handles_missing_completed_with_output_item_done(monke
             self.api_key = api_key
             self.responses = FakeResponses()
 
-    broth_module = importlib.import_module("miso.broth")
+    broth_module = importlib.import_module("miso.runtime.providers")
     monkeypatch.setattr(broth_module, "OpenAI", FakeOpenAIClient)
 
     turn = agent._openai_fetch_once(
@@ -683,7 +697,7 @@ def test_openai_fetch_once_handles_missing_completed_with_output_item_done(monke
         verbose=False,
         run_id="run_partial",
         iteration=0,
-        toolkit=toolkit(),
+        toolkit=Toolkit(),
         emit_stream=False,
         previous_response_id=None,
     )
@@ -766,14 +780,16 @@ def test_observe_tool_batch_skips_anthropic_tool_result_validation_errors():
         raise ValueError("tool_result blocks must have a corresponding tool_use block")
 
     agent._fetch_once = fake_fetch_once
-    observation, consumed = agent._observe_tool_batch(
+    observation, usage = agent._observe_tool_batch(
         full_messages=[],
         tool_messages=[],
         payload={},
     )
 
     assert observation == ""
-    assert consumed == 0
+    assert usage.consumed_tokens == 0
+    assert usage.input_tokens == 0
+    assert usage.output_tokens == 0
 
 
 def test_extract_openai_message_text_includes_refusal_blocks():
@@ -787,6 +803,30 @@ def test_extract_openai_message_text_includes_refusal_blocks():
         }
     )
     assert text == "I can’t help with that exact request."
+
+
+def test_extract_openai_token_usage_prefers_total_tokens():
+    agent = Broth()
+
+    usage = agent._extract_openai_token_usage(
+        {"total_tokens": 13, "input_tokens": 8, "output_tokens": 5}
+    )
+
+    assert usage.consumed_tokens == 13
+    assert usage.input_tokens == 8
+    assert usage.output_tokens == 5
+
+
+def test_extract_openai_token_usage_falls_back_to_input_plus_output():
+    agent = Broth()
+
+    usage = agent._extract_openai_token_usage(
+        {"input_tokens": 8, "output_tokens": 5}
+    )
+
+    assert usage.consumed_tokens == 13
+    assert usage.input_tokens == 8
+    assert usage.output_tokens == 5
 
 
 def test_ollama_fetch_once_forces_stream_true(monkeypatch):
@@ -809,6 +849,8 @@ def test_ollama_fetch_once_forces_stream_true(monkeypatch):
 
         def iter_lines(self):
             yield json.dumps({
+                "prompt_eval_count": 4,
+                "eval_count": 5,
                 "message": {"content": "ok"},
                 "done": True,
             })
@@ -823,7 +865,7 @@ def test_ollama_fetch_once_forces_stream_true(monkeypatch):
         captured_request["timeout"] = timeout
         return FakeHTTPXStream()
 
-    broth_module = importlib.import_module("miso.broth")
+    broth_module = importlib.import_module("miso.runtime.providers")
     monkeypatch.setattr(broth_module.httpx, "stream", fake_httpx_stream)
 
     turn = agent._ollama_fetch_once(
@@ -834,12 +876,15 @@ def test_ollama_fetch_once_forces_stream_true(monkeypatch):
         verbose=False,
         run_id="run_stream",
         iteration=0,
-        toolkit=toolkit(),
+        toolkit=Toolkit(),
         emit_stream=False,
     )
 
     assert captured_request["json"]["stream"] is True
     assert turn.final_text == "ok"
+    assert turn.consumed_tokens == 9
+    assert turn.input_tokens == 4
+    assert turn.output_tokens == 5
 
 
 # ── Context-window tracking tests ──────────────────────────────────────
@@ -902,9 +947,9 @@ def test_bundle_contains_context_window_used_pct():
             consumed_tokens=6400,
         )
 
-    from miso import tool, toolkit
+    from miso.tools import tool, Toolkit
     t1 = tool(name="t1", func=lambda: "ok", parameters=[])
-    a.toolkit = toolkit({"t1": t1})
+    a.toolkit = Toolkit({"t1": t1})
     a._fetch_once = fake_fetch_once
 
     _, bundle = a.run([{"role": "user", "content": "hello"}])

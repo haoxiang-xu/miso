@@ -4,7 +4,6 @@ $ErrorActionPreference = "Stop"
 
 $ROOT_DIR = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $VENV_DIR = Join-Path $ROOT_DIR ".venv"
-$REQUIREMENTS_FILE = Join-Path $ROOT_DIR "requirements.txt"
 
 function Test-Python312Command {
   param(
@@ -83,9 +82,9 @@ if ($LASTEXITCODE -ne 0) {
   throw "Failed to upgrade pip in .venv."
 }
 
-& $VENV_PY -m pip install -r $REQUIREMENTS_FILE
+& $VENV_PY -m pip install -e "${ROOT_DIR}[dev]"
 if ($LASTEXITCODE -ne 0) {
-  throw "Failed to install Python dependencies."
+  throw "Failed to install the editable package and dev dependencies."
 }
 
 Write-Host "Ready: $(& $VENV_PY --version)"

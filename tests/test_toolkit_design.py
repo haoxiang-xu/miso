@@ -1,6 +1,6 @@
 import json
 
-from miso import tool as Tool, toolkit as Toolkit
+from miso.tools import Tool, Toolkit
 
 
 def test_tool_parameter_inference_and_execute():

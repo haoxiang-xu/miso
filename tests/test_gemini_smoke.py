@@ -1,17 +1,13 @@
 import os
 import json
 import importlib
-import sys
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-repo_root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(repo_root))
-
-from miso import broth as Broth, toolkit
-from miso.broth import ProviderTurnResult, ToolCall
+from miso.runtime import Broth
+from miso.tools import Toolkit
+from miso.runtime import ProviderTurnResult, ToolCall
 
 
 def _last_assistant_text(messages):
@@ -75,7 +71,11 @@ def test_gemini_fetch_once_streams_text(monkeypatch):
             self.content = content
 
     class FakeUsageMeta:
-        total_token_count = 15
+        prompt_token_count = 8
+        tool_use_prompt_token_count = 1
+        candidates_token_count = 4
+        thoughts_token_count = 3
+        total_token_count = 16
 
     class FakeChunk:
         def __init__(self, candidates, usage_metadata=None):
@@ -98,7 +98,7 @@ def test_gemini_fetch_once_streams_text(monkeypatch):
             self.models = FakeModels()
 
     # Patch google_genai in broth module
-    broth_module = importlib.import_module("miso.broth")
+    broth_module = importlib.import_module("miso.runtime.providers")
     fake_genai = MagicMock()
     fake_genai.Client = FakeClient
     monkeypatch.setattr(broth_module, "google_genai", fake_genai)
@@ -111,13 +111,15 @@ def test_gemini_fetch_once_streams_text(monkeypatch):
         verbose=False,
         run_id="run_gemini",
         iteration=0,
-        toolkit=toolkit(),
+        toolkit=Toolkit(),
         emit_stream=False,
     )
 
     assert captured_kwargs["model"] == "gemini-2.5-pro"
     assert turn.final_text == "hello world"
-    assert turn.consumed_tokens >= 15
+    assert turn.consumed_tokens == 16
+    assert turn.input_tokens == 9
+    assert turn.output_tokens == 7
     assert turn.tool_calls == []
 
 
@@ -147,6 +149,9 @@ def test_gemini_fetch_once_parses_tool_calls(monkeypatch):
             self.content = content
 
     class FakeUsageMeta:
+        prompt_token_count = 10
+        candidates_token_count = 8
+        thoughts_token_count = 7
         total_token_count = 25
 
     class FakeChunk:
@@ -166,7 +171,7 @@ def test_gemini_fetch_once_parses_tool_calls(monkeypatch):
         def __init__(self, api_key):
             self.models = FakeModels()
 
-    broth_module = importlib.import_module("miso.broth")
+    broth_module = importlib.import_module("miso.runtime.providers")
     fake_genai = MagicMock()
     fake_genai.Client = FakeClient
     monkeypatch.setattr(broth_module, "google_genai", fake_genai)
@@ -179,7 +184,7 @@ def test_gemini_fetch_once_parses_tool_calls(monkeypatch):
         verbose=False,
         run_id="run_tool",
         iteration=0,
-        toolkit=toolkit(),
+        toolkit=Toolkit(),
         emit_stream=False,
     )
 
@@ -187,7 +192,9 @@ def test_gemini_fetch_once_parses_tool_calls(monkeypatch):
     tc = turn.tool_calls[0]
     assert tc.name == "get_weather"
     assert tc.arguments == {"city": "Tokyo"}
-    assert turn.consumed_tokens >= 25
+    assert turn.consumed_tokens == 25
+    assert turn.input_tokens == 10
+    assert turn.output_tokens == 15
 
 
 # ── unit test: model capabilities resolve ───────────────────────────────────
@@ -324,8 +331,8 @@ def test_gemini_tool_result_format():
 
     tool_calls = [ToolCall(call_id="c1", name="get_weather", arguments={"city": "SF"})]
 
-    tk = toolkit()
-    from miso import tool as Tool
+    tk = Toolkit()
+    from miso.tools import Tool
     t = Tool(name="get_weather", description="Get weather", parameters=[], func=lambda city: {"temp": 72})
     tk.register(t)
     a.add_toolkit(tk)
@@ -365,6 +372,8 @@ def test_gemini_run_end_to_end(monkeypatch):
             tool_calls=[],
             final_text="Hello!",
             consumed_tokens=10,
+            input_tokens=6,
+            output_tokens=4,
         )
 
     a._fetch_once = fake_fetch_once
@@ -377,6 +386,8 @@ def test_gemini_run_end_to_end(monkeypatch):
 
     assert _last_assistant_text(messages_out) == "Hello!"
     assert bundle["consumed_tokens"] == 10
+    assert bundle["input_tokens"] == 6
+    assert bundle["output_tokens"] == 4
 
     event_types = [e["type"] for e in captured_events]
     assert "run_started" in event_types
@@ -412,6 +423,9 @@ def test_gemini_streaming_callback(monkeypatch):
             self.content = content
 
     class FakeUsageMeta:
+        prompt_token_count = 4
+        candidates_token_count = 3
+        thoughts_token_count = 3
         total_token_count = 10
 
     class FakeChunk:
@@ -428,7 +442,7 @@ def test_gemini_streaming_callback(monkeypatch):
         def __init__(self, api_key):
             self.models = FakeModels()
 
-    broth_module = importlib.import_module("miso.broth")
+    broth_module = importlib.import_module("miso.runtime.providers")
     fake_genai = MagicMock()
     fake_genai.Client = FakeClient
     monkeypatch.setattr(broth_module, "google_genai", fake_genai)
@@ -447,9 +461,12 @@ def test_gemini_streaming_callback(monkeypatch):
         verbose=False,
         run_id="stream_test",
         iteration=0,
-        toolkit=toolkit(),
+        toolkit=Toolkit(),
         emit_stream=True,
     )
 
     assert deltas == ["tok1", "tok2"]
     assert turn.final_text == "tok1tok2"
+    assert turn.consumed_tokens == 10
+    assert turn.input_tokens == 4
+    assert turn.output_tokens == 6

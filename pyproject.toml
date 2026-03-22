@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "miso"
+version = "0.2.0"
+description = "A lightweight Python agent builder for tool-using runtimes."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=0.83.0",
+    "google-genai>=1.14.0",
+    "httpx>=0.28.1",
+    "mcp>=1.26.0",
+    "openai>=2.7.1",
+    "platformdirs>=4.4.0",
+    "tree-sitter>=0.21.3,<0.22",
+    "tree-sitter-languages>=1.10.2,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.4.2",
+    "python-dotenv>=1.0.1",
+    "qdrant-client>=1.9.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+miso = [
+    "runtime/resources/*.json",
+    "toolkits/builtin/*/toolkit.toml",
+    "toolkits/builtin/*/README.md",
+    "toolkits/builtin/*/*.svg",
+    "toolkits/builtin/*/*.png",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+    ".git",
+    ".pytest_cache",
+    ".venv",
+    "tests/evals/fixtures",
+]

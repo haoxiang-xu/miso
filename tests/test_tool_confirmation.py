@@ -2,14 +2,8 @@
 
 import json
 
-from miso import (
-    broth as Broth,
-    tool,
-    toolkit,
-    ToolConfirmationRequest,
-    ToolConfirmationResponse,
-)
-from miso.broth import ProviderTurnResult, ToolCall
+from miso.runtime import Broth, ProviderTurnResult, ToolCall
+from miso.tools import Tool, ToolConfirmationRequest, ToolConfirmationResponse, tool, Toolkit
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -38,7 +32,7 @@ def _make_agent_with_tools(*, confirmed_tool_func=None, plain_tool_func=None):
         parameters=[],
     )
 
-    agent.toolkit = toolkit({
+    agent.toolkit = Toolkit({
         confirmed.name: confirmed,
         plain.name: plain,
     })
@@ -128,12 +122,12 @@ def test_tool_requires_confirmation_set_true():
 def test_tool_from_callable_requires_confirmation():
     def fn():
         pass
-    t = tool.from_callable(fn, requires_confirmation=True)
+    t = Tool.from_callable(fn, requires_confirmation=True)
     assert t.requires_confirmation is True
 
 
 def test_toolkit_register_requires_confirmation():
-    tk = toolkit()
+    tk = Toolkit()
     def fn():
         pass
     registered = tk.register(fn, requires_confirmation=True)
@@ -142,7 +136,7 @@ def test_toolkit_register_requires_confirmation():
 
 def test_toolkit_register_overrides_requires_confirmation():
     t = tool(name="t", func=lambda: None, parameters=[], requires_confirmation=False)
-    tk = toolkit()
+    tk = Toolkit()
     tk.register(t, requires_confirmation=True)
     assert t.requires_confirmation is True
 

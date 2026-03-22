@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from miso import ToolRegistryConfig, ToolkitRegistry, get_toolkit_metadata, list_toolkits
+from miso.tools import ToolRegistryConfig, ToolkitRegistry, get_toolkit_metadata, list_toolkits
 
 
 def _write_icon(path: Path) -> None:
@@ -36,10 +36,10 @@ def _write_toolkit_package(
     )
     (package_dir / "runtime.py").write_text(
         """
-from miso import toolkit
+from miso.tools import Toolkit
 
 
-class DemoToolkit(toolkit):
+class DemoToolkit(Toolkit):
     def __init__(self):
         super().__init__()
         self.register(self.echo)
@@ -113,19 +113,28 @@ def test_builtin_registry_lists_expected_toolkits_and_tools():
     registry = ToolkitRegistry()
     toolkit_ids = {item["id"] for item in registry.list_toolkits(include_tools=False)}
 
-    assert toolkit_ids == {"workspace", "terminal", "external_api", "ask_user_question"}
-    assert registry.require("workspace").to_summary()["tool_count"] == 19
+    assert toolkit_ids == {"workspace", "terminal", "external_api", "ask_user"}
+    assert registry.require("workspace").to_summary()["tool_count"] == 20
     assert registry.require("terminal").to_summary()["tool_count"] == 4
     assert registry.require("external_api").to_summary()["tool_count"] == 2
-    assert registry.require("ask_user_question").to_summary()["tool_count"] == 1
+    assert registry.require("ask_user").to_summary()["tool_count"] == 1
+
+
+def test_ask_user_toolkit_description_encourages_user_clarification():
+    registry = ToolkitRegistry()
+
+    summary = registry.require("ask_user").to_summary()
+
+    assert "Strongly prefer asking the user" in summary["description"]
+    assert "multiple plausible approaches" in summary["description"]
 
 
 def test_get_toolkit_metadata_returns_full_markdown_and_inherited_tool_icon():
     toolkit_metadata = get_toolkit_metadata("workspace")
-    tool_metadata = get_toolkit_metadata("workspace", "read_file")
+    tool_metadata = get_toolkit_metadata("workspace", "read_files")
 
-    assert toolkit_metadata["readme_markdown"].startswith("# access_workspace_toolkit")
-    assert tool_metadata["toolkit"]["readme_markdown"].startswith("# access_workspace_toolkit")
+    assert toolkit_metadata["readme_markdown"].startswith("# Workspace Toolkit")
+    assert tool_metadata["toolkit"]["readme_markdown"].startswith("# Workspace Toolkit")
     assert tool_metadata["tool"]["icon_path"] == tool_metadata["toolkit"]["icon_path"]
     assert tool_metadata["tool"]["icon"] == tool_metadata["toolkit"]["icon"]
 
@@ -135,7 +144,7 @@ def test_list_toolkits_payload_is_json_serializable():
     encoded = json.dumps(payload)
 
     assert "workspace" in encoded
-    assert "ask_user_question" in encoded
+    assert "ask_user" in encoded
 
 
 def test_local_root_requires_a_manifest(tmp_path):
@@ -232,7 +241,7 @@ def test_disabled_plugins_are_not_loaded(monkeypatch):
         raise AssertionError("plugin loader should not run when plugin is disabled")
 
     monkeypatch.setattr(
-        "miso.tool_registry._entry_points_for_group",
+        "miso.tools.registry._entry_points_for_group",
         lambda group: [_FakeEntryPoint("demo", _load)],
     )
 
@@ -251,7 +260,7 @@ def test_enabled_plugin_is_loaded_only_when_explicitly_enabled(tmp_path, monkeyp
         return module.DemoToolkit
 
     monkeypatch.setattr(
-        "miso.tool_registry._entry_points_for_group",
+        "miso.tools.registry._entry_points_for_group",
         lambda group: [_FakeEntryPoint("plugin_demo", _load)],
     )
 
