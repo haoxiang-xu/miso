@@ -559,7 +559,14 @@ class WorkspaceToolkit(BuiltinToolkit):
             history_result_optimizer=self._compact_list_directories_history_result,
         )
         self.register(self.create_directory)
-        self.register(self.search_text, observe=True)
+        self.register(
+            self.search_text,
+            observe=True,
+            description=(
+                "Search text inside local files under the current workspace root or a workspace subpath. "
+                "This only searches workspace contents and does not search the web."
+            ),
+        )
 
     def list_directories(
         self,

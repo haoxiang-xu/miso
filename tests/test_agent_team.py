@@ -112,6 +112,64 @@ def test_agent_memory_configs_are_coerced_into_memory_manager():
     assert agent.memory_manager.config.long_term.max_profile_chars == 512
 
 
+def test_agent_builds_internal_memory_recall_tools_only_for_tool_capable_models(monkeypatch):
+    class FakeBroth:
+        def __init__(self, provider=None, model=None, api_key=None, memory_manager=None):
+            self.provider = provider
+            self.model = model
+            self.api_key = api_key
+            self.memory_manager = memory_manager
+            self.toolkit = None
+            self.on_tool_confirm = None
+
+    monkeypatch.setattr("miso.agents.agent.Broth", FakeBroth)
+    monkeypatch.setattr(
+        "miso.agents.agent._AGENT_MODEL_CAPABILITIES",
+        {
+            "tool-model": {"supports_tools": True},
+            "plain-model": {"supports_tools": False},
+        },
+    )
+
+    memory = MemoryManager()
+    memory.recall_profile = lambda *, session_id, memory_namespace=None, max_chars=None: {
+        "session_id": session_id,
+        "memory_namespace": memory_namespace,
+        "max_chars": max_chars,
+    }
+    memory.recall_memory = lambda *, session_id, memory_namespace=None, query, top_k=None, include_short_term=True, include_long_term=True: {
+        "session_id": session_id,
+        "memory_namespace": memory_namespace,
+        "query": query,
+        "top_k": top_k,
+        "include_short_term": include_short_term,
+        "include_long_term": include_long_term,
+    }
+
+    tool_agent = Agent(name="tooling", model="tool-model", short_term_memory=memory)
+    tool_engine = tool_agent._build_engine(session_id="chat-1", memory_namespace="ns-1")
+    assert tool_engine.toolkit is not None
+    assert tool_engine.toolkit.execute("recall_profile", {"max_chars": 32}) == {
+        "session_id": "chat-1",
+        "memory_namespace": "ns-1",
+        "max_chars": 32,
+    }
+    assert tool_engine.toolkit.execute("recall_memory", {"query": "hello", "top_k": 2}) == {
+        "session_id": "chat-1",
+        "memory_namespace": "ns-1",
+        "query": "hello",
+        "top_k": 2,
+        "include_short_term": True,
+        "include_long_term": True,
+    }
+
+    plain_agent = Agent(name="plain", model="plain-model", short_term_memory=memory)
+    plain_engine = plain_agent._build_engine(session_id="chat-2", memory_namespace="ns-2")
+    assert plain_engine.toolkit is not None
+    assert plain_engine.toolkit.get("recall_profile") is None
+    assert plain_engine.toolkit.get("recall_memory") is None
+
+
 def test_agent_step_parses_structured_multi_agent_response(monkeypatch):
     class FakeBroth:
         def __init__(self, provider=None, model=None, api_key=None, memory_manager=None):

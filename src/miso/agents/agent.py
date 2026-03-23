@@ -10,11 +10,13 @@ from typing import TYPE_CHECKING, Any, Callable
 from .._internal.agent_shared import as_text, normalize_mentions
 from ..memory import LongTermMemoryConfig, MemoryConfig, MemoryManager
 from ..runtime import Broth
+from ..runtime.payloads import load_model_capabilities
 from ..schemas import ResponseFormat
 from ..tools import Tool, Toolkit
 from ..tools.catalog import ToolkitCatalogConfig, extract_toolkit_catalog_token
 
 _FORWARDED_BROTH_KEYS = {"provider", "model", "api_key", "memory_manager", "toolkit_catalog_config"}
+_AGENT_MODEL_CAPABILITIES: dict[str, dict[str, Any]] | None = None
 
 if TYPE_CHECKING:
     from .team import Team
@@ -109,6 +111,37 @@ def _slug_subagent_role(value: str) -> str:
 
 def _join_instruction_parts(*parts: str) -> str:
     return "\n\n".join(part.strip() for part in parts if isinstance(part, str) and part.strip())
+
+
+def _agent_model_capability_registry() -> dict[str, dict[str, Any]]:
+    global _AGENT_MODEL_CAPABILITIES
+    if _AGENT_MODEL_CAPABILITIES is None:
+        try:
+            _AGENT_MODEL_CAPABILITIES = load_model_capabilities()
+        except Exception:
+            _AGENT_MODEL_CAPABILITIES = {}
+    return _AGENT_MODEL_CAPABILITIES
+
+
+def _resolve_model_key(model: str, registry: dict[str, Any]) -> str | None:
+    if model in registry:
+        return model
+    normalized_model = str(model or "").replace(".", "-")
+    best: str | None = None
+    for key in registry:
+        normalized_key = str(key).replace(".", "-")
+        if (
+            str(model).startswith(key)
+            or str(model).startswith(normalized_key)
+            or normalized_model.startswith(key)
+            or normalized_model.startswith(normalized_key)
+            or key.startswith(str(model))
+            or key.startswith(normalized_model)
+            or normalized_key.startswith(str(model))
+            or normalized_key.startswith(normalized_model)
+        ) and (best is None or len(key) > len(best)):
+            best = key
+    return best
 
 
 class Agent:
@@ -250,8 +283,137 @@ class Agent:
         if runtime is not None:
             self._suspended_toolkit_catalog_runs[state_token] = runtime
 
-    def _build_agent_toolkit(self, *, runtime_context: _SubagentRuntime | None = None) -> Toolkit:
+    def _model_capability(self, key: str, default: Any = None) -> Any:
+        registry = _agent_model_capability_registry()
+        resolved = _resolve_model_key(self.model, registry)
+        model_caps = registry.get(resolved, {}) if resolved else {}
+        if not isinstance(model_caps, dict):
+            return default
+        return model_caps.get(key, default)
+
+    def _supports_tool_calling(self) -> bool:
+        return bool(self._model_capability("supports_tools", True))
+
+    def _resolve_memory_tool_scope(
+        self,
+        *,
+        runtime_context: _SubagentRuntime | None = None,
+        session_id: str | None = None,
+        memory_namespace: str | None = None,
+    ) -> tuple[str, str | None]:
+        resolved_session_id = session_id or ""
+        resolved_memory_namespace = memory_namespace
+        if runtime_context is not None:
+            if not resolved_session_id:
+                resolved_session_id = runtime_context.current_session_id
+            if resolved_memory_namespace is None:
+                resolved_memory_namespace = runtime_context.current_memory_namespace
+        return resolved_session_id, resolved_memory_namespace
+
+    def _build_memory_recall_toolkit(
+        self,
+        *,
+        runtime_context: _SubagentRuntime | None = None,
+        session_id: str | None = None,
+        memory_namespace: str | None = None,
+    ) -> Toolkit | None:
+        if self.memory_manager is None or not self._supports_tool_calling():
+            return None
+
+        resolved_session_id, resolved_memory_namespace = self._resolve_memory_tool_scope(
+            runtime_context=runtime_context,
+            session_id=session_id,
+            memory_namespace=memory_namespace,
+        )
+        toolkit = Toolkit()
+
+        def _recall_profile(max_chars: int | None = None) -> dict[str, Any]:
+            return self.memory_manager.recall_profile(
+                session_id=resolved_session_id,
+                memory_namespace=resolved_memory_namespace,
+                max_chars=max_chars,
+            )
+
+        def _recall_memory(
+            query: str,
+            top_k: int | None = None,
+            include_short_term: bool = True,
+            include_long_term: bool = True,
+        ) -> dict[str, Any]:
+            return self.memory_manager.recall_memory(
+                session_id=resolved_session_id,
+                memory_namespace=resolved_memory_namespace,
+                query=query,
+                top_k=top_k,
+                include_short_term=include_short_term,
+                include_long_term=include_long_term,
+            )
+
+        toolkit.register(
+            _recall_profile,
+            name="recall_profile",
+            description="Recall the long-term profile for the current memory namespace.",
+            parameters=[
+                {
+                    "name": "max_chars",
+                    "description": "Optional maximum serialized profile length.",
+                    "type_": "integer",
+                    "required": False,
+                }
+            ],
+        )
+        toolkit.register(
+            _recall_memory,
+            name="recall_memory",
+            description=(
+                "Recall additional short-term and long-term memory for the current query. "
+                "This supplements the automatic memory recall path."
+            ),
+            parameters=[
+                {
+                    "name": "query",
+                    "description": "The query to use for extra memory recall.",
+                    "type_": "string",
+                    "required": True,
+                },
+                {
+                    "name": "top_k",
+                    "description": "Optional override for recall top-k across memory sources.",
+                    "type_": "integer",
+                    "required": False,
+                },
+                {
+                    "name": "include_short_term",
+                    "description": "Whether to include additional short-term memory recall.",
+                    "type_": "boolean",
+                    "required": False,
+                },
+                {
+                    "name": "include_long_term",
+                    "description": "Whether to include additional long-term memory recall.",
+                    "type_": "boolean",
+                    "required": False,
+                },
+            ],
+        )
+        return toolkit
+
+    def _build_agent_toolkit(
+        self,
+        *,
+        runtime_context: _SubagentRuntime | None = None,
+        session_id: str | None = None,
+        memory_namespace: str | None = None,
+    ) -> Toolkit:
         merged = Toolkit()
+        internal_memory_toolkit = self._build_memory_recall_toolkit(
+            runtime_context=runtime_context,
+            session_id=session_id,
+            memory_namespace=memory_namespace,
+        )
+        if internal_memory_toolkit is not None:
+            for tool_obj in internal_memory_toolkit.tools.values():
+                merged.register(tool_obj)
         for item in self.tools:
             if isinstance(item, Toolkit):
                 for tool_obj in item.tools.values():
@@ -268,7 +430,13 @@ class Agent:
             merged.register(self._build_subagent_tool(runtime_context))
         return merged
 
-    def _build_engine(self, *, runtime_context: _SubagentRuntime | None = None) -> Broth:
+    def _build_engine(
+        self,
+        *,
+        runtime_context: _SubagentRuntime | None = None,
+        session_id: str | None = None,
+        memory_namespace: str | None = None,
+    ) -> Broth:
         core_kwargs: dict[str, Any] = {
             "provider": self.provider,
             "model": self.model,
@@ -303,7 +471,11 @@ class Agent:
             if hasattr(engine, key):
                 setattr(engine, key, copy.deepcopy(value))
 
-        engine.toolkit = self._build_agent_toolkit(runtime_context=runtime_context)
+        engine.toolkit = self._build_agent_toolkit(
+            runtime_context=runtime_context,
+            session_id=session_id,
+            memory_namespace=memory_namespace,
+        )
 
         default_confirm = self.defaults.get("on_tool_confirm")
         if callable(default_confirm):
@@ -669,7 +841,15 @@ Return your result directly to the parent agent so it can continue coordinating 
             on_continuation_request=on_continuation_request,
             runtime_context=runtime_context,
         )
-        engine = self._build_engine(runtime_context=resolved_runtime)
+        engine = self._build_engine(
+            runtime_context=resolved_runtime,
+            session_id=(
+                resolved_runtime.current_session_id if resolved_runtime is not None else session_id
+            ),
+            memory_namespace=(
+                resolved_runtime.current_memory_namespace if resolved_runtime is not None else memory_namespace
+            ),
+        )
         conversation_out, bundle = engine.run(
             messages=self._compose_messages(messages, extra_system_messages=extra_system_messages),
             payload=self._merge_payload(payload),
@@ -749,7 +929,15 @@ Return your result directly to the parent agent so it can continue coordinating 
             on_continuation_request=on_continuation_request,
             runtime_context=runtime_context,
         )
-        engine = self._build_engine(runtime_context=resolved_runtime)
+        engine = self._build_engine(
+            runtime_context=resolved_runtime,
+            session_id=(
+                resolved_runtime.current_session_id if resolved_runtime is not None else session_id
+            ),
+            memory_namespace=(
+                resolved_runtime.current_memory_namespace if resolved_runtime is not None else memory_namespace
+            ),
+        )
         self._restore_toolkit_catalog_state_to_engine(engine, continuation)
         conversation_out, bundle = engine.resume_human_input(
             conversation=copy.deepcopy(conversation),

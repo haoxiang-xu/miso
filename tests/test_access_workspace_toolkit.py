@@ -120,6 +120,16 @@ def test_workspace_pin_tools_use_explicit_descriptions():
         assert "pin_id" in unpin_description
 
 
+def test_workspace_search_text_description_clarifies_local_scope():
+    with tempfile.TemporaryDirectory() as tmp:
+        tk = WorkspaceToolkit(workspace_root=tmp)
+
+        description = tk.tools["search_text"].description
+
+        assert "workspace" in description
+        assert "does not search the web" in description
+
+
 def test_workspace_pin_tools_require_active_session_id():
     with tempfile.TemporaryDirectory() as tmp:
         tk = WorkspaceToolkit(workspace_root=tmp)

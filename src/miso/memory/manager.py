@@ -1894,6 +1894,350 @@ class MemoryManager:
     def last_commit_info(self) -> dict[str, Any]:
         return copy.deepcopy(self._last_commit_info)
 
+    @staticmethod
+    def _normalize_top_k(candidate: Any, default: int) -> int:
+        try:
+            if candidate is None:
+                return max(0, int(default))
+            return max(0, int(candidate))
+        except Exception:
+            return max(0, int(default))
+
+    def _short_term_recall_result(
+        self,
+        *,
+        session_id: str,
+        query: str,
+        top_k: int | None = None,
+        history_messages: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        resolved_query = str(query or "").strip()
+        resolved_top_k = self._normalize_top_k(top_k, self.config.vector_top_k)
+        result = {
+            "available": False,
+            "session_id": session_id,
+            "query": resolved_query,
+            "top_k": resolved_top_k,
+            "min_score": self.config.vector_min_score,
+            "messages": [],
+            "hit_count": 0,
+            "count": 0,
+            "fallback_reason": "",
+        }
+
+        adapter = self.config.vector_adapter
+        if adapter is None:
+            result["fallback_reason"] = "vector_adapter_missing"
+            return result
+        if resolved_top_k <= 0:
+            result["fallback_reason"] = "top_k_disabled"
+            return result
+        if not session_id:
+            result["fallback_reason"] = "missing_session_id"
+            return result
+        if not resolved_query:
+            result["fallback_reason"] = "missing_query"
+            return result
+
+        if history_messages is None:
+            state = self.store.load(session_id) if session_id else {}
+            raw_history = state.get("messages", []) if isinstance(state, dict) else []
+            if not isinstance(raw_history, list):
+                raw_history = []
+            history_messages = _deepcopy_messages(raw_history)
+        else:
+            history_messages = _deepcopy_messages(history_messages)
+
+        try:
+            recalled = _call_vector_similarity_search(
+                adapter,
+                session_id=session_id,
+                query=resolved_query,
+                k=resolved_top_k,
+                min_score=self.config.vector_min_score,
+            )
+        except Exception as exc:
+            result["fallback_reason"] = f"vector_search_failed: {exc}"
+            return result
+
+        normalized_recalled = _normalize_recalled_messages(recalled)
+        if normalized_recalled:
+            normalized_recalled = _infer_recall_roles_from_messages(normalized_recalled, history_messages)
+        recall_messages = _dedupe_adjacent_messages(_coerce_recall_messages(normalized_recalled))
+        result["available"] = True
+        result["messages"] = recall_messages
+        result["hit_count"] = len(recalled) if isinstance(recalled, list) else 0
+        result["count"] = len(recall_messages)
+        return result
+
+    def _profile_recall_result(
+        self,
+        *,
+        session_id: str,
+        memory_namespace: str | None,
+        max_chars: int | None = None,
+    ) -> dict[str, Any]:
+        long_term = self.config.long_term
+        namespace = _resolve_memory_namespace(session_id, memory_namespace)
+        result = {
+            "available": False,
+            "memory_namespace": namespace or "",
+            "max_chars": self._normalize_top_k(
+                max_chars,
+                long_term.max_profile_chars if long_term is not None else 0,
+            ),
+            "profile": {},
+            "key_count": 0,
+            "fallback_reason": "",
+        }
+
+        if long_term is None:
+            result["fallback_reason"] = "long_term_disabled"
+            return result
+        if not namespace:
+            result["fallback_reason"] = "missing_memory_namespace"
+            return result
+
+        self.ensure_long_term_components()
+        profile_store = long_term.profile_store
+        if profile_store is None:
+            result["fallback_reason"] = "profile_store_missing"
+            return result
+
+        try:
+            profile = _normalize_profile_document(profile_store.load(namespace))
+        except Exception as exc:
+            result["fallback_reason"] = f"profile_load_failed: {exc}"
+            return result
+
+        selected_profile = _select_profile_for_context(
+            profile,
+            max_chars=result["max_chars"],
+        )
+        result["available"] = True
+        result["profile"] = selected_profile
+        result["key_count"] = len(selected_profile) if isinstance(selected_profile, dict) else 0
+        return result
+
+    def _long_term_recall_result(
+        self,
+        *,
+        session_id: str,
+        memory_namespace: str | None,
+        query: str,
+        memory_type: str,
+        top_k: int | None = None,
+        apply_query_hints: bool = False,
+    ) -> dict[str, Any]:
+        long_term = self.config.long_term
+        namespace = _resolve_memory_namespace(session_id, memory_namespace)
+        default_top_k = 0
+        min_score = None
+        if long_term is not None:
+            if memory_type == "fact":
+                default_top_k = long_term.vector_top_k
+                min_score = long_term.vector_min_score
+            elif memory_type == "episode":
+                default_top_k = long_term.episode_top_k
+                min_score = long_term.episode_min_score
+            elif memory_type == "playbook":
+                default_top_k = long_term.playbook_top_k
+                min_score = long_term.playbook_min_score
+
+        resolved_query = str(query or "").strip()
+        resolved_top_k = self._normalize_top_k(top_k, default_top_k)
+        result = {
+            "available": False,
+            "memory_namespace": namespace or "",
+            "memory_type": memory_type,
+            "query": resolved_query,
+            "top_k": resolved_top_k,
+            "min_score": min_score,
+            "items": [],
+            "hit_count": 0,
+            "count": 0,
+            "fallback_reason": "",
+        }
+
+        if long_term is None:
+            result["fallback_reason"] = "long_term_disabled"
+            return result
+        if not namespace:
+            result["fallback_reason"] = "missing_memory_namespace"
+            return result
+
+        self.ensure_long_term_components()
+        if long_term.vector_adapter is None:
+            result["fallback_reason"] = "long_term_vector_adapter_missing"
+            return result
+        if resolved_top_k <= 0:
+            result["fallback_reason"] = "top_k_disabled"
+            return result
+        if not resolved_query:
+            result["fallback_reason"] = "missing_query"
+            return result
+
+        if apply_query_hints:
+            if memory_type == "episode" and not _should_recall_episode_memories(resolved_query):
+                result["fallback_reason"] = "query_hints_not_matched"
+                return result
+            if memory_type == "playbook" and not _should_recall_playbooks(resolved_query):
+                result["fallback_reason"] = "query_hints_not_matched"
+                return result
+
+        try:
+            recalled = _call_long_term_similarity_search(
+                long_term.vector_adapter,
+                namespace=namespace,
+                query=resolved_query,
+                k=resolved_top_k,
+                filters={"memory_type": memory_type},
+                min_score=float(min_score) if min_score is not None else None,
+            )
+        except Exception as exc:
+            result["fallback_reason"] = f"{memory_type}_search_failed: {exc}"
+            return result
+
+        normalized = _normalize_long_term_search_results(
+            recalled,
+            max_items=resolved_top_k,
+            memory_type=memory_type,
+        )
+        result["available"] = True
+        result["items"] = normalized
+        result["hit_count"] = len(recalled) if isinstance(recalled, list) else 0
+        result["count"] = len(normalized)
+        return result
+
+    def recall_profile(
+        self,
+        *,
+        session_id: str,
+        memory_namespace: str | None = None,
+        max_chars: int | None = None,
+    ) -> dict[str, Any]:
+        result = self._profile_recall_result(
+            session_id=session_id,
+            memory_namespace=memory_namespace,
+            max_chars=max_chars,
+        )
+        return {
+            "memory_namespace": result["memory_namespace"],
+            "profile": copy.deepcopy(result["profile"]),
+            "key_count": result["key_count"],
+            "available": result["available"],
+            **({"fallback_reason": result["fallback_reason"]} if result["fallback_reason"] else {}),
+        }
+
+    def recall_memory(
+        self,
+        *,
+        session_id: str,
+        query: str,
+        memory_namespace: str | None = None,
+        top_k: int | None = None,
+        include_short_term: bool = True,
+        include_long_term: bool = True,
+    ) -> dict[str, Any]:
+        state = self.store.load(session_id) if session_id else {}
+        raw_history = state.get("messages", []) if isinstance(state, dict) else []
+        history_messages = _deepcopy_messages(raw_history) if isinstance(raw_history, list) else []
+        namespace = _resolve_memory_namespace(session_id, memory_namespace) or ""
+
+        result = {
+            "session_id": session_id,
+            "memory_namespace": namespace,
+            "query": str(query or "").strip(),
+            "top_k_override": top_k if top_k is None else self._normalize_top_k(top_k, 0),
+            "short_term": {
+                "messages": [],
+                "count": 0,
+                "hit_count": 0,
+                "available": False,
+            },
+            "long_term": {
+                "facts": [],
+                "episodes": [],
+                "playbooks": [],
+                "counts": {"facts": 0, "episodes": 0, "playbooks": 0},
+                "hit_counts": {"facts": 0, "episodes": 0, "playbooks": 0},
+                "available": False,
+            },
+        }
+
+        if include_short_term:
+            short_term = self._short_term_recall_result(
+                session_id=session_id,
+                query=query,
+                top_k=top_k,
+                history_messages=history_messages,
+            )
+            result["short_term"] = {
+                "messages": copy.deepcopy(short_term["messages"]),
+                "count": short_term["count"],
+                "hit_count": short_term["hit_count"],
+                "available": short_term["available"],
+                **({"fallback_reason": short_term["fallback_reason"]} if short_term["fallback_reason"] else {}),
+            }
+
+        if include_long_term:
+            facts = self._long_term_recall_result(
+                session_id=session_id,
+                memory_namespace=memory_namespace,
+                query=query,
+                memory_type="fact",
+                top_k=top_k,
+                apply_query_hints=False,
+            )
+            episodes = self._long_term_recall_result(
+                session_id=session_id,
+                memory_namespace=memory_namespace,
+                query=query,
+                memory_type="episode",
+                top_k=top_k,
+                apply_query_hints=False,
+            )
+            playbooks = self._long_term_recall_result(
+                session_id=session_id,
+                memory_namespace=memory_namespace,
+                query=query,
+                memory_type="playbook",
+                top_k=top_k,
+                apply_query_hints=False,
+            )
+            long_term_result = {
+                "facts": copy.deepcopy(facts["items"]),
+                "episodes": copy.deepcopy(episodes["items"]),
+                "playbooks": copy.deepcopy(playbooks["items"]),
+                "counts": {
+                    "facts": facts["count"],
+                    "episodes": episodes["count"],
+                    "playbooks": playbooks["count"],
+                },
+                "hit_counts": {
+                    "facts": facts["hit_count"],
+                    "episodes": episodes["hit_count"],
+                    "playbooks": playbooks["hit_count"],
+                },
+                "available": any(
+                    item["available"] for item in (facts, episodes, playbooks)
+                ),
+            }
+            fallback_reasons = {
+                "facts": facts["fallback_reason"],
+                "episodes": episodes["fallback_reason"],
+                "playbooks": playbooks["fallback_reason"],
+            }
+            if any(fallback_reasons.values()):
+                long_term_result["fallback_reasons"] = {
+                    key: value
+                    for key, value in fallback_reasons.items()
+                    if value
+                }
+            result["long_term"] = long_term_result
+
+        return result
+
     def ensure_long_term_components(self, *, broth_instance: Any | None = None) -> None:
         long_term = self.config.long_term
         if long_term is None:
@@ -1926,6 +2270,7 @@ class MemoryManager:
         prepared: list[dict[str, Any]],
         session_id: str,
         memory_namespace: str | None,
+        supports_tools: bool | None = None,
     ) -> list[dict[str, Any]]:
         long_term = self.config.long_term
         if long_term is None:
@@ -1942,126 +2287,79 @@ class MemoryManager:
         systems, non_system = _split_system_and_non_system(prepared)
         injected: list[dict[str, Any]] = []
 
-        profile_store = long_term.profile_store
-        if profile_store is not None:
-            try:
-                profile = _normalize_profile_document(profile_store.load(namespace))
-            except Exception as exc:
-                memory_meta["long_term_profile_fallback_reason"] = f"profile_load_failed: {exc}"
-            else:
-                selected_profile = _select_profile_for_context(
-                    profile,
-                    max_chars=long_term.max_profile_chars,
-                )
-                if selected_profile:
-                    injected.append({
-                        "role": "system",
-                        "content": f"[MEMORY_PROFILE]\n{json.dumps(selected_profile, ensure_ascii=False)}",
-                    })
-                    memory_meta["long_term_profile_applied"] = True
-                    memory_meta["long_term_profile_key_count"] = len(selected_profile)
+        profile_result = self._profile_recall_result(
+            session_id=session_id,
+            memory_namespace=memory_namespace,
+            max_chars=long_term.max_profile_chars,
+        )
+        profile_fallback_reason = str(profile_result.get("fallback_reason") or "").strip()
+        if profile_fallback_reason:
+            memory_meta["long_term_profile_fallback_reason"] = profile_fallback_reason
+        if not bool(supports_tools):
+            selected_profile = profile_result.get("profile") or {}
+            if selected_profile:
+                injected.append({
+                    "role": "system",
+                    "content": f"[MEMORY_PROFILE]\n{json.dumps(selected_profile, ensure_ascii=False)}",
+                })
+                memory_meta["long_term_profile_applied"] = True
+                memory_meta["long_term_profile_key_count"] = int(profile_result.get("key_count") or 0)
 
         query = _latest_user_query(prepared)
-        if query and long_term.vector_adapter is not None:
-            try:
-                if long_term.vector_top_k > 0:
-                    recalled_facts = _call_long_term_similarity_search(
-                        long_term.vector_adapter,
-                        namespace=namespace,
-                        query=query,
-                        k=long_term.vector_top_k,
-                        filters={"memory_type": "fact"},
-                        min_score=(
-                            float(long_term.vector_min_score)
-                            if long_term.vector_min_score is not None
-                            else None
-                        ),
-                    )
-                else:
-                    recalled_facts = []
-            except Exception as exc:
-                memory_meta["long_term_vector_fallback_reason"] = f"vector_search_failed: {exc}"
-            else:
-                facts = _normalize_long_term_search_results(
-                    recalled_facts,
-                    max_items=long_term.vector_top_k,
-                    memory_type="fact",
-                )
-                if facts:
-                    injected.append({
-                        "role": "system",
-                        "content": f"[MEMORY_FACTS]\n{json.dumps(facts, ensure_ascii=False)}",
-                    })
-                    memory_meta["long_term_fact_recall_hit_count"] = len(recalled_facts) if isinstance(recalled_facts, list) else 0
-                    memory_meta["long_term_fact_recall_count"] = len(facts)
+        fact_result = self._long_term_recall_result(
+            session_id=session_id,
+            memory_namespace=memory_namespace,
+            query=query,
+            memory_type="fact",
+            apply_query_hints=False,
+        )
+        fact_fallback_reason = str(fact_result.get("fallback_reason") or "").strip()
+        if fact_fallback_reason and fact_fallback_reason != "missing_query":
+            memory_meta["long_term_vector_fallback_reason"] = fact_fallback_reason
+        facts = fact_result.get("items") or []
+        if facts:
+            injected.append({
+                "role": "system",
+                "content": f"[MEMORY_FACTS]\n{json.dumps(facts, ensure_ascii=False)}",
+            })
+            memory_meta["long_term_fact_recall_hit_count"] = int(fact_result.get("hit_count") or 0)
+            memory_meta["long_term_fact_recall_count"] = int(fact_result.get("count") or 0)
 
-        if (
-            query
-            and long_term.vector_adapter is not None
-            and long_term.episode_top_k > 0
-            and _should_recall_episode_memories(query)
-        ):
-            try:
-                recalled_episodes = _call_long_term_similarity_search(
-                    long_term.vector_adapter,
-                    namespace=namespace,
-                    query=query,
-                    k=long_term.episode_top_k,
-                    filters={"memory_type": "episode"},
-                    min_score=(
-                        float(long_term.episode_min_score)
-                        if long_term.episode_min_score is not None
-                        else None
-                    ),
-                )
-            except Exception as exc:
-                memory_meta["long_term_episode_fallback_reason"] = f"episode_search_failed: {exc}"
-            else:
-                episodes = _normalize_long_term_search_results(
-                    recalled_episodes,
-                    max_items=long_term.episode_top_k,
-                    memory_type="episode",
-                )
-                if episodes:
-                    injected.append({
-                        "role": "system",
-                        "content": f"[MEMORY_EPISODES]\n{json.dumps(episodes, ensure_ascii=False)}",
-                    })
-                    memory_meta["long_term_episode_recall_count"] = len(episodes)
+        episode_result = self._long_term_recall_result(
+            session_id=session_id,
+            memory_namespace=memory_namespace,
+            query=query,
+            memory_type="episode",
+            apply_query_hints=True,
+        )
+        episode_fallback_reason = str(episode_result.get("fallback_reason") or "").strip()
+        if episode_fallback_reason and episode_fallback_reason not in {"missing_query", "query_hints_not_matched"}:
+            memory_meta["long_term_episode_fallback_reason"] = episode_fallback_reason
+        episodes = episode_result.get("items") or []
+        if episodes:
+            injected.append({
+                "role": "system",
+                "content": f"[MEMORY_EPISODES]\n{json.dumps(episodes, ensure_ascii=False)}",
+            })
+            memory_meta["long_term_episode_recall_count"] = int(episode_result.get("count") or 0)
 
-        if (
-            query
-            and long_term.vector_adapter is not None
-            and long_term.playbook_top_k > 0
-            and _should_recall_playbooks(query)
-        ):
-            try:
-                recalled_playbooks = _call_long_term_similarity_search(
-                    long_term.vector_adapter,
-                    namespace=namespace,
-                    query=query,
-                    k=long_term.playbook_top_k,
-                    filters={"memory_type": "playbook"},
-                    min_score=(
-                        float(long_term.playbook_min_score)
-                        if long_term.playbook_min_score is not None
-                        else None
-                    ),
-                )
-            except Exception as exc:
-                memory_meta["long_term_playbook_fallback_reason"] = f"playbook_search_failed: {exc}"
-            else:
-                playbooks = _normalize_long_term_search_results(
-                    recalled_playbooks,
-                    max_items=long_term.playbook_top_k,
-                    memory_type="playbook",
-                )
-                if playbooks:
-                    injected.append({
-                        "role": "system",
-                        "content": f"[MEMORY_PLAYBOOKS]\n{json.dumps(playbooks, ensure_ascii=False)}",
-                    })
-                    memory_meta["long_term_playbook_recall_count"] = len(playbooks)
+        playbook_result = self._long_term_recall_result(
+            session_id=session_id,
+            memory_namespace=memory_namespace,
+            query=query,
+            memory_type="playbook",
+            apply_query_hints=True,
+        )
+        playbook_fallback_reason = str(playbook_result.get("fallback_reason") or "").strip()
+        if playbook_fallback_reason and playbook_fallback_reason not in {"missing_query", "query_hints_not_matched"}:
+            memory_meta["long_term_playbook_fallback_reason"] = playbook_fallback_reason
+        playbooks = playbook_result.get("items") or []
+        if playbooks:
+            injected.append({
+                "role": "system",
+                "content": f"[MEMORY_PLAYBOOKS]\n{json.dumps(playbooks, ensure_ascii=False)}",
+            })
+            memory_meta["long_term_playbook_recall_count"] = int(playbook_result.get("count") or 0)
 
         if not injected:
             return prepared
@@ -2078,6 +2376,7 @@ class MemoryManager:
         memory_namespace: str | None = None,
         provider: str | None = None,
         tool_resolver: HistoryToolResolver | None = None,
+        supports_tools: bool | None = None,
     ) -> list[dict[str, Any]]:
         state = self.store.load(session_id) if session_id else {}
         history = state.get("messages", [])
@@ -2114,6 +2413,7 @@ class MemoryManager:
                 prepared=_deepcopy_messages(prepared),
                 session_id=session_id,
                 memory_namespace=memory_namespace,
+                supports_tools=supports_tools,
             )
         finally:
             state.pop("_summary_generator", None)
