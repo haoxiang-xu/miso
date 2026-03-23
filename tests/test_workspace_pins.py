@@ -137,3 +137,47 @@ def test_pinned_prompt_messages_mark_pins_skipped_due_to_budget(tmp_path):
     assert "status=skipped_due_to_budget" in messages[0]["content"]
     assert "def small():" in messages[1]["content"]
     assert "def large():" not in messages[1]["content"]
+
+
+def test_pinned_prompt_messages_relocate_non_python_ranges_via_declaration_metadata(tmp_path):
+    store = InMemorySessionStore()
+    session_id = "pin-javascript-live-reload"
+    file_path = tmp_path / "demo.js"
+    file_path.write_text(
+        "before\n"
+        "function runTask() {\n"
+        "  const value = 1;\n"
+        "  return value;\n"
+        "}\n"
+        "after\n",
+        encoding="utf-8",
+    )
+
+    lines = file_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    pin = build_pin_record(
+        path=file_path.resolve(),
+        lines=lines,
+        start=3,
+        end=4,
+        reason="keep function body in view",
+    )
+    save_workspace_pins(store, session_id, {}, [pin])
+
+    file_path.write_text(
+        "intro\n"
+        "before\n"
+        "function runTask() {\n"
+        "  const value = 2;\n"
+        "  return value;\n"
+        "}\n"
+        "after\n",
+        encoding="utf-8",
+    )
+
+    messages = build_pinned_prompt_messages(store=store, session_id=session_id)
+
+    assert len(messages) == 2
+    assert "status=resolved" in messages[0]["content"]
+    assert "current=lines=4-5" in messages[0]["content"]
+    assert "value = 2" in messages[1]["content"]
+    assert "value = 1" not in messages[1]["content"]

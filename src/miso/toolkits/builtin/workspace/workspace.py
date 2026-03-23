@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import hashlib
 import json
 import re
@@ -19,6 +18,7 @@ from ....workspace.pins import (
     remove_pins,
     save_workspace_pins,
 )
+from ....workspace.syntax import build_syntax_tree_payload
 
 
 class WorkspaceToolkit(BuiltinToolkit):
@@ -70,6 +70,77 @@ class WorkspaceToolkit(BuiltinToolkit):
             compacted["digest"] = hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()
         return compacted
 
+    def _resolve_workspace_path_safe(self, path: str) -> tuple[Path | None, str | None]:
+        try:
+            return self._resolve_workspace_path(path), None
+        except Exception as exc:
+            return None, str(exc)
+
+    def _read_file_payload(self, target: Path, *, max_chars: int) -> dict[str, Any]:
+        if not target.exists():
+            return {"error": f"file not found: {target}"}
+        if not target.is_file():
+            return {"error": f"not a file: {target}"}
+
+        content = target.read_text(encoding="utf-8", errors="replace")
+        total_lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+        truncated = len(content) > max_chars
+        if truncated:
+            content = content[:max_chars]
+
+        return {
+            "path": str(target),
+            "content": content,
+            "total_lines": total_lines,
+            "truncated": truncated,
+        }
+
+    def _file_exists_payload(self, target: Path) -> dict[str, Any]:
+        if not target.exists():
+            return {"path": str(target), "exists": False, "type": None}
+        kind = "directory" if target.is_dir() else "file"
+        return {"path": str(target), "exists": True, "type": kind}
+
+    def _list_directory_payload(
+        self,
+        target: Path,
+        *,
+        recursive: bool,
+        max_entries: int,
+    ) -> dict[str, Any]:
+        if not target.exists():
+            return {"error": f"path not found: {target}"}
+        if not target.is_dir():
+            return {"error": f"not a directory: {target}"}
+
+        entries: list[str] = []
+        iterator = target.rglob("*") if recursive else target.iterdir()
+
+        for entry in iterator:
+            rel = entry.relative_to(self.workspace_root)
+            suffix = "/" if entry.is_dir() else ""
+            entries.append(f"{rel}{suffix}")
+            if len(entries) >= max_entries:
+                break
+
+        return {
+            "path": str(target),
+            "entries": entries,
+            "truncated": len(entries) >= max_entries,
+        }
+
+    def _preview_entries(self, entries: list[Any], *, limit: int = 20) -> list[Any]:
+        if len(entries) <= limit:
+            return entries
+        head_count = max(1, limit // 2)
+        tail_count = max(1, limit - head_count)
+        omitted = len(entries) - head_count - tail_count
+        return [
+            *entries[:head_count],
+            f"... <omitted {omitted} entries> ...",
+            *entries[-tail_count:],
+        ]
+
     def _require_pin_context(self) -> tuple[str, Any] | tuple[None, None]:
         context = self.current_execution_context
         if context is None or not context.session_id:
@@ -83,9 +154,9 @@ class WorkspaceToolkit(BuiltinToolkit):
 
     def _register_file_tools(self) -> None:
         self.register(
-            self.read_file,
-            history_arguments_optimizer=self._compact_read_file_history_arguments,
-            history_result_optimizer=self._compact_read_file_history_result,
+            self.read_files,
+            history_arguments_optimizer=self._compact_read_files_history_arguments,
+            history_result_optimizer=self._compact_read_files_history_result,
         )
         self.register(
             self.read_file_ast,
@@ -107,7 +178,7 @@ class WorkspaceToolkit(BuiltinToolkit):
             self.file_exists,
         )
 
-    def _compact_read_file_history_arguments(
+    def _compact_read_files_history_arguments(
         self,
         payload: Any,
         context: ToolHistoryOptimizationContext,
@@ -115,34 +186,113 @@ class WorkspaceToolkit(BuiltinToolkit):
         if not isinstance(payload, dict):
             return payload
         compacted: dict[str, Any] = {}
-        for key in ("path", "max_chars", "start", "end"):
+        for key in ("paths", "max_chars_per_file", "max_total_chars"):
             if key in payload:
                 compacted[key] = payload[key]
         if compacted != payload:
             compacted["compacted"] = True
         return compacted or {"compacted": True}
 
-    def _compact_read_file_history_result(
+    def _compact_read_files_history_result(
         self,
         payload: Any,
         context: ToolHistoryOptimizationContext,
     ) -> Any:
         if not isinstance(payload, dict):
             return payload
-        content = payload.get("content")
-        if not isinstance(content, str):
+        files = payload.get("files")
+        if not isinstance(files, list):
             return payload
-        if len(content) <= context.max_chars:
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        if len(encoded) <= context.max_chars:
             return payload
+
+        compacted_files: list[dict[str, Any]] = []
+        for item in files[:8]:
+            if not isinstance(item, dict):
+                compacted_files.append({"type": type(item).__name__})
+                continue
+            compacted_item = {
+                "requested_path": item.get("requested_path"),
+            }
+            for key in ("path", "total_lines", "truncated", "error"):
+                if key in item:
+                    compacted_item[key] = item.get(key)
+            content = item.get("content")
+            if isinstance(content, str):
+                compacted_item["content"] = self._preview_text(content, context.preview_chars)
+            compacted_files.append(compacted_item)
+
         compacted = {
-            "path": payload.get("path"),
-            "total_lines": payload.get("total_lines"),
+            "files": compacted_files,
+            "requested_paths": payload.get("requested_paths"),
+            "returned_files": payload.get("returned_files"),
             "truncated": payload.get("truncated"),
-            "content": self._preview_text(content, context.preview_chars),
+            "skipped_paths": payload.get("skipped_paths"),
             "compacted": True,
         }
+        if len(files) > len(compacted_files):
+            compacted["files_truncated"] = True
         if context.include_hash:
-            compacted["digest"] = hashlib.sha1(content.encode("utf-8", errors="replace")).hexdigest()
+            compacted["digest"] = hashlib.sha1(encoded.encode("utf-8", errors="replace")).hexdigest()
+        return compacted
+
+    def _compact_list_directories_history_arguments(
+        self,
+        payload: Any,
+        context: ToolHistoryOptimizationContext,
+    ) -> Any:
+        if not isinstance(payload, dict):
+            return payload
+        compacted: dict[str, Any] = {}
+        for key in ("paths", "recursive", "max_entries_per_directory", "max_total_entries"):
+            if key in payload:
+                compacted[key] = payload[key]
+        if compacted != payload:
+            compacted["compacted"] = True
+        return compacted or {"compacted": True}
+
+    def _compact_list_directories_history_result(
+        self,
+        payload: Any,
+        context: ToolHistoryOptimizationContext,
+    ) -> Any:
+        if not isinstance(payload, dict):
+            return payload
+        directories = payload.get("directories")
+        if not isinstance(directories, list):
+            return payload
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        if len(encoded) <= context.max_chars:
+            return payload
+
+        compacted_directories: list[dict[str, Any]] = []
+        for item in directories[:8]:
+            if not isinstance(item, dict):
+                compacted_directories.append({"type": type(item).__name__})
+                continue
+            compacted_item = {"requested_path": item.get("requested_path")}
+            for key in ("path", "truncated", "error"):
+                if key in item:
+                    compacted_item[key] = item.get(key)
+            entries = item.get("entries")
+            if isinstance(entries, list):
+                compacted_item["entries"] = self._preview_entries(entries)
+                compacted_item["entry_count"] = len(entries)
+            compacted_directories.append(compacted_item)
+
+        compacted = {
+            "directories": compacted_directories,
+            "requested_paths": payload.get("requested_paths"),
+            "returned_directories": payload.get("returned_directories"),
+            "truncated": payload.get("truncated"),
+            "skipped_paths": payload.get("skipped_paths"),
+            "compacted": True,
+        }
+        if len(directories) > len(compacted_directories):
+            compacted["directories_truncated"] = True
+        if context.include_hash:
+            compacted["digest"] = hashlib.sha1(encoded.encode("utf-8", errors="replace")).hexdigest()
         return compacted
 
     def _compact_write_like_history_arguments(
@@ -172,7 +322,7 @@ class WorkspaceToolkit(BuiltinToolkit):
         if not isinstance(payload, dict):
             return payload
         compacted: dict[str, Any] = {}
-        for key in ("path", "max_nodes"):
+        for key in ("path", "language", "max_nodes"):
             if key in payload:
                 compacted[key] = payload[key]
         if compacted != payload:
@@ -183,13 +333,20 @@ class WorkspaceToolkit(BuiltinToolkit):
         if not isinstance(node, dict):
             return {"type": type(node).__name__}
         preview: dict[str, Any] = {"type": node.get("type")}
-        body = node.get("body")
-        if isinstance(body, list):
-            preview["body"] = body[:limit]
-            if len(body) > limit:
-                preview["body_truncated"] = True
-        elif body is not None:
-            preview["body"] = body
+        if "text" in node:
+            preview["text"] = node.get("text")
+        children = node.get("children")
+        if isinstance(children, list):
+            preview["children"] = [
+                {
+                    "type": child.get("type"),
+                    **({"field_name": child.get("field_name")} if child.get("field_name") else {}),
+                }
+                for child in children[:limit]
+                if isinstance(child, dict)
+            ]
+            if len(children) > limit:
+                preview["children_truncated"] = True
         return preview
 
     def _compact_read_file_ast_history_result(
@@ -217,103 +374,79 @@ class WorkspaceToolkit(BuiltinToolkit):
             compacted["digest"] = hashlib.sha1(encoded.encode("utf-8", errors="replace")).hexdigest()
         return compacted
 
-    def _count_python_ast_nodes(self, node: ast.AST) -> int:
-        return sum(1 for _ in ast.walk(node))
-
-    def _serialize_python_ast_list(
+    def read_files(
         self,
-        values: list[Any],
-        *,
-        state: dict[str, Any],
-    ) -> list[Any]:
-        serialized: list[Any] = []
-        for value in values:
-            if state["truncated"]:
-                break
-            item = self._serialize_python_ast_value(value, state=state)
-            if item is not None:
-                serialized.append(item)
-        return serialized
-
-    def _serialize_python_ast_value(
-        self,
-        value: Any,
-        *,
-        state: dict[str, Any],
-    ) -> Any:
-        if state["truncated"]:
-            return None
-        if isinstance(value, ast.AST):
-            return self._serialize_python_ast_node(value, state=state)
-        if isinstance(value, list):
-            return self._serialize_python_ast_list(value, state=state)
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            if isinstance(value, str) and len(value) > 200:
-                return self._preview_text(value, 100)
-            return value
-        return repr(value)
-
-    def _serialize_python_ast_node(
-        self,
-        node: ast.AST,
-        *,
-        state: dict[str, Any],
+        paths: list[str],
+        max_chars_per_file: int = 20000,
+        max_total_chars: int = 50000,
     ) -> dict[str, Any]:
-        if state["emitted_nodes"] >= state["max_nodes"]:
-            state["truncated"] = True
-            return {
-                "type": node.__class__.__name__,
-                "truncated": True,
-            }
+        """Read multiple UTF-8 text files from workspace.
 
-        state["emitted_nodes"] += 1
-        data: dict[str, Any] = {"type": node.__class__.__name__}
-
-        for attr in ("lineno", "end_lineno", "col_offset", "end_col_offset"):
-            if hasattr(node, attr):
-                data[attr] = getattr(node, attr)
-
-        for field_name, field_value in ast.iter_fields(node):
-            if field_name == "ctx":
-                continue
-            serialized = self._serialize_python_ast_value(field_value, state=state)
-            if serialized in (None, [], {}):
-                continue
-            data[field_name] = serialized
-            if state["truncated"]:
-                break
-
-        return data
-
-    def read_file(self, path: str, max_chars: int = 20000) -> dict[str, Any]:
-        """Read entire UTF-8 text file from workspace.
-
-        :param path: Relative or absolute path inside workspace.
-        :param max_chars: Truncate content after this many characters.
+        :param paths: File paths relative or absolute inside workspace.
+        :param max_chars_per_file: Truncate each file after this many characters.
+        :param max_total_chars: Stop once the combined returned content reaches this many characters.
         """
-        target = self._resolve_workspace_path(path)
-        if not target.exists():
-            return {"error": f"file not found: {target}"}
-        if not target.is_file():
-            return {"error": f"not a file: {target}"}
+        if not paths:
+            return {"error": "paths is required"}
+        if max_chars_per_file < 1:
+            return {"error": "max_chars_per_file must be >= 1"}
+        if max_total_chars < 1:
+            return {"error": "max_total_chars must be >= 1"}
 
-        content = target.read_text(encoding="utf-8", errors="replace")
-        total_lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
-        truncated = len(content) > max_chars
-        if truncated:
-            content = content[:max_chars]
+        files: list[dict[str, Any]] = []
+        remaining_chars = max_total_chars
+        skipped_paths: list[str] = []
+        overall_truncated = False
+
+        for index, raw_path in enumerate(paths):
+            target, resolve_error = self._resolve_workspace_path_safe(raw_path)
+            if target is None:
+                files.append({"requested_path": raw_path, "error": resolve_error})
+                continue
+
+            item = {
+                "requested_path": raw_path,
+                **self._read_file_payload(target, max_chars=max_chars_per_file),
+            }
+            content = item.get("content")
+            if isinstance(content, str):
+                if len(content) > remaining_chars:
+                    item["content"] = content[:remaining_chars]
+                    item["truncated"] = True
+                    item["truncated_by_total_limit"] = True
+                    overall_truncated = True
+                    files.append(item)
+                    skipped_paths = paths[index + 1 :]
+                    remaining_chars = 0
+                    break
+
+                remaining_chars -= len(content)
+                overall_truncated = overall_truncated or bool(item.get("truncated"))
+
+            files.append(item)
+            if remaining_chars <= 0:
+                skipped_paths = paths[index + 1 :]
+                overall_truncated = True
+                break
 
         return {
-            "path": str(target),
-            "content": content,
-            "total_lines": total_lines,
-            "truncated": truncated,
+            "files": files,
+            "requested_paths": len(paths),
+            "returned_files": len(files),
+            "truncated": overall_truncated or bool(skipped_paths),
+            "skipped_paths": skipped_paths,
         }
 
-    def read_file_ast(self, path: str, max_nodes: int = 400) -> dict[str, Any]:
-        """Parse a Python source file and return a JSON-safe AST.
+    def read_file_ast(
+        self,
+        path: str,
+        language: str | None = None,
+        max_nodes: int = 400,
+    ) -> dict[str, Any]:
+        """Parse a source file and return a JSON-safe syntax tree.
 
         :param path: Relative or absolute path inside workspace.
+        :param language: Optional language override.
         :param max_nodes: Maximum AST nodes to serialize in the response.
         """
         target = self._resolve_workspace_path(path)
@@ -321,45 +454,12 @@ class WorkspaceToolkit(BuiltinToolkit):
             return {"error": f"file not found: {target}"}
         if not target.is_file():
             return {"error": f"not a file: {target}"}
-        if target.suffix != ".py":
-            return {
-                "error": "read_file_ast currently supports Python source files (.py) only",
-                "path": str(target),
-                "supported_extensions": [".py"],
-            }
-        if max_nodes < 1:
-            return {"error": "max_nodes must be >= 1", "path": str(target)}
-
-        source = target.read_text(encoding="utf-8", errors="replace")
-        try:
-            parsed = ast.parse(source, filename=str(target))
-        except SyntaxError as exc:
-            return {
-                "error": f"python syntax error: {exc.msg}",
-                "path": str(target),
-                "language": "python",
-                "line": exc.lineno,
-                "column": exc.offset,
-                "end_line": getattr(exc, "end_lineno", None),
-                "end_column": getattr(exc, "end_offset", None),
-            }
-
-        total_nodes = self._count_python_ast_nodes(parsed)
-        state = {
-            "max_nodes": max_nodes,
-            "emitted_nodes": 0,
-            "truncated": False,
-        }
-        serialized = self._serialize_python_ast_node(parsed, state=state)
-
-        return {
-            "path": str(target),
-            "language": "python",
-            "node_count": total_nodes,
-            "returned_node_count": state["emitted_nodes"],
-            "truncated": state["truncated"] or total_nodes > state["emitted_nodes"],
-            "ast": serialized,
-        }
+        return build_syntax_tree_payload(
+            target,
+            source_bytes=target.read_bytes(),
+            language=language,
+            max_nodes=max_nodes,
+        )
 
     def write_file(self, path: str, content: str, append: bool = False) -> dict[str, Any]:
         """Write UTF-8 text file into workspace (overwrite or append).
@@ -450,43 +550,84 @@ class WorkspaceToolkit(BuiltinToolkit):
         :param path: Relative or absolute path inside workspace.
         """
         target = self._resolve_workspace_path(path)
-        if not target.exists():
-            return {"path": str(target), "exists": False, "type": None}
-        kind = "directory" if target.is_dir() else "file"
-        return {"path": str(target), "exists": True, "type": kind}
+        return self._file_exists_payload(target)
 
     def _register_directory_tools(self) -> None:
-        self.register_many(
-            self.list_directory,
-            self.create_directory,
+        self.register(
+            self.list_directories,
+            history_arguments_optimizer=self._compact_list_directories_history_arguments,
+            history_result_optimizer=self._compact_list_directories_history_result,
         )
+        self.register(self.create_directory)
         self.register(self.search_text, observe=True)
 
-    def list_directory(self, path: str = ".", recursive: bool = False, max_entries: int = 200) -> dict[str, Any]:
-        """List files and folders under a workspace path.
+    def list_directories(
+        self,
+        paths: list[str],
+        recursive: bool = False,
+        max_entries_per_directory: int = 200,
+        max_total_entries: int = 500,
+    ) -> dict[str, Any]:
+        """List multiple workspace directories in one call.
 
-        :param path: Directory path relative to workspace root.
-        :param recursive: If True, list all descendants recursively.
-        :param max_entries: Maximum entries to return.
+        :param paths: Directory paths relative or absolute inside workspace.
+        :param recursive: If True, list descendants recursively for each directory.
+        :param max_entries_per_directory: Maximum entries to return per directory.
+        :param max_total_entries: Stop once the combined returned entries reach this many items.
         """
-        target = self._resolve_workspace_path(path)
-        if not target.exists():
-            return {"error": f"path not found: {target}"}
+        if not paths:
+            return {"error": "paths is required"}
+        if max_entries_per_directory < 1:
+            return {"error": "max_entries_per_directory must be >= 1"}
+        if max_total_entries < 1:
+            return {"error": "max_total_entries must be >= 1"}
 
-        entries: list[str] = []
-        iterator = target.rglob("*") if recursive else target.iterdir()
+        directories: list[dict[str, Any]] = []
+        remaining_entries = max_total_entries
+        skipped_paths: list[str] = []
+        overall_truncated = False
 
-        for entry in iterator:
-            rel = entry.relative_to(self.workspace_root)
-            suffix = "/" if entry.is_dir() else ""
-            entries.append(f"{rel}{suffix}")
-            if len(entries) >= max_entries:
+        for index, raw_path in enumerate(paths):
+            target, resolve_error = self._resolve_workspace_path_safe(raw_path)
+            if target is None:
+                directories.append({"requested_path": raw_path, "error": resolve_error})
+                continue
+
+            item = {
+                "requested_path": raw_path,
+                **self._list_directory_payload(
+                    target,
+                    recursive=recursive,
+                    max_entries=max_entries_per_directory,
+                ),
+            }
+            entries = item.get("entries")
+            if isinstance(entries, list):
+                if len(entries) > remaining_entries:
+                    item["entries"] = entries[:remaining_entries]
+                    item["truncated"] = True
+                    item["truncated_by_total_limit"] = True
+                    overall_truncated = True
+                    directories.append(item)
+                    skipped_paths = paths[index + 1 :]
+                    remaining_entries = 0
+                    break
+
+                remaining_entries -= len(entries)
+                overall_truncated = overall_truncated or bool(item.get("truncated"))
+
+            directories.append(item)
+            if remaining_entries <= 0:
+                skipped_paths = paths[index + 1 :]
+                overall_truncated = True
                 break
 
         return {
-            "path": str(target),
-            "entries": entries,
-            "truncated": len(entries) >= max_entries,
+            "directories": directories,
+            "requested_paths": len(paths),
+            "returned_directories": len(directories),
+            "truncated": overall_truncated or bool(skipped_paths),
+            "skipped_paths": skipped_paths,
         }
 
     def create_directory(self, path: str) -> dict[str, Any]:

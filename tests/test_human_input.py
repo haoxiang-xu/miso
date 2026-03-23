@@ -122,6 +122,8 @@ def test_run_returns_awaiting_human_input_and_emits_request_event():
             final_text="",
             response_id="resp_1",
             consumed_tokens=11,
+            input_tokens=7,
+            output_tokens=4,
         )
 
     agent._fetch_once = fake_fetch_once
@@ -137,10 +139,18 @@ def test_run_returns_awaiting_human_input_and_emits_request_event():
 
     assert bundle["status"] == "awaiting_human_input"
     assert bundle["consumed_tokens"] == 11
+    assert bundle["input_tokens"] == 7
+    assert bundle["output_tokens"] == 4
     assert bundle["human_input_request"]["request_id"] == "call_1"
     assert bundle["human_input_request"]["selection_mode"] == "single"
     assert bundle["continuation"]["previous_response_id"] == "resp_1"
     assert bundle["continuation"]["iteration"] == 1
+    assert bundle["continuation"]["consumed_tokens"] == 11
+    assert bundle["continuation"]["input_tokens"] == 7
+    assert bundle["continuation"]["output_tokens"] == 4
+    assert bundle["continuation"]["last_turn_tokens"] == 11
+    assert bundle["continuation"]["last_turn_input_tokens"] == 7
+    assert bundle["continuation"]["last_turn_output_tokens"] == 4
     assert messages[-1]["type"] == "function_call"
     assert not any(event["type"] == "tool_result" for event in events)
     human_input_event = next(event for event in events if event["type"] == "human_input_requested")
@@ -298,6 +308,8 @@ def test_resume_human_input_openai_uses_previous_response_id_and_function_call_o
                 final_text="",
                 response_id="resp_1",
                 consumed_tokens=11,
+                input_tokens=7,
+                output_tokens=4,
             )
 
         return ProviderTurnResult(
@@ -306,6 +318,8 @@ def test_resume_human_input_openai_uses_previous_response_id_and_function_call_o
             final_text="React selected",
             response_id="resp_2",
             consumed_tokens=7,
+            input_tokens=4,
+            output_tokens=3,
         )
 
     agent._fetch_once = fake_fetch_once
@@ -335,6 +349,8 @@ def test_resume_human_input_openai_uses_previous_response_id_and_function_call_o
     }
     assert resumed_bundle["status"] == "completed"
     assert resumed_bundle["consumed_tokens"] == 18
+    assert resumed_bundle["input_tokens"] == 11
+    assert resumed_bundle["output_tokens"] == 7
     assert resumed_messages[-1]["content"] == "React selected"
 
 

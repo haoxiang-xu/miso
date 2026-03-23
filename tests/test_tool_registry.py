@@ -131,7 +131,7 @@ def test_ask_user_toolkit_description_encourages_user_clarification():
 
 def test_get_toolkit_metadata_returns_full_markdown_and_inherited_tool_icon():
     toolkit_metadata = get_toolkit_metadata("workspace")
-    tool_metadata = get_toolkit_metadata("workspace", "read_file")
+    tool_metadata = get_toolkit_metadata("workspace", "read_files")
 
     assert toolkit_metadata["readme_markdown"].startswith("# Workspace Toolkit")
     assert tool_metadata["toolkit"]["readme_markdown"].startswith("# Workspace Toolkit")

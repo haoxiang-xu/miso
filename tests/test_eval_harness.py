@@ -129,13 +129,13 @@ def test_rule_based_scorer_rewards_expected_evidence():
         ),
         callback_events=[
             {"type": "tool_call", "tool_name": "terminal_exec", "arguments": {"command": "pytest -q"}},
-            {"type": "tool_call", "tool_name": "read_file", "arguments": {"path": "src/reporting.py"}},
+            {"type": "tool_call", "tool_name": "read_files", "arguments": {"paths": ["src/reporting.py"]}},
             {"type": "tool_result", "tool_name": "terminal_exec", "result": {"error": "assertion failed"}},
         ],
     )
     run_artifact.tool_usage = {
         "total_calls": 2,
-        "by_tool": {"terminal_exec": 1, "read_file": 1},
+        "by_tool": {"terminal_exec": 1, "read_files": 1},
         "failed_calls": [{"tool": "terminal_exec", "error": "assertion failed"}],
         "blocked_attempts": [],
         "denied_tools": [],
@@ -203,6 +203,8 @@ class FakeAgent:
             return list(self.candidate_messages), {
                 "status": "completed",
                 "consumed_tokens": 42,
+                "input_tokens": 30,
+                "output_tokens": 12,
                 "context_window_used_pct": 0.5,
                 "max_context_window_tokens": 1000,
             }
@@ -232,7 +234,7 @@ class FakeAgent:
                     }
                 ),
             }
-        ], {"status": "completed", "consumed_tokens": 11}
+        ], {"status": "completed", "consumed_tokens": 11, "input_tokens": 7, "output_tokens": 4}
 
 
 def test_run_benchmark_suite_passes_saved_message_list_to_judge(monkeypatch, tmp_path):
@@ -264,6 +266,11 @@ def test_run_benchmark_suite_passes_saved_message_list_to_judge(monkeypatch, tmp
     saved_run_payload = json.loads(run_artifact_path.read_text(encoding="utf-8"))
 
     assert FakeAgent.judge_seen_message_list == saved_run_payload["messages"]
+    assert saved_run_payload["token_usage"]["consumed_tokens"] == 42
+    assert saved_run_payload["token_usage"]["input_tokens"] == 30
+    assert saved_run_payload["token_usage"]["output_tokens"] == 12
+    assert result["leaderboard_rows"][0]["input_tokens"] == 30
+    assert result["leaderboard_rows"][0]["output_tokens"] == 12
 
 
 def test_run_single_model_eval_supports_notebook_defined_case(monkeypatch, tmp_path):
@@ -402,6 +409,8 @@ class FakeInteractiveAgent:
                 "memory_namespace": memory_namespace,
             },
             "consumed_tokens": 7,
+            "input_tokens": 4,
+            "output_tokens": 3,
             "context_window_used_pct": 0.1,
             "max_context_window_tokens": 1000,
         }
@@ -431,6 +440,8 @@ class FakeInteractiveAgent:
         ], {
             "status": "completed",
             "consumed_tokens": 18,
+            "input_tokens": 11,
+            "output_tokens": 7,
             "context_window_used_pct": 0.2,
             "max_context_window_tokens": 1000,
         }

@@ -3,7 +3,7 @@ id = "workspace"
 name = "Access Workspace"
 description = "Read, create, and edit files and directories inside a workspace root."
 factory = "miso.toolkits.builtin.workspace:WorkspaceToolkit"
-version = "1.0.0"
+version = "2.0.0"
 readme = "README.md"
 icon = "folder"
 color = "#eff6ff"
@@ -76,9 +76,9 @@ observe = false
 requires_confirmation = false
 
 [[tools]]
-name = "list_directory"
-title = "List Directory"
-description = "List files and directories under a workspace path."
+name = "list_directories"
+title = "List Directories"
+description = "List multiple workspace directories in one call."
 observe = false
 requires_confirmation = false
 
@@ -104,16 +104,16 @@ observe = false
 requires_confirmation = false
 
 [[tools]]
-name = "read_file"
-title = "Read File"
-description = "Read an entire UTF-8 text file from the workspace."
+name = "read_files"
+title = "Read Files"
+description = "Read multiple UTF-8 text files from the workspace."
 observe = false
 requires_confirmation = false
 
 [[tools]]
 name = "read_file_ast"
 title = "Read File AST"
-description = "Parse a Python source file and return a JSON-safe AST."
+description = "Parse a supported source file and return a JSON-safe syntax tree."
 observe = false
 requires_confirmation = false
 

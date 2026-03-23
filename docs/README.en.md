@@ -1,99 +1,43 @@
-# Miso Overview
+# Miso Encyclopedia
 
-`miso` is a Python agent framework with a minimal top-level API and explicit lower-level modules.
+`miso` now ships a two-layer documentation set: concise repository entry points and a full bilingual encyclopedia covering skills chapters and every production class under `src/miso`.
 
-## Official Imports
+Language switch: [English](README.en.md) | [简体中文](README.zh-CN.md)
 
-```python
-from miso import Agent, Team
-from miso.runtime import Broth
-from miso.tools import Tool, Toolkit, ToolParameter, tool
-from miso.toolkits import (
-    AskUserToolkit,
-    ExternalAPIToolkit,
-    MCPToolkit,
-    TerminalToolkit,
-    WorkspaceToolkit,
-)
-from miso.schemas import ResponseFormat
-from miso.memory import MemoryConfig, MemoryManager
-from miso.input import media
-```
+## Reading paths
 
-## Package Layout
+- Start with the skills chapters for architecture and execution flow, then move into the API reference for specific classes.
+- Use the appendices when you need exhaustive coverage checks, exported-symbol lookup, or return-shape summaries.
+- Builtin toolkit package READMEs stay short on purpose; treat them as package entry hints, not the canonical reference.
 
-```text
-src/miso/
-  agents/
-  runtime/
-  tools/
-  toolkits/
-  memory/
-  input/
-  workspace/
-  schemas/
-  _internal/
-```
+## Skills chapters
 
-## Runtime Layers
+- [Architecture Overview](en/skills/architecture-overview.md)
+- [Agent and Team](en/skills/agent-and-team.md)
+- [Runtime Engine](en/skills/runtime-engine.md)
+- [Tool System Patterns](en/skills/tool-system-patterns.md)
+- [Memory System](en/skills/memory-system.md)
+- [Creating Builtin Toolkits](en/skills/creating-builtin-toolkits.md)
+- [Testing Conventions](en/skills/testing-conventions.md)
 
-- `miso.agents`: high-level `Agent` and `Team`
-- `miso.runtime`: the lower-level `Broth` runtime and model payload resources
-- `miso.tools`: tool definitions, decorators, registry, and catalog
-- `miso.toolkits`: built-in toolkits and MCP integration
-- `miso.memory`: short-term and long-term memory components
-- `miso.input`: human-input and media helpers
-- `miso.schemas`: structured output models
+## API reference
 
-## Built-in Toolkits
+- [Agents API Reference](en/api/agents.md)
+- [Runtime API Reference](en/api/runtime.md)
+- [Tool System API Reference](en/api/tools.md)
+- [Toolkit Implementations Reference](en/api/toolkits.md)
+- [Memory API Reference](en/api/memory.md)
+- [Input, Workspace, and Schema Reference](en/api/input-workspace-schemas.md)
 
-- `WorkspaceToolkit`: file, directory, Python AST, line-edit, and workspace pin tools
-- `TerminalToolkit`: restricted shell execution and persistent sessions
-- `ExternalAPIToolkit`: basic outbound HTTP access plus git commands (read-only and destructive)
-- `AskUserToolkit`: structured user-question suspension flow
-- `MCPToolkit`: remote MCP server bridge
+## Appendices
 
-## Quick Start
+- [Class Index](en/appendix/class-index.md)
+- [Export Index](en/appendix/export-index.md)
+- [Glossary](en/appendix/glossary.md)
+- [Return Shapes and State Flow](en/appendix/return-shapes-and-state-flow.md)
 
-```python
-from miso import Agent
-from miso.toolkits import WorkspaceToolkit, TerminalToolkit
+## Coverage commitments
 
-agent = Agent(
-    name="coder",
-    provider="openai",
-    model="gpt-5",
-    tools=[
-        WorkspaceToolkit(workspace_root="."),
-        TerminalToolkit(workspace_root=".", terminal_strict_mode=True),
-    ],
-)
-
-messages, bundle = agent.run("Inspect the repo and explain what matters.")
-```
-
-## Structured Output
-
-```python
-from miso.runtime import Broth
-from miso.schemas import ResponseFormat
-
-runtime = Broth(provider="openai", model="gpt-5")
-fmt = ResponseFormat(
-    name="summary",
-    schema={
-        "type": "object",
-        "properties": {"summary": {"type": "string"}},
-        "required": ["summary"],
-        "additionalProperties": False,
-    },
-)
-messages, bundle = runtime.run("Summarize the repository.", response_format=fmt)
-```
-
-## Testing
-
-```bash
-./scripts/init_python312_venv.sh
-./run_tests.sh
-```
+- All 55 production classes under `src/miso` are indexed exactly once.
+- Public exports from package `__init__` files are cross-linked into the reference tree.
+- English and Chinese docs share the same chapter and page layout.

@@ -83,6 +83,12 @@ def test_anthropic_fetch_once_uses_stream_method(monkeypatch):
         type = "message_delta"
 
         class usage:
+            output_tokens = 2
+
+    class FakeMessageDeltaFinal:
+        type = "message_delta"
+
+        class usage:
             output_tokens = 5
 
     class FakeStream:
@@ -98,6 +104,7 @@ def test_anthropic_fetch_once_uses_stream_method(monkeypatch):
             yield FakeContentBlockDelta()
             yield FakeContentBlockStop()
             yield FakeMessageDelta()
+            yield FakeMessageDeltaFinal()
 
     class FakeMessages:
         def stream(self, **kwargs):
@@ -127,7 +134,9 @@ def test_anthropic_fetch_once_uses_stream_method(monkeypatch):
     assert captured_kwargs["model"] == "claude-sonnet-4"
     assert "stream" not in captured_kwargs  # stream() implies streaming; no explicit kwarg needed
     assert turn.final_text == "hello"
-    assert turn.consumed_tokens > 0
+    assert turn.consumed_tokens == 15
+    assert turn.input_tokens == 10
+    assert turn.output_tokens == 5
 
 
 # ── unit test: _anthropic_fetch_once parses tool_use blocks ─────────────────
@@ -210,7 +219,9 @@ def test_anthropic_fetch_once_parses_tool_calls(monkeypatch):
     assert tc.name == "get_weather"
     assert tc.call_id == "call_abc"
     assert tc.arguments == {"city": "Tokyo"}
-    assert turn.consumed_tokens > 0
+    assert turn.consumed_tokens == 32
+    assert turn.input_tokens == 20
+    assert turn.output_tokens == 12
 
 
 # ── unit test: dated model resolves to undated config ───────────────────────

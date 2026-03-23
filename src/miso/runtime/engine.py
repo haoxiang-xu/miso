@@ -78,6 +78,15 @@ class ProviderTurnResult:
     response_id: str | None = None
     reasoning_items: list[dict[str, Any]] | None = None
     consumed_tokens: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class TokenUsage:
+    consumed_tokens: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 @dataclass
@@ -539,6 +548,8 @@ class Broth:
         last_turn_tokens: int,
         *,
         status: str,
+        run_input_tokens: int = 0,
+        run_output_tokens: int = 0,
         human_input_request: dict[str, Any] | None = None,
         continuation: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -547,6 +558,8 @@ class Broth:
         return {
             "model": self.model,
             "consumed_tokens": run_consumed,
+            "input_tokens": max(0, int(run_input_tokens or 0)),
+            "output_tokens": max(0, int(run_output_tokens or 0)),
             "max_context_window_tokens": max_ctx,
             "context_window_used_pct": round(pct, 2),
             "status": status,
@@ -568,6 +581,10 @@ class Broth:
         memory_namespace: str | None,
         consumed_tokens: int,
         last_turn_tokens: int,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        last_turn_input_tokens: int = 0,
+        last_turn_output_tokens: int = 0,
         toolkit_catalog: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
@@ -587,9 +604,37 @@ class Broth:
             "session_id": session_id,
             "memory_namespace": memory_namespace,
             "consumed_tokens": consumed_tokens,
+            "input_tokens": max(0, int(input_tokens or 0)),
+            "output_tokens": max(0, int(output_tokens or 0)),
             "last_turn_tokens": last_turn_tokens,
+            "last_turn_input_tokens": max(0, int(last_turn_input_tokens or 0)),
+            "last_turn_output_tokens": max(0, int(last_turn_output_tokens or 0)),
             "toolkit_catalog": copy.deepcopy(toolkit_catalog),
         }
+
+    def _coerce_token_count(self, value: Any) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _normalize_token_usage(
+        self,
+        *,
+        consumed_tokens: Any = None,
+        input_tokens: Any = None,
+        output_tokens: Any = None,
+    ) -> TokenUsage:
+        input_count = self._coerce_token_count(input_tokens)
+        output_count = self._coerce_token_count(output_tokens)
+        consumed_count = self._coerce_token_count(consumed_tokens)
+        if consumed_count == 0 and (input_count > 0 or output_count > 0):
+            consumed_count = input_count + output_count
+        return TokenUsage(
+            consumed_tokens=consumed_count,
+            input_tokens=input_count,
+            output_tokens=output_count,
+        )
 
     def _canonicalize_seed_messages(self, messages) -> list[dict[str, Any]]:
         canonical: list[dict[str, Any]] = []
@@ -1388,7 +1433,11 @@ class Broth:
         run_id: str,
         iteration: int = 0,
         total_consumed_tokens: int = 0,
+        total_input_tokens: int = 0,
+        total_output_tokens: int = 0,
         last_turn_tokens: int = 0,
+        last_turn_input_tokens: int = 0,
+        last_turn_output_tokens: int = 0,
         toolkit_catalog_runtime: ToolkitCatalogRuntime | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         catalog_suspended = False
@@ -1506,8 +1555,17 @@ class Broth:
                         turn.response_id if use_openai_previous_response_chain else None
                     )
                     self.last_response_id = turn.response_id
-                total_consumed_tokens += max(0, int(turn.consumed_tokens or 0))
-                last_turn_tokens = max(0, int(turn.consumed_tokens or 0))
+                turn_usage = self._normalize_token_usage(
+                    consumed_tokens=turn.consumed_tokens,
+                    input_tokens=turn.input_tokens,
+                    output_tokens=turn.output_tokens,
+                )
+                total_consumed_tokens += turn_usage.consumed_tokens
+                total_input_tokens += turn_usage.input_tokens
+                total_output_tokens += turn_usage.output_tokens
+                last_turn_tokens = turn_usage.consumed_tokens
+                last_turn_input_tokens = turn_usage.input_tokens
+                last_turn_output_tokens = turn_usage.output_tokens
 
                 if turn.reasoning_items:
                     self.last_reasoning_items = copy.deepcopy(turn.reasoning_items)
@@ -1528,14 +1586,16 @@ class Broth:
                     iteration=iteration,
                     response_id=turn.response_id,
                     has_tool_calls=bool(turn.tool_calls),
-                bundle=copy.deepcopy(
-                    self._build_bundle(
-                        total_consumed_tokens,
-                        last_turn_tokens,
-                        status="running" if turn.tool_calls else "completed",
+                    bundle=copy.deepcopy(
+                        self._build_bundle(
+                            total_consumed_tokens,
+                            last_turn_tokens,
+                            run_input_tokens=total_input_tokens,
+                            run_output_tokens=total_output_tokens,
+                            status="running" if turn.tool_calls else "completed",
+                        )
                     )
-                ),
-            )
+                )
 
                 if turn.tool_calls:
                     execution = self._coerce_tool_execution_outcome(
@@ -1566,12 +1626,18 @@ class Broth:
                             session_id=session_id,
                             memory_namespace=memory_namespace,
                             consumed_tokens=total_consumed_tokens,
+                            input_tokens=total_input_tokens,
+                            output_tokens=total_output_tokens,
                             last_turn_tokens=last_turn_tokens,
+                            last_turn_input_tokens=last_turn_input_tokens,
+                            last_turn_output_tokens=last_turn_output_tokens,
                             toolkit_catalog=catalog_payload,
                         )
                         bundle = self._build_bundle(
                             total_consumed_tokens,
                             last_turn_tokens,
+                            run_input_tokens=total_input_tokens,
+                            run_output_tokens=total_output_tokens,
                             status="awaiting_human_input",
                             human_input_request=execution.human_input_request.to_dict(),
                             continuation=continuation,
@@ -1582,12 +1648,14 @@ class Broth:
 
                     tool_messages = execution.result_messages
                     if execution.should_observe and tool_messages:
-                        observation, observe_consumed_tokens = self._observe_tool_batch(
+                        observation, observe_usage = self._observe_tool_batch(
                             full_messages=conversation,
                             tool_messages=tool_messages,
                             payload=payload,
                         )
-                        total_consumed_tokens += max(0, int(observe_consumed_tokens or 0))
+                        total_consumed_tokens += observe_usage.consumed_tokens
+                        total_input_tokens += observe_usage.input_tokens
+                        total_output_tokens += observe_usage.output_tokens
                         if observation:
                             self._inject_observation(tool_messages[-1], observation)
                             self._emit(
@@ -1613,6 +1681,8 @@ class Broth:
                 bundle = self._build_bundle(
                     total_consumed_tokens,
                     last_turn_tokens,
+                    run_input_tokens=total_input_tokens,
+                    run_output_tokens=total_output_tokens,
                     status="completed",
                 )
                 self._emit(
@@ -1655,6 +1725,8 @@ class Broth:
             bundle = self._build_bundle(
                 total_consumed_tokens,
                 last_turn_tokens,
+                run_input_tokens=total_input_tokens,
+                run_output_tokens=total_output_tokens,
                 status="max_iterations",
             )
             return conversation, bundle
@@ -1844,7 +1916,11 @@ class Broth:
         start_iteration = int(continuation.get("iteration") or 0)
         max_loops = int(continuation.get("max_iterations") or self.max_iterations)
         total_consumed_tokens = int(continuation.get("consumed_tokens") or 0)
+        total_input_tokens = int(continuation.get("input_tokens") or 0)
+        total_output_tokens = int(continuation.get("output_tokens") or 0)
         last_turn_tokens = int(continuation.get("last_turn_tokens") or 0)
+        last_turn_input_tokens = int(continuation.get("last_turn_input_tokens") or 0)
+        last_turn_output_tokens = int(continuation.get("last_turn_output_tokens") or 0)
 
         self._emit(callback, "run_started", run_id, iteration=start_iteration, provider=self.provider, model=self.model)
         return self._run_loop(
@@ -1864,7 +1940,11 @@ class Broth:
             run_id=run_id,
             iteration=start_iteration,
             total_consumed_tokens=total_consumed_tokens,
+            total_input_tokens=total_input_tokens,
+            total_output_tokens=total_output_tokens,
             last_turn_tokens=last_turn_tokens,
+            last_turn_input_tokens=last_turn_input_tokens,
+            last_turn_output_tokens=last_turn_output_tokens,
             toolkit_catalog_runtime=toolkit_catalog_runtime,
         )
 
@@ -2230,7 +2310,7 @@ class Broth:
                     for idx in sorted(output_items_from_events.keys())
                 ]
                 response_id = created_response_id
-                consumed_tokens = 0
+                token_usage = TokenUsage()
             else:
                 # gpt-5 / preview models occasionally close the stream without emitting
                 # response.completed. If we collected text deltas, return them gracefully
@@ -2243,13 +2323,15 @@ class Broth:
                         final_text=full_text,
                         response_id=created_response_id,
                         consumed_tokens=0,
+                        input_tokens=0,
+                        output_tokens=0,
                     )
                 raise ValueError("error: openai stream ended without completion payload")
         else:
             outputs = getattr(completed_response, "output", None) or []
             response_id = getattr(completed_response, "id", None)
             usage = getattr(completed_response, "usage", None)
-            consumed_tokens = self._extract_openai_consumed_tokens(usage)
+            token_usage = self._extract_openai_token_usage(usage)
 
         assistant_messages: list[dict[str, Any]] = []
         tool_calls: list[ToolCall] = []
@@ -2299,7 +2381,9 @@ class Broth:
             final_text="".join(final_text_parts).strip(),
             response_id=response_id,
             reasoning_items=reasoning_items or None,
-            consumed_tokens=consumed_tokens,
+            consumed_tokens=token_usage.consumed_tokens,
+            input_tokens=token_usage.input_tokens,
+            output_tokens=token_usage.output_tokens,
         )
 
     def _ollama_fetch_once(
@@ -2414,6 +2498,8 @@ class Broth:
                         tool_calls=tool_calls,
                         final_text="",
                         consumed_tokens=latest_prompt_eval_count + latest_eval_count,
+                        input_tokens=latest_prompt_eval_count,
+                        output_tokens=latest_eval_count,
                     )
 
                 if data.get("done", False):
@@ -2423,6 +2509,8 @@ class Broth:
                         tool_calls=[],
                         final_text=full_message,
                         consumed_tokens=latest_prompt_eval_count + latest_eval_count,
+                        input_tokens=latest_prompt_eval_count,
+                        output_tokens=latest_eval_count,
                     )
 
         raise ValueError("error: unexpected termination of ollama stream. ( runtime.engine -> _ollama_fetch_once )")
@@ -2499,7 +2587,8 @@ class Broth:
         assistant_messages: list[dict[str, Any]] = []
         tool_calls: list[ToolCall] = []
         final_text_parts: list[str] = []
-        consumed_tokens = 0
+        input_tokens = 0
+        output_tokens = 0
 
         # Track content blocks being built
         current_tool_name: str = ""
@@ -2573,12 +2662,12 @@ class Broth:
                         current_tool_json_parts = []
 
                 elif event_type == "message_delta":
-                    # Extract usage from message_delta
                     usage = getattr(event, "usage", None)
                     if usage:
                         usage_dict = self._as_dict(usage)
-                        output_tokens = usage_dict.get("output_tokens", 0)
-                        consumed_tokens += max(0, int(output_tokens or 0))
+                        if isinstance(usage_dict, dict):
+                            input_tokens = max(input_tokens, self._coerce_token_count(usage_dict.get("input_tokens")))
+                            output_tokens = max(output_tokens, self._coerce_token_count(usage_dict.get("output_tokens")))
 
                 elif event_type == "message_start":
                     msg = getattr(event, "message", None)
@@ -2586,8 +2675,8 @@ class Broth:
                         msg_dict = self._as_dict(msg)
                         usage = msg_dict.get("usage", {})
                         if isinstance(usage, dict):
-                            input_tokens = usage.get("input_tokens", 0)
-                            consumed_tokens += max(0, int(input_tokens or 0))
+                            input_tokens = max(input_tokens, self._coerce_token_count(usage.get("input_tokens")))
+                            output_tokens = max(output_tokens, self._coerce_token_count(usage.get("output_tokens")))
 
         # ── assemble result ────────────────────────────────────────────────
         full_text = "".join(collected_chunks).strip()
@@ -2607,11 +2696,17 @@ class Broth:
         elif full_text:
             assistant_messages.append({"role": "assistant", "content": full_text})
 
+        token_usage = self._normalize_token_usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
         return ProviderTurnResult(
             assistant_messages=assistant_messages,
             tool_calls=tool_calls,
             final_text="".join(final_text_parts).strip(),
-            consumed_tokens=consumed_tokens,
+            consumed_tokens=token_usage.consumed_tokens,
+            input_tokens=token_usage.input_tokens,
+            output_tokens=token_usage.output_tokens,
         )
 
     def _gemini_fetch_once(
@@ -2708,7 +2803,7 @@ class Broth:
         tool_calls: list[ToolCall] = []
         assistant_messages: list[dict[str, Any]] = []
         final_text_parts: list[str] = []
-        consumed_tokens = 0
+        token_usage = TokenUsage()
 
         try:
             response_stream = client.models.generate_content_stream(**request_kwargs)
@@ -2716,9 +2811,9 @@ class Broth:
                 # Extract usage metadata
                 usage_meta = getattr(chunk, "usage_metadata", None)
                 if usage_meta:
-                    total = getattr(usage_meta, "total_token_count", 0) or 0
-                    if total > consumed_tokens:
-                        consumed_tokens = total
+                    chunk_usage = self._extract_gemini_token_usage(usage_meta)
+                    if chunk_usage.consumed_tokens >= token_usage.consumed_tokens:
+                        token_usage = chunk_usage
 
                 candidates = getattr(chunk, "candidates", None) or []
                 for candidate in candidates:
@@ -2772,7 +2867,9 @@ class Broth:
                     assistant_messages=[{"role": "assistant", "content": full_text}],
                     tool_calls=[],
                     final_text=full_text,
-                    consumed_tokens=consumed_tokens,
+                    consumed_tokens=token_usage.consumed_tokens,
+                    input_tokens=token_usage.input_tokens,
+                    output_tokens=token_usage.output_tokens,
                 )
             raise ValueError(f"error: Gemini API call failed: {exc} ( runtime.engine -> _gemini_fetch_once )") from exc
 
@@ -2804,7 +2901,9 @@ class Broth:
             assistant_messages=assistant_messages,
             tool_calls=tool_calls,
             final_text="".join(final_text_parts).strip(),
-            consumed_tokens=consumed_tokens,
+            consumed_tokens=token_usage.consumed_tokens,
+            input_tokens=token_usage.input_tokens,
+            output_tokens=token_usage.output_tokens,
         )
 
     def _execute_tool_calls(
@@ -3048,7 +3147,7 @@ class Broth:
         full_messages: list[dict[str, Any]],
         tool_messages: list[dict[str, Any]],
         payload: dict[str, Any],
-    ) -> tuple[str, int]:
+    ) -> tuple[str, TokenUsage]:
         observe_messages = self._build_observation_messages(full_messages, tool_messages)
         observe_payload = self._build_observation_payload(payload)
 
@@ -3068,13 +3167,18 @@ class Broth:
         except Exception as exc:
             # Observation is optional: never let review pass break the main run.
             if self.provider == "anthropic" and "tool_result" in str(exc):
-                return "", 0
+                return "", TokenUsage()
             raise
 
+        observe_usage = self._normalize_token_usage(
+            consumed_tokens=observe_turn.consumed_tokens,
+            input_tokens=observe_turn.input_tokens,
+            output_tokens=observe_turn.output_tokens,
+        )
         if observe_turn.final_text:
-            return observe_turn.final_text.strip(), int(observe_turn.consumed_tokens or 0)
+            return observe_turn.final_text.strip(), observe_usage
 
-        return self._last_assistant_text(observe_turn.assistant_messages).strip(), int(observe_turn.consumed_tokens or 0)
+        return self._last_assistant_text(observe_turn.assistant_messages).strip(), observe_usage
 
     def _is_anthropic_tool_result_message(self, message: dict[str, Any]) -> bool:
         if not isinstance(message, dict) or message.get("role") != "user":
@@ -3494,20 +3598,31 @@ class Broth:
             return attrs
         return {"value": str(obj)}
 
-    def _extract_openai_consumed_tokens(self, usage: Any) -> int:
+    def _extract_openai_token_usage(self, usage: Any) -> TokenUsage:
         if usage is None:
-            return 0
+            return TokenUsage()
 
         usage_dict = self._as_dict(usage)
-        total_tokens = usage_dict.get("total_tokens")
-        if isinstance(total_tokens, int):
-            return max(0, total_tokens)
+        return self._normalize_token_usage(
+            consumed_tokens=usage_dict.get("total_tokens"),
+            input_tokens=usage_dict.get("input_tokens"),
+            output_tokens=usage_dict.get("output_tokens"),
+        )
 
-        input_tokens = usage_dict.get("input_tokens")
-        output_tokens = usage_dict.get("output_tokens")
-        if isinstance(input_tokens, int) and isinstance(output_tokens, int):
-            return max(0, input_tokens + output_tokens)
-        return 0
+    def _extract_gemini_token_usage(self, usage_metadata: Any) -> TokenUsage:
+        if usage_metadata is None:
+            return TokenUsage()
+
+        usage_dict = self._as_dict(usage_metadata)
+        prompt_tokens = self._coerce_token_count(usage_dict.get("prompt_token_count"))
+        tool_use_prompt_tokens = self._coerce_token_count(usage_dict.get("tool_use_prompt_token_count"))
+        candidate_tokens = self._coerce_token_count(usage_dict.get("candidates_token_count"))
+        thought_tokens = self._coerce_token_count(usage_dict.get("thoughts_token_count"))
+        return self._normalize_token_usage(
+            consumed_tokens=usage_dict.get("total_token_count"),
+            input_tokens=prompt_tokens + tool_use_prompt_tokens,
+            output_tokens=candidate_tokens + thought_tokens,
+        )
 
     def _content_to_text(self, content: Any) -> str:
         if isinstance(content, str):

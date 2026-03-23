@@ -1,30 +1,20 @@
 # External API Toolkit
 
-`ExternalAPIToolkit` 提供基础的外部 HTTP 请求能力。
+`ExternalAPIToolkit` remains the package-level entry point for this builtin toolkit.
 
-## 用法
+## What this README is for
 
-```python
-from miso.toolkits import ExternalAPIToolkit
+- Quick package-local orientation
+- Canonical documentation links
+- Stable manifest-facing path for packaged metadata
 
-tk = ExternalAPIToolkit(workspace_root=".")
-```
+## Full documentation
 
-## 包含的能力
+- English API reference: [ExternalAPIToolkit](../../../../../docs/en/api/toolkits.md#externalapitoolkit)
+- 中文 API 参考: [ExternalAPIToolkit](../../../../../docs/zh-CN/api/toolkits.md#externalapitoolkit)
+- English docs index: [docs/README.en.md](../../../../../docs/README.en.md)
+- 中文文档索引: [docs/README.zh-CN.md](../../../../../docs/README.zh-CN.md)
 
-- `http_get`
-- `http_post`
-- `git_status`
-- `git_log`
-- `git_diff`
-- `git_add`
-- `git_commit`
-- `git_checkout`
-- `git_branch`
+## Notes
 
-## 设计约束
-
-- 面向通用 HTTP 调用，不负责鉴权策略管理
-- 返回值保持简单的请求/响应摘要结构
-- Git 工具仅用于读取状态/日志/差异输出，不做写操作
-- 写操作的 Git 工具需要人工确认后执行
+The full encyclopedia now lives under `docs/`. This file intentionally stays short so packaged manifests can link to a stable, lightweight README without duplicating the full reference set.

@@ -1,6 +1,13 @@
 # miso
 
-`miso` is a Python agent framework organized around a small public API and a clear internal package layout.
+[![Version](https://img.shields.io/badge/version-0.2.0-2563eb)](pyproject.toml)
+[![Dependencies](https://img.shields.io/badge/dependencies-8%20core-16a34a)](pyproject.toml)
+[![Python](https://img.shields.io/badge/python-3.12%2B-3776AB)](pyproject.toml)
+[![License](https://img.shields.io/badge/license-Apache%202.0-0ea5e9)](LICENSE)
+
+English / 中文: [English Docs](docs/README.en.md) | [中文文档](docs/README.zh-CN.md)
+
+`miso` is a lightweight Python agent framework organized around a small public API and explicit lower-level modules.
 
 ## Install
 
@@ -33,26 +40,7 @@ from miso.memory import MemoryConfig, MemoryManager
 from miso.input import media
 ```
 
-## Layout
-
-The project now uses a `src/` layout with one canonical package:
-
-```text
-src/miso/
-  agents/
-  runtime/
-  tools/
-  toolkits/
-  memory/
-  input/
-  workspace/
-  schemas/
-  _internal/
-```
-
-## Quick Examples
-
-High-level agent:
+## Quick Example
 
 ```python
 from miso import Agent
@@ -67,37 +55,23 @@ agent = Agent(
         TerminalToolkit(workspace_root=".", terminal_strict_mode=True),
     ],
 )
+
+messages, bundle = agent.run("Inspect the repo and explain what matters.")
 ```
 
-Low-level runtime:
+## Package Layout
 
-```python
-from miso.runtime import Broth
-from miso.toolkits import WorkspaceToolkit
-
-runtime = Broth(provider="openai", model="gpt-5")
-runtime.add_toolkit(WorkspaceToolkit(workspace_root="."))
-messages, bundle = runtime.run("Inspect the repo and explain the structure.")
-```
-
-Structured output:
-
-```python
-from miso.runtime import Broth
-from miso.schemas import ResponseFormat
-
-fmt = ResponseFormat(
-    name="answer",
-    schema={
-        "type": "object",
-        "properties": {"summary": {"type": "string"}},
-        "required": ["summary"],
-        "additionalProperties": False,
-    },
-)
-
-runtime = Broth(provider="openai", model="gpt-5")
-messages, bundle = runtime.run("Summarize this repo.", response_format=fmt)
+```text
+src/miso/
+  agents/
+  runtime/
+  tools/
+  toolkits/
+  memory/
+  input/
+  workspace/
+  schemas/
+  _internal/
 ```
 
 ## Built-in Toolkits
@@ -111,7 +85,6 @@ messages, bundle = runtime.run("Summarize this repo.", response_format=fmt)
 ## Testing
 
 ```bash
+./scripts/init_python312_venv.sh
 ./run_tests.sh
 ```
-
-This script expects Python 3.12 and an editable install created by `./scripts/init_python312_venv.sh`.
