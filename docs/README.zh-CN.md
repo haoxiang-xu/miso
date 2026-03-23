@@ -1,101 +1,44 @@
-# Miso 概览
+# Miso 百科文档
 
-语言入口：[English](README.en.md) | [简体中文](README.zh-CN.md) | [首页](../README.md)
+`miso` 现在采用双层文档体系：仓库入口页保持精简，完整的中英双语百科正文覆盖 skills 章节和 `src/miso` 下全部生产类。
 
-`miso` 是一个 Python agent framework。第二阶段重构后，对外 API 收口，低层模块也都按职责拆开。
+Language switch: [English](README.en.md) | [简体中文](README.zh-CN.md)
 
-## 正式导入方式
+## 阅读路径
 
-```python
-from miso import Agent, Team
-from miso.runtime import Broth
-from miso.tools import Tool, Toolkit, ToolParameter, tool
-from miso.toolkits import (
-    AskUserToolkit,
-    ExternalAPIToolkit,
-    MCPToolkit,
-    TerminalToolkit,
-    WorkspaceToolkit,
-)
-from miso.schemas import ResponseFormat
-from miso.memory import MemoryConfig, MemoryManager
-from miso.input import media
-```
+- 先读 skills 章节建立架构和执行流，再进入 API 参考定位具体类。
+- 当你需要全量覆盖检查、导出符号检索或返回结构速查时，使用附录。
+- builtin toolkit 包内 README 故意保持简短，应把它们视为入口提示，而不是正式参考。
 
-## 包结构
+## Skills 章节
 
-```text
-src/miso/
-  agents/
-  runtime/
-  tools/
-  toolkits/
-  memory/
-  input/
-  workspace/
-  schemas/
-  _internal/
-```
+- [架构总览](zh-CN/skills/architecture-overview.md)
+- [Agent 与 Team](zh-CN/skills/agent-and-team.md)
+- [Runtime Engine](zh-CN/skills/runtime-engine.md)
+- [工具系统模式](zh-CN/skills/tool-system-patterns.md)
+- [Memory 系统](zh-CN/skills/memory-system.md)
+- [创建内置 Toolkit](zh-CN/skills/creating-builtin-toolkits.md)
+- [测试约定](zh-CN/skills/testing-conventions.md)
 
-## 运行时分层
+## API 参考
 
-- `miso.agents`：高层 `Agent` / `Team`
-- `miso.runtime`：低层 `Broth` runtime 与模型 payload 资源
-- `miso.tools`：tool 定义、decorator、registry、catalog
-- `miso.toolkits`：内置 toolkit 与 MCP bridge
-- `miso.memory`：短期 / 长期记忆组件
-- `miso.input`：human input 与 media helper
-- `miso.schemas`：结构化输出模型
+- [Agents API 参考](zh-CN/api/agents.md)
+- [Runtime API 参考](zh-CN/api/runtime.md)
+- [工具系统 API 参考](zh-CN/api/tools.md)
+- [Toolkit 实现参考](zh-CN/api/toolkits.md)
+- [Memory API 参考](zh-CN/api/memory.md)
+- [Input、Workspace 与 Schema 参考](zh-CN/api/input-workspace-schemas.md)
+- [Pupu 子系统参考](zh-CN/api/pupu.md)
 
-## 内置 Toolkits
+## 附录
 
-- `WorkspaceToolkit`：文件、目录、多语言 syntax tree、行级编辑与 workspace pin
-- `TerminalToolkit`：受限 shell 执行与持久 session
-- `ExternalAPIToolkit`：基础外部 HTTP 调用
-- `AskUserToolkit`：结构化向用户提问并 suspend / resume
-- `MCPToolkit`：把 MCP server 暴露成 toolkit
+- [类索引](zh-CN/appendix/class-index.md)
+- [导出索引](zh-CN/appendix/export-index.md)
+- [术语表](zh-CN/appendix/glossary.md)
+- [返回结构与状态流速查](zh-CN/appendix/return-shapes-and-state-flow.md)
 
-## 快速示例
+## 覆盖承诺
 
-```python
-from miso import Agent
-from miso.toolkits import WorkspaceToolkit, TerminalToolkit
-
-agent = Agent(
-    name="coder",
-    provider="openai",
-    model="gpt-5",
-    tools=[
-        WorkspaceToolkit(workspace_root="."),
-        TerminalToolkit(workspace_root=".", terminal_strict_mode=True),
-    ],
-)
-
-messages, bundle = agent.run("检查这个仓库并说明结构。")
-```
-
-## 结构化输出
-
-```python
-from miso.runtime import Broth
-from miso.schemas import ResponseFormat
-
-runtime = Broth(provider="openai", model="gpt-5")
-fmt = ResponseFormat(
-    name="summary",
-    schema={
-        "type": "object",
-        "properties": {"summary": {"type": "string"}},
-        "required": ["summary"],
-        "additionalProperties": False,
-    },
-)
-messages, bundle = runtime.run("总结这个仓库。", response_format=fmt)
-```
-
-## 测试
-
-```bash
-./scripts/init_python312_venv.sh
-./run_tests.sh
-```
+- `src/miso` 下全部 75 个生产类都会被准确索引一次。
+- 各包 `__init__` 中的公开导出会被交叉链接到参考树。
+- 中英文文档保持相同的章节和页面布局。
