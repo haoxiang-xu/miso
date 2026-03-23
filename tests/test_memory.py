@@ -838,6 +838,140 @@ def test_long_term_memory_can_coexist_with_short_term_recall():
     assert [item["text"] for item in facts_payload] == ["Redis was selected as the cache."]
 
 
+def test_long_term_profile_is_not_auto_injected_when_tools_are_supported():
+    profile_store = _FakeLongTermProfileStore()
+    adapter = _FakeLongTermVectorAdapter()
+    manager = MemoryManager(
+        config=MemoryConfig(
+            long_term=LongTermMemoryConfig(
+                profile_store=profile_store,
+                vector_adapter=adapter,
+                vector_top_k=2,
+            )
+        )
+    )
+    profile_store.save("tool_user", {"preferences": {"tone": "concise"}})
+    adapter.records["tool_user"] = [
+        {"memory_type": "fact", "text": "Redis was selected as the cache."},
+    ]
+
+    prepared = manager.prepare_messages(
+        "tool_memory_session",
+        [{"role": "user", "content": "what do you remember?"}],
+        max_context_window_tokens=20_000,
+        model="gpt-5",
+        memory_namespace="tool_user",
+        supports_tools=True,
+    )
+
+    assert _extract_tagged_json_payload(prepared, "[MEMORY_PROFILE]") is None
+    facts_payload = _extract_tagged_json_payload(prepared, "[MEMORY_FACTS]")
+    assert [item["text"] for item in facts_payload] == ["Redis was selected as the cache."]
+
+
+def test_explicit_recall_profile_and_memory_return_structured_results():
+    short_term_adapter = _FakeVectorAdapter(
+        search_results=[
+            {
+                "messages": [
+                    {"role": "user", "content": "previous user message"},
+                    {"role": "assistant", "content": "previous assistant message"},
+                ],
+                "score": 0.95,
+            }
+        ]
+    )
+    profile_store = _FakeLongTermProfileStore()
+    long_term_adapter = _FakeLongTermVectorAdapter()
+    manager = MemoryManager(
+        config=MemoryConfig(
+            vector_adapter=short_term_adapter,
+            vector_top_k=2,
+            long_term=LongTermMemoryConfig(
+                profile_store=profile_store,
+                vector_adapter=long_term_adapter,
+                vector_top_k=2,
+                episode_top_k=2,
+                playbook_top_k=2,
+            ),
+        )
+    )
+
+    profile_store.save("explicit_user", {"preferences": {"tone": "concise"}})
+    long_term_adapter.records["explicit_user"] = [
+        {"memory_type": "fact", "text": "Fact 1"},
+        {"memory_type": "fact", "text": "Fact 2"},
+        {
+            "memory_type": "episode",
+            "situation": "Asked how the deployment worked.",
+            "action": "Explained the release flow.",
+            "outcome": "User approved the approach.",
+            "text": "Situation: Asked how the deployment worked.\nAction: Explained the release flow.\nOutcome: User approved the approach.",
+        },
+        {
+            "memory_type": "episode",
+            "situation": "Asked how the memory workflow worked.",
+            "action": "Explained the recall flow.",
+            "outcome": "User approved the approach.",
+            "text": "Situation: Asked how the memory workflow worked.\nAction: Explained the recall flow.\nOutcome: User approved the approach.",
+        },
+        {
+            "memory_type": "playbook",
+            "trigger": "Need to debug the deployment.",
+            "goal": "Verify the release flow.",
+            "steps": ["Inspect CI", "Inspect release config"],
+            "text": "Trigger: Need to debug the deployment.\nGoal: Verify the release flow.\nSteps:\n1. Inspect CI\n2. Inspect release config",
+        },
+        {
+            "memory_type": "playbook",
+            "trigger": "Need to debug the memory workflow.",
+            "goal": "Verify the recall path.",
+            "steps": ["Inspect memory.py", "Run targeted tests"],
+            "text": "Trigger: Need to debug the memory workflow.\nGoal: Verify the recall path.\nSteps:\n1. Inspect memory.py\n2. Run targeted tests",
+        },
+    ]
+
+    manager.commit_messages(
+        "explicit_session",
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ],
+        memory_namespace="explicit_user",
+        model="gpt-5",
+    )
+
+    profile_result = manager.recall_profile(
+        session_id="explicit_session",
+        memory_namespace="explicit_user",
+        max_chars=200,
+    )
+    memory_result = manager.recall_memory(
+        session_id="explicit_session",
+        memory_namespace="explicit_user",
+        query="status update",
+        top_k=1,
+    )
+
+    assert profile_result["profile"] == {"preferences": {"tone": "concise"}}
+    assert profile_result["memory_namespace"] == "explicit_user"
+    assert [item["content"] for item in memory_result["short_term"]["messages"]] == [
+        "previous user message",
+        "previous assistant message",
+    ]
+    assert [item["text"] for item in memory_result["long_term"]["facts"]] == ["Fact 1"]
+    assert memory_result["long_term"]["episodes"][0]["outcome"] == "User approved the approach."
+    assert memory_result["long_term"]["playbooks"][0]["trigger"] == "Need to debug the deployment."
+    assert short_term_adapter.searches == [
+        ("explicit_session", "status update", 1, None),
+    ]
+    assert long_term_adapter.searches == [
+        ("explicit_user", "status update", 1, {"memory_type": "fact"}, None),
+        ("explicit_user", "status update", 1, {"memory_type": "episode"}, None),
+        ("explicit_user", "status update", 1, {"memory_type": "playbook"}, None),
+    ]
+
+
 def test_broth_emits_memory_events_and_commits_when_session_id_is_set():
     manager = MemoryManager(
         config=MemoryConfig(last_n_turns=2),
@@ -887,6 +1021,9 @@ def test_broth_passes_memory_namespace_to_long_term_memory():
         )
     )
     agent = Broth(provider="ollama", model="deepseek-r1:14b", memory_manager=manager)
+    agent.model_capabilities = {
+        "deepseek-r1:14b": {"supports_tools": False},
+    }
 
     captured_requests: list[list[dict[str, Any]]] = []
 
@@ -921,6 +1058,60 @@ def test_broth_passes_memory_namespace_to_long_term_memory():
     second_request = captured_requests[-1]
     profile_payload = _extract_tagged_json_payload(second_request, "[MEMORY_PROFILE]")
     assert profile_payload == {"preferences": {"namespace": "shared_user"}}
+
+
+def test_broth_only_auto_injects_profile_for_models_without_tool_support():
+    profile_store = _FakeLongTermProfileStore()
+    manager = MemoryManager(
+        config=MemoryConfig(
+            long_term=LongTermMemoryConfig(
+                profile_store=profile_store,
+                vector_adapter=_FakeLongTermVectorAdapter(),
+            )
+        )
+    )
+    profile_store.save("shared_user", {"preferences": {"tone": "concise"}})
+
+    captured_requests: list[list[dict[str, Any]]] = []
+
+    def fake_fetch_once(**kwargs):
+        captured_requests.append(json.loads(json.dumps(kwargs["messages"], ensure_ascii=False)))
+        return ProviderTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "done"}],
+            tool_calls=[],
+            final_text="done",
+            consumed_tokens=8,
+        )
+
+    tool_agent = Broth(provider="ollama", model="tool-model", memory_manager=manager)
+    tool_agent.model_capabilities = {
+        "tool-model": {"supports_tools": True},
+        "plain-model": {"supports_tools": False},
+    }
+    tool_agent._fetch_once = fake_fetch_once
+    tool_agent._extract_long_term_memory = lambda *args, **kwargs: {}
+    tool_agent.run(
+        messages=[{"role": "user", "content": "what do you remember?"}],
+        session_id="tool-session",
+        memory_namespace="shared_user",
+        max_iterations=1,
+    )
+
+    plain_agent = Broth(provider="ollama", model="plain-model", memory_manager=manager)
+    plain_agent.model_capabilities = dict(tool_agent.model_capabilities)
+    plain_agent._fetch_once = fake_fetch_once
+    plain_agent._extract_long_term_memory = lambda *args, **kwargs: {}
+    plain_agent.run(
+        messages=[{"role": "user", "content": "what do you remember?"}],
+        session_id="plain-session",
+        memory_namespace="shared_user",
+        max_iterations=1,
+    )
+
+    assert _extract_tagged_json_payload(captured_requests[0], "[MEMORY_PROFILE]") is None
+    assert _extract_tagged_json_payload(captured_requests[1], "[MEMORY_PROFILE]") == {
+        "preferences": {"tone": "concise"}
+    }
 
 
 def test_long_term_extraction_waits_for_configured_number_of_complete_turns():
