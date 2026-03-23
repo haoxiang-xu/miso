@@ -68,4 +68,3 @@
 - Toolkit 实现参考: `../api/toolkits.md`
 - Memory API 参考: `../api/memory.md`
 - Input、Workspace 与 Schema 参考: `../api/input-workspace-schemas.md`
-- Pupu 子系统参考: `../api/pupu.md`

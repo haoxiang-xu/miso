@@ -58,31 +58,6 @@
 | `SummaryTokenStrategy` | `src/miso/memory/manager.py:1675` | `../api/memory.md#summarytokenstrategy` |
 | `VectorStoreAdapter` | `src/miso/memory/manager.py:30` | `../api/memory.md#vectorstoreadapter` |
 
-## `src/miso/pupu/__init__.py`
-
-| 名称 | 源码 | 参考 |
-| --- | --- | --- |
-| `CatalogEntry` | `src/miso/pupu/models.py:286` | `../api/pupu.md#catalogentry` |
-| `CatalogService` | `src/miso/pupu/services.py:254` | `../api/pupu.md#catalogservice` |
-| `ConnectionIssue` | `src/miso/pupu/models.py:141` | `../api/pupu.md#connectionissue` |
-| `ConnectionTestResult` | `src/miso/pupu/models.py:163` | `../api/pupu.md#connectiontestresult` |
-| `DraftEntry` | `src/miso/pupu/models.py:205` | `../api/pupu.md#draftentry` |
-| `FieldSpec` | `src/miso/pupu/models.py:67` | `../api/pupu.md#fieldspec` |
-| `FileCatalogCache` | `src/miso/pupu/stores.py:19` | `../api/pupu.md#filecatalogcache` |
-| `FileInstalledServerStore` | `src/miso/pupu/stores.py:36` | `../api/pupu.md#fileinstalledserverstore` |
-| `GitHubRepositoryClient` | `src/miso/pupu/services.py:220` | `../api/pupu.md#githubrepositoryclient` |
-| `ImportService` | `src/miso/pupu/services.py:373` | `../api/pupu.md#importservice` |
-| `InMemorySecretStore` | `src/miso/pupu/stores.py:79` | `../api/pupu.md#inmemorysecretstore` |
-| `InstallProfile` | `src/miso/pupu/models.py:101` | `../api/pupu.md#installprofile` |
-| `InstalledServer` | `src/miso/pupu/models.py:348` | `../api/pupu.md#installedserver` |
-| `MCPImportDraft` | `src/miso/pupu/models.py:251` | `../api/pupu.md#mcpimportdraft` |
-| `MCPRuntimeManager` | `src/miso/pupu/services.py:892` | `../api/pupu.md#mcpruntimemanager` |
-| `MCPTestService` | `src/miso/pupu/services.py:685` | `../api/pupu.md#mcptestservice` |
-| `NamespacedToolkit` | `src/miso/pupu/services.py:646` | `../api/pupu.md#namespacedtoolkit` |
-| `PupuMCPService` | `src/miso/pupu/services.py:954` | `../api/pupu.md#pupumcpservice` |
-| `ToolPreview` | `src/miso/pupu/models.py:46` | `../api/pupu.md#toolpreview` |
-| `default_pupu_data_dir` | `-` | 非 class 导出 |
-
 ## `src/miso/runtime/__init__.py`
 
 | 名称 | 源码 | 参考 |

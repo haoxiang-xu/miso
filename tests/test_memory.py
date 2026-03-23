@@ -999,10 +999,10 @@ def test_long_term_prepare_can_recall_typed_memory_blocks():
         {"memory_type": "fact", "text": "Project uses Qdrant for long-term memory."},
         {
             "memory_type": "episode",
-            "situation": "Asked how memory was wired in PuPu.",
+            "situation": "Asked how memory was wired in the sidecar integration.",
             "action": "Explained the sidecar integration path.",
             "outcome": "User accepted the design.",
-            "text": "Situation: Asked how memory was wired in PuPu.\nAction: Explained the sidecar integration path.\nOutcome: User accepted the design.",
+            "text": "Situation: Asked how memory was wired in the sidecar integration.\nAction: Explained the sidecar integration path.\nOutcome: User accepted the design.",
         },
         {
             "memory_type": "playbook",

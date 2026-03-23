@@ -28,7 +28,6 @@ Language switch: [English](README.en.md) | [简体中文](README.zh-CN.md)
 - [Toolkit Implementations Reference](en/api/toolkits.md)
 - [Memory API Reference](en/api/memory.md)
 - [Input, Workspace, and Schema Reference](en/api/input-workspace-schemas.md)
-- [Pupu Subsystem Reference](en/api/pupu.md)
 
 ## Appendices
 
@@ -39,6 +38,6 @@ Language switch: [English](README.en.md) | [简体中文](README.zh-CN.md)
 
 ## Coverage commitments
 
-- All 75 production classes under `src/miso` are indexed exactly once.
+- All 55 production classes under `src/miso` are indexed exactly once.
 - Public exports from package `__init__` files are cross-linked into the reference tree.
 - English and Chinese docs share the same chapter and page layout.

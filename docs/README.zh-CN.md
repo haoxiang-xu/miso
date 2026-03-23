@@ -28,7 +28,6 @@ Language switch: [English](README.en.md) | [简体中文](README.zh-CN.md)
 - [Toolkit 实现参考](zh-CN/api/toolkits.md)
 - [Memory API 参考](zh-CN/api/memory.md)
 - [Input、Workspace 与 Schema 参考](zh-CN/api/input-workspace-schemas.md)
-- [Pupu 子系统参考](zh-CN/api/pupu.md)
 
 ## 附录
 
@@ -39,6 +38,6 @@ Language switch: [English](README.en.md) | [简体中文](README.zh-CN.md)
 
 ## 覆盖承诺
 
-- `src/miso` 下全部 75 个生产类都会被准确索引一次。
+- `src/miso` 下全部 55 个生产类都会被准确索引一次。
 - 各包 `__init__` 中的公开导出会被交叉链接到参考树。
 - 中英文文档保持相同的章节和页面布局。
