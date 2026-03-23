@@ -76,9 +76,9 @@ src/miso/
 
 ## Built-in Toolkits
 
-- `WorkspaceToolkit`: workspace file, multi-language syntax tree, and line editing
-- `TerminalToolkit`: restricted terminal execution and persistent sessions
-- `ExternalAPIToolkit`: simple HTTP GET/POST tools
+- `WorkspaceToolkit`: workspace file, Python AST, and line editing
+- `TerminalToolkit`: restricted terminal execution and sessions
+- `ExternalAPIToolkit`: simple HTTP GET/POST tools plus git commands (read-only and destructive)
 - `AskUserToolkit`: structured user-question suspension flow
 - `MCPToolkit`: expose MCP servers as toolkits
 
