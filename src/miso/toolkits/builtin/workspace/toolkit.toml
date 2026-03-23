@@ -1,7 +1,7 @@
 [toolkit]
 id = "workspace"
 name = "Access Workspace"
-description = "Read, create, and edit files and directories inside a workspace root."
+description = "Read, create, and edit local files and directories inside the current workspace root."
 factory = "miso.toolkits.builtin.workspace:WorkspaceToolkit"
 version = "2.0.0"
 readme = "README.md"
@@ -141,7 +141,7 @@ requires_confirmation = false
 [[tools]]
 name = "search_text"
 title = "Search Text"
-description = "Search workspace files with a regex pattern."
+description = "Search text inside local workspace files with a regex pattern. This does not search the web."
 observe = true
 requires_confirmation = false
 

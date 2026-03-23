@@ -174,6 +174,7 @@ class Broth:
             memory_namespace=memory_namespace,
             provider=self.provider,
             tool_resolver=self._find_tool,
+            supports_tools=self._model_capability("supports_tools", True),
         )
 
     def _commit_memory_messages(

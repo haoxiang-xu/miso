@@ -1,26 +1,20 @@
 # Terminal Toolkit
 
-`TerminalToolkit` 提供受限的 terminal 执行与持久 session 能力。
+`TerminalToolkit` remains the package-level entry point for this builtin toolkit.
 
-## 用法
+## What this README is for
 
-```python
-from miso.toolkits import TerminalToolkit
+- Quick package-local orientation
+- Canonical documentation links
+- Stable manifest-facing path for packaged metadata
 
-tk = TerminalToolkit(
-    workspace_root=".",
-    terminal_strict_mode=True,
-)
-```
+## Full documentation
 
-## 包含的能力
+- English API reference: [TerminalToolkit](../../../../../docs/en/api/toolkits.md#terminaltoolkit)
+- 中文 API 参考: [TerminalToolkit](../../../../../docs/zh-CN/api/toolkits.md#terminaltoolkit)
+- English docs index: [docs/README.en.md](../../../../../docs/README.en.md)
+- 中文文档索引: [docs/README.zh-CN.md](../../../../../docs/README.zh-CN.md)
 
-- `terminal_exec`
-- `terminal_session_open`
-- `terminal_session_write`
-- `terminal_session_close`
+## Notes
 
-## 设计约束
-
-- 只暴露 terminal 行为，不包含文件编辑工具
-- 需要文件编辑时，应与 `WorkspaceToolkit` 组合使用
+The full encyclopedia now lives under `docs/`. This file intentionally stays short so packaged manifests can link to a stable, lightweight README without duplicating the full reference set.

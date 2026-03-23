@@ -1,20 +1,20 @@
 # Ask User Toolkit
 
-`AskUserToolkit` 提供结构化向用户提问的保留工具。
+`AskUserToolkit` remains the package-level entry point for this builtin toolkit.
 
-## 用法
+## What this README is for
 
-```python
-from miso.toolkits import AskUserToolkit
+- Quick package-local orientation
+- Canonical documentation links
+- Stable manifest-facing path for packaged metadata
 
-tk = AskUserToolkit()
-```
+## Full documentation
 
-## 包含的能力
+- English API reference: [AskUserToolkit](../../../../../docs/en/api/toolkits.md#askusertoolkit)
+- 中文 API 参考: [AskUserToolkit](../../../../../docs/zh-CN/api/toolkits.md#askusertoolkit)
+- English docs index: [docs/README.en.md](../../../../../docs/README.en.md)
+- 中文文档索引: [docs/README.zh-CN.md](../../../../../docs/README.zh-CN.md)
 
-- `ask_user_question`
+## Notes
 
-## 设计约束
-
-- `ask_user_question` 是运行时保留工具，不应被直接本地执行
-- suspend / resume 语义由 `Broth` 运行时处理
+The full encyclopedia now lives under `docs/`. This file intentionally stays short so packaged manifests can link to a stable, lightweight README without duplicating the full reference set.
