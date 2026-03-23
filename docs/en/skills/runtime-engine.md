@@ -25,7 +25,7 @@ This chapter explains the `Broth` runtime, canonical provider-turn types, callba
 - Prepare canonical messages and inject pinned context.
 - Fetch one provider turn and normalize tool requests.
 - Execute tools, handle confirmation or human input, and optionally run observation turns.
-- Commit memory and return messages plus a bundle containing stop reason, tokens, artifacts, and continuation state.
+- Commit memory at terminal states and return messages plus a bundle containing `status`, token counts, and optional human-input or continuation state.
 
 ## Configuration surface
 
@@ -56,6 +56,24 @@ This chapter explains the `Broth` runtime, canonical provider-turn types, callba
 - `src/miso/runtime/engine.py`
 - `src/miso/runtime/payloads.py`
 - `src/miso/runtime/providers/`
+
+## Broth In Practice
+
+`Broth` is the low-level execution runtime. It does not own agent identity, default instructions, or durable configuration. Its job is narrower and more operational: take a prepared request, run provider turns, execute tools, handle suspension and resumption, and return a normalized conversation plus bundle.
+
+This boundary is intentional. `Agent` answers the question "what is this agent configured to be?", while `Broth` answers the question "how does this specific run execute?". That separation is why `Agent.run()` creates a fresh `Broth` each time instead of reusing a long-lived runtime instance.
+
+## Current Execution Flow
+
+1. `run()` canonicalizes incoming messages, validates modality support against model capabilities, and projects canonical messages into the provider-specific shape expected by OpenAI, Anthropic, Gemini, or Ollama.
+2. If both `memory_manager` and `session_id` are present, the runtime performs a memory prepare pass before the loop begins, injecting summarized history, retrieved long-term context, and any context-window trimming result into the request.
+3. `_run_loop()` resolves visible toolkits for the current iteration, issues one provider turn, and normalizes the provider response into a `ProviderTurnResult` so the loop can stay provider-agnostic.
+4. If the model emitted tool calls, the runtime executes tools, applies confirmation gates, or returns early with `awaiting_human_input` when human input is required. Tools marked with `observe=True` trigger an additional observation turn that briefly reviews the latest tool result.
+5. When a turn no longer produces tool calls, the runtime applies any structured-output parsing, builds the bundle, commits memory, and returns the final conversation.
+
+## Design Notes
+
+The current implementation treats memory as a boundary capability around `run()`, not as the center of the per-iteration state machine. This keeps the runtime usable without memory, avoids extra summary and extraction cost on every loop iteration, and prevents half-finished suspended states from being committed before a run is truly complete.
 
 ## Detailed legacy reference
 

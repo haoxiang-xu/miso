@@ -55,6 +55,24 @@ This chapter documents the high-level orchestration surface: how a single agent 
 - `src/miso/agents/agent.py`
 - `src/miso/agents/team.py`
 
+## Agent In Practice
+
+`Agent` is the high-level interface exposed to callers. It owns the agent's identity, default instructions, tool list, memory configuration, and per-run defaults, but it does not execute the provider loop itself. Instead, each `run()` builds a fresh `Broth` instance to perform the actual execution.
+
+In other words, `Agent` is the configuration envelope and public entry surface, while `Broth` is the single-run executor. `Agent` defines what the agent is and what defaults it carries. `Broth` defines how one concrete request is executed.
+
+## Current Execution Flow
+
+1. `Agent.run()` normalizes a string or message list into a conversation and prepends the agent's `instructions` plus any extra system messages.
+2. It merges default payload, response-format, and per-run overrides, then resolves whether subagent runtime context should be active for this run.
+3. `_build_engine()` creates a fresh `Broth` and attaches provider settings, api key, memory manager, toolkit catalog config, and the merged toolset built from the agent's tools.
+4. The assembled messages and runtime options are forwarded into `engine.run()`. If execution suspends for human input, `Agent.resume_human_input()` creates a new runtime, restores continuation state, and continues the same conversation.
+5. When toolkit catalog is enabled, `Agent` also captures and restores catalog state tokens around suspension so the resumed runtime sees the same active and managed toolkits.
+
+## Design Notes
+
+This split keeps `Agent` as the stable user-facing API while concentrating provider adapters, tool loops, suspension logic, and token accounting inside `Broth`. The practical benefits are a fresh runtime per run, explicit continuation and memory state flow, and a simpler mental model for callers who only need to understand `Agent.run()` and `Agent.resume_human_input()`.
+
 ## Detailed legacy reference
 
 The original repository skill note is preserved below for continuity and extra examples. The canonical copy now lives in this docs tree.

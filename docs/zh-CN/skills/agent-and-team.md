@@ -55,6 +55,28 @@
 - `src/miso/agents/agent.py`
 - `src/miso/agents/team.py`
 
+## Agent 是什么
+
+`Agent` 是面向调用方的高层接口。它负责保存 agent 的身份、默认指令、工具集合、memory 配置以及每次运行的默认覆盖项；但它自己并不直接执行 provider loop，而是在每次 `run()` 时创建新的 `Broth` 去完成底层执行。
+
+换句话说，`Agent` 更像“配置容器 + 入口表面”，而 `Broth` 更像“单次运行的执行器”。前者决定这个 agent 是谁、带着什么默认能力；后者负责把这一轮请求真正跑完。
+
+## 当前实现里的运行链路
+
+1. `Agent.run()` 会先把字符串或消息列表规范化，再把 `instructions` 和额外 system 消息拼进 conversation 顶部。
+2. 它会合并默认 payload、response format 和运行时覆盖项，并解析当前是否要启用子代理运行时。
+3. `_build_engine()` 会创建一个新的 `Broth`，把 provider、model、api key、memory manager、toolkit catalog 配置和 agent 的工具集合全部挂进去。
+4. 真正执行时，`Agent` 会把已经组装好的 messages 和参数转发给 `engine.run()`；如果运行因为人类输入而暂停，`Agent.resume_human_input()` 会重新创建 runtime，再把 continuation 状态恢复进去继续执行。
+5. 对于启用了 toolkit catalog 的运行，`Agent` 还会在暂停前后捕获和恢复 catalog state token，确保恢复后的 runtime 看到的是同一组 active/managed toolkits。
+
+## 设计取舍
+
+这种分层让 `Agent` 保持为稳定的高层 API，而把 provider 适配、tool loop、暂停恢复和 token 统计集中到 `Broth`。这样做的直接收益是：
+
+- 每次运行都使用 fresh runtime，不容易残留隐式状态。
+- memory、toolkit catalog 和 continuation 都能以显式参数或状态对象的形式流转，而不是藏在长生命周期实例里。
+- 高层调用方通常只需要理解 `Agent.run()` / `Agent.resume_human_input()`，不需要直接处理 provider 细节。
+
 ## 详细说明
 
 本章与英文版保持相同的阅读顺序，但把重点放在结构、调用链和对象边界上；API 级细节请与相邻的参考页配套阅读。
