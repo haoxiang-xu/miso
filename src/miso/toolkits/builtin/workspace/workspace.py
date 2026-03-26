@@ -295,6 +295,32 @@ class WorkspaceToolkit(BuiltinToolkit):
             compacted["digest"] = hashlib.sha1(encoded.encode("utf-8", errors="replace")).hexdigest()
         return compacted
 
+    def _compact_search_text_history_result(
+        self,
+        payload: Any,
+        context: ToolHistoryOptimizationContext,
+    ) -> Any:
+        if not isinstance(payload, dict):
+            return payload
+        matches = payload.get("matches")
+        if not isinstance(matches, list):
+            return payload
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        if len(encoded) <= context.max_chars:
+            return payload
+        preview_matches = matches[:8]
+        compacted: dict[str, Any] = {
+            "path": payload.get("path"),
+            "pattern": payload.get("pattern"),
+            "matches": preview_matches,
+            "total_match_count": len(matches),
+            "truncated": payload.get("truncated"),
+            "compacted": True,
+        }
+        if context.include_hash:
+            compacted["digest"] = hashlib.sha1(encoded.encode("utf-8", errors="replace")).hexdigest()
+        return compacted
+
     def _compact_write_like_history_arguments(
         self,
         payload: Any,
@@ -377,8 +403,8 @@ class WorkspaceToolkit(BuiltinToolkit):
     def read_files(
         self,
         paths: list[str],
-        max_chars_per_file: int = 20000,
-        max_total_chars: int = 50000,
+        max_chars_per_file: int = 12000,
+        max_total_chars: int = 30000,
     ) -> dict[str, Any]:
         """Read multiple UTF-8 text files from workspace.
 
@@ -562,6 +588,7 @@ class WorkspaceToolkit(BuiltinToolkit):
         self.register(
             self.search_text,
             observe=True,
+            history_result_optimizer=self._compact_search_text_history_result,
             description=(
                 "Search text inside local files under the current workspace root or a workspace subpath. "
                 "This only searches workspace contents and does not search the web."
@@ -572,8 +599,8 @@ class WorkspaceToolkit(BuiltinToolkit):
         self,
         paths: list[str],
         recursive: bool = False,
-        max_entries_per_directory: int = 200,
-        max_total_entries: int = 500,
+        max_entries_per_directory: int = 100,
+        max_total_entries: int = 300,
     ) -> dict[str, Any]:
         """List multiple workspace directories in one call.
 
@@ -650,7 +677,7 @@ class WorkspaceToolkit(BuiltinToolkit):
         self,
         pattern: str,
         path: str = ".",
-        max_results: int = 100,
+        max_results: int = 40,
         case_sensitive: bool = False,
     ) -> dict[str, Any]:
         """Search text pattern across workspace files.
@@ -705,9 +732,31 @@ class WorkspaceToolkit(BuiltinToolkit):
             "truncated": False,
         }
 
+    def _compact_read_lines_history_result(
+        self,
+        payload: Any,
+        context: ToolHistoryOptimizationContext,
+    ) -> Any:
+        if not isinstance(payload, dict):
+            return payload
+        content = payload.get("content")
+        if not isinstance(content, str) or len(content) <= context.max_chars:
+            return payload
+        return {
+            "path": payload.get("path"),
+            "start": payload.get("start"),
+            "end": payload.get("end"),
+            "total_lines": payload.get("total_lines"),
+            "content": self._compact_text_blob(content, context),
+            "compacted": True,
+        }
+
     def _register_line_tools(self) -> None:
-        self.register_many(
+        self.register(
             self.read_lines,
+            history_result_optimizer=self._compact_read_lines_history_result,
+        )
+        self.register_many(
             self.insert_lines,
             self.replace_lines,
             self.delete_lines,
