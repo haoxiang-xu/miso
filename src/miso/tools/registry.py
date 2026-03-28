@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover - Python 3.9 fallback
 from .toolkit import Toolkit as RuntimeToolkit
 
 _ICON_SUFFIXES = {".svg", ".png"}
-_ENTRY_POINT_GROUP = "miso.toolkits"
+_ENTRY_POINT_GROUPS = ("unchain.toolkits", "miso.toolkits")
 
 
 def _read_markdown(path: Path) -> str:
@@ -477,25 +477,29 @@ class ToolkitRegistry:
             return
 
         seen: set[str] = set()
-        for entry_point in _entry_points_for_group(_ENTRY_POINT_GROUP):
-            if entry_point.name not in enabled:
-                continue
+        for entry_point_group in _ENTRY_POINT_GROUPS:
+            for entry_point in _entry_points_for_group(entry_point_group):
+                if entry_point.name not in enabled or entry_point.name in seen:
+                    continue
 
-            factory = entry_point.load()
-            manifest_path = _find_manifest_near_factory(factory)
-            descriptor = self._load_descriptor(
-                manifest_path=manifest_path,
-                source="plugin",
-                import_roots=(),
-                entry_point_name=entry_point.name,
-                entry_point_factory=factory,
-            )
-            self._register_descriptor(descriptor)
-            seen.add(entry_point.name)
+                factory = entry_point.load()
+                manifest_path = _find_manifest_near_factory(factory)
+                descriptor = self._load_descriptor(
+                    manifest_path=manifest_path,
+                    source="plugin",
+                    import_roots=(),
+                    entry_point_name=entry_point.name,
+                    entry_point_factory=factory,
+                )
+                self._register_descriptor(descriptor)
+                seen.add(entry_point.name)
 
         missing = sorted(enabled - seen)
         if missing:
-            raise ValueError(f"enabled plugin(s) not found in '{_ENTRY_POINT_GROUP}': {', '.join(missing)}")
+            raise ValueError(
+                "enabled plugin(s) not found in any of "
+                f"{_ENTRY_POINT_GROUPS!r}: {', '.join(missing)}"
+            )
 
     def _find_local_manifests(self, root: Path) -> list[Path]:
         if not root.exists():
