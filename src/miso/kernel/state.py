@@ -12,7 +12,7 @@ from .delta import (
     InsertMessagesOp,
     ReplaceSpanOp,
 )
-from .types import ModelTurnResult, ToolCall
+from .types import KernelRunResult, ModelTurnResult, ToolBatchState, ToolCall
 from .versioning import MessageVersionGraph
 
 
@@ -65,6 +65,10 @@ class RunState:
     suspend_state: SuspendState = field(default_factory=SuspendState)
     pending_tool_calls: list[ToolCall] = field(default_factory=list)
     last_model_turn: ModelTurnResult | None = None
+    tool_batch_state: ToolBatchState = field(default_factory=ToolBatchState)
+    run_status: str = "idle"
+    last_continuation: dict[str, Any] | None = None
+    next_model_input: list[dict[str, Any]] | None = None
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     optimizer_state: dict[str, dict[str, Any]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -210,6 +214,42 @@ class RunState:
                     if isinstance(value, ModelTurnResult) or value is None
                     else copy.deepcopy(value)
                 )
+                continue
+            if key == "tool_batch_state":
+                if isinstance(value, ToolBatchState):
+                    self.tool_batch_state = value.copy()
+                elif isinstance(value, dict):
+                    current = self.tool_batch_state.copy()
+                    if "result_messages" in value:
+                        current.result_messages = _deepcopy_messages(value.get("result_messages"))
+                    if "should_observe" in value:
+                        current.should_observe = bool(value.get("should_observe"))
+                    if "awaiting_human_input" in value:
+                        current.awaiting_human_input = bool(value.get("awaiting_human_input"))
+                    if "human_input_request" in value:
+                        current.human_input_request = copy.deepcopy(value.get("human_input_request"))
+                    if "human_input_tool_call_id" in value:
+                        current.human_input_tool_call_id = copy.deepcopy(value.get("human_input_tool_call_id"))
+                    if "executed_call_ids" in value:
+                        current.executed_call_ids = [
+                            str(item)
+                            for item in (value.get("executed_call_ids") or [])
+                            if isinstance(item, str)
+                        ]
+                    self.tool_batch_state = current
+                else:
+                    self.tool_batch_state = ToolBatchState()
+                continue
+            if key == "run_status":
+                self.run_status = str(value or "idle")
+                continue
+            if key == "last_continuation":
+                self.last_continuation = copy.deepcopy(value) if isinstance(value, dict) else None
+                continue
+            if key == "next_model_input":
+                self.next_model_input = _deepcopy_messages(value if isinstance(value, list) else [])
+                if not self.next_model_input:
+                    self.next_model_input = None
                 continue
             if key == "provider_state" and isinstance(value, dict):
                 for inner_key, inner_value in value.items():
