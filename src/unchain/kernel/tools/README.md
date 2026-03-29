@@ -1,6 +1,6 @@
 Kernel-native tool subsystem.
 
-This package mirrors `miso.kernel.optimizers` structurally:
+This package mirrors `unchain.kernel.optimizers` structurally:
 
 - `base.py`: shared harness-facing tool abstractions
 - `messages.py`: provider-specific tool result message builders

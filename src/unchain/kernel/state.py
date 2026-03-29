@@ -12,7 +12,7 @@ from .delta import (
     InsertMessagesOp,
     ReplaceSpanOp,
 )
-from .subagents.types import SubagentState
+from ..subagents.types import SubagentState
 from .types import ModelTurnResult, ToolBatchState, ToolCall
 from .versioning import MessageVersionGraph
 

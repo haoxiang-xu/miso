@@ -4,8 +4,8 @@ import copy
 from dataclasses import dataclass
 from typing import Any
 
-from ....memory import MemoryConfig, MemoryManager, SessionStore
-from ...memory import KernelMemoryRuntime
+from ...kernel.memory import KernelMemoryRuntime
+from ...memory import MemoryConfig, MemoryManager, SessionStore
 from .base import BaseAgentModule
 
 

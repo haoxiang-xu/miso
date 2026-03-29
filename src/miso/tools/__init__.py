@@ -11,7 +11,7 @@ from .catalog import (
     extract_toolkit_catalog_token,
 )
 from .confirmation import ToolConfirmationRequest, ToolConfirmationResponse
-from .decorators import tool
+from .decorators import tool as _tool_decorator
 from .models import (
     HistoryPayloadOptimizer,
     NormalizedToolHistoryRecord,
@@ -28,6 +28,10 @@ from .registry import (
 )
 from .tool import Tool
 from .toolkit import Toolkit
+
+# Re-export the decorator after importing the `tool` submodule so
+# `from miso.tools import tool` resolves to the callable decorator.
+tool = _tool_decorator
 
 __all__ = [
     "CATALOG_TOOL_NAMES",

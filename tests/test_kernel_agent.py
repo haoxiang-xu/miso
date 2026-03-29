@@ -1,8 +1,8 @@
 import json
 
 from miso.input import HumanInputResponse, build_ask_user_question_tool
-from miso.kernel import BaseRuntimeHarness, HarnessDelta, ModelTurnResult, ToolCall
-from miso.kernel.agent import Agent, MemoryModule, OptimizersModule, PoliciesModule, ToolsModule
+from unchain.kernel import BaseRuntimeHarness, HarnessDelta, ModelTurnResult, ToolCall
+from unchain.agent import Agent, MemoryModule, OptimizersModule, PoliciesModule, ToolsModule
 from miso.memory import MemoryManager
 
 
@@ -297,7 +297,7 @@ def test_kernel_agent_optimizer_module_registers_custom_harness_and_policy_defau
     assert fake_model_io.seen_payloads[0]["store"] is False
 
 
-def test_unchain_kernel_agent_import_works():
-    from unchain.kernel.agent import Agent as UnchainKernelAgent
+def test_unchain_agent_import_works():
+    from unchain.agent import Agent as UnchainAgent
 
-    assert UnchainKernelAgent is Agent
+    assert UnchainAgent is Agent

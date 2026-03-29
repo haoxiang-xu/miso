@@ -1,4 +1,4 @@
-from miso.kernel import (
+from unchain.kernel import (
     AppendMessagesOp,
     BaseRuntimeHarness,
     HarnessDelta,
@@ -8,9 +8,9 @@ from miso.kernel import (
     ModelTurnRequest,
     OpenAIModelIO,
 )
-from miso.kernel.types import ToolCall as KernelToolCall
+from unchain.kernel.types import ToolCall as KernelToolCall
 from miso.tools import Toolkit
-from miso.kernel.types import ModelTurnResult
+from unchain.kernel.types import ModelTurnResult
 
 
 def test_run_state_rebases_old_view_delta_onto_latest_version():

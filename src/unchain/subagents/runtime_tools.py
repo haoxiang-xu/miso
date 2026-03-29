@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ...tools import Tool, ToolParameter, tool
+from ..tools import Tool, ToolParameter, tool
 
 
 def build_delegate_to_subagent_tool() -> Tool:

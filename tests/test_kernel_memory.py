@@ -2,8 +2,8 @@ import copy
 import json
 
 from miso.input.human_input import ASK_USER_QUESTION_TOOL_NAME
-from miso.kernel import KernelLoop, KernelMemoryRuntime, ModelTurnResult
-from miso.kernel.types import ToolCall as KernelToolCall
+from unchain.kernel import KernelLoop, KernelMemoryRuntime, ModelTurnResult
+from unchain.kernel.types import ToolCall as KernelToolCall
 from miso.memory import InMemorySessionStore, LongTermMemoryConfig, MemoryConfig, MemoryManager
 from miso.tools import Toolkit
 

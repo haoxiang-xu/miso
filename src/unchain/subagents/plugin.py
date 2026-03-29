@@ -7,9 +7,9 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from ..tools.runtime import ToolRuntimeOutcome, ToolRuntimePlugin
-from ..tools.common import emit_loop_event
-from ..types import ToolCall
+from ..kernel.tools.common import emit_loop_event
+from ..kernel.tools.runtime import ToolRuntimeOutcome, ToolRuntimePlugin
+from ..kernel.types import ToolCall
 from .executor import SubagentExecutor
 from .types import SubagentPolicy, SubagentResult, SubagentState, SubagentTemplate
 

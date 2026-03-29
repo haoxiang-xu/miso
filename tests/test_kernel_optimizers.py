@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from miso.kernel import (
+from unchain.kernel import (
     KernelLoop,
     LastNOptimizer,
     LastNOptimizerConfig,
@@ -15,7 +15,7 @@ from miso.kernel import (
     WorkspacePinsOptimizer,
     WorkspacePinsOptimizerConfig,
 )
-from miso.kernel.types import ToolCall as KernelToolCall
+from unchain.kernel.types import ToolCall as KernelToolCall
 from miso.memory import InMemorySessionStore
 from miso.tools import Toolkit
 from miso.workspace import build_pin_record, load_workspace_pins, save_workspace_pins

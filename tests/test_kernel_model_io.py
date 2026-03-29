@@ -1,8 +1,8 @@
 import json
 from types import SimpleNamespace
 
-from miso.kernel import AnthropicModelIO, ModelTurnRequest, OllamaModelIO
-from miso.kernel.tools import get_provider_message_builder
+from unchain.kernel import AnthropicModelIO, ModelTurnRequest, OllamaModelIO
+from unchain.kernel.tools import get_provider_message_builder
 from miso.tools import Toolkit
 
 

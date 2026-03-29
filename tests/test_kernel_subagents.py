@@ -2,8 +2,9 @@ import json
 import threading
 import time
 
-from miso.kernel import ModelTurnResult, SubagentPolicy, SubagentTemplate, ToolCall
-from miso.kernel.agent import Agent, MemoryModule, PoliciesModule, SubagentModule
+from unchain.agent import Agent, MemoryModule, PoliciesModule, SubagentModule
+from unchain.kernel import ModelTurnResult, ToolCall
+from unchain.subagents import SubagentPolicy, SubagentTemplate
 from miso.memory import MemoryManager
 
 

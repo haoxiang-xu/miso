@@ -4,12 +4,12 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from ...schemas import ResponseFormat
-from ...tools import Tool, Toolkit
-from ..loop import KernelLoop
-from ..memory import KernelMemoryRuntime
-from ..model_io import ModelIO
-from ..types import KernelRunResult
+from ..kernel.loop import KernelLoop
+from ..kernel.memory import KernelMemoryRuntime
+from ..kernel.model_io import ModelIO
+from ..kernel.types import KernelRunResult
+from ..schemas import ResponseFormat
+from ..tools import Tool, Toolkit
 from .model_io import ModelIOFactoryRegistry
 from .spec import AgentSpec, AgentState
 

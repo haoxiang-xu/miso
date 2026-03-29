@@ -4,8 +4,8 @@ import copy
 from typing import Any, Callable
 
 from .modules.memory import MemoryModule
-from ...tools import Tool
-from ..types import KernelRunResult
+from ..kernel.types import KernelRunResult
+from ..tools import Tool
 from .builder import AgentBuilder, AgentCallContext
 from .model_io import ModelIOFactoryRegistry
 from .spec import AgentSpec, AgentState

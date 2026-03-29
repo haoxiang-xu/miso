@@ -4,7 +4,7 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from ....schemas import ResponseFormat
+from ...schemas import ResponseFormat
 from .base import BaseAgentModule
 
 
