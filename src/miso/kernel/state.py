@@ -12,6 +12,7 @@ from .delta import (
     InsertMessagesOp,
     ReplaceSpanOp,
 )
+from .subagents.types import SubagentState
 from .types import ModelTurnResult, ToolBatchState, ToolCall
 from .versioning import MessageVersionGraph
 
@@ -74,6 +75,7 @@ class RunState:
     memory_commit_info: dict[str, Any] = field(default_factory=dict)
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     optimizer_state: dict[str, dict[str, Any]] = field(default_factory=dict)
+    subagent_state: SubagentState = field(default_factory=SubagentState)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def seed_messages(
@@ -201,6 +203,12 @@ class RunState:
                         self.optimizer_state[optimizer_name] = copy.deepcopy(optimizer_value)
                     else:
                         self.optimizer_state[optimizer_name] = {"value": copy.deepcopy(optimizer_value)}
+                continue
+            if key == "subagent_state":
+                if isinstance(value, SubagentState):
+                    self.subagent_state = value.copy()
+                else:
+                    self.subagent_state = self.subagent_state.merged(value)
                 continue
             if key == "memory_state" and isinstance(value, dict):
                 self.memory_state.update(copy.deepcopy(value))

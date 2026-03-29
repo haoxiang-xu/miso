@@ -7,6 +7,7 @@ from ...tools.toolkit import Toolkit
 from ..delta import HarnessDelta
 from ..harness import BaseRuntimeHarness, HarnessContext, RuntimeHarness, RuntimePhase
 from ..state import RunState
+from .runtime import ToolRuntimePlugin
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,13 @@ class ToolContext:
     @property
     def loop(self) -> Any:
         return self.event.get("loop")
+
+    @property
+    def tool_runtime_plugins(self) -> list[ToolRuntimePlugin]:
+        plugins = self.event.get("tool_runtime_plugins")
+        if not isinstance(plugins, list):
+            return []
+        return [plugin for plugin in plugins if isinstance(plugin, ToolRuntimePlugin) or hasattr(plugin, "can_handle")]
 
     @property
     def callback(self) -> Any:

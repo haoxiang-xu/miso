@@ -13,6 +13,7 @@ from .confirmation import execute_confirmable_tool_call
 from .human_input import parse_human_input_request
 from .messages import get_provider_message_builder
 from .observation import inject_observation, observation_token_state
+from .runtime import run_tool_runtime_plugins
 
 
 @dataclass
@@ -36,6 +37,7 @@ class ToolExecutionHarness(BaseToolHarness):
             return None
 
         includes_human_input = any(is_human_input_tool_name(tool_call.name) for tool_call in tool_calls)
+        includes_handoff = any(tool_call.name == "handoff_to_subagent" for tool_call in tool_calls)
         if includes_human_input and len(tool_calls) > 1:
             error_text = "ask_user_question must be the only tool call in a turn"
             builder = get_provider_message_builder(context.provider)
@@ -61,6 +63,34 @@ class ToolExecutionHarness(BaseToolHarness):
                 },
                 trace={
                     "mixed_human_input_batch": True,
+                    "tool_call_count": len(tool_calls),
+                },
+            )
+        if includes_handoff and len(tool_calls) > 1:
+            error_text = "handoff_to_subagent must be the only tool call in a turn"
+            builder = get_provider_message_builder(context.provider)
+            result_messages = [
+                builder.build_tool_result_message(
+                    tool_call=tool_call,
+                    tool_result={"error": error_text, "tool": tool_call.name},
+                )
+                for tool_call in tool_calls
+            ]
+            return HarnessDelta(
+                created_by=self.created_by,
+                state_updates={
+                    "tool_batch_state": ToolBatchState(
+                        result_messages=result_messages,
+                        should_observe=False,
+                        awaiting_human_input=False,
+                        human_input_request=None,
+                        human_input_tool_call_id=None,
+                        executed_call_ids=[tool_call.call_id for tool_call in tool_calls],
+                    ),
+                    "run_status": "running",
+                },
+                trace={
+                    "mixed_handoff_batch": True,
                     "tool_call_count": len(tool_calls),
                 },
             )
@@ -95,6 +125,46 @@ class ToolExecutionHarness(BaseToolHarness):
             call_id=tool_call.call_id,
             arguments=copy.deepcopy(tool_call.arguments),
         )
+
+        plugin_outcome = run_tool_runtime_plugins(
+            context.tool_runtime_plugins,
+            tool_call=tool_call,
+            context=context,
+        )
+        if plugin_outcome is not None:
+            builder = get_provider_message_builder(context.provider)
+            result_messages = copy_messages(batch_state.result_messages)
+            if plugin_outcome.result_messages:
+                result_messages.extend(copy_messages(plugin_outcome.result_messages))
+            elif isinstance(plugin_outcome.tool_result, dict):
+                result_messages.append(
+                    builder.build_tool_result_message(tool_call=tool_call, tool_result=plugin_outcome.tool_result)
+                )
+            if isinstance(plugin_outcome.tool_result, dict):
+                emit_loop_event(
+                    context.loop,
+                    context.callback,
+                    "tool_result",
+                    context.run_id,
+                    iteration=context.iteration,
+                    tool_name=tool_call.name,
+                    call_id=tool_call.call_id,
+                    result=copy.deepcopy(plugin_outcome.tool_result),
+                )
+            state_updates = copy.deepcopy(plugin_outcome.state_updates)
+            state_updates["tool_batch_state"] = ToolBatchState(
+                result_messages=result_messages,
+                should_observe=batch_state.should_observe or bool(plugin_outcome.should_observe),
+                awaiting_human_input=False,
+                human_input_request=batch_state.human_input_request,
+                human_input_tool_call_id=batch_state.human_input_tool_call_id,
+                executed_call_ids=append_executed_call_id(batch_state, tool_call.call_id),
+            )
+            return HarnessDelta(
+                created_by=self.created_by,
+                state_updates=state_updates,
+                suspend=plugin_outcome.suspend_override,
+            )
 
         if is_human_input_tool_name(tool_call.name):
             try:
@@ -280,7 +350,9 @@ class ToolExecutionHarness(BaseToolHarness):
                 state_updates={
                     "pending_tool_calls": [],
                     "tool_batch_state": ToolBatchState(),
-                    "run_status": "running",
+                    "run_status": context.state.run_status,
+                    "last_continuation": None,
+                    "next_model_input": None,
                 },
             )
 

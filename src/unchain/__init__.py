@@ -19,6 +19,7 @@ _ALIASED_PACKAGES = (
     "kernel",
     "kernel.agent",
     "kernel.agent.modules",
+    "kernel.subagents",
     "memory",
     "runtime",
     "runtime.providers",

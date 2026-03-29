@@ -51,6 +51,16 @@ from .tools import (
     ToolHarness,
 )
 from .state import ProviderState, RunState, SessionState, SuspendState, TokenState
+from .subagents import (
+    SubagentExecutor,
+    SubagentMemoryPolicy,
+    SubagentMode,
+    SubagentOutputMode,
+    SubagentPolicy,
+    SubagentResult,
+    SubagentState,
+    SubagentTemplate,
+)
 from .types import KernelRunResult, ModelTurnResult, TokenUsage, ToolBatchState, ToolCall
 from .versioning import MessageVersion, MessageVersionGraph
 
@@ -103,6 +113,14 @@ __all__ = [
     "RuntimeHarness",
     "RuntimePhase",
     "SessionState",
+    "SubagentExecutor",
+    "SubagentMemoryPolicy",
+    "SubagentMode",
+    "SubagentOutputMode",
+    "SubagentPolicy",
+    "SubagentResult",
+    "SubagentState",
+    "SubagentTemplate",
     "SummaryGenerator",
     "SuspendSignal",
     "SuspendState",

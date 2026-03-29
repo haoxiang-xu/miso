@@ -50,6 +50,7 @@ class PreparedAgent:
     default_max_context_window_tokens: int | None = None
     default_on_tool_confirm: Callable[..., Any] | None = None
     run_hooks: list[RunHook] = field(default_factory=list)
+    tool_runtime_plugins: list[Any] = field(default_factory=list)
 
     def _merge_payloads(self, *payloads: dict[str, Any] | None) -> dict[str, Any] | None:
         merged: dict[str, Any] = {}
@@ -100,6 +101,7 @@ class PreparedAgent:
             max_context_window_tokens=self._resolved_max_context_window_tokens(),
             toolkit=self.toolkit,
             run_id=self.call_context.run_id,
+            tool_runtime_plugins=list(self.tool_runtime_plugins),
         )
         return self._apply_run_hooks(result)
 
@@ -121,12 +123,14 @@ class PreparedAgent:
             memory_namespace=self.call_context.memory_namespace,
             toolkit=self.toolkit,
             run_id=self.call_context.run_id,
+            tool_runtime_plugins=list(self.tool_runtime_plugins),
         )
         return self._apply_run_hooks(result)
 
 
 @dataclass
 class AgentBuilder:
+    agent: Any
     spec: AgentSpec
     state: AgentState
     call_context: AgentCallContext
@@ -140,6 +144,7 @@ class AgentBuilder:
     default_max_context_window_tokens: int | None = None
     default_on_tool_confirm: Callable[..., Any] | None = None
     run_hooks: list[RunHook] = field(default_factory=list)
+    tool_runtime_plugins: list[Any] = field(default_factory=list)
     _model_io: ModelIO | None = None
     _model_io_factory: Callable[[AgentSpec, AgentCallContext], ModelIO] | None = None
 
@@ -170,6 +175,9 @@ class AgentBuilder:
 
     def add_run_hook(self, hook: RunHook) -> None:
         self.run_hooks.append(hook)
+
+    def add_tool_runtime_plugin(self, plugin: Any) -> None:
+        self.tool_runtime_plugins.append(plugin)
 
     def set_payload_defaults(self, payload: dict[str, Any]) -> None:
         self.default_payload.update(copy.deepcopy(payload))
@@ -215,4 +223,5 @@ class AgentBuilder:
             default_max_context_window_tokens=self.default_max_context_window_tokens,
             default_on_tool_confirm=self.default_on_tool_confirm,
             run_hooks=list(self.run_hooks),
+            tool_runtime_plugins=list(self.tool_runtime_plugins),
         )

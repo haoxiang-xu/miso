@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Callable
 
+from .modules.memory import MemoryModule
 from ...tools import Tool
 from ..types import KernelRunResult
 from .builder import AgentBuilder, AgentCallContext
@@ -69,6 +70,7 @@ class Agent:
 
     def _prepare(self, call_context: AgentCallContext):
         builder = AgentBuilder(
+            agent=self,
             spec=self.spec,
             state=self.state,
             call_context=call_context,
@@ -79,6 +81,56 @@ class Agent:
         for module in self.spec.modules:
             module.configure(builder)
         return builder.build()
+
+    def clone(
+        self,
+        *,
+        name: str | None = None,
+        instructions: str | None = None,
+        modules: tuple[Any, ...] | None = None,
+    ) -> "Agent":
+        return Agent(
+            name=name or self.name,
+            instructions=self.instructions if instructions is None else instructions,
+            provider=self.provider,
+            model=self.model,
+            api_key=self.spec.api_key,
+            modules=tuple(self.spec.modules if modules is None else modules),
+            model_io_factory=self._model_io_factory,
+        )
+
+    def fork_for_subagent(
+        self,
+        *,
+        subagent_name: str,
+        mode: str,
+        parent_name: str,
+        lineage: list[str],
+        task: str,
+        instructions: str,
+        expected_output: str,
+        memory_policy: str,
+    ) -> "Agent":
+        overlay = (
+            f'You are subagent "{subagent_name}" created by parent "{parent_name}".\n'
+            f"Mode: {mode}\n"
+            f"Lineage: {' > '.join(lineage)}\n\n"
+            "Only execute the delegated subtask.\n"
+            "Do not ask the user directly for clarification. If clarification is required, return a concise structured clarification request via the runtime tools.\n"
+            f"Delegated task:\n{task.strip()}\n\n"
+        )
+        if expected_output.strip():
+            overlay += f"Expected output:\n{expected_output.strip()}\n\n"
+        if instructions.strip():
+            overlay += f"Extra instructions:\n{instructions.strip()}\n"
+        modules = list(self.spec.modules)
+        if memory_policy == "ephemeral":
+            modules = [module for module in modules if not isinstance(module, MemoryModule)]
+        return self.clone(
+            name=subagent_name,
+            instructions="\n\n".join(part for part in (self.instructions, overlay.strip()) if part.strip()),
+            modules=tuple(modules),
+        )
 
     def run(
         self,

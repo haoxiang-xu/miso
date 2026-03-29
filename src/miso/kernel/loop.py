@@ -190,6 +190,7 @@ class KernelLoop:
         openai_text_format: dict[str, Any] | None = None,
         on_tool_confirm: Any = None,
         max_iterations: int = 0,
+        tool_runtime_plugins: list[Any] | None = None,
     ) -> ModelTurnResult:
         runtime_toolkit = toolkit if toolkit is not None else Toolkit()
         current_iteration = int(state.iteration)
@@ -212,6 +213,7 @@ class KernelLoop:
             "max_iterations": max_iterations,
             "supports_tools": True,
             "loop": self,
+            "tool_runtime_plugins": list(tool_runtime_plugins or []),
         }
 
         if self._memory_runtime is not None and current_iteration > 0:
@@ -574,6 +576,7 @@ class KernelLoop:
         toolkit: Toolkit | None = None,
         run_id: str | None = None,
         skip_bootstrap: bool = False,
+        tool_runtime_plugins: list[Any] | None = None,
     ) -> KernelRunResult:
         if self._model_io is None:
             raise RuntimeError("KernelLoop.model_io is not configured")
@@ -628,6 +631,7 @@ class KernelLoop:
                 response_format=response_format,
                 on_tool_confirm=on_tool_confirm,
                 max_iterations=max_iterations,
+                tool_runtime_plugins=tool_runtime_plugins,
             )
             self.emit_event(
                 callback,
@@ -644,6 +648,24 @@ class KernelLoop:
             )
             if state.run_status == "awaiting_human_input":
                 return self._build_result(state, status="awaiting_human_input")
+            if state.run_status == "completed":
+                final_text = self._last_assistant_text(state.transcript)
+                self.emit_event(
+                    callback,
+                    "final_message",
+                    run_id,
+                    iteration=max(0, int(state.iteration) - 1),
+                    content=final_text,
+                )
+                self.emit_event(
+                    callback,
+                    "run_completed",
+                    run_id,
+                    iteration=max(0, int(state.iteration) - 1),
+                    status="completed",
+                    bundle=self._build_legacy_bundle(state, status="completed"),
+                )
+                return self._build_result(state, status="completed")
             if turn.tool_calls:
                 self.emit_event(
                     callback,
@@ -699,6 +721,7 @@ class KernelLoop:
         max_context_window_tokens: int | None = None,
         toolkit: Toolkit | None = None,
         run_id: str | None = None,
+        tool_runtime_plugins: list[Any] | None = None,
     ) -> KernelRunResult:
         resolved_payload = dict(payload or {})
         resolved_provider = provider or self._infer_provider() or "openai"
@@ -726,6 +749,7 @@ class KernelLoop:
             on_tool_confirm=on_tool_confirm,
             toolkit=toolkit,
             run_id=resolved_run_id,
+            tool_runtime_plugins=tool_runtime_plugins,
         )
 
     def resume_human_input(
@@ -743,6 +767,7 @@ class KernelLoop:
         memory_namespace: str | None = None,
         toolkit: Toolkit | None = None,
         run_id: str | None = None,
+        tool_runtime_plugins: list[Any] | None = None,
     ) -> KernelRunResult:
         if not isinstance(conversation, list):
             raise TypeError("conversation must be a list of provider-projected messages")
@@ -823,4 +848,5 @@ class KernelLoop:
             toolkit=toolkit,
             run_id=resolved_run_id,
             skip_bootstrap=True,
+            tool_runtime_plugins=tool_runtime_plugins,
         )

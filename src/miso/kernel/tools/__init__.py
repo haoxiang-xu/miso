@@ -16,6 +16,7 @@ from .observation import (
     inject_observation,
     observation_token_state,
 )
+from .runtime import ToolRuntimeOutcome, ToolRuntimePlugin
 
 __all__ = [
     "AnthropicMessageBuilder",
@@ -34,4 +35,6 @@ __all__ = [
     "ToolContext",
     "ToolExecutionHarness",
     "ToolHarness",
+    "ToolRuntimeOutcome",
+    "ToolRuntimePlugin",
 ]
