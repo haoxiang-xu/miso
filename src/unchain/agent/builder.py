@@ -4,8 +4,8 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from ..memory import KernelMemoryRuntime
 from ..kernel.loop import KernelLoop
-from ..kernel.memory import KernelMemoryRuntime
 from ..kernel.model_io import ModelIO
 from ..kernel.types import KernelRunResult
 from ..schemas import ResponseFormat

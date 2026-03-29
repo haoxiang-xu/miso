@@ -13,7 +13,8 @@ from .delta import (
     ReplaceSpanOp,
 )
 from ..subagents.types import SubagentState
-from .types import ModelTurnResult, ToolBatchState, ToolCall
+from ..tools.types import ToolBatchState
+from .types import ModelTurnResult, ToolCall
 from .versioning import MessageVersionGraph
 
 
@@ -76,7 +77,30 @@ class RunState:
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     optimizer_state: dict[str, dict[str, Any]] = field(default_factory=dict)
     subagent_state: SubagentState = field(default_factory=SubagentState)
+    component_state: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self._sync_all_component_state()
+
+    def component_bucket(self, name: str) -> dict[str, Any]:
+        bucket = self.component_state.get(name)
+        if not isinstance(bucket, dict):
+            bucket = {}
+            self.component_state[name] = bucket
+        return bucket
+
+    def _sync_all_component_state(self) -> None:
+        self.component_state["optimizers"] = copy.deepcopy(self.optimizer_state)
+        self.component_bucket("memory").update(
+            {
+                "state": copy.deepcopy(self.memory_state),
+                "prepare_info": copy.deepcopy(self.memory_prepare_info),
+                "commit_info": copy.deepcopy(self.memory_commit_info),
+            }
+        )
+        self.component_bucket("tools")["tool_batch_state"] = self.tool_batch_state.copy()
+        self.component_bucket("subagents")["state"] = self.subagent_state.copy()
 
     def seed_messages(
         self,
@@ -203,21 +227,26 @@ class RunState:
                         self.optimizer_state[optimizer_name] = copy.deepcopy(optimizer_value)
                     else:
                         self.optimizer_state[optimizer_name] = {"value": copy.deepcopy(optimizer_value)}
+                self.component_state["optimizers"] = copy.deepcopy(self.optimizer_state)
                 continue
             if key == "subagent_state":
                 if isinstance(value, SubagentState):
                     self.subagent_state = value.copy()
                 else:
                     self.subagent_state = self.subagent_state.merged(value)
+                self.component_bucket("subagents")["state"] = self.subagent_state.copy()
                 continue
             if key == "memory_state" and isinstance(value, dict):
                 self.memory_state.update(copy.deepcopy(value))
+                self.component_bucket("memory")["state"] = copy.deepcopy(self.memory_state)
                 continue
             if key == "memory_prepare_info" and isinstance(value, dict):
                 self.memory_prepare_info.update(copy.deepcopy(value))
+                self.component_bucket("memory")["prepare_info"] = copy.deepcopy(self.memory_prepare_info)
                 continue
             if key == "memory_commit_info" and isinstance(value, dict):
                 self.memory_commit_info.update(copy.deepcopy(value))
+                self.component_bucket("memory")["commit_info"] = copy.deepcopy(self.memory_commit_info)
                 continue
             if key == "pending_tool_calls":
                 if isinstance(value, list):
@@ -259,6 +288,7 @@ class RunState:
                     self.tool_batch_state = current
                 else:
                     self.tool_batch_state = ToolBatchState()
+                self.component_bucket("tools")["tool_batch_state"] = self.tool_batch_state.copy()
                 continue
             if key == "run_status":
                 self.run_status = str(value or "idle")

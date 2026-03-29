@@ -3,13 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from unchain.kernel import (
-    KernelLoop,
+from unchain.kernel import KernelLoop, ModelTurnResult
+from unchain.optimizers import (
     LastNOptimizer,
     LastNOptimizerConfig,
     LlmSummaryOptimizer,
     LlmSummaryOptimizerConfig,
-    ModelTurnResult,
     ToolHistoryCompactionOptimizer,
     ToolHistoryCompactionOptimizerConfig,
     WorkspacePinsOptimizer,

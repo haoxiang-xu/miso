@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
-from ..kernel.model_io import AnthropicModelIO, ModelIO, OllamaModelIO, OpenAIModelIO
+from ..kernel.model_io import ModelIO
+from ..providers import AnthropicModelIO, OllamaModelIO, OpenAIModelIO
 
 
 class ModelIOFactoryRegistry:

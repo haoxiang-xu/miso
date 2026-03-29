@@ -6,8 +6,8 @@ from unchain.kernel import (
     KernelLoop,
     LegacyBrothModelIO,
     ModelTurnRequest,
-    OpenAIModelIO,
 )
+from unchain.providers import OpenAIModelIO
 from unchain.kernel.types import ToolCall as KernelToolCall
 from miso.tools import Toolkit
 from unchain.kernel.types import ModelTurnResult

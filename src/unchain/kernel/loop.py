@@ -4,21 +4,21 @@ import copy
 import uuid
 from typing import Any
 
+from ..memory import KernelMemoryRuntime
 from ..schemas import ResponseFormat
-from .delta import HarnessDelta
-from .harness import HarnessContext, RuntimeHarness, RuntimePhase
-from .memory import KernelMemoryRuntime
-from .model_io import ModelIO, ModelTurnRequest
-from .state import RunState
-from .tools import (
+from ..tools import (
     HumanInputResumeHarness,
     OBSERVATION_MAX_OUTPUT_TOKENS,
     OBSERVATION_RECENT_MESSAGES,
     OBSERVATION_SYSTEM_PROMPT,
     ToolExecutionHarness,
 )
-from .types import KernelRunResult, ModelTurnResult, TokenUsage
 from ..tools.toolkit import Toolkit
+from .delta import HarnessDelta
+from .harness import HarnessContext, RuntimeHarness, RuntimePhase
+from .model_io import ModelIO, ModelTurnRequest
+from .state import RunState
+from .types import KernelRunResult, ModelTurnResult, TokenUsage
 
 
 class KernelLoop:
@@ -218,6 +218,7 @@ class KernelLoop:
 
         if self._memory_runtime is not None and current_iteration > 0:
             state.memory_prepare_info = {}
+            state.component_bucket("memory")["prepare_info"] = {}
         self.dispatch_phase(state, phase="before_model", event=phase_event)
         if self._memory_runtime is not None and state.memory_prepare_info:
             self.emit_event(
@@ -270,6 +271,7 @@ class KernelLoop:
         else:
             if self._memory_runtime is not None:
                 state.memory_commit_info = {}
+                state.component_bucket("memory")["commit_info"] = {}
             self.dispatch_phase(state, phase="before_commit", event=after_model_event)
             if self._memory_runtime is not None and state.memory_commit_info:
                 self.emit_event(

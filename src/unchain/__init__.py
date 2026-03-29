@@ -1,42 +1,36 @@
 from __future__ import annotations
 
 import importlib
-import sys
 from pathlib import Path
-
-import miso as _miso
-from miso import *  # noqa: F401,F403
-from miso import __version__
 
 __brand__ = "unchain"
 __tagline__ = "unchain harness"
-
-_ALIASED_PACKAGES = (
-    "_internal",
-    "agents",
-    "characters",
-    "input",
-    "input.human_input",
-    "memory",
-    "memory.tool_history",
-    "runtime",
-    "runtime.payloads",
-    "runtime.providers",
-    "runtime.resources",
-    "schemas",
-    "toolkits",
-    "toolkits.builtin",
-    "tools",
-    "tools.decorators",
-    "tools.tool",
-    "tools.toolkit",
-    "workspace",
-)
-
-for _suffix in _ALIASED_PACKAGES:
-    sys.modules.setdefault(f"{__name__}.{_suffix}", importlib.import_module(f"miso.{_suffix}"))
+__version__ = "0.2.0"
 
 _here = Path(__file__).resolve().parent
 _legacy_root = (_here.parent / "miso").resolve()
 __path__ = [str(_here), str(_legacy_root)]
-__all__ = [*getattr(_miso, "__all__", ()), "__brand__", "__tagline__"]
+
+_LAZY_EXPORTS = {
+    "Agent",
+    "Team",
+    "CharacterAgent",
+    "CharacterDecision",
+    "CharacterEvaluation",
+    "CharacterSchedule",
+    "CharacterScheduleBlock",
+    "CharacterSpec",
+}
+
+__all__ = sorted([*_LAZY_EXPORTS, "__brand__", "__tagline__", "__version__"])
+
+
+def __getattr__(name: str):
+    if name in _LAZY_EXPORTS:
+        miso = importlib.import_module("miso")
+        return getattr(miso, name)
+    raise AttributeError(name)
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | _LAZY_EXPORTS)

@@ -1,62 +1,37 @@
-from .catalog import (
-    CATALOG_TOOL_NAMES,
-    TOOLKIT_ACTIVATE_TOOL_NAME,
-    TOOLKIT_DEACTIVATE_TOOL_NAME,
-    TOOLKIT_DESCRIBE_TOOL_NAME,
-    TOOLKIT_LIST_ACTIVE_TOOL_NAME,
-    TOOLKIT_LIST_TOOL_NAME,
-    ToolkitCatalogConfig,
-    ToolkitCatalogRuntime,
-    build_visible_toolkits,
-    extract_toolkit_catalog_token,
-)
-from .confirmation import ToolConfirmationRequest, ToolConfirmationResponse
-from .decorators import tool as _tool_decorator
-from .models import (
-    HistoryPayloadOptimizer,
-    NormalizedToolHistoryRecord,
-    ToolHistoryOptimizationContext,
-    ToolParameter,
-)
-from .registry import (
-    ToolDescriptor,
-    ToolRegistryConfig,
-    ToolkitDescriptor,
-    ToolkitRegistry,
-    get_toolkit_metadata,
-    list_toolkits,
-)
-from .tool import Tool
-from .toolkit import Toolkit
+from __future__ import annotations
 
-# Re-export the decorator after importing the `tool` submodule so
-# `from miso.tools import tool` resolves to the callable decorator.
-tool = _tool_decorator
+import importlib
+import sys
 
-__all__ = [
-    "CATALOG_TOOL_NAMES",
-    "HistoryPayloadOptimizer",
-    "NormalizedToolHistoryRecord",
-    "TOOLKIT_ACTIVATE_TOOL_NAME",
-    "TOOLKIT_DEACTIVATE_TOOL_NAME",
-    "TOOLKIT_DESCRIBE_TOOL_NAME",
-    "TOOLKIT_LIST_ACTIVE_TOOL_NAME",
-    "TOOLKIT_LIST_TOOL_NAME",
-    "ToolConfirmationRequest",
-    "ToolConfirmationResponse",
-    "ToolDescriptor",
-    "ToolHistoryOptimizationContext",
-    "ToolRegistryConfig",
-    "ToolkitCatalogConfig",
-    "ToolkitCatalogRuntime",
-    "ToolkitDescriptor",
-    "ToolkitRegistry",
-    "build_visible_toolkits",
-    "extract_toolkit_catalog_token",
-    "get_toolkit_metadata",
-    "list_toolkits",
-    "Tool",
-    "Toolkit",
-    "ToolParameter",
+__all__ = list(importlib.import_module("unchain.tools").__all__)
+
+_ALIASED_SUBMODULES = (
+    "catalog",
+    "confirmation",
+    "decorators",
+    "execution",
+    "human_input",
+    "messages",
+    "models",
+    "observation",
+    "registry",
+    "runtime",
     "tool",
-]
+    "toolkit",
+    "types",
+)
+
+for _suffix in _ALIASED_SUBMODULES:
+    sys.modules.setdefault(f"{__name__}.{_suffix}", importlib.import_module(f"unchain.tools.{_suffix}"))
+
+tool = getattr(importlib.import_module("unchain.tools"), "tool")
+
+
+def __getattr__(name: str):
+    if name == "tool":
+        return tool
+    return getattr(importlib.import_module("unchain.tools"), name)
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))
