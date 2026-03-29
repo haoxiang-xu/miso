@@ -7,6 +7,7 @@ from typing import Any
 from ..schemas import ResponseFormat
 from .delta import HarnessDelta
 from .harness import HarnessContext, RuntimeHarness, RuntimePhase
+from .memory import KernelMemoryRuntime
 from .model_io import ModelIO, ModelTurnRequest
 from .state import RunState
 from .tools import (
@@ -31,6 +32,7 @@ class KernelLoop:
     ) -> None:
         self._harnesses: list[RuntimeHarness] = []
         self._model_io = model_io
+        self._memory_runtime: KernelMemoryRuntime | None = None
         for harness in harnesses or []:
             self.register_harness(harness)
 
@@ -44,6 +46,13 @@ class KernelLoop:
 
     def register_context_optimizer(self, optimizer: RuntimeHarness) -> None:
         self.register_harness(optimizer)
+
+    def register_memory_harness(self, memory_harness: RuntimeHarness) -> None:
+        self.register_harness(memory_harness)
+
+    def attach_memory(self, memory_runtime: KernelMemoryRuntime) -> None:
+        self._memory_runtime = memory_runtime
+        self._ensure_memory_components()
 
     @property
     def model_io(self) -> ModelIO | None:
@@ -201,10 +210,21 @@ class KernelLoop:
             "openai_text_format": openai_text_format,
             "on_tool_confirm": on_tool_confirm,
             "max_iterations": max_iterations,
+            "supports_tools": True,
             "loop": self,
         }
 
+        if self._memory_runtime is not None and current_iteration > 0:
+            state.memory_prepare_info = {}
         self.dispatch_phase(state, phase="before_model", event=phase_event)
+        if self._memory_runtime is not None and state.memory_prepare_info:
+            self.emit_event(
+                callback,
+                "memory_prepare",
+                run_id,
+                iteration=current_iteration,
+                **copy.deepcopy(state.memory_prepare_info),
+            )
         turn = self.fetch_model_turn(
             state,
             payload=payload,
@@ -246,7 +266,17 @@ class KernelLoop:
                 },
             )
         else:
+            if self._memory_runtime is not None:
+                state.memory_commit_info = {}
             self.dispatch_phase(state, phase="before_commit", event=after_model_event)
+            if self._memory_runtime is not None and state.memory_commit_info:
+                self.emit_event(
+                    callback,
+                    "memory_commit",
+                    run_id,
+                    iteration=current_iteration,
+                    **copy.deepcopy(state.memory_commit_info),
+                )
 
         state.iteration = current_iteration + 1
         return turn
@@ -260,6 +290,47 @@ class KernelLoop:
             self.register_harness(ToolExecutionHarness())
         if "human_input_resume" not in existing_names:
             self.register_harness(HumanInputResumeHarness())
+
+    def _ensure_memory_components(self) -> None:
+        if self._memory_runtime is None:
+            return
+        existing_names = {harness.name for harness in self._harnesses}
+        for component in self._memory_runtime.build_default_components():
+            if component.name in existing_names:
+                continue
+            self.register_harness(component)
+            existing_names.add(component.name)
+
+    def _dispatch_bootstrap(
+        self,
+        state: RunState,
+        *,
+        payload: dict[str, Any] | None,
+        response_format: ResponseFormat | None,
+        callback: Any,
+        verbose: bool,
+        toolkit: Toolkit | None,
+        run_id: str,
+        resume_mode: bool,
+    ) -> None:
+        if self._memory_runtime is None:
+            return
+        runtime_toolkit = toolkit if toolkit is not None else Toolkit()
+        self.dispatch_phase(
+            state,
+            phase="bootstrap",
+            event={
+                "payload": dict(payload or {}),
+                "toolkit": runtime_toolkit,
+                "callback": callback,
+                "verbose": verbose,
+                "run_id": run_id,
+                "response_format": response_format,
+                "supports_tools": True,
+                "resume_mode": resume_mode,
+                "loop": self,
+            },
+        )
 
     def emit_event(
         self,
@@ -386,6 +457,7 @@ class KernelLoop:
         payload: dict[str, Any],
         callback: Any = None,
         iteration: int = 0,
+        provider: str | None = None,
     ) -> tuple[str, TokenUsage]:
         if self._model_io is None:
             return "", TokenUsage()
@@ -398,9 +470,10 @@ class KernelLoop:
                 "content": "Review the LAST tool result above and provide one brief actionable observation.",
             },
         ]
-        observe_payload = dict(payload or {})
-        observe_payload["temperature"] = 0.2
-        observe_payload["max_output_tokens"] = OBSERVATION_MAX_OUTPUT_TOKENS
+        observe_payload = self._build_observation_payload(
+            payload or {},
+            provider=provider or self._infer_provider(),
+        )
         try:
             turn = self._model_io.fetch_turn(
                 ModelTurnRequest(
@@ -425,6 +498,30 @@ class KernelLoop:
             output_tokens=int(turn.output_tokens or 0),
         )
 
+    def _build_observation_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        provider: str | None,
+    ) -> dict[str, Any]:
+        observe_payload = dict(payload or {})
+        observe_payload["temperature"] = 0.2
+        normalized_provider = str(provider or "").strip().lower()
+        if normalized_provider == "anthropic":
+            observe_payload["max_tokens"] = OBSERVATION_MAX_OUTPUT_TOKENS
+            observe_payload.pop("max_output_tokens", None)
+            observe_payload.pop("num_predict", None)
+            return observe_payload
+        if normalized_provider == "ollama":
+            observe_payload["num_predict"] = OBSERVATION_MAX_OUTPUT_TOKENS
+            observe_payload.pop("max_output_tokens", None)
+            observe_payload.pop("max_tokens", None)
+            return observe_payload
+        observe_payload["max_output_tokens"] = OBSERVATION_MAX_OUTPUT_TOKENS
+        observe_payload.pop("max_tokens", None)
+        observe_payload.pop("num_predict", None)
+        return observe_payload
+
     def _build_result(self, state: RunState, *, status: str) -> KernelRunResult:
         request = state.tool_batch_state.human_input_request
         return KernelRunResult(
@@ -442,6 +539,28 @@ class KernelLoop:
             iteration=int(state.iteration),
         )
 
+    def _build_legacy_bundle(self, state: RunState, *, status: str) -> dict[str, Any]:
+        max_ctx = max(0, int(state.provider_state.max_context_window_tokens or 0))
+        last_turn_tokens = int(state.token_state.last_turn_tokens or 0)
+        pct = (last_turn_tokens / max_ctx * 100.0) if max_ctx > 0 else 0.0
+        request = state.tool_batch_state.human_input_request
+        return {
+            "model": state.provider_state.model,
+            "consumed_tokens": int(state.token_state.consumed_tokens or 0),
+            "input_tokens": int(state.token_state.input_tokens or 0),
+            "output_tokens": int(state.token_state.output_tokens or 0),
+            "last_turn_tokens": last_turn_tokens,
+            "last_turn_input_tokens": int(state.token_state.last_turn_input_tokens or 0),
+            "last_turn_output_tokens": int(state.token_state.last_turn_output_tokens or 0),
+            "max_context_window_tokens": max_ctx,
+            "context_window_used_pct": round(pct, 2),
+            "status": status,
+            "human_input_request": request.to_dict() if request is not None else None,
+            "continuation": copy.deepcopy(state.last_continuation) if isinstance(state.last_continuation, dict) else None,
+            "previous_response_id": state.provider_state.previous_response_id,
+            "iteration": int(state.iteration),
+        }
+
     def _run_state(
         self,
         state: RunState,
@@ -454,18 +573,35 @@ class KernelLoop:
         on_tool_confirm: Any = None,
         toolkit: Toolkit | None = None,
         run_id: str | None = None,
+        skip_bootstrap: bool = False,
     ) -> KernelRunResult:
         if self._model_io is None:
             raise RuntimeError("KernelLoop.model_io is not configured")
         provider = str(state.provider_state.provider or self._infer_provider() or "")
-        if provider != "openai":
-            raise NotImplementedError(f"KernelLoop.run currently supports only provider='openai', got {provider!r}")
+        if provider not in {"openai", "anthropic", "ollama"}:
+            raise NotImplementedError(
+                "KernelLoop.run currently supports only provider in "
+                "{'openai', 'anthropic', 'ollama'}, "
+                f"got {provider!r}"
+            )
         state.provider_state.provider = provider
         if not state.provider_state.model:
             state.provider_state.model = self._infer_model()
         self._ensure_runtime_harnesses()
+        self._ensure_memory_components()
         run_id = str(run_id or uuid.uuid4())
         runtime_toolkit = toolkit if toolkit is not None else Toolkit()
+        if not skip_bootstrap:
+            self._dispatch_bootstrap(
+                state,
+                payload=payload,
+                response_format=response_format,
+                callback=callback,
+                verbose=verbose,
+                toolkit=runtime_toolkit,
+                run_id=run_id,
+                resume_mode=False,
+            )
         self.emit_event(
             callback,
             "run_started",
@@ -501,6 +637,10 @@ class KernelLoop:
                 response_id=turn.response_id,
                 has_tool_calls=bool(turn.tool_calls),
                 status=state.run_status,
+                bundle=self._build_legacy_bundle(
+                    state,
+                    status="running" if turn.tool_calls else "completed",
+                ),
             )
             if state.run_status == "awaiting_human_input":
                 return self._build_result(state, status="awaiting_human_input")
@@ -527,6 +667,7 @@ class KernelLoop:
                 run_id,
                 iteration=max(0, int(state.iteration) - 1),
                 status="completed",
+                bundle=self._build_legacy_bundle(state, status="completed"),
             )
             return self._build_result(state, status="completed")
 
@@ -536,6 +677,7 @@ class KernelLoop:
             "run_max_iterations",
             run_id,
             iteration=int(state.iteration),
+            bundle=self._build_legacy_bundle(state, status="max_iterations"),
         )
         return self._build_result(state, status="max_iterations")
 
@@ -561,6 +703,7 @@ class KernelLoop:
         resolved_payload = dict(payload or {})
         resolved_provider = provider or self._infer_provider() or "openai"
         resolved_model = model or self._infer_model()
+        resolved_run_id = str(run_id or uuid.uuid4())
         state = self.seed_state(
             messages,
             provider=resolved_provider,
@@ -582,7 +725,7 @@ class KernelLoop:
             max_iterations=max_iterations,
             on_tool_confirm=on_tool_confirm,
             toolkit=toolkit,
-            run_id=run_id,
+            run_id=resolved_run_id,
         )
 
     def resume_human_input(
@@ -606,8 +749,12 @@ class KernelLoop:
         if not isinstance(continuation, dict):
             raise TypeError("continuation must be a dict returned by KernelRunResult.continuation")
         resolved_provider = str(continuation.get("provider") or self._infer_provider() or "")
-        if resolved_provider != "openai":
-            raise NotImplementedError(f"KernelLoop.resume_human_input currently supports only provider='openai', got {resolved_provider!r}")
+        if resolved_provider not in {"openai", "anthropic", "ollama"}:
+            raise NotImplementedError(
+                "KernelLoop.resume_human_input currently supports only provider in "
+                "{'openai', 'anthropic', 'ollama'}, "
+                f"got {resolved_provider!r}"
+            )
         expected_session_id = continuation.get("session_id")
         if isinstance(expected_session_id, str) and session_id is not None and session_id != expected_session_id:
             raise ValueError("resume_human_input requires the same session_id as the suspended run")
@@ -621,6 +768,7 @@ class KernelLoop:
             if response_format is not None
             else self._deserialize_response_format(continuation.get("response_format"))
         )
+        resolved_run_id = str(run_id or uuid.uuid4())
         state = self.seed_state(
             conversation,
             provider=resolved_provider,
@@ -642,12 +790,25 @@ class KernelLoop:
         state.token_state.last_turn_output_tokens = int(continuation.get("last_turn_output_tokens") or 0)
         state.run_status = "running"
         self._ensure_runtime_harnesses()
+        self._ensure_memory_components()
+        self._dispatch_bootstrap(
+            state,
+            payload=resolved_payload,
+            response_format=resolved_response_format,
+            callback=callback,
+            verbose=verbose,
+            toolkit=toolkit,
+            run_id=resolved_run_id,
+            resume_mode=True,
+        )
         self.dispatch_phase(
             state,
             phase="on_resume",
             event={
                 "continuation": copy.deepcopy(continuation),
                 "response": copy.deepcopy(response),
+                "callback": callback,
+                "run_id": resolved_run_id,
                 "loop": self,
             },
         )
@@ -660,5 +821,6 @@ class KernelLoop:
             max_iterations=int(continuation.get("max_iterations") or 6),
             on_tool_confirm=on_tool_confirm,
             toolkit=toolkit,
-            run_id=run_id,
+            run_id=resolved_run_id,
+            skip_bootstrap=True,
         )

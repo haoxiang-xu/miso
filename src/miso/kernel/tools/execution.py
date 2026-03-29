@@ -255,6 +255,7 @@ class ToolExecutionHarness(BaseToolHarness):
                     payload=payload,
                     callback=context.callback,
                     iteration=context.iteration,
+                    provider=context.provider,
                 )
             token_state = observation_token_state(
                 consumed_tokens=context.state.token_state.consumed_tokens,

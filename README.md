@@ -1,4 +1,8 @@
-# unchain
+<div align="center">
+  <img src="./assets/unchain.png" alt="unchain" style="height: 100px; margin-bottom: 32px;" />
+  <h1>unchain</h1>
+  <p>unchain harness</p>
+</div>
 
 > unchain harness
 

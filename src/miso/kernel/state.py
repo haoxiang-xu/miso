@@ -12,7 +12,7 @@ from .delta import (
     InsertMessagesOp,
     ReplaceSpanOp,
 )
-from .types import KernelRunResult, ModelTurnResult, ToolBatchState, ToolCall
+from .types import ModelTurnResult, ToolBatchState, ToolCall
 from .versioning import MessageVersionGraph
 
 
@@ -69,6 +69,9 @@ class RunState:
     run_status: str = "idle"
     last_continuation: dict[str, Any] | None = None
     next_model_input: list[dict[str, Any]] | None = None
+    memory_state: dict[str, Any] = field(default_factory=dict)
+    memory_prepare_info: dict[str, Any] = field(default_factory=dict)
+    memory_commit_info: dict[str, Any] = field(default_factory=dict)
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     optimizer_state: dict[str, dict[str, Any]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -198,6 +201,15 @@ class RunState:
                         self.optimizer_state[optimizer_name] = copy.deepcopy(optimizer_value)
                     else:
                         self.optimizer_state[optimizer_name] = {"value": copy.deepcopy(optimizer_value)}
+                continue
+            if key == "memory_state" and isinstance(value, dict):
+                self.memory_state.update(copy.deepcopy(value))
+                continue
+            if key == "memory_prepare_info" and isinstance(value, dict):
+                self.memory_prepare_info.update(copy.deepcopy(value))
+                continue
+            if key == "memory_commit_info" and isinstance(value, dict):
+                self.memory_commit_info.update(copy.deepcopy(value))
                 continue
             if key == "pending_tool_calls":
                 if isinstance(value, list):

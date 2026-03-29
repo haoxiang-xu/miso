@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, TYPE_CHECKING, Protocol, runtime_checkable
@@ -40,6 +41,8 @@ class ModelTurnRequest:
 @runtime_checkable
 class ModelIO(Protocol):
     """Provider-facing boundary used by the new kernel loop."""
+
+    provider: str
 
     def fetch_turn(self, request: ModelTurnRequest) -> ModelTurnResult:
         ...
@@ -98,8 +101,170 @@ class LegacyBrothModelIO:
         )
 
 
-class OpenAIModelIO:
+class _NativeModelIOBase:
+    provider = ""
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        default_payloads: dict[str, dict[str, Any]] | None = None,
+        model_capabilities: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError(f"{self.__class__.__name__} requires a non-empty model")
+
+        self.model = model.strip()
+
+        if default_payloads is None or model_capabilities is None:
+            from ..runtime.payloads import load_default_payloads, load_model_capabilities
+
+            if default_payloads is None:
+                default_payloads = load_default_payloads()
+            if model_capabilities is None:
+                model_capabilities = load_model_capabilities()
+
+        self.default_payloads = copy.deepcopy(default_payloads or {})
+        self.model_capabilities = copy.deepcopy(model_capabilities or {})
+
+    def _resolve_model_key(self, registry: dict[str, Any]) -> str | None:
+        if self.model in registry:
+            return self.model
+        normalized_model = self.model.replace(".", "-")
+        best: str | None = None
+        for key in registry:
+            normalized_key = str(key).replace(".", "-")
+            if (
+                self.model.startswith(key)
+                or self.model.startswith(normalized_key)
+                or normalized_model.startswith(key)
+                or normalized_model.startswith(normalized_key)
+                or key.startswith(self.model)
+                or key.startswith(normalized_model)
+                or normalized_key.startswith(self.model)
+                or normalized_key.startswith(normalized_model)
+            ) and (best is None or len(str(key)) > len(best)):
+                best = str(key)
+        return best
+
+    def _model_capability(self, key: str, default: Any = None) -> Any:
+        resolved = self._resolve_model_key(self.model_capabilities)
+        model_caps = self.model_capabilities.get(resolved, {}) if resolved else {}
+        if not isinstance(model_caps, dict):
+            return default
+        return model_caps.get(key, default)
+
+    def _merged_payload(self, payload: dict[str, Any] | None) -> dict[str, Any]:
+        resolved_key = self._resolve_model_key(self.default_payloads)
+        defaults = copy.deepcopy(self.default_payloads.get(resolved_key, {}) if resolved_key else {})
+        if not isinstance(defaults, dict):
+            return {}
+
+        user_payload = payload or {}
+        for key in list(defaults.keys()):
+            if key in user_payload:
+                defaults[key] = user_payload[key]
+
+        allowed_keys = self._model_capability("allowed_payload_keys", None)
+        if isinstance(allowed_keys, list) and allowed_keys:
+            allowed_key_set = {key for key in allowed_keys if isinstance(key, str)}
+            for key in user_payload:
+                if key in allowed_key_set and key not in defaults:
+                    defaults[key] = user_payload[key]
+            defaults = {key: value for key, value in defaults.items() if key in allowed_key_set}
+
+        defaults = {key: value for key, value in defaults.items() if value is not None or key in user_payload}
+        return defaults
+
+    def _coerce_token_count(self, value: Any) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _normalize_token_usage(self, *, input_tokens: Any, output_tokens: Any) -> TokenUsage:
+        resolved_input = self._coerce_token_count(input_tokens)
+        resolved_output = self._coerce_token_count(output_tokens)
+        return TokenUsage(
+            consumed_tokens=resolved_input + resolved_output,
+            input_tokens=resolved_input,
+            output_tokens=resolved_output,
+        )
+
+    def _tool_names_for_trace(self, tools_json: list[dict[str, Any]] | None) -> list[str]:
+        tool_names: list[str] = []
+        for tool in tools_json or []:
+            name = str(tool.get("name", "")).strip()
+            if name:
+                tool_names.append(name)
+        return tool_names
+
+    def _emit_request_messages(
+        self,
+        *,
+        callback: Callable[[dict[str, Any]], None] | None,
+        run_id: str,
+        iteration: int,
+        messages: list[dict[str, Any]],
+        previous_response_id: str | None = None,
+        tool_names: list[str] | None = None,
+        **extra: Any,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "provider": self.provider,
+            "messages": copy.deepcopy(messages),
+        }
+        if previous_response_id is not None:
+            payload["previous_response_id"] = previous_response_id
+        if tool_names:
+            payload["tool_names"] = list(tool_names)
+        payload.update(copy.deepcopy(extra))
+        self._emit(callback, "request_messages", run_id, iteration=iteration, **payload)
+
+    def _emit(
+        self,
+        callback: Callable[[dict[str, Any]], None] | None,
+        event_type: str,
+        run_id: str,
+        *,
+        iteration: int,
+        **extra: Any,
+    ) -> None:
+        if callback is None:
+            return
+        event = {
+            "type": event_type,
+            "run_id": run_id,
+            "iteration": iteration,
+        }
+        event.update(extra)
+        callback(event)
+
+    def _as_dict(self, obj: Any) -> dict[str, Any]:
+        if obj is None:
+            return {}
+        if isinstance(obj, dict):
+            return copy.deepcopy(obj)
+        if hasattr(obj, "model_dump"):
+            dumped = obj.model_dump()
+            return copy.deepcopy(dumped) if isinstance(dumped, dict) else {}
+        if hasattr(obj, "to_dict"):
+            dumped = obj.to_dict()
+            return copy.deepcopy(dumped) if isinstance(dumped, dict) else {}
+        if hasattr(obj, "__dict__"):
+            raw = {
+                key: value
+                for key, value in vars(obj).items()
+                if not key.startswith("_")
+            }
+            return copy.deepcopy(raw)
+        return {}
+
+
+class OpenAIModelIO(_NativeModelIOBase):
     """Native OpenAI Responses API adapter for the new kernel."""
+
+    provider = "openai"
 
     def __init__(
         self,
@@ -112,23 +277,13 @@ class OpenAIModelIO:
     ) -> None:
         if not isinstance(api_key, str) or not api_key.strip():
             raise ValueError("OpenAIModelIO requires a non-empty api_key")
-        if not isinstance(model, str) or not model.strip():
-            raise ValueError("OpenAIModelIO requires a non-empty model")
-
-        self.model = model.strip()
         self.api_key = api_key
         self._client_factory = client_factory or OpenAI
-
-        if default_payloads is None or model_capabilities is None:
-            from ..runtime.payloads import load_default_payloads, load_model_capabilities
-
-            if default_payloads is None:
-                default_payloads = load_default_payloads()
-            if model_capabilities is None:
-                model_capabilities = load_model_capabilities()
-
-        self.default_payloads = copy.deepcopy(default_payloads or {})
-        self.model_capabilities = copy.deepcopy(model_capabilities or {})
+        super().__init__(
+            model=model,
+            default_payloads=default_payloads,
+            model_capabilities=model_capabilities,
+        )
 
     def fetch_turn(self, request: ModelTurnRequest) -> ModelTurnResult:
         openai_client = self._client_factory(api_key=self.api_key)
@@ -290,55 +445,6 @@ class OpenAIModelIO:
             output_tokens=usage.output_tokens,
         )
 
-    def _resolve_model_key(self, registry: dict[str, Any]) -> str | None:
-        if self.model in registry:
-            return self.model
-        normalized_model = self.model.replace(".", "-")
-        best: str | None = None
-        for key in registry:
-            normalized_key = str(key).replace(".", "-")
-            if (
-                self.model.startswith(key)
-                or self.model.startswith(normalized_key)
-                or normalized_model.startswith(key)
-                or normalized_model.startswith(normalized_key)
-                or key.startswith(self.model)
-                or key.startswith(normalized_model)
-                or normalized_key.startswith(self.model)
-                or normalized_key.startswith(normalized_model)
-            ) and (best is None or len(str(key)) > len(best)):
-                best = str(key)
-        return best
-
-    def _model_capability(self, key: str, default: Any = None) -> Any:
-        resolved = self._resolve_model_key(self.model_capabilities)
-        model_caps = self.model_capabilities.get(resolved, {}) if resolved else {}
-        if not isinstance(model_caps, dict):
-            return default
-        return model_caps.get(key, default)
-
-    def _merged_payload(self, payload: dict[str, Any] | None) -> dict[str, Any]:
-        resolved_key = self._resolve_model_key(self.default_payloads)
-        defaults = copy.deepcopy(self.default_payloads.get(resolved_key, {}) if resolved_key else {})
-        if not isinstance(defaults, dict):
-            return {}
-
-        user_payload = payload or {}
-        for key in list(defaults.keys()):
-            if key in user_payload:
-                defaults[key] = user_payload[key]
-
-        allowed_keys = self._model_capability("allowed_payload_keys", None)
-        if isinstance(allowed_keys, list) and allowed_keys:
-            allowed_key_set = {key for key in allowed_keys if isinstance(key, str)}
-            for key in user_payload:
-                if key in allowed_key_set and key not in defaults:
-                    defaults[key] = user_payload[key]
-            defaults = {key: value for key, value in defaults.items() if key in allowed_key_set}
-
-        defaults = {key: value for key, value in defaults.items() if value is not None or key in user_payload}
-        return defaults
-
     def _normalize_input_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         normalized: list[dict[str, Any]] = []
         for message in messages:
@@ -385,75 +491,355 @@ class OpenAIModelIO:
             output_tokens=output_tokens,
         )
 
-    def _coerce_token_count(self, value: Any) -> int:
-        try:
-            return max(0, int(value or 0))
-        except (TypeError, ValueError):
-            return 0
+class AnthropicModelIO(_NativeModelIOBase):
+    """Native Anthropic Messages API adapter for the new kernel."""
 
-    def _tool_names_for_trace(self, tools_json: list[dict[str, Any]] | None) -> list[str]:
-        tool_names: list[str] = []
-        for tool in tools_json or []:
-            name = str(tool.get("name", "")).strip()
-            if name:
-                tool_names.append(name)
-        return tool_names
+    provider = "anthropic"
 
-    def _emit_request_messages(
+    def __init__(
         self,
         *,
-        callback: Callable[[dict[str, Any]], None] | None,
-        run_id: str,
-        iteration: int,
-        messages: list[dict[str, Any]],
-        previous_response_id: str | None = None,
-        tool_names: list[str] | None = None,
+        model: str,
+        api_key: str,
+        client_factory: Callable[..., Any] | None = None,
+        default_payloads: dict[str, dict[str, Any]] | None = None,
+        model_capabilities: dict[str, dict[str, Any]] | None = None,
     ) -> None:
-        payload: dict[str, Any] = {
-            "provider": "openai",
-            "messages": copy.deepcopy(messages),
-        }
-        if previous_response_id is not None:
-            payload["previous_response_id"] = previous_response_id
-        if tool_names:
-            payload["tool_names"] = list(tool_names)
-        self._emit(callback, "request_messages", run_id, iteration=iteration, **payload)
+        if not isinstance(api_key, str) or not api_key.strip():
+            raise ValueError("AnthropicModelIO requires a non-empty api_key")
+        super().__init__(
+            model=model,
+            default_payloads=default_payloads,
+            model_capabilities=model_capabilities,
+        )
+        self.api_key = api_key
+        if client_factory is None:
+            from ..runtime import providers
 
-    def _emit(
+            anthropic_client_cls = providers.Anthropic
+            if anthropic_client_cls is None:
+                raise ImportError("anthropic package is required for anthropic provider — pip install anthropic")
+            client_factory = anthropic_client_cls
+        self._client_factory = client_factory
+
+    def fetch_turn(self, request: ModelTurnRequest) -> ModelTurnResult:
+        client = self._client_factory(api_key=self.api_key)
+        request_payload = self._merged_payload(request.payload)
+
+        system_parts: list[str] = []
+        chat_messages: list[dict[str, Any]] = []
+        for message in request.messages:
+            if isinstance(message, dict) and message.get("role") == "system":
+                content = message.get("content", "")
+                if isinstance(content, str) and content.strip():
+                    system_parts.append(content.strip())
+                elif content not in (None, ""):
+                    system_parts.append(str(content))
+                continue
+            chat_messages.append(copy.deepcopy(message))
+
+        if request.response_format is not None:
+            system_parts.append(request.response_format.to_anthropic())
+        system_prompt = "\n\n".join(part for part in system_parts if isinstance(part, str) and part.strip())
+
+        tools_json = request.toolkit.to_json()
+        anthropic_tools: list[dict[str, Any]] = []
+        if tools_json and self._model_capability("supports_tools", True):
+            for tool_def in tools_json:
+                params = tool_def.get("parameters", {})
+                anthropic_tools.append({
+                    "name": tool_def.get("name", ""),
+                    "description": tool_def.get("description", ""),
+                    "input_schema": params,
+                })
+
+        max_tokens = request_payload.pop("max_tokens", 4096)
+        request_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": chat_messages,
+            "max_tokens": max_tokens,
+            **request_payload,
+        }
+        if system_prompt:
+            request_kwargs["system"] = system_prompt
+        if anthropic_tools:
+            request_kwargs["tools"] = anthropic_tools
+
+        self._emit_request_messages(
+            callback=request.callback,
+            run_id=request.run_id,
+            iteration=request.iteration,
+            messages=chat_messages,
+            tool_names=self._tool_names_for_trace(tools_json),
+            system=system_prompt if system_prompt else None,
+        )
+
+        collected_chunks: list[str] = []
+        assistant_messages: list[dict[str, Any]] = []
+        tool_calls: list[ToolCall] = []
+        final_text_parts: list[str] = []
+        input_tokens = 0
+        output_tokens = 0
+        current_tool_name = ""
+        current_tool_id = ""
+        current_tool_json_parts: list[str] = []
+        content_blocks: list[dict[str, Any]] = []
+
+        with client.messages.stream(**request_kwargs) as stream:
+            for event in stream:
+                event_type = getattr(event, "type", None)
+
+                if event_type == "content_block_start":
+                    block_dict = self._as_dict(getattr(event, "content_block", None))
+                    if block_dict.get("type") == "tool_use":
+                        current_tool_name = str(block_dict.get("name", "") or "")
+                        current_tool_id = str(block_dict.get("id") or str(uuid.uuid4()))
+                        current_tool_json_parts = []
+                    continue
+
+                if event_type == "content_block_delta":
+                    delta_dict = self._as_dict(getattr(event, "delta", None))
+                    delta_type = delta_dict.get("type", "")
+                    if delta_type == "text_delta":
+                        text = delta_dict.get("text", "") or ""
+                        if text:
+                            collected_chunks.append(text)
+                            if request.emit_stream:
+                                self._emit(
+                                    request.callback,
+                                    "token_delta",
+                                    request.run_id,
+                                    iteration=request.iteration,
+                                    provider=self.provider,
+                                    delta=text,
+                                    accumulated_text="".join(collected_chunks),
+                                )
+                        continue
+                    if delta_type == "input_json_delta":
+                        partial = delta_dict.get("partial_json", "") or ""
+                        if partial:
+                            current_tool_json_parts.append(partial)
+                    continue
+
+                if event_type == "content_block_stop":
+                    if current_tool_name:
+                        raw_json = "".join(current_tool_json_parts)
+                        try:
+                            arguments = json.loads(raw_json) if raw_json.strip() else {}
+                        except json.JSONDecodeError:
+                            arguments = raw_json
+                        tool_calls.append(
+                            ToolCall(
+                                call_id=current_tool_id,
+                                name=current_tool_name,
+                                arguments=copy.deepcopy(arguments),
+                            )
+                        )
+                        content_blocks.append({
+                            "type": "tool_use",
+                            "id": current_tool_id,
+                            "name": current_tool_name,
+                            "input": arguments if isinstance(arguments, dict) else {},
+                        })
+                        current_tool_name = ""
+                        current_tool_id = ""
+                        current_tool_json_parts = []
+                    continue
+
+                if event_type == "message_delta":
+                    usage_dict = self._as_dict(getattr(event, "usage", None))
+                    if usage_dict:
+                        input_tokens = max(input_tokens, self._coerce_token_count(usage_dict.get("input_tokens")))
+                        output_tokens = max(output_tokens, self._coerce_token_count(usage_dict.get("output_tokens")))
+                    continue
+
+                if event_type == "message_start":
+                    msg_dict = self._as_dict(getattr(event, "message", None))
+                    usage_dict = msg_dict.get("usage", {}) if isinstance(msg_dict, dict) else {}
+                    if isinstance(usage_dict, dict):
+                        input_tokens = max(input_tokens, self._coerce_token_count(usage_dict.get("input_tokens")))
+                        output_tokens = max(output_tokens, self._coerce_token_count(usage_dict.get("output_tokens")))
+                    continue
+
+        full_text = "".join(collected_chunks).strip()
+        if full_text:
+            final_text_parts.append(full_text)
+
+        if tool_calls:
+            assistant_content: list[dict[str, Any]] = []
+            if full_text:
+                assistant_content.append({"type": "text", "text": full_text})
+            assistant_content.extend(content_blocks)
+            assistant_messages.append({
+                "role": "assistant",
+                "content": assistant_content,
+            })
+        elif full_text:
+            assistant_messages.append({"role": "assistant", "content": full_text})
+
+        token_usage = self._normalize_token_usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+        return ModelTurnResult(
+            assistant_messages=assistant_messages,
+            tool_calls=tool_calls,
+            final_text="".join(final_text_parts).strip(),
+            response_id=None,
+            reasoning_items=None,
+            consumed_tokens=token_usage.consumed_tokens,
+            input_tokens=token_usage.input_tokens,
+            output_tokens=token_usage.output_tokens,
+        )
+
+
+class OllamaModelIO(_NativeModelIOBase):
+    """Native Ollama chat API adapter for the new kernel."""
+
+    provider = "ollama"
+
+    def __init__(
         self,
-        callback: Callable[[dict[str, Any]], None] | None,
-        event_type: str,
-        run_id: str,
         *,
-        iteration: int,
-        **extra: Any,
+        model: str,
+        base_url: str = "http://localhost:11434",
+        stream_factory: Callable[..., Any] | None = None,
+        default_payloads: dict[str, dict[str, Any]] | None = None,
+        model_capabilities: dict[str, dict[str, Any]] | None = None,
     ) -> None:
-        if callback is None:
-            return
-        event = {
-            "type": event_type,
-            "run_id": run_id,
-            "iteration": iteration,
-        }
-        event.update(extra)
-        callback(event)
+        super().__init__(
+            model=model,
+            default_payloads=default_payloads,
+            model_capabilities=model_capabilities,
+        )
+        self.base_url = str(base_url or "http://localhost:11434").rstrip("/")
+        if stream_factory is None:
+            from ..runtime import providers
 
-    def _as_dict(self, obj: Any) -> dict[str, Any]:
-        if obj is None:
-            return {}
-        if isinstance(obj, dict):
-            return copy.deepcopy(obj)
-        if hasattr(obj, "model_dump"):
-            dumped = obj.model_dump()
-            return copy.deepcopy(dumped) if isinstance(dumped, dict) else {}
-        if hasattr(obj, "to_dict"):
-            dumped = obj.to_dict()
-            return copy.deepcopy(dumped) if isinstance(dumped, dict) else {}
-        if hasattr(obj, "__dict__"):
-            raw = {
-                key: value
-                for key, value in vars(obj).items()
-                if not key.startswith("_")
-            }
-            return copy.deepcopy(raw)
-        return {}
+            stream_factory = providers.httpx.stream
+        self._stream_factory = stream_factory
+
+    def fetch_turn(self, request: ModelTurnRequest) -> ModelTurnResult:
+        request_body: dict[str, Any] = {
+            "model": self.model,
+            "messages": copy.deepcopy(request.messages),
+            "stream": True,
+        }
+
+        tools_json = request.toolkit.to_json()
+        tools: list[dict[str, Any]] = []
+        for tool_def in tools_json:
+            if tool_def.get("type") == "function":
+                function_def = {key: value for key, value in tool_def.items() if key != "type"}
+                tools.append({"type": "function", "function": function_def})
+            else:
+                tools.append(copy.deepcopy(tool_def))
+
+        if tools:
+            request_body["tools"] = tools
+            request_body["tool_choice"] = "auto"
+
+        merged_payload = self._merged_payload(request.payload)
+        if merged_payload:
+            request_body["options"] = merged_payload
+
+        if request.response_format is not None:
+            request_body["format"] = request.response_format.to_ollama()
+
+        self._emit_request_messages(
+            callback=request.callback,
+            run_id=request.run_id,
+            iteration=request.iteration,
+            messages=request_body.get("messages", []),
+            tool_names=self._tool_names_for_trace(tools_json),
+        )
+
+        collected_chunks: list[str] = []
+        latest_prompt_eval_count = 0
+        latest_eval_count = 0
+
+        with self._stream_factory(
+            "POST",
+            f"{self.base_url}/api/chat",
+            json=request_body,
+            timeout=None,
+        ) as response:
+            if int(getattr(response, "status_code", 0) or 0) >= 400:
+                raw_detail = response.read()
+                if isinstance(raw_detail, bytes):
+                    detail = raw_detail.decode()
+                else:
+                    detail = str(raw_detail)
+                raise ValueError(f"error: {detail} ( kernel.model_io -> OllamaModelIO.fetch_turn )")
+            response.raise_for_status()
+
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                if isinstance(line, bytes):
+                    line = line.decode()
+
+                data = json.loads(line)
+                if data.get("error"):
+                    raise ValueError(f"error: {data['error']} ( kernel.model_io -> OllamaModelIO.fetch_turn )")
+                if isinstance(data.get("prompt_eval_count"), int):
+                    latest_prompt_eval_count = data["prompt_eval_count"]
+                if isinstance(data.get("eval_count"), int):
+                    latest_eval_count = data["eval_count"]
+
+                message = data.get("message") or {}
+                delta = message.get("content", "") or message.get("thinking", "")
+                if delta:
+                    collected_chunks.append(delta)
+                    if request.emit_stream:
+                        self._emit(
+                            request.callback,
+                            "token_delta",
+                            request.run_id,
+                            iteration=request.iteration,
+                            provider=self.provider,
+                            delta=delta,
+                            accumulated_text="".join(collected_chunks),
+                        )
+
+                raw_tool_calls = message.get("tool_calls") or []
+                if raw_tool_calls:
+                    assistant_message = {
+                        "role": "assistant",
+                        "content": message.get("content", ""),
+                        "tool_calls": copy.deepcopy(raw_tool_calls),
+                    }
+                    tool_calls: list[ToolCall] = []
+                    for raw_tool_call in raw_tool_calls:
+                        fn = raw_tool_call.get("function", {}) or {}
+                        tool_calls.append(
+                            ToolCall(
+                                call_id=str(raw_tool_call.get("id") or str(uuid.uuid4())),
+                                name=str(fn.get("name", "") or ""),
+                                arguments=copy.deepcopy(fn.get("arguments", {})),
+                            )
+                        )
+
+                    return ModelTurnResult(
+                        assistant_messages=[assistant_message],
+                        tool_calls=tool_calls,
+                        final_text="",
+                        response_id=None,
+                        consumed_tokens=latest_prompt_eval_count + latest_eval_count,
+                        input_tokens=latest_prompt_eval_count,
+                        output_tokens=latest_eval_count,
+                    )
+
+                if data.get("done", False):
+                    full_message = message.get("content") or "".join(collected_chunks)
+                    return ModelTurnResult(
+                        assistant_messages=[{"role": "assistant", "content": full_message}],
+                        tool_calls=[],
+                        final_text=full_message,
+                        response_id=None,
+                        consumed_tokens=latest_prompt_eval_count + latest_eval_count,
+                        input_tokens=latest_prompt_eval_count,
+                        output_tokens=latest_eval_count,
+                    )
+
+        raise ValueError("error: unexpected termination of ollama stream. ( kernel.model_io -> OllamaModelIO.fetch_turn )")

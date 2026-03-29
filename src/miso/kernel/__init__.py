@@ -9,7 +9,17 @@ from .delta import (
 )
 from .harness import BaseRuntimeHarness, HarnessContext, RuntimeHarness, RuntimePhase
 from .loop import KernelLoop
-from .model_io import LegacyBrothModelIO, ModelIO, ModelTurnRequest, OpenAIModelIO
+from .memory import (
+    BaseMemoryHarness,
+    KernelMemoryRuntime,
+    LongTermRecallMemoryHarness,
+    MemoryBootstrapHarness,
+    MemoryCommitHarness,
+    MemoryContext,
+    MemoryHarness,
+    ShortTermRecallMemoryHarness,
+)
+from .model_io import AnthropicModelIO, LegacyBrothModelIO, ModelIO, ModelTurnRequest, OllamaModelIO, OpenAIModelIO
 from .optimizers import (
     BaseContextOptimizer,
     ContextOptimizer,
@@ -48,7 +58,9 @@ __all__ = [
     "ActivateVersionOp",
     "AppendMessagesOp",
     "AnthropicMessageBuilder",
+    "AnthropicModelIO",
     "BaseContextOptimizer",
+    "BaseMemoryHarness",
     "BaseRuntimeHarness",
     "BaseToolHarness",
     "ContextOptimizer",
@@ -59,14 +71,20 @@ __all__ = [
     "HumanInputResumeHarness",
     "InsertMessagesOp",
     "KernelLoop",
+    "KernelMemoryRuntime",
     "KernelRunResult",
     "LastNOptimizer",
     "LastNOptimizerConfig",
     "LegacyBrothModelIO",
     "LlmSummaryOptimizer",
     "LlmSummaryOptimizerConfig",
+    "LongTermRecallMemoryHarness",
     "MessageVersion",
     "MessageVersionGraph",
+    "MemoryBootstrapHarness",
+    "MemoryCommitHarness",
+    "MemoryContext",
+    "MemoryHarness",
     "ModelIO",
     "ModelTurnResult",
     "ModelTurnRequest",
@@ -76,6 +94,7 @@ __all__ = [
     "OBSERVATION_RECENT_MESSAGES",
     "OBSERVATION_SYSTEM_PROMPT",
     "OllamaMessageBuilder",
+    "OllamaModelIO",
     "OptimizerContext",
     "ProviderMessageBuilder",
     "ProviderState",
@@ -89,6 +108,7 @@ __all__ = [
     "SuspendState",
     "TokenState",
     "TokenUsage",
+    "ShortTermRecallMemoryHarness",
     "ToolBatchState",
     "ToolContext",
     "ToolHarness",

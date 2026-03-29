@@ -17,6 +17,8 @@ _ALIASED_PACKAGES = (
     "characters",
     "input",
     "kernel",
+    "kernel.agent",
+    "kernel.agent.modules",
     "memory",
     "runtime",
     "runtime.providers",
