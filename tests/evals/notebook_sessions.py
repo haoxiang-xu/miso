@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from miso import Agent
+from unchain.agent import Agent
 
 from .cases import build_eval_case
 from .defaults import get_default_judge_model_spec

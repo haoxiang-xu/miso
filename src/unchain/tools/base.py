@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable, TYPE_CHECKING
 
 from .toolkit import Toolkit
 from ..kernel.delta import HarnessDelta
 from ..kernel.harness import BaseRuntimeHarness, HarnessContext, RuntimeHarness, RuntimePhase
 from ..kernel.state import RunState
-from .runtime import ToolRuntimePlugin
+
+if TYPE_CHECKING:
+    from .runtime import ToolRuntimePlugin
 
 
 @dataclass(frozen=True)

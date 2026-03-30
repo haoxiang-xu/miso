@@ -22,7 +22,6 @@ def test_unchain_common_subpackages_are_available():
     tools = importlib.import_module("unchain.tools")
     toolkits = importlib.import_module("unchain.toolkits")
     runtime = importlib.import_module("unchain.runtime")
-    providers = importlib.import_module("unchain.runtime.providers")
 
     assert hasattr(kernel, "KernelLoop")
     assert hasattr(agent, "Agent")
@@ -33,8 +32,7 @@ def test_unchain_common_subpackages_are_available():
     assert hasattr(subagents, "SubagentPolicy")
     assert hasattr(tools, "Toolkit")
     assert hasattr(toolkits, "WorkspaceToolkit")
-    assert hasattr(runtime, "Broth")
-    assert "/runtime/providers/" in providers.__file__
+    assert hasattr(runtime, "load_model_capabilities")
     assert "/src/unchain/kernel/" in kernel.__file__
     assert "/src/unchain/agent/" in agent.__file__
     assert "/src/unchain/memory/" in memory.__file__

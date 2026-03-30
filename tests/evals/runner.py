@@ -8,7 +8,7 @@ from typing import Any
 import re
 import time
 
-from miso import Agent
+from unchain.agent import Agent
 from miso.toolkits import AskUserToolkit, ExternalAPIToolkit, TerminalToolkit, WorkspaceToolkit
 from miso.runtime.payloads import load_model_capabilities
 

@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from miso import Agent
+from unchain.agent import Agent
 from miso.runtime import Broth, ProviderTurnResult, ToolCall
 from miso.toolkits import AskUserToolkit, TerminalToolkit
 from miso.tools import ToolkitCatalogConfig, tool, Toolkit
