@@ -1,16 +1,15 @@
-from miso.kernel import (
+from unchain.kernel import (
     AppendMessagesOp,
     BaseRuntimeHarness,
     HarnessDelta,
     InsertMessagesOp,
     KernelLoop,
-    LegacyBrothModelIO,
     ModelTurnRequest,
-    OpenAIModelIO,
 )
-from miso.kernel.types import ToolCall as KernelToolCall
-from miso.tools import Toolkit
-from miso.kernel.types import ModelTurnResult
+from unchain.providers import OpenAIModelIO
+from unchain.kernel.types import ToolCall as KernelToolCall
+from unchain.tools import Toolkit
+from unchain.kernel.types import ModelTurnResult
 
 
 def test_run_state_rebases_old_view_delta_onto_latest_version():
@@ -81,46 +80,6 @@ def test_kernel_loop_applies_harnesses_in_order():
         {"role": "system", "content": "first"},
         {"role": "system", "content": "second"},
     ]
-
-
-def test_legacy_broth_model_io_delegates_fetch_once_to_engine():
-    bridge = LegacyBrothModelIO.from_config(provider="openai", model="gpt-5", api_key="test-key")
-    seen = {}
-
-    def fake_fetch_once(**kwargs):
-        seen.update(kwargs)
-        from miso.runtime import ProviderTurnResult
-
-        return ProviderTurnResult(
-            assistant_messages=[{"role": "assistant", "content": "ok"}],
-            tool_calls=[],
-            final_text="ok",
-            response_id="resp_1",
-            consumed_tokens=7,
-            input_tokens=4,
-            output_tokens=3,
-        )
-
-    bridge.engine._fetch_once = fake_fetch_once
-    loop = KernelLoop(model_io=bridge)
-    state = loop.seed_state([{"role": "user", "content": "start"}], provider="openai", model="gpt-5")
-    state.provider_state.previous_response_id = "prev_0"
-
-    turn = loop.fetch_model_turn(
-        state,
-        payload={"temperature": 0.2},
-        toolkit=Toolkit(),
-        run_id="kernel-run",
-        emit_stream=True,
-    )
-
-    assert turn.final_text == "ok"
-    assert seen["messages"] == [{"role": "user", "content": "start"}]
-    assert seen["payload"] == {"temperature": 0.2}
-    assert seen["run_id"] == "kernel-run"
-    assert seen["iteration"] == 0
-    assert seen["emit_stream"] is True
-    assert seen["previous_response_id"] == "prev_0"
 
 
 def test_openai_model_io_builds_request_and_parses_text(monkeypatch):

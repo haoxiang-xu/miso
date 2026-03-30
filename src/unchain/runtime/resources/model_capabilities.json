@@ -1,0 +1,236 @@
+{
+  "gpt-4.1": {
+    "provider": "openai",
+    "max_context_window_tokens": 1047576,
+    "supports_tools": true,
+    "supports_response_format": true,
+    "supports_previous_response_id": true,
+    "supports_reasoning": false,
+    "input_modalities": ["text", "image", "pdf"],
+    "input_source_types": {
+      "image": ["url", "base64"],
+      "pdf": ["url", "base64"]
+    },
+    "allowed_payload_keys": [
+      "instructions",
+      "temperature",
+      "top_p",
+      "max_output_tokens",
+      "truncation",
+      "tool_choice"
+    ]
+  },
+  "gpt-5": {
+    "provider": "openai",
+    "max_context_window_tokens": 1047576,
+    "supports_tools": true,
+    "supports_response_format": true,
+    "supports_previous_response_id": true,
+    "supports_reasoning": true,
+    "input_modalities": ["text", "image", "pdf"],
+    "input_source_types": {
+      "image": ["url", "base64"],
+      "pdf": ["url", "base64"]
+    },
+    "allowed_payload_keys": [
+      "instructions",
+      "max_output_tokens",
+      "truncation",
+      "store",
+      "include",
+      "reasoning",
+      "tool_choice"
+    ]
+  },
+  "gpt-5.4": {
+    "provider": "openai",
+    "max_context_window_tokens": 1050000,
+    "supports_tools": true,
+    "supports_response_format": true,
+    "supports_previous_response_id": true,
+    "supports_reasoning": true,
+    "input_modalities": ["text", "image"],
+    "input_source_types": {
+      "image": ["url", "base64"]
+    },
+    "allowed_payload_keys": [
+      "instructions",
+      "max_output_tokens",
+      "truncation",
+      "store",
+      "include",
+      "reasoning",
+      "tool_choice"
+    ]
+  },
+  "gpt-5-codex": {
+    "provider": "openai",
+    "max_context_window_tokens": 1047576,
+    "supports_tools": true,
+    "supports_response_format": true,
+    "supports_previous_response_id": true,
+    "supports_reasoning": true,
+    "input_modalities": ["text", "image", "pdf"],
+    "input_source_types": {
+      "image": ["url", "base64"],
+      "pdf": ["url", "base64"]
+    },
+    "allowed_payload_keys": [
+      "instructions",
+      "max_output_tokens",
+      "truncation",
+      "store",
+      "include",
+      "reasoning",
+      "tool_choice"
+    ]
+  },
+  "deepseek-r1:14b": {
+    "provider": "ollama",
+    "max_context_window_tokens": 128000,
+    "supports_tools": true,
+    "supports_response_format": true,
+    "supports_previous_response_id": false,
+    "supports_reasoning": false,
+    "input_modalities": ["text"],
+    "input_source_types": {},
+    "allowed_payload_keys": ["num_predict", "temperature", "top_p"]
+  },
+  "claude-sonnet-4": {
+    "provider": "anthropic",
+    "provider_model": "claude-sonnet-4-20250514",
+    "max_context_window_tokens": 200000,
+    "supports_tools": true,
+    "supports_response_format": false,
+    "supports_previous_response_id": false,
+    "supports_reasoning": false,
+    "input_modalities": ["text", "image", "pdf"],
+    "input_source_types": {
+      "image": ["url", "base64"],
+      "pdf": ["url", "base64"]
+    },
+    "allowed_payload_keys": ["max_tokens", "temperature", "top_k"]
+  },
+  "claude-sonnet-4-6": {
+    "provider": "anthropic",
+    "max_context_window_tokens": 200000,
+    "supports_tools": true,
+    "supports_response_format": false,
+    "supports_previous_response_id": false,
+    "supports_reasoning": false,
+    "input_modalities": ["text", "image", "pdf"],
+    "input_source_types": {
+      "image": ["url", "base64"],
+      "pdf": ["url", "base64"]
+    },
+    "allowed_payload_keys": ["max_tokens", "temperature", "top_k"]
+  },
+  "claude-opus-4-6": {
+    "provider": "anthropic",
+    "max_context_window_tokens": 200000,
+    "supports_tools": true,
+    "supports_response_format": false,
+    "supports_previous_response_id": false,
+    "supports_reasoning": false,
+    "input_modalities": ["text", "image", "pdf"],
+    "input_source_types": {
+      "image": ["url", "base64"],
+      "pdf": ["url", "base64"]
+    },
+    "allowed_payload_keys": ["max_tokens", "temperature", "top_k"]
+  },
+  "claude-haiku-3.5": {
+    "provider": "anthropic",
+    "provider_model": "claude-3-5-haiku-20241022",
+    "max_context_window_tokens": 200000,
+    "supports_tools": true,
+    "supports_response_format": false,
+    "supports_previous_response_id": false,
+    "supports_reasoning": false,
+    "input_modalities": ["text", "image"],
+    "input_source_types": {
+      "image": ["url", "base64"]
+    },
+    "allowed_payload_keys": ["max_tokens", "temperature", "top_k", "top_p"]
+  },
+  "gpt-5.2-codex": {
+    "provider": "openai",
+    "max_context_window_tokens": 400000,
+    "supports_tools": true,
+    "supports_response_format": true,
+    "supports_previous_response_id": true,
+    "supports_reasoning": true,
+    "input_modalities": ["text", "image"],
+    "input_source_types": {
+      "image": ["url", "base64"]
+    },
+    "allowed_payload_keys": [
+      "instructions",
+      "max_output_tokens",
+      "truncation",
+      "store",
+      "include",
+      "reasoning",
+      "tool_choice"
+    ]
+  },
+  "text-embedding-3-small": {
+    "provider": "openai",
+    "model_type": "embedding",
+    "default_embedding_dimensions": 1536,
+    "supports_dimensions": true,
+    "allowed_payload_keys": ["dimensions", "encoding_format", "user"]
+  },
+  "text-embedding-3-large": {
+    "provider": "openai",
+    "model_type": "embedding",
+    "default_embedding_dimensions": 3072,
+    "supports_dimensions": true,
+    "allowed_payload_keys": ["dimensions", "encoding_format", "user"]
+  },
+  "gemini-2.5-pro": {
+    "provider": "gemini",
+    "max_context_window_tokens": 1048576,
+    "supports_tools": true,
+    "supports_response_format": true,
+    "supports_previous_response_id": false,
+    "supports_reasoning": true,
+    "input_modalities": ["text", "image", "pdf"],
+    "input_source_types": {
+      "image": ["url", "base64"],
+      "pdf": ["url", "base64"]
+    },
+    "allowed_payload_keys": [
+      "max_output_tokens",
+      "temperature",
+      "top_p",
+      "top_k"
+    ]
+  },
+  "gemini-2.5-flash": {
+    "provider": "gemini",
+    "max_context_window_tokens": 1048576,
+    "supports_tools": true,
+    "supports_response_format": true,
+    "supports_previous_response_id": false,
+    "supports_reasoning": true,
+    "input_modalities": ["text", "image", "pdf"],
+    "input_source_types": {
+      "image": ["url", "base64"],
+      "pdf": ["url", "base64"]
+    },
+    "allowed_payload_keys": [
+      "max_output_tokens",
+      "temperature",
+      "top_p",
+      "top_k"
+    ]
+  },
+  "text-embedding-ada-002": {
+    "provider": "openai",
+    "model_type": "embedding",
+    "default_embedding_dimensions": 1536,
+    "supports_dimensions": false,
+    "allowed_payload_keys": ["encoding_format", "user"]
+  }
+}

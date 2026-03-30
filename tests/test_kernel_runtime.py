@@ -1,9 +1,9 @@
 import json
 
-from miso.input.human_input import ASK_USER_QUESTION_TOOL_NAME
-from miso.kernel import KernelLoop, ModelTurnResult
-from miso.kernel.types import ToolCall as KernelToolCall
-from miso.tools import Toolkit, tool
+from unchain.input.human_input import ASK_USER_QUESTION_TOOL_NAME
+from unchain.kernel import KernelLoop, ModelTurnResult
+from unchain.kernel.types import ToolCall as KernelToolCall
+from unchain.tools import Toolkit, tool
 
 
 class _QueueModelIO:
@@ -428,3 +428,342 @@ def test_kernel_run_stops_at_max_iterations():
 
     assert result.status == "max_iterations"
     assert any(message.get("type") == "function_call_output" for message in result.messages)
+
+
+def test_kernel_run_completes_single_anthropic_turn():
+    model_io = _QueueModelIO([
+        ModelTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "done"}],
+            tool_calls=[],
+            final_text="done",
+            consumed_tokens=5,
+            input_tokens=3,
+            output_tokens=2,
+        ),
+    ])
+    loop = KernelLoop(model_io=model_io)
+
+    result = loop.run(
+        [{"role": "user", "content": "hello"}],
+        provider="anthropic",
+        model="claude-3-7-sonnet",
+    )
+
+    assert result.status == "completed"
+    assert result.messages[-1] == {"role": "assistant", "content": "done"}
+    assert model_io.requests[0].previous_response_id is None
+
+
+def test_kernel_run_executes_anthropic_tool_and_continues_with_full_transcript():
+    model_io = _QueueModelIO([
+        ModelTurnResult(
+            assistant_messages=[{
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "call_1", "name": "demo_tool", "input": {"x": 1}}],
+            }],
+            tool_calls=[KernelToolCall(call_id="call_1", name="demo_tool", arguments={"x": 1})],
+            consumed_tokens=6,
+            input_tokens=4,
+            output_tokens=2,
+        ),
+        ModelTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "done"}],
+            tool_calls=[],
+            final_text="done",
+        ),
+    ])
+    toolkit = Toolkit()
+    toolkit.register(lambda x=None: {"value": x + 1}, name="demo_tool")
+    loop = KernelLoop(model_io=model_io)
+
+    result = loop.run(
+        [{"role": "user", "content": "start"}],
+        provider="anthropic",
+        model="claude-3-7-sonnet",
+        toolkit=toolkit,
+        max_iterations=3,
+    )
+
+    assert result.status == "completed"
+    tool_message = next(
+        message
+        for message in result.messages
+        if message.get("role") == "user"
+        and isinstance(message.get("content"), list)
+        and message["content"][0].get("type") == "tool_result"
+    )
+    assert json.loads(tool_message["content"][0]["content"]) == {"value": 2}
+    second_request_messages = model_io.requests[1].messages
+    assert second_request_messages[0] == {"role": "user", "content": "start"}
+    assert any(
+        message.get("role") == "assistant"
+        and isinstance(message.get("content"), list)
+        and message["content"][0].get("type") == "tool_use"
+        for message in second_request_messages
+    )
+    assert any(
+        message.get("role") == "user"
+        and isinstance(message.get("content"), list)
+        and message["content"][0].get("type") == "tool_result"
+        for message in second_request_messages
+    )
+
+
+def test_kernel_resume_human_input_anthropic_appends_tool_result_and_uses_full_transcript():
+    initial_model_io = _QueueModelIO([
+        ModelTurnResult(
+            assistant_messages=[{
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "call_user",
+                    "name": ASK_USER_QUESTION_TOOL_NAME,
+                    "input": {
+                        "title": "Choose stack",
+                        "question": "Which stack?",
+                        "selection_mode": "single",
+                        "options": [
+                            {"label": "React", "value": "react"},
+                            {"label": "Vue", "value": "vue"},
+                        ],
+                    },
+                }],
+            }],
+            tool_calls=[
+                KernelToolCall(
+                    call_id="call_user",
+                    name=ASK_USER_QUESTION_TOOL_NAME,
+                    arguments={
+                        "title": "Choose stack",
+                        "question": "Which stack?",
+                        "selection_mode": "single",
+                        "options": [
+                            {"label": "React", "value": "react"},
+                            {"label": "Vue", "value": "vue"},
+                        ],
+                    },
+                )
+            ],
+        ),
+    ])
+    ask_toolkit = Toolkit()
+    ask_toolkit.register(lambda **_: {"error": "reserved"}, name=ASK_USER_QUESTION_TOOL_NAME, parameters=[])
+    initial_loop = KernelLoop(model_io=initial_model_io)
+    suspended = initial_loop.run(
+        [{"role": "user", "content": "need a choice"}],
+        provider="anthropic",
+        model="claude-3-7-sonnet",
+        toolkit=ask_toolkit,
+    )
+
+    resumed_model_io = _QueueModelIO([
+        ModelTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "resume done"}],
+            tool_calls=[],
+            final_text="resume done",
+        ),
+    ])
+    resumed_loop = KernelLoop(model_io=resumed_model_io)
+    resumed = resumed_loop.resume_human_input(
+        conversation=suspended.messages,
+        continuation=suspended.continuation,
+        response={"request_id": "call_user", "selected_values": ["react"]},
+        toolkit=ask_toolkit,
+    )
+
+    assert resumed.status == "completed"
+    request = resumed_model_io.requests[0]
+    assert request.previous_response_id is None
+    assert any(
+        message.get("role") == "user"
+        and isinstance(message.get("content"), list)
+        and message["content"][0].get("type") == "tool_result"
+        and json.loads(message["content"][0]["content"])["selected_values"] == ["react"]
+        for message in request.messages
+    )
+    assert len(request.messages) > 1
+
+
+def test_kernel_run_completes_single_ollama_turn():
+    model_io = _QueueModelIO([
+        ModelTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "done"}],
+            tool_calls=[],
+            final_text="done",
+        ),
+    ])
+    loop = KernelLoop(model_io=model_io)
+
+    result = loop.run(
+        [{"role": "user", "content": "hello"}],
+        provider="ollama",
+        model="qwen3",
+    )
+
+    assert result.status == "completed"
+    assert result.messages[-1] == {"role": "assistant", "content": "done"}
+    assert model_io.requests[0].previous_response_id is None
+
+
+def test_kernel_run_executes_ollama_tool_and_continues_with_full_transcript():
+    model_io = _QueueModelIO([
+        ModelTurnResult(
+            assistant_messages=[{
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "call_1", "function": {"name": "demo_tool", "arguments": {"x": 1}}}],
+            }],
+            tool_calls=[KernelToolCall(call_id="call_1", name="demo_tool", arguments={"x": 1})],
+        ),
+        ModelTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "done"}],
+            tool_calls=[],
+            final_text="done",
+        ),
+    ])
+    toolkit = Toolkit()
+    toolkit.register(lambda x=None: {"value": x + 1}, name="demo_tool")
+    loop = KernelLoop(model_io=model_io)
+
+    result = loop.run(
+        [{"role": "user", "content": "start"}],
+        provider="ollama",
+        model="qwen3",
+        toolkit=toolkit,
+        max_iterations=3,
+    )
+
+    assert result.status == "completed"
+    tool_message = next(message for message in result.messages if message.get("role") == "tool")
+    assert json.loads(tool_message["content"]) == {"value": 2}
+    second_request_messages = model_io.requests[1].messages
+    assert second_request_messages[0] == {"role": "user", "content": "start"}
+    assert any(message.get("role") == "assistant" and "tool_calls" in message for message in second_request_messages)
+    assert any(message.get("role") == "tool" for message in second_request_messages)
+
+
+def test_kernel_resume_human_input_ollama_appends_tool_result_and_uses_full_transcript():
+    initial_model_io = _QueueModelIO([
+        ModelTurnResult(
+            assistant_messages=[{
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_user",
+                    "function": {
+                        "name": ASK_USER_QUESTION_TOOL_NAME,
+                        "arguments": {
+                            "title": "Choose stack",
+                            "question": "Which stack?",
+                            "selection_mode": "single",
+                            "options": [
+                                {"label": "React", "value": "react"},
+                                {"label": "Vue", "value": "vue"},
+                            ],
+                        },
+                    },
+                }],
+            }],
+            tool_calls=[
+                KernelToolCall(
+                    call_id="call_user",
+                    name=ASK_USER_QUESTION_TOOL_NAME,
+                    arguments={
+                        "title": "Choose stack",
+                        "question": "Which stack?",
+                        "selection_mode": "single",
+                        "options": [
+                            {"label": "React", "value": "react"},
+                            {"label": "Vue", "value": "vue"},
+                        ],
+                    },
+                )
+            ],
+        ),
+    ])
+    ask_toolkit = Toolkit()
+    ask_toolkit.register(lambda **_: {"error": "reserved"}, name=ASK_USER_QUESTION_TOOL_NAME, parameters=[])
+    initial_loop = KernelLoop(model_io=initial_model_io)
+    suspended = initial_loop.run(
+        [{"role": "user", "content": "need a choice"}],
+        provider="ollama",
+        model="qwen3",
+        toolkit=ask_toolkit,
+    )
+
+    resumed_model_io = _QueueModelIO([
+        ModelTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "resume done"}],
+            tool_calls=[],
+            final_text="resume done",
+        ),
+    ])
+    resumed_loop = KernelLoop(model_io=resumed_model_io)
+    resumed = resumed_loop.resume_human_input(
+        conversation=suspended.messages,
+        continuation=suspended.continuation,
+        response={"request_id": "call_user", "selected_values": ["react"]},
+        toolkit=ask_toolkit,
+    )
+
+    assert resumed.status == "completed"
+    request = resumed_model_io.requests[0]
+    assert request.previous_response_id is None
+    assert any(
+        message.get("role") == "tool"
+        and json.loads(message.get("content", "{}"))["selected_values"] == ["react"]
+        for message in request.messages
+    )
+    assert len(request.messages) > 1
+
+
+def test_kernel_observe_tool_batch_uses_anthropic_payload_keys():
+    model_io = _QueueModelIO([
+        ModelTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "looks fine"}],
+            tool_calls=[],
+            final_text="looks fine",
+        ),
+    ])
+    loop = KernelLoop(model_io=model_io)
+
+    observation, usage = loop.observe_tool_batch(
+        full_messages=[{"role": "user", "content": "observe"}],
+        tool_messages=[{"role": "user", "content": '{"topic":"x","ok":true}'}],
+        payload={},
+        provider="anthropic",
+        iteration=1,
+    )
+
+    assert observation == "looks fine"
+    assert usage.output_tokens == 0
+    observe_request = model_io.requests[0]
+    assert observe_request.payload["max_tokens"] > 0
+    assert "max_output_tokens" not in observe_request.payload
+    assert "num_predict" not in observe_request.payload
+
+
+def test_kernel_observe_tool_batch_uses_ollama_payload_keys():
+    model_io = _QueueModelIO([
+        ModelTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "looks fine"}],
+            tool_calls=[],
+            final_text="looks fine",
+        ),
+    ])
+    loop = KernelLoop(model_io=model_io)
+
+    observation, usage = loop.observe_tool_batch(
+        full_messages=[{"role": "user", "content": "observe"}],
+        tool_messages=[{"role": "tool", "content": '{"topic":"x","ok":true}'}],
+        payload={},
+        provider="ollama",
+        iteration=1,
+    )
+
+    assert observation == "looks fine"
+    assert usage.output_tokens == 0
+    observe_request = model_io.requests[0]
+    assert observe_request.payload["num_predict"] > 0
+    assert "max_output_tokens" not in observe_request.payload
+    assert "max_tokens" not in observe_request.payload
