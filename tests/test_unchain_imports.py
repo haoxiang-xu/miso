@@ -5,8 +5,8 @@ import unchain
 
 
 def test_unchain_top_level_aliases_miso_exports():
-    assert unchain.Agent is miso.Agent
-    assert unchain.Team is miso.Team
+    from unchain.agent.agent import Agent as UnchainAgent
+    assert unchain.Agent is UnchainAgent
     assert unchain.__version__ == miso.__version__
     assert unchain.__brand__ == "unchain"
     assert unchain.__tagline__ == "unchain harness"
