@@ -22,6 +22,7 @@ class Tool:
         parameters: list[ToolParameter | dict[str, Any]] | None = None,
         observe: bool = False,
         requires_confirmation: bool = False,
+        render_component: dict[str, Any] | None = None,
         history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
         history_result_optimizer: HistoryPayloadOptimizer | None = None,
     ):
@@ -34,6 +35,7 @@ class Tool:
         self.func = func
         self.observe = observe
         self.requires_confirmation = requires_confirmation
+        self.render_component = render_component
         self.history_arguments_optimizer = history_arguments_optimizer
         self.history_result_optimizer = history_result_optimizer
         self.parameters = self._construct_parameters(parameters)
@@ -58,6 +60,7 @@ class Tool:
                 parameters=self.parameters or None,
                 observe=self.observe,
                 requires_confirmation=self.requires_confirmation,
+                render_component=self.render_component,
                 history_arguments_optimizer=self.history_arguments_optimizer,
                 history_result_optimizer=self.history_result_optimizer,
             )
@@ -77,6 +80,7 @@ class Tool:
         parameters: list[ToolParameter | dict[str, Any]] | None = None,
         observe: bool = False,
         requires_confirmation: bool = False,
+        render_component: dict[str, Any] | None = None,
         history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
         history_result_optimizer: HistoryPayloadOptimizer | None = None,
     ) -> "Tool":
@@ -88,6 +92,7 @@ class Tool:
             parameters=parameters,
             observe=observe,
             requires_confirmation=requires_confirmation,
+            render_component=render_component,
             history_arguments_optimizer=history_arguments_optimizer,
             history_result_optimizer=history_result_optimizer,
         )

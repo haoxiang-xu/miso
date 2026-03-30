@@ -15,6 +15,7 @@ def tool(
     parameters: list[ToolParameter | dict[str, Any]] | None = None,
     observe: bool = False,
     requires_confirmation: bool = False,
+    render_component: dict[str, Any] | None = None,
     history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
     history_result_optimizer: HistoryPayloadOptimizer | None = None,
 ):
@@ -30,6 +31,7 @@ def tool(
             parameters=parameters,
             observe=observe,
             requires_confirmation=requires_confirmation,
+            render_component=render_component,
             history_arguments_optimizer=history_arguments_optimizer,
             history_result_optimizer=history_result_optimizer,
         )
@@ -42,6 +44,7 @@ def tool(
             parameters=parameters,
             observe=observe,
             requires_confirmation=requires_confirmation,
+            render_component=render_component,
             history_arguments_optimizer=history_arguments_optimizer,
             history_result_optimizer=history_result_optimizer,
         )

@@ -19,6 +19,7 @@ class Toolkit:
         *,
         observe: bool | None = None,
         requires_confirmation: bool | None = None,
+        render_component: dict[str, Any] | None = None,
         name: str | None = None,
         description: str | None = None,
         parameters: list[ToolParameter | dict[str, Any]] | None = None,
@@ -36,6 +37,8 @@ class Toolkit:
                 tool_obj.observe = observe
             if requires_confirmation is not None:
                 tool_obj.requires_confirmation = requires_confirmation
+            if render_component is not None:
+                tool_obj.render_component = render_component
             if history_arguments_optimizer is not None:
                 tool_obj.history_arguments_optimizer = history_arguments_optimizer
             if history_result_optimizer is not None:
@@ -51,6 +54,7 @@ class Toolkit:
                 parameters=parameters,
                 observe=bool(observe),
                 requires_confirmation=bool(requires_confirmation),
+                render_component=render_component,
                 history_arguments_optimizer=history_arguments_optimizer,
                 history_result_optimizer=history_result_optimizer,
             )
