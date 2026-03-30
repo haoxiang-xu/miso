@@ -255,6 +255,19 @@ def test_dated_model_46_resolves():
     assert merged["max_tokens"] == 64000
 
 
+def test_dated_model_40_resolves():
+    a = Broth()
+    a.model = "claude-sonnet-4-20250514"
+
+    provider = a._model_capability("provider")
+    assert provider == "anthropic"
+    assert a.max_context_window_tokens == 200000
+
+    merged = a._merged_payload(None)
+    assert "max_tokens" in merged
+    assert merged["max_tokens"] == 64000
+
+
 def test_anthropic_run_multimodal_projection_unit():
     a = Broth()
     a.provider = "anthropic"

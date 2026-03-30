@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 
-from ..input.human_input import is_human_input_tool_name
+from ..input.human_input import HumanInputResponse, is_human_input_tool_name
 from .toolkit import Toolkit
 from ..kernel.delta import HarnessDelta, SuspendSignal
 from ..kernel.types import ToolCall
@@ -199,6 +199,92 @@ class ToolExecutionHarness(BaseToolHarness):
                             awaiting_human_input=False,
                             human_input_request=batch_state.human_input_request,
                             human_input_tool_call_id=batch_state.human_input_tool_call_id,
+                            executed_call_ids=append_executed_call_id(batch_state, tool_call.call_id),
+                        ),
+                    },
+                )
+
+            on_human_input = context.event.get("on_human_input")
+            if callable(on_human_input):
+                emit_loop_event(
+                    context.loop,
+                    context.callback,
+                    "human_input_requested",
+                    context.run_id,
+                    iteration=context.iteration,
+                    request_id=request.request_id,
+                    kind=request.kind,
+                    title=request.title,
+                    question=request.question,
+                    selection_mode=request.selection_mode,
+                    options=[option.to_dict() for option in request.options],
+                    allow_other=request.allow_other,
+                    other_label=request.other_label,
+                    other_placeholder=request.other_placeholder,
+                    min_selected=request.min_selected,
+                    max_selected=request.max_selected,
+                )
+                try:
+                    raw_response = on_human_input(request)
+                except Exception as cb_exc:
+                    builder = get_provider_message_builder(context.provider)
+                    tool_result = {
+                        "error": f"human input callback failed: {cb_exc}",
+                        "tool": tool_call.name,
+                    }
+                    result_messages = copy_messages(batch_state.result_messages)
+                    result_messages.append(
+                        builder.build_tool_result_message(tool_call=tool_call, tool_result=tool_result)
+                    )
+                    emit_loop_event(
+                        context.loop,
+                        context.callback,
+                        "tool_result",
+                        context.run_id,
+                        iteration=context.iteration,
+                        tool_name=tool_call.name,
+                        call_id=tool_call.call_id,
+                        result=tool_result,
+                    )
+                    return HarnessDelta(
+                        created_by=self.created_by,
+                        state_updates={
+                            "tool_batch_state": ToolBatchState(
+                                result_messages=result_messages,
+                                should_observe=False,
+                                awaiting_human_input=False,
+                                human_input_request=None,
+                                human_input_tool_call_id=None,
+                                executed_call_ids=append_executed_call_id(batch_state, tool_call.call_id),
+                            ),
+                        },
+                    )
+                human_response = HumanInputResponse.from_raw(raw_response, request=request)
+                builder = get_provider_message_builder(context.provider)
+                tool_result = human_response.to_tool_result()
+                result_messages = copy_messages(batch_state.result_messages)
+                result_messages.append(
+                    builder.build_tool_result_message(tool_call=tool_call, tool_result=tool_result)
+                )
+                emit_loop_event(
+                    context.loop,
+                    context.callback,
+                    "tool_result",
+                    context.run_id,
+                    iteration=context.iteration,
+                    tool_name=tool_call.name,
+                    call_id=tool_call.call_id,
+                    result=copy.deepcopy(tool_result),
+                )
+                return HarnessDelta(
+                    created_by=self.created_by,
+                    state_updates={
+                        "tool_batch_state": ToolBatchState(
+                            result_messages=result_messages,
+                            should_observe=False,
+                            awaiting_human_input=False,
+                            human_input_request=None,
+                            human_input_tool_call_id=None,
                             executed_call_ids=append_executed_call_id(batch_state, tool_call.call_id),
                         ),
                     },

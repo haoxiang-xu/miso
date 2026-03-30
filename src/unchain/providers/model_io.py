@@ -326,6 +326,34 @@ class OpenAIModelIO(_NativeModelIOBase):
             tool_names=self._tool_names_for_trace(tools_json),
         )
 
+        try:
+            return self._fetch_turn_streaming(openai_client, request, request_kwargs)
+        except Exception as exc:
+            if request_kwargs.get("previous_response_id") and self._is_previous_response_error(exc):
+                request_kwargs.pop("previous_response_id", None)
+                request_kwargs["input"] = normalized_messages
+                if request.callback:
+                    self._emit(
+                        request.callback,
+                        "previous_response_id_fallback",
+                        request.run_id,
+                        iteration=request.iteration,
+                        provider="openai",
+                    )
+                return self._fetch_turn_streaming(openai_client, request, request_kwargs)
+            raise
+
+    @staticmethod
+    def _is_previous_response_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "previous_response" in msg or "not_found" in msg or "no tool call found" in msg
+
+    def _fetch_turn_streaming(
+        self,
+        openai_client: Any,
+        request: ModelTurnRequest,
+        request_kwargs: dict[str, Any],
+    ) -> ModelTurnResult:
         collected_chunks: list[str] = []
         completed_response = None
         created_response_id: str | None = None
@@ -578,12 +606,15 @@ class AnthropicModelIO(_NativeModelIOBase):
         assistant_messages: list[dict[str, Any]] = []
         tool_calls: list[ToolCall] = []
         final_text_parts: list[str] = []
+        reasoning_items: list[dict[str, Any]] = []
         input_tokens = 0
         output_tokens = 0
         current_tool_name = ""
         current_tool_id = ""
         current_tool_json_parts: list[str] = []
         content_blocks: list[dict[str, Any]] = []
+        in_thinking_block = False
+        current_thinking_parts: list[str] = []
 
         with client.messages.stream(**request_kwargs) as stream:
             for event in stream:
@@ -595,11 +626,28 @@ class AnthropicModelIO(_NativeModelIOBase):
                         current_tool_name = str(block_dict.get("name", "") or "")
                         current_tool_id = str(block_dict.get("id") or str(uuid.uuid4()))
                         current_tool_json_parts = []
+                    elif block_dict.get("type") == "thinking":
+                        in_thinking_block = True
+                        current_thinking_parts = []
                     continue
 
                 if event_type == "content_block_delta":
                     delta_dict = self._as_dict(getattr(event, "delta", None))
                     delta_type = delta_dict.get("type", "")
+                    if delta_type == "thinking_delta":
+                        thinking_text = delta_dict.get("thinking", "") or ""
+                        if thinking_text:
+                            current_thinking_parts.append(thinking_text)
+                            if request.emit_stream:
+                                self._emit(
+                                    request.callback,
+                                    "reasoning",
+                                    request.run_id,
+                                    iteration=request.iteration,
+                                    provider=self.provider,
+                                    delta=thinking_text,
+                                )
+                        continue
                     if delta_type == "text_delta":
                         text = delta_dict.get("text", "") or ""
                         if text:
@@ -622,7 +670,14 @@ class AnthropicModelIO(_NativeModelIOBase):
                     continue
 
                 if event_type == "content_block_stop":
-                    if current_tool_name:
+                    if in_thinking_block and current_thinking_parts:
+                        reasoning_items.append({
+                            "type": "thinking",
+                            "text": "".join(current_thinking_parts),
+                        })
+                        in_thinking_block = False
+                        current_thinking_parts = []
+                    elif current_tool_name:
                         raw_json = "".join(current_tool_json_parts)
                         try:
                             arguments = json.loads(raw_json) if raw_json.strip() else {}
@@ -644,6 +699,8 @@ class AnthropicModelIO(_NativeModelIOBase):
                         current_tool_name = ""
                         current_tool_id = ""
                         current_tool_json_parts = []
+                    else:
+                        in_thinking_block = False
                     continue
 
                 if event_type == "message_delta":
@@ -686,7 +743,7 @@ class AnthropicModelIO(_NativeModelIOBase):
             tool_calls=tool_calls,
             final_text="".join(final_text_parts).strip(),
             response_id=None,
-            reasoning_items=None,
+            reasoning_items=reasoning_items or None,
             consumed_tokens=token_usage.consumed_tokens,
             input_tokens=token_usage.input_tokens,
             output_tokens=token_usage.output_tokens,
@@ -755,6 +812,7 @@ class OllamaModelIO(_NativeModelIOBase):
         )
 
         collected_chunks: list[str] = []
+        reasoning_chunks: list[str] = []
         latest_prompt_eval_count = 0
         latest_eval_count = 0
 
@@ -788,9 +846,14 @@ class OllamaModelIO(_NativeModelIOBase):
                     latest_eval_count = data["eval_count"]
 
                 message = data.get("message") or {}
-                delta = message.get("content", "") or message.get("thinking", "")
-                if delta:
-                    collected_chunks.append(delta)
+                content_delta = message.get("content", "") or ""
+                thinking_delta = message.get("thinking", "") or ""
+
+                if thinking_delta:
+                    reasoning_chunks.append(thinking_delta)
+
+                if content_delta:
+                    collected_chunks.append(content_delta)
                     if request.emit_stream:
                         self._emit(
                             request.callback,
@@ -798,7 +861,7 @@ class OllamaModelIO(_NativeModelIOBase):
                             request.run_id,
                             iteration=request.iteration,
                             provider=self.provider,
-                            delta=delta,
+                            delta=content_delta,
                             accumulated_text="".join(collected_chunks),
                         )
 
@@ -825,6 +888,7 @@ class OllamaModelIO(_NativeModelIOBase):
                         tool_calls=tool_calls,
                         final_text="",
                         response_id=None,
+                        reasoning_items=[{"type": "thinking", "text": "".join(reasoning_chunks)}] if reasoning_chunks else None,
                         consumed_tokens=latest_prompt_eval_count + latest_eval_count,
                         input_tokens=latest_prompt_eval_count,
                         output_tokens=latest_eval_count,
@@ -837,6 +901,7 @@ class OllamaModelIO(_NativeModelIOBase):
                         tool_calls=[],
                         final_text=full_message,
                         response_id=None,
+                        reasoning_items=[{"type": "thinking", "text": "".join(reasoning_chunks)}] if reasoning_chunks else None,
                         consumed_tokens=latest_prompt_eval_count + latest_eval_count,
                         input_tokens=latest_prompt_eval_count,
                         output_tokens=latest_eval_count,

@@ -32,6 +32,8 @@ class AgentCallContext:
     max_context_window_tokens: int | None = None
     previous_response_id: str | None = None
     on_tool_confirm: Callable[..., Any] | None = None
+    on_human_input: Callable[..., Any] | None = None
+    on_max_iterations: Callable[..., Any] | None = None
     session_id: str | None = None
     memory_namespace: str | None = None
     run_id: str | None = None
@@ -49,6 +51,8 @@ class PreparedAgent:
     default_max_iterations: int | None = None
     default_max_context_window_tokens: int | None = None
     default_on_tool_confirm: Callable[..., Any] | None = None
+    default_on_human_input: Callable[..., Any] | None = None
+    default_on_max_iterations: Callable[..., Any] | None = None
     run_hooks: list[RunHook] = field(default_factory=list)
     tool_runtime_plugins: list[Any] = field(default_factory=list)
 
@@ -76,6 +80,12 @@ class PreparedAgent:
     def _resolved_on_tool_confirm(self) -> Callable[..., Any] | None:
         return self.call_context.on_tool_confirm or self.default_on_tool_confirm
 
+    def _resolved_on_human_input(self) -> Callable[..., Any] | None:
+        return self.call_context.on_human_input or self.default_on_human_input
+
+    def _resolved_on_max_iterations(self) -> Callable[..., Any] | None:
+        return self.call_context.on_max_iterations or self.default_on_max_iterations
+
     def _apply_run_hooks(self, result: KernelRunResult) -> KernelRunResult:
         current = result
         for hook in self.run_hooks:
@@ -94,6 +104,8 @@ class PreparedAgent:
             max_iterations=self._resolved_max_iterations(),
             previous_response_id=self.call_context.previous_response_id,
             on_tool_confirm=self._resolved_on_tool_confirm(),
+            on_human_input=self._resolved_on_human_input(),
+            on_max_iterations=self._resolved_on_max_iterations(),
             session_id=self.call_context.session_id,
             memory_namespace=self.call_context.memory_namespace,
             provider=self.spec.provider,
@@ -119,6 +131,8 @@ class PreparedAgent:
             callback=self.call_context.callback,
             verbose=self.call_context.verbose,
             on_tool_confirm=self._resolved_on_tool_confirm(),
+            on_human_input=self._resolved_on_human_input(),
+            on_max_iterations=self._resolved_on_max_iterations(),
             session_id=self.call_context.session_id,
             memory_namespace=self.call_context.memory_namespace,
             toolkit=self.toolkit,
@@ -143,6 +157,8 @@ class AgentBuilder:
     default_max_iterations: int | None = None
     default_max_context_window_tokens: int | None = None
     default_on_tool_confirm: Callable[..., Any] | None = None
+    default_on_human_input: Callable[..., Any] | None = None
+    default_on_max_iterations: Callable[..., Any] | None = None
     run_hooks: list[RunHook] = field(default_factory=list)
     tool_runtime_plugins: list[Any] = field(default_factory=list)
     _model_io: ModelIO | None = None
@@ -194,6 +210,12 @@ class AgentBuilder:
     def set_on_tool_confirm_default(self, on_tool_confirm: Callable[..., Any]) -> None:
         self.default_on_tool_confirm = on_tool_confirm
 
+    def set_on_human_input_default(self, on_human_input: Callable[..., Any]) -> None:
+        self.default_on_human_input = on_human_input
+
+    def set_on_max_iterations_default(self, on_max_iterations: Callable[..., Any]) -> None:
+        self.default_on_max_iterations = on_max_iterations
+
     def _resolve_model_io(self) -> ModelIO:
         if self._model_io is not None:
             return self._model_io
@@ -222,6 +244,8 @@ class AgentBuilder:
             default_max_iterations=self.default_max_iterations,
             default_max_context_window_tokens=self.default_max_context_window_tokens,
             default_on_tool_confirm=self.default_on_tool_confirm,
+            default_on_human_input=self.default_on_human_input,
+            default_on_max_iterations=self.default_on_max_iterations,
             run_hooks=list(self.run_hooks),
             tool_runtime_plugins=list(self.tool_runtime_plugins),
         )

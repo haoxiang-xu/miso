@@ -96,6 +96,20 @@
     "input_source_types": {},
     "allowed_payload_keys": ["num_predict", "temperature", "top_p"]
   },
+  "claude-sonnet-4": {
+    "provider": "anthropic",
+    "max_context_window_tokens": 200000,
+    "supports_tools": true,
+    "supports_response_format": false,
+    "supports_previous_response_id": false,
+    "supports_reasoning": false,
+    "input_modalities": ["text", "image", "pdf"],
+    "input_source_types": {
+      "image": ["url", "base64"],
+      "pdf": ["url", "base64"]
+    },
+    "allowed_payload_keys": ["max_tokens", "temperature", "top_k"]
+  },
   "claude-sonnet-4-6": {
     "provider": "anthropic",
     "max_context_window_tokens": 200000,
@@ -108,7 +122,7 @@
       "image": ["url", "base64"],
       "pdf": ["url", "base64"]
     },
-    "allowed_payload_keys": ["max_tokens", "temperature", "top_p", "top_k"]
+    "allowed_payload_keys": ["max_tokens", "temperature", "top_k"]
   },
   "claude-opus-4-6": {
     "provider": "anthropic",
@@ -122,7 +136,7 @@
       "image": ["url", "base64"],
       "pdf": ["url", "base64"]
     },
-    "allowed_payload_keys": ["max_tokens", "temperature", "top_p", "top_k"]
+    "allowed_payload_keys": ["max_tokens", "temperature", "top_k"]
   },
   "gpt-5.2-codex": {
     "provider": "openai",

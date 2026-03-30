@@ -189,6 +189,7 @@ class KernelLoop:
         response_format: Any = None,
         openai_text_format: dict[str, Any] | None = None,
         on_tool_confirm: Any = None,
+        on_human_input: Any = None,
         max_iterations: int = 0,
         tool_runtime_plugins: list[Any] | None = None,
     ) -> ModelTurnResult:
@@ -210,6 +211,7 @@ class KernelLoop:
             "response_format": response_format,
             "openai_text_format": openai_text_format,
             "on_tool_confirm": on_tool_confirm,
+            "on_human_input": on_human_input,
             "max_iterations": max_iterations,
             "supports_tools": True,
             "loop": self,
@@ -409,6 +411,24 @@ class KernelLoop:
         required_list = required if isinstance(required, list) else None
         return ResponseFormat(name=name, schema=schema, required=required_list)
 
+    @staticmethod
+    def _ensure_json_safe(obj: Any) -> Any:
+        if obj is None or isinstance(obj, (str, int, float, bool)):
+            return obj
+        if isinstance(obj, dict):
+            return {
+                k: KernelLoop._ensure_json_safe(v)
+                for k, v in obj.items()
+                if isinstance(k, str) and isinstance(v, (str, int, float, bool, type(None), dict, list, tuple))
+            }
+        if isinstance(obj, (list, tuple)):
+            return [
+                KernelLoop._ensure_json_safe(item)
+                for item in obj
+                if isinstance(item, (str, int, float, bool, type(None), dict, list, tuple))
+            ]
+        return str(obj)
+
     def build_human_input_continuation(
         self,
         *,
@@ -427,8 +447,8 @@ class KernelLoop:
             "request_id": getattr(request, "request_id", None),
             "call_id": getattr(request, "request_id", None),
             "request": request.to_dict(),
-            "payload": copy.deepcopy(payload),
-            "response_format": self._serialize_response_format(response_format),
+            "payload": self._ensure_json_safe(copy.deepcopy(payload)),
+            "response_format": self._ensure_json_safe(self._serialize_response_format(response_format)),
             "iteration": int(next_iteration),
             "max_iterations": int(max_iterations),
             "previous_response_id": state.provider_state.previous_response_id,
@@ -575,6 +595,8 @@ class KernelLoop:
         verbose: bool = False,
         max_iterations: int = 6,
         on_tool_confirm: Any = None,
+        on_human_input: Any = None,
+        on_max_iterations: Any = None,
         toolkit: Toolkit | None = None,
         run_id: str | None = None,
         skip_bootstrap: bool = False,
@@ -615,7 +637,38 @@ class KernelLoop:
             provider=state.provider_state.provider,
             model=state.provider_state.model,
         )
-        while int(state.iteration) < int(max_iterations):
+        effective_max = int(max_iterations)
+        while True:
+            if int(state.iteration) >= effective_max:
+                if callable(on_max_iterations):
+                    self.emit_event(
+                        callback,
+                        "run_max_iterations",
+                        run_id,
+                        iteration=int(state.iteration),
+                        bundle=self._build_legacy_bundle(state, status="max_iterations"),
+                    )
+                    mi_response = on_max_iterations({
+                        "iteration": int(state.iteration),
+                        "max_iterations": effective_max,
+                        "consumed_tokens": int(state.token_state.consumed_tokens),
+                    })
+                    if isinstance(mi_response, dict) and mi_response.get("approved"):
+                        effective_max += max(1, int(mi_response.get("extra_iterations", effective_max)))
+                    else:
+                        state.run_status = "max_iterations"
+                        return self._build_result(state, status="max_iterations")
+                else:
+                    state.run_status = "max_iterations"
+                    self.emit_event(
+                        callback,
+                        "run_max_iterations",
+                        run_id,
+                        iteration=int(state.iteration),
+                        bundle=self._build_legacy_bundle(state, status="max_iterations"),
+                    )
+                    return self._build_result(state, status="max_iterations")
+
             self.emit_event(
                 callback,
                 "iteration_started",
@@ -632,7 +685,8 @@ class KernelLoop:
                 emit_stream=True,
                 response_format=response_format,
                 on_tool_confirm=on_tool_confirm,
-                max_iterations=max_iterations,
+                on_human_input=on_human_input,
+                max_iterations=effective_max,
                 tool_runtime_plugins=tool_runtime_plugins,
             )
             self.emit_event(
@@ -695,16 +749,6 @@ class KernelLoop:
             )
             return self._build_result(state, status="completed")
 
-        state.run_status = "max_iterations"
-        self.emit_event(
-            callback,
-            "run_max_iterations",
-            run_id,
-            iteration=int(state.iteration),
-            bundle=self._build_legacy_bundle(state, status="max_iterations"),
-        )
-        return self._build_result(state, status="max_iterations")
-
     def run(
         self,
         messages: list[dict[str, Any]],
@@ -716,6 +760,8 @@ class KernelLoop:
         max_iterations: int = 6,
         previous_response_id: str | None = None,
         on_tool_confirm: Any = None,
+        on_human_input: Any = None,
+        on_max_iterations: Any = None,
         session_id: str | None = None,
         memory_namespace: str | None = None,
         provider: str | None = None,
@@ -737,7 +783,14 @@ class KernelLoop:
             memory_namespace=memory_namespace,
             max_context_window_tokens=max_context_window_tokens,
         )
-        use_previous_response_chain = resolved_provider == "openai" and resolved_payload.get("store") is not False
+        effective_store = resolved_payload.get("store")
+        if effective_store is None and self._model_io is not None:
+            try:
+                merged = self._model_io._merged_payload(resolved_payload)
+                effective_store = merged.get("store")
+            except Exception:
+                pass
+        use_previous_response_chain = resolved_provider == "openai" and effective_store is not False
         state.provider_state.previous_response_id = previous_response_id
         state.provider_state.use_previous_response_chain = use_previous_response_chain
         state.run_status = "running"
@@ -749,6 +802,8 @@ class KernelLoop:
             verbose=verbose,
             max_iterations=max_iterations,
             on_tool_confirm=on_tool_confirm,
+            on_human_input=on_human_input,
+            on_max_iterations=on_max_iterations,
             toolkit=toolkit,
             run_id=resolved_run_id,
             tool_runtime_plugins=tool_runtime_plugins,
@@ -765,6 +820,8 @@ class KernelLoop:
         callback: Any = None,
         verbose: bool = False,
         on_tool_confirm: Any = None,
+        on_human_input: Any = None,
+        on_max_iterations: Any = None,
         session_id: str | None = None,
         memory_namespace: str | None = None,
         toolkit: Toolkit | None = None,
@@ -847,6 +904,8 @@ class KernelLoop:
             verbose=verbose,
             max_iterations=int(continuation.get("max_iterations") or 6),
             on_tool_confirm=on_tool_confirm,
+            on_human_input=on_human_input,
+            on_max_iterations=on_max_iterations,
             toolkit=toolkit,
             run_id=resolved_run_id,
             skip_bootstrap=True,
