@@ -116,15 +116,96 @@ CLAUDE_HAIKU_35 = ModelConfiguration(
         payload={
             "max_tokens": 32000,
             "temperature": 0.7,
+        }
+    )
+)
+
+GPT_4O = ModelConfiguration(
+    name="gpt-4o",
+    capabilities=ModelCapabilities(
+        provider="openai",
+        provider_model="gpt-4o",
+        max_context_window_tokens=128000,
+        supports_tools=True,
+        supports_response_format=True,
+        supports_previous_response_id=False,
+        supports_reasoning=False,
+        input_modalities=["text", "image"],
+        input_source_types={
+            "image": ["url", "base64"]
+        },
+        allowed_payload_keys=["max_tokens", "temperature", "top_p", "frequency_penalty", "presence_penalty", "response_format"]
+    ),
+    default_payload=ModelDefaultPayload(
+        payload={
+            "max_tokens": 16384,
+            "temperature": 0.7,
+            "top_p": 1,
+            "frequency_penalty": 0,
+            "presence_penalty": 0
+        }
+    )
+)
+
+CLAUDE_SONNET_35 = ModelConfiguration(
+    name="claude-sonnet-3.5",
+    capabilities=ModelCapabilities(
+        provider="anthropic",
+        provider_model="claude-3-5-sonnet-20241022",
+        max_context_window_tokens=200000,
+        supports_tools=True,
+        supports_response_format=False,
+        supports_previous_response_id=False,
+        supports_reasoning=True,
+        input_modalities=["text", "image"],
+        input_source_types={
+            "image": ["url", "base64"]
+        },
+        allowed_payload_keys=["max_tokens", "temperature", "top_k", "top_p"]
+    ),
+    default_payload=ModelDefaultPayload(
+        payload={
+            "max_tokens": 32000,
+            "temperature": 0.7,
             "top_p": 1
         }
     )
 )
 
+GEMINI_PRO_15 = ModelConfiguration(
+    name="gemini-pro-1.5",
+    capabilities=ModelCapabilities(
+        provider="google",
+        provider_model="gemini-1.5-pro",
+        max_context_window_tokens=1048576,
+        supports_tools=True,
+        supports_response_format=False,
+        supports_previous_response_id=False,
+        supports_reasoning=False,
+        input_modalities=["text", "image", "audio", "video"],
+        input_source_types={
+            "image": ["url", "base64"],
+            "audio": ["url", "base64"],
+            "video": ["url", "base64"]
+        },
+        allowed_payload_keys=["max_output_tokens", "temperature", "top_k", "top_p"]
+    ),
+    default_payload=ModelDefaultPayload(
+        payload={
+            "max_output_tokens": 8192,
+            "temperature": 0.7,
+            "top_p": 1,
+            "top_k": 40
+        }
+    )
+)
 
 __all__ = [
     "ModelCapabilities",
-    "ModelDefaultPayload", 
+    "ModelDefaultPayload",
     "ModelConfiguration",
-    "CLAUDE_HAIKU_35"
+    "CLAUDE_HAIKU_35",
+    "GPT_4O",
+    "CLAUDE_SONNET_35",
+    "GEMINI_PRO_15",
 ]
