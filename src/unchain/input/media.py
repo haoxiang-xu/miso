@@ -1,12 +1,12 @@
 """
-miso.media — helpers for building canonical multimodal content blocks.
+unchain.media — helpers for building canonical multimodal content blocks.
 
 Builds provider-agnostic blocks that Broth translates correctly for
 OpenAI, Claude, and Ollama — no provider-specific code needed in userland.
 
 Typical usage
 -------------
-    from miso.input import media
+    from unchain.input import media
 
     png_block = media.from_file("logo.png")
     pdf_block = media.from_file("report.pdf")
@@ -37,7 +37,7 @@ _MIME_BY_SUFFIX: dict[str, str] = {
 
 
 def from_file(path: str | Path) -> dict:
-    """Build a canonical miso content block from a local file.
+    """Build a canonical unchain content block from a local file.
 
     Supported formats: ``.png``, ``.jpg`` / ``.jpeg``, ``.gif``, ``.webp``, ``.pdf``
 
@@ -53,7 +53,7 @@ def from_file(path: str | Path) -> dict:
         path: Path to a local image or PDF file.
 
     Returns:
-        A canonical miso content block dict.
+        A canonical unchain content block dict.
 
     Raises:
         FileNotFoundError: If the file does not exist.
@@ -61,14 +61,14 @@ def from_file(path: str | Path) -> dict:
     """
     path = Path(path)
     if not path.exists():
-        raise FileNotFoundError(f"miso.media: file not found — {path}")
+        raise FileNotFoundError(f"unchain.media: file not found — {path}")
 
     suffix = path.suffix.lower()
     mime = _MIME_BY_SUFFIX.get(suffix)
     if mime is None:
         supported = ", ".join(sorted(_MIME_BY_SUFFIX))
         raise ValueError(
-            f"miso.media: unsupported file type '{suffix}'. "
+            f"unchain.media: unsupported file type '{suffix}'. "
             f"Supported extensions: {supported}"
         )
 
@@ -86,7 +86,7 @@ def from_file(path: str | Path) -> dict:
 
 
 def from_url(url: str, media_type: str | None = None) -> dict:
-    """Build a canonical miso image block from a public URL.
+    """Build a canonical unchain image block from a public URL.
 
     Args:
         url:        Publicly accessible image URL.
@@ -94,13 +94,13 @@ def from_url(url: str, media_type: str | None = None) -> dict:
                     Inferred from the URL extension when omitted.
 
     Returns:
-        A canonical miso content block dict.
+        A canonical unchain content block dict.
 
     Raises:
         ValueError: If ``url`` is empty.
     """
     if not isinstance(url, str) or not url.strip():
-        raise ValueError("miso.media: url must be a non-empty string")
+        raise ValueError("unchain.media: url must be a non-empty string")
 
     if media_type is None:
         suffix = Path(url.split("?")[0]).suffix.lower()

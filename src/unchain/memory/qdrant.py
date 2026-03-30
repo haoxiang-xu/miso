@@ -422,7 +422,7 @@ class QdrantLongTermVectorAdapter:
 class JsonFileSessionStore:
     """SessionStore backed by one JSON file per session.
 
-    Stores messages, vector_indexed_until, and summary so the miso
+    Stores messages, vector_indexed_until, and summary so the unchain
     MemoryManager can work correctly across process restarts without
     re-embedding already-indexed messages.
 

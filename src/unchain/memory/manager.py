@@ -185,9 +185,9 @@ def _default_user_data_dir() -> Path:
     try:
         from platformdirs import user_data_dir
 
-        return Path(user_data_dir("miso", "miso"))
+        return Path(user_data_dir("unchain", "unchain"))
     except Exception:
-        return Path.home() / ".miso"
+        return Path.home() / ".unchain"
 
 
 def _deepcopy_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

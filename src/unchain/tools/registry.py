@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover - Python 3.9 fallback
 from .toolkit import Toolkit as RuntimeToolkit
 
 _ICON_SUFFIXES = {".svg", ".png"}
-_ENTRY_POINT_GROUPS = ("unchain.toolkits", "miso.toolkits")
+_ENTRY_POINT_GROUPS = ("unchain.toolkits", "unchain.toolkits")
 
 
 def _read_markdown(path: Path) -> str:
@@ -300,7 +300,7 @@ class ToolkitDescriptor:
     display_order: int = 0
     hidden: bool = False
     compat_python: str | None = None
-    compat_miso: str | None = None
+    compat_legacy: str | None = None
     tools: dict[str, ToolDescriptor] = field(default_factory=dict)
     import_roots: tuple[Path, ...] = field(default_factory=tuple, repr=False)
 
@@ -332,7 +332,7 @@ class ToolkitDescriptor:
             },
             "compat": {
                 "python": self.compat_python,
-                "miso": self.compat_miso,
+                "legacy": self.compat_legacy,
             },
         }
         if include_tools:
@@ -430,7 +430,7 @@ class ToolkitRegistry:
         if not isinstance(runtime_toolkit, RuntimeToolkit):
             raise ValueError(
                 f"{descriptor.manifest_path}: toolkit factory '{descriptor.factory}' "
-                "did not return a miso.tools.Toolkit"
+                "did not return a unchain.tools.Toolkit"
             )
         return runtime_toolkit
 
@@ -625,7 +625,7 @@ class ToolkitRegistry:
             display_order=_optional_int(display_section, "order", default=0),
             hidden=_coerce_bool(display_section.get("hidden"), default=False),
             compat_python=_optional_str(compat_section, "python"),
-            compat_miso=_optional_str(compat_section, "miso"),
+            compat_legacy=_optional_str(compat_section, "legacy"),
             tools=tools,
             import_roots=tuple(import_roots),
         )
@@ -666,7 +666,7 @@ class ToolkitRegistry:
 
         if not isinstance(runtime_toolkit, RuntimeToolkit):
             raise ValueError(
-                f"{descriptor.manifest_path}: toolkit factory '{descriptor.factory}' did not return a miso.tools.Toolkit"
+                f"{descriptor.manifest_path}: toolkit factory '{descriptor.factory}' did not return a unchain.tools.Toolkit"
             )
 
         actual_tools = runtime_toolkit.tools

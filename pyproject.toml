@@ -33,7 +33,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-miso = [
+unchain = [
     "runtime/resources/*.json",
     "toolkits/builtin/*/toolkit.toml",
     "toolkits/builtin/*/README.md",

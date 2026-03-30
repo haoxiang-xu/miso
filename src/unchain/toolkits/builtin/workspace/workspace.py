@@ -18,7 +18,7 @@ from ....workspace.pins import (
     remove_pins,
     save_workspace_pins,
 )
-from ....workspace.syntax import build_syntax_tree_payload
+from ....workspace.syntax import build_syntax_tree_payload, detect_language, is_language_supported
 
 
 class WorkspaceToolkit(BuiltinToolkit):
@@ -101,6 +101,13 @@ class WorkspaceToolkit(BuiltinToolkit):
         kind = "directory" if target.is_dir() else "file"
         return {"path": str(target), "exists": True, "type": kind}
 
+    # Directories that add noise without value for LLM context
+    _SKIP_DIR_NAMES: set[str] = {
+        ".git", "node_modules", "__pycache__", ".tox", ".mypy_cache",
+        ".pytest_cache", ".ruff_cache", ".next", ".nuxt", "dist",
+        "build", ".venv", "venv", ".egg-info",
+    }
+
     def _list_directory_payload(
         self,
         target: Path,
@@ -113,13 +120,30 @@ class WorkspaceToolkit(BuiltinToolkit):
         if not target.is_dir():
             return {"error": f"not a directory: {target}"}
 
-        entries: list[str] = []
-        iterator = target.rglob("*") if recursive else target.iterdir()
+        if recursive:
+            return self._list_directory_tree(target, max_entries=max_entries)
+        return self._list_directory_flat(target, max_entries=max_entries)
 
-        for entry in iterator:
-            rel = entry.relative_to(self.workspace_root)
-            suffix = "/" if entry.is_dir() else ""
-            entries.append(f"{rel}{suffix}")
+    def _list_directory_flat(
+        self,
+        target: Path,
+        *,
+        max_entries: int,
+    ) -> dict[str, Any]:
+        entries: list[dict[str, Any]] = []
+        try:
+            children = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        except PermissionError:
+            return {"path": str(target), "error": "permission denied"}
+
+        for entry in children:
+            if entry.name in self._SKIP_DIR_NAMES:
+                continue
+            if entry.is_dir():
+                entries.append({"name": entry.name + "/", "type": "dir"})
+            else:
+                size = entry.stat().st_size
+                entries.append({"name": entry.name, "type": "file", "size": size})
             if len(entries) >= max_entries:
                 break
 
@@ -127,6 +151,50 @@ class WorkspaceToolkit(BuiltinToolkit):
             "path": str(target),
             "entries": entries,
             "truncated": len(entries) >= max_entries,
+        }
+
+    def _list_directory_tree(
+        self,
+        target: Path,
+        *,
+        max_entries: int,
+    ) -> dict[str, Any]:
+        """Build a nested tree structure for recursive listing."""
+        state = {"count": 0, "truncated": False}
+
+        def _build_node(dirpath: Path) -> dict[str, Any]:
+            node: dict[str, Any] = {"name": dirpath.name + "/", "type": "dir"}
+            if state["truncated"]:
+                return node
+            try:
+                children = sorted(dirpath.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+            except PermissionError:
+                node["error"] = "permission denied"
+                return node
+
+            child_nodes: list[dict[str, Any]] = []
+            for entry in children:
+                if state["count"] >= max_entries:
+                    state["truncated"] = True
+                    break
+                if entry.name in self._SKIP_DIR_NAMES:
+                    continue
+                state["count"] += 1
+                if entry.is_dir():
+                    child_nodes.append(_build_node(entry))
+                else:
+                    size = entry.stat().st_size
+                    child_nodes.append({"name": entry.name, "type": "file", "size": size})
+            if child_nodes:
+                node["children"] = child_nodes
+            return node
+
+        root = _build_node(target)
+        return {
+            "path": str(target),
+            "tree": root.get("children", []),
+            "entry_count": state["count"],
+            "truncated": state["truncated"],
         }
 
     def _preview_entries(self, entries: list[Any], *, limit: int = 20) -> list[Any]:
@@ -159,11 +227,6 @@ class WorkspaceToolkit(BuiltinToolkit):
             history_result_optimizer=self._compact_read_files_history_result,
         )
         self.register(
-            self.read_file_ast,
-            history_arguments_optimizer=self._compact_read_file_ast_history_arguments,
-            history_result_optimizer=self._compact_read_file_ast_history_result,
-        )
-        self.register(
             self.write_file,
             history_arguments_optimizer=self._compact_write_like_history_arguments,
         )
@@ -186,7 +249,7 @@ class WorkspaceToolkit(BuiltinToolkit):
         if not isinstance(payload, dict):
             return payload
         compacted: dict[str, Any] = {}
-        for key in ("paths", "max_chars_per_file", "max_total_chars"):
+        for key in ("paths", "max_chars_per_file", "max_total_chars", "ast_threshold"):
             if key in payload:
                 compacted[key] = payload[key]
         if compacted != payload:
@@ -218,9 +281,17 @@ class WorkspaceToolkit(BuiltinToolkit):
             for key in ("path", "total_lines", "truncated", "error"):
                 if key in item:
                     compacted_item[key] = item.get(key)
-            content = item.get("content")
-            if isinstance(content, str):
-                compacted_item["content"] = self._preview_text(content, context.preview_chars)
+            if item.get("ast_upgraded"):
+                compacted_item["ast_upgraded"] = True
+                compacted_item["language"] = item.get("language")
+                compacted_item["node_count"] = item.get("node_count")
+                ast_node = item.get("ast")
+                if ast_node is not None:
+                    compacted_item["ast"] = self._ast_history_preview(ast_node)
+            else:
+                content = item.get("content")
+                if isinstance(content, str):
+                    compacted_item["content"] = self._preview_text(content, context.preview_chars)
             compacted_files.append(compacted_item)
 
         compacted = {
@@ -272,13 +343,16 @@ class WorkspaceToolkit(BuiltinToolkit):
                 compacted_directories.append({"type": type(item).__name__})
                 continue
             compacted_item = {"requested_path": item.get("requested_path")}
-            for key in ("path", "truncated", "error"):
+            for key in ("path", "truncated", "error", "entry_count"):
                 if key in item:
                     compacted_item[key] = item.get(key)
             entries = item.get("entries")
             if isinstance(entries, list):
                 compacted_item["entries"] = self._preview_entries(entries)
                 compacted_item["entry_count"] = len(entries)
+            elif "tree" in item:
+                # Tree mode — just keep entry_count, drop the tree
+                compacted_item["tree"] = "[compacted]"
             compacted_directories.append(compacted_item)
 
         compacted = {
@@ -340,21 +414,6 @@ class WorkspaceToolkit(BuiltinToolkit):
             compacted["append"] = payload.get("append")
         return compacted
 
-    def _compact_read_file_ast_history_arguments(
-        self,
-        payload: Any,
-        context: ToolHistoryOptimizationContext,
-    ) -> Any:
-        if not isinstance(payload, dict):
-            return payload
-        compacted: dict[str, Any] = {}
-        for key in ("path", "language", "max_nodes"):
-            if key in payload:
-                compacted[key] = payload[key]
-        if compacted != payload:
-            compacted["compacted"] = True
-        return compacted or {"compacted": True}
-
     def _ast_history_preview(self, node: Any, *, limit: int = 8) -> dict[str, Any]:
         if not isinstance(node, dict):
             return {"type": type(node).__name__}
@@ -375,42 +434,24 @@ class WorkspaceToolkit(BuiltinToolkit):
                 preview["children_truncated"] = True
         return preview
 
-    def _compact_read_file_ast_history_result(
-        self,
-        payload: Any,
-        context: ToolHistoryOptimizationContext,
-    ) -> Any:
-        if not isinstance(payload, dict) or "ast" not in payload:
-            return payload
-        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        if len(encoded) <= context.max_chars:
-            return payload
-        compacted = {
-            "path": payload.get("path"),
-            "language": payload.get("language"),
-            "node_count": payload.get("node_count"),
-            "returned_node_count": payload.get("returned_node_count"),
-            "truncated": payload.get("truncated"),
-            "ast": self._ast_history_preview(payload.get("ast")),
-            "compacted": True,
-        }
-        if "error" in payload:
-            compacted["error"] = payload.get("error")
-        if context.include_hash:
-            compacted["digest"] = hashlib.sha1(encoded.encode("utf-8", errors="replace")).hexdigest()
-        return compacted
-
     def read_files(
         self,
         paths: list[str],
         max_chars_per_file: int = 12000,
         max_total_chars: int = 30000,
+        ast_threshold: int = 256,
     ) -> dict[str, Any]:
         """Read multiple UTF-8 text files from workspace.
+
+        When a file's content exceeds *ast_threshold* characters and the file's
+        language is supported by the syntax parser, the raw content is replaced
+        with a compact AST representation.  Set ``ast_threshold`` to ``0`` to
+        disable automatic AST conversion.
 
         :param paths: File paths relative or absolute inside workspace.
         :param max_chars_per_file: Truncate each file after this many characters.
         :param max_total_chars: Stop once the combined returned content reaches this many characters.
+        :param ast_threshold: Content length above which AST is returned instead of raw text.  0 to disable.
         """
         if not paths:
             return {"error": "paths is required"}
@@ -436,6 +477,54 @@ class WorkspaceToolkit(BuiltinToolkit):
             }
             content = item.get("content")
             if isinstance(content, str):
+                # Auto-upgrade to AST when content exceeds threshold
+                if (
+                    ast_threshold > 0
+                    and len(content) > ast_threshold
+                    and target is not None
+                ):
+                    source_bytes = target.read_bytes()
+                    lang = detect_language(target, source_bytes=source_bytes)
+                    _lang_ok = False
+                    if lang is not None:
+                        try:
+                            _lang_ok = is_language_supported(lang)
+                        except Exception:
+                            pass
+                    if _lang_ok:
+                        ast_payload = build_syntax_tree_payload(
+                            target,
+                            source_bytes=source_bytes,
+                            language=lang,
+                            max_nodes=400,
+                        )
+                        if "error" not in ast_payload:
+                            item.pop("content", None)
+                            item["ast"] = ast_payload.get("ast")
+                            item["language"] = lang
+                            item["node_count"] = ast_payload.get("node_count")
+                            item["returned_node_count"] = ast_payload.get("returned_node_count")
+                            item["ast_upgraded"] = True
+                            # Estimate AST payload size for budget tracking
+                            ast_encoded = json.dumps(ast_payload.get("ast"), ensure_ascii=False)
+                            ast_chars = len(ast_encoded)
+                            if ast_chars > remaining_chars:
+                                item["truncated"] = True
+                                item["truncated_by_total_limit"] = True
+                                overall_truncated = True
+                                files.append(item)
+                                skipped_paths = paths[index + 1 :]
+                                remaining_chars = 0
+                                break
+                            remaining_chars -= ast_chars
+                            overall_truncated = overall_truncated or bool(ast_payload.get("truncated"))
+                            files.append(item)
+                            if remaining_chars <= 0:
+                                skipped_paths = paths[index + 1 :]
+                                overall_truncated = True
+                                break
+                            continue
+
                 if len(content) > remaining_chars:
                     item["content"] = content[:remaining_chars]
                     item["truncated"] = True
@@ -462,30 +551,6 @@ class WorkspaceToolkit(BuiltinToolkit):
             "truncated": overall_truncated or bool(skipped_paths),
             "skipped_paths": skipped_paths,
         }
-
-    def read_file_ast(
-        self,
-        path: str,
-        language: str | None = None,
-        max_nodes: int = 400,
-    ) -> dict[str, Any]:
-        """Parse a source file and return a JSON-safe syntax tree.
-
-        :param path: Relative or absolute path inside workspace.
-        :param language: Optional language override.
-        :param max_nodes: Maximum AST nodes to serialize in the response.
-        """
-        target = self._resolve_workspace_path(path)
-        if not target.exists():
-            return {"error": f"file not found: {target}"}
-        if not target.is_file():
-            return {"error": f"not a file: {target}"}
-        return build_syntax_tree_payload(
-            target,
-            source_bytes=target.read_bytes(),
-            language=language,
-            max_nodes=max_nodes,
-        )
 
     def write_file(self, path: str, content: str, append: bool = False) -> dict[str, Any]:
         """Write UTF-8 text file into workspace (overwrite or append).
@@ -632,23 +697,13 @@ class WorkspaceToolkit(BuiltinToolkit):
                 **self._list_directory_payload(
                     target,
                     recursive=recursive,
-                    max_entries=max_entries_per_directory,
+                    max_entries=min(max_entries_per_directory, remaining_entries),
                 ),
             }
-            entries = item.get("entries")
-            if isinstance(entries, list):
-                if len(entries) > remaining_entries:
-                    item["entries"] = entries[:remaining_entries]
-                    item["truncated"] = True
-                    item["truncated_by_total_limit"] = True
-                    overall_truncated = True
-                    directories.append(item)
-                    skipped_paths = paths[index + 1 :]
-                    remaining_entries = 0
-                    break
-
-                remaining_entries -= len(entries)
-                overall_truncated = overall_truncated or bool(item.get("truncated"))
+            # Budget tracking — flat mode uses len(entries), tree mode uses entry_count
+            entry_count = item.get("entry_count") if "tree" in item else len(item.get("entries") or [])
+            remaining_entries -= entry_count
+            overall_truncated = overall_truncated or bool(item.get("truncated"))
 
             directories.append(item)
             if remaining_entries <= 0:

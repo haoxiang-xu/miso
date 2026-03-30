@@ -78,7 +78,7 @@ requires_confirmation = false
 [[tools]]
 name = "list_directories"
 title = "List Directories"
-description = "List multiple workspace directories in one call."
+description = "List workspace directories with file metadata (type, size). Recursive mode returns a nested tree structure. Common noise directories (node_modules, .git, __pycache__, etc.) are skipped."
 observe = false
 requires_confirmation = false
 
@@ -106,14 +106,7 @@ requires_confirmation = false
 [[tools]]
 name = "read_files"
 title = "Read Files"
-description = "Read multiple UTF-8 text files from the workspace."
-observe = false
-requires_confirmation = false
-
-[[tools]]
-name = "read_file_ast"
-title = "Read File AST"
-description = "Parse a supported source file and return a JSON-safe syntax tree."
+description = "Read multiple UTF-8 text files from the workspace. Files above ast_threshold characters are automatically returned as a compact AST instead of raw text when the language is supported."
 observe = false
 requires_confirmation = false
 

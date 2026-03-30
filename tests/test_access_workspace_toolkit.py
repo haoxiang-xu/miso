@@ -47,7 +47,7 @@ def test_access_workspace_toolkit_registers_expected_tools():
         names = set(toolkit.tools.keys())
         # file-level
         assert "read_files" in names
-        assert "read_file_ast" in names
+        assert "read_file_ast" not in names
         assert "write_file" in names
         assert "create_file" in names
         assert "delete_file" in names
@@ -83,7 +83,7 @@ def test_workspace_toolkit_builds_without_terminal_tools():
         tk = WorkspaceToolkit(workspace_root=tmp)
         assert isinstance(tk, WorkspaceToolkit)
         assert "read_files" in tk.tools
-        assert "read_file_ast" in tk.tools
+        assert "read_file_ast" not in tk.tools
         assert "terminal_exec" not in tk.tools
 
 
@@ -99,7 +99,7 @@ def test_workspace_toolkit_does_not_expose_legacy_single_read_tools():
 
 def test_workspace_toolkit_methods_are_declared_on_class_for_ui_discovery():
     assert "read_files" in WorkspaceToolkit.__dict__
-    assert "read_file_ast" in WorkspaceToolkit.__dict__
+    assert "read_file_ast" not in WorkspaceToolkit.__dict__
     assert "write_file" in WorkspaceToolkit.__dict__
     assert "list_directories" in WorkspaceToolkit.__dict__
     assert "read_lines" in WorkspaceToolkit.__dict__
@@ -244,10 +244,17 @@ def test_workspace_toolkit_batch_reads_and_directory_listing():
         )
         assert list_result["requested_paths"] == 2
         assert list_result["returned_directories"] == 2
-        assert "notes/a.txt" in list_result["directories"][0]["entries"]
-        assert "docs/b.txt" in list_result["directories"][1]["entries"]
-        assert "docs/nested/" in list_result["directories"][1]["entries"]
-        assert "docs/nested/c.txt" in list_result["directories"][1]["entries"]
+        # Recursive mode returns tree structure
+        notes_tree = list_result["directories"][0]["tree"]
+        notes_names = [e["name"] for e in notes_tree]
+        assert "a.txt" in notes_names
+        docs_tree = list_result["directories"][1]["tree"]
+        docs_names = [e["name"] for e in docs_tree]
+        assert "nested/" in docs_names
+        assert "b.txt" in docs_names
+        # nested dir should contain c.txt
+        nested_node = next(e for e in docs_tree if e["name"] == "nested/")
+        assert any(c["name"] == "c.txt" for c in nested_node.get("children", []))
 
 
 def test_list_directories_reject_file_path():
@@ -261,19 +268,25 @@ def test_list_directories_reject_file_path():
         assert result["error"] == f"not a directory: {file_path.resolve()}"
 
 
-def _assert_syntax_tree_result(result: dict, language: str):
-    assert result["language"] == language
-    assert result["parser"] == "tree_sitter"
-    assert result["tree_kind"] == "concrete_syntax_tree"
-    assert result["node_count"] >= result["returned_node_count"] >= 1
-    assert result["truncated"] is False
-    assert result["has_syntax_errors"] is False
-    assert result["syntax_errors"] == []
-    assert isinstance(result["ast"], dict)
-    assert isinstance(result["ast"]["type"], str)
+def _read_files_ast(toolkit, path, ast_threshold=1):
+    """Read a single file via read_files with forced AST upgrade."""
+    result = toolkit.execute(
+        "read_files",
+        {"paths": [path], "max_chars_per_file": 50000, "max_total_chars": 50000, "ast_threshold": ast_threshold},
+    )
+    return result["files"][0]
 
 
-def test_read_file_ast_parses_python_file():
+def _assert_ast_upgraded_result(item: dict, language: str):
+    assert item.get("ast_upgraded") is True
+    assert item["language"] == language
+    assert item["node_count"] >= item["returned_node_count"] >= 1
+    assert isinstance(item["ast"], dict)
+    assert isinstance(item["ast"]["type"], str)
+    assert "content" not in item
+
+
+def test_read_files_auto_ast_parses_python_file():
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = WorkspaceToolkit(workspace_root=tmp)
         Path(tmp, "sample.py").write_text(
@@ -281,16 +294,16 @@ def test_read_file_ast_parses_python_file():
             encoding="utf-8",
         )
 
-        result = toolkit.execute("read_file_ast", {"path": "sample.py"})
+        item = _read_files_ast(toolkit, "sample.py")
 
-        _assert_syntax_tree_result(result, "python")
-        assert result["ast"]["type"] == "module"
-        children = result["ast"]["children"]
+        _assert_ast_upgraded_result(item, "python")
+        assert item["ast"]["type"] == "module"
+        children = item["ast"]["children"]
         assert children[0]["type"] == "import_statement"
         assert children[1]["type"] == "class_definition"
 
 
-def test_read_file_ast_parses_typescript_file():
+def test_read_files_auto_ast_parses_typescript_file():
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = WorkspaceToolkit(workspace_root=tmp)
         Path(tmp, "sample.ts").write_text(
@@ -298,13 +311,13 @@ def test_read_file_ast_parses_typescript_file():
             encoding="utf-8",
         )
 
-        result = toolkit.execute("read_file_ast", {"path": "sample.ts"})
+        item = _read_files_ast(toolkit, "sample.ts")
 
-        _assert_syntax_tree_result(result, "typescript")
-        assert result["ast"]["type"] == "program"
+        _assert_ast_upgraded_result(item, "typescript")
+        assert item["ast"]["type"] == "program"
 
 
-def test_read_file_ast_parses_rust_file():
+def test_read_files_auto_ast_parses_rust_file():
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = WorkspaceToolkit(workspace_root=tmp)
         Path(tmp, "sample.rs").write_text(
@@ -312,13 +325,13 @@ def test_read_file_ast_parses_rust_file():
             encoding="utf-8",
         )
 
-        result = toolkit.execute("read_file_ast", {"path": "sample.rs"})
+        item = _read_files_ast(toolkit, "sample.rs")
 
-        _assert_syntax_tree_result(result, "rust")
-        assert result["ast"]["type"] == "source_file"
+        _assert_ast_upgraded_result(item, "rust")
+        assert item["ast"]["type"] == "source_file"
 
 
-def test_read_file_ast_parses_go_file():
+def test_read_files_auto_ast_parses_go_file():
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = WorkspaceToolkit(workspace_root=tmp)
         Path(tmp, "sample.go").write_text(
@@ -326,13 +339,13 @@ def test_read_file_ast_parses_go_file():
             encoding="utf-8",
         )
 
-        result = toolkit.execute("read_file_ast", {"path": "sample.go"})
+        item = _read_files_ast(toolkit, "sample.go")
 
-        _assert_syntax_tree_result(result, "go")
-        assert result["ast"]["type"] == "source_file"
+        _assert_ast_upgraded_result(item, "go")
+        assert item["ast"]["type"] == "source_file"
 
 
-def test_read_file_ast_detects_language_from_shebang():
+def test_read_files_auto_ast_detects_language_from_shebang():
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = WorkspaceToolkit(workspace_root=tmp)
         Path(tmp, "script").write_text(
@@ -340,76 +353,45 @@ def test_read_file_ast_detects_language_from_shebang():
             encoding="utf-8",
         )
 
-        result = toolkit.execute("read_file_ast", {"path": "script"})
+        item = _read_files_ast(toolkit, "script")
 
-        _assert_syntax_tree_result(result, "bash")
+        _assert_ast_upgraded_result(item, "bash")
 
 
-def test_read_file_ast_supports_language_override():
+def test_read_files_no_ast_for_unsupported_language():
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = WorkspaceToolkit(workspace_root=tmp)
-        Path(tmp, "snippet.custom").write_text(
-            "function greet(name) {\n  return `hi ${name}`;\n}\n",
-            encoding="utf-8",
-        )
+        Path(tmp, "notes.txt").write_text("hello world " * 30, encoding="utf-8")
 
-        result = toolkit.execute(
-            "read_file_ast",
-            {"path": "snippet.custom", "language": "javascript"},
-        )
+        item = _read_files_ast(toolkit, "notes.txt")
 
-        _assert_syntax_tree_result(result, "javascript")
+        # Unsupported language falls back to raw content
+        assert item.get("ast_upgraded") is not True
+        assert "content" in item
 
 
-def test_read_file_ast_rejects_unsupported_text_files():
+def test_read_files_no_ast_below_threshold():
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = WorkspaceToolkit(workspace_root=tmp)
-        Path(tmp, "notes.txt").write_text("hello\n", encoding="utf-8")
+        Path(tmp, "tiny.py").write_text("x = 1\n", encoding="utf-8")
 
-        result = toolkit.execute("read_file_ast", {"path": "notes.txt"})
+        # Use high threshold — file is only 6 chars
+        item = _read_files_ast(toolkit, "tiny.py", ast_threshold=256)
 
-        assert result["language"] is None
-        assert result["error"] == "read_file_ast could not detect a supported language for this file"
-        assert "python" in result["supported_languages"]
+        assert item.get("ast_upgraded") is not True
+        assert "content" in item
+        assert item["content"] == "x = 1\n"
 
 
-def test_read_file_ast_rejects_binary_files():
+def test_read_files_ast_disabled_when_threshold_zero():
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = WorkspaceToolkit(workspace_root=tmp)
-        Path(tmp, "blob.bin").write_bytes(b"\x00\x01\x02")
+        Path(tmp, "big.py").write_text("x = 1\n" * 100, encoding="utf-8")
 
-        result = toolkit.execute("read_file_ast", {"path": "blob.bin"})
+        item = _read_files_ast(toolkit, "big.py", ast_threshold=0)
 
-        assert result["language"] is None
-        assert result["error"] == "read_file_ast does not support binary files"
-        assert "javascript" in result["supported_languages"]
-
-
-def test_read_file_ast_reports_python_syntax_errors():
-    with tempfile.TemporaryDirectory() as tmp:
-        toolkit = WorkspaceToolkit(workspace_root=tmp)
-        Path(tmp, "broken.py").write_text("def broken(:\n    pass\n", encoding="utf-8")
-
-        result = toolkit.execute("read_file_ast", {"path": "broken.py"})
-
-        assert result["language"] == "python"
-        assert result["parser"] == "tree_sitter"
-        assert result["has_syntax_errors"] is True
-        assert result["syntax_errors"][0]["start_line"] == 1
-        assert isinstance(result["ast"], dict)
-
-
-def test_read_file_ast_reports_javascript_syntax_errors():
-    with tempfile.TemporaryDirectory() as tmp:
-        toolkit = WorkspaceToolkit(workspace_root=tmp)
-        Path(tmp, "broken.js").write_text("function broken( {\n  return 1;\n}\n", encoding="utf-8")
-
-        result = toolkit.execute("read_file_ast", {"path": "broken.js"})
-
-        assert result["language"] == "javascript"
-        assert result["has_syntax_errors"] is True
-        assert result["syntax_errors"]
-        assert isinstance(result["ast"], dict)
+        assert item.get("ast_upgraded") is not True
+        assert "content" in item
 
 
 def test_line_level_read_insert_replace_delete():
