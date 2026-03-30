@@ -62,7 +62,7 @@ class _FakeOllamaResponse:
 def test_anthropic_model_io_builds_request_and_parses_text():
     captured_kwargs = {}
     events = []
-    client_factory = lambda api_key: _FakeAnthropicClient(
+    client_factory = lambda api_key, **kwargs: _FakeAnthropicClient(
         events=[
             SimpleNamespace(
                 type="message_start",
@@ -108,7 +108,7 @@ def test_anthropic_model_io_parses_tool_use_and_emits_token_delta():
     events = []
     toolkit = Toolkit()
     toolkit.register(lambda x=None: {"x": x}, name="demo_tool")
-    client_factory = lambda api_key: _FakeAnthropicClient(
+    client_factory = lambda api_key, **kwargs: _FakeAnthropicClient(
         events=[
             SimpleNamespace(
                 type="content_block_delta",
@@ -161,7 +161,7 @@ def test_anthropic_model_io_parses_tool_use_and_emits_token_delta():
 
 def test_anthropic_model_io_maps_sonnet_4_alias_to_provider_model():
     captured_kwargs = {}
-    client_factory = lambda api_key: _FakeAnthropicClient(
+    client_factory = lambda api_key, **kwargs: _FakeAnthropicClient(
         events=[
             SimpleNamespace(
                 type="message_start",

@@ -34,7 +34,7 @@ def test_unchain_common_subpackages_are_available():
     assert hasattr(tools, "Toolkit")
     assert hasattr(toolkits, "WorkspaceToolkit")
     assert hasattr(runtime, "Broth")
-    assert "/src/miso/runtime/providers/" in providers.__file__
+    assert "/runtime/providers/" in providers.__file__
     assert "/src/unchain/kernel/" in kernel.__file__
     assert "/src/unchain/agent/" in agent.__file__
     assert "/src/unchain/memory/" in memory.__file__

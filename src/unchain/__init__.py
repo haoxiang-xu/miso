@@ -8,8 +8,7 @@ __tagline__ = "unchain harness"
 __version__ = "0.2.0"
 
 _here = Path(__file__).resolve().parent
-_legacy_root = (_here.parent / "miso").resolve()
-__path__ = [str(_here), str(_legacy_root)]
+__path__ = [str(_here)]
 
 _LAZY_EXPORTS = {
     "Agent",

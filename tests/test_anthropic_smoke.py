@@ -112,7 +112,7 @@ def test_anthropic_fetch_once_uses_stream_method(monkeypatch):
             return FakeStream()
 
     class FakeAnthropicClient:
-        def __init__(self, api_key):
+        def __init__(self, api_key, **kwargs):
             self.api_key = api_key
             self.messages = FakeMessages()
 
@@ -196,7 +196,7 @@ def test_anthropic_fetch_once_parses_tool_calls(monkeypatch):
             return FakeStream()
 
     class FakeAnthropicClient:
-        def __init__(self, api_key):
+        def __init__(self, api_key, **kwargs):
             self.messages = FakeMessages()
 
     broth_module = importlib.import_module("miso.runtime.providers")
