@@ -1,9 +1,9 @@
 import json
 
-from miso.input.human_input import ASK_USER_QUESTION_TOOL_NAME
+from unchain.input.human_input import ASK_USER_QUESTION_TOOL_NAME
 from unchain.kernel import KernelLoop, ModelTurnResult
 from unchain.kernel.types import ToolCall as KernelToolCall
-from miso.tools import Toolkit, tool
+from unchain.tools import Toolkit, tool
 
 
 class _QueueModelIO:

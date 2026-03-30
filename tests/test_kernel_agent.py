@@ -1,9 +1,9 @@
 import json
 
-from miso.input import HumanInputResponse, build_ask_user_question_tool
+from unchain.input import HumanInputResponse, build_ask_user_question_tool
 from unchain.kernel import BaseRuntimeHarness, HarnessDelta, ModelTurnResult, ToolCall
 from unchain.agent import Agent, MemoryModule, OptimizersModule, PoliciesModule, ToolsModule
-from miso.memory import MemoryManager
+from unchain.memory import MemoryManager
 
 
 def test_kernel_agent_run_returns_kernel_run_result_and_supports_three_providers():

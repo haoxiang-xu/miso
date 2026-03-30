@@ -1,7 +1,7 @@
 """Test new model configurations."""
 
 import pytest
-from miso.schemas.models import GPT_4O, CLAUDE_SONNET_35, GEMINI_PRO_15
+from unchain.schemas.models import GPT_4O, CLAUDE_SONNET_35, GEMINI_PRO_15
 
 
 def test_gpt_4o_configuration():

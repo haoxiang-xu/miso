@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unchain.kernel import ModelTurnRequest
 from unchain.providers import AnthropicModelIO, OllamaModelIO
 from unchain.tools import get_provider_message_builder
-from miso.tools import Toolkit
+from unchain.tools import Toolkit
 
 
 class _FakeAnthropicStream:

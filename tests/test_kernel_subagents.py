@@ -5,7 +5,7 @@ import time
 from unchain.agent import Agent, MemoryModule, PoliciesModule, SubagentModule
 from unchain.kernel import ModelTurnResult, ToolCall
 from unchain.subagents import SubagentPolicy, SubagentTemplate
-from miso.memory import MemoryManager
+from unchain.memory import MemoryManager
 
 
 def _openai_tool_turn(*, call_id: str, name: str, arguments: dict) -> ModelTurnResult:

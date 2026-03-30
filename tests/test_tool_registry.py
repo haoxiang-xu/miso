@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from miso.tools import ToolRegistryConfig, ToolkitRegistry, get_toolkit_metadata, list_toolkits
+from unchain.tools import ToolRegistryConfig, ToolkitRegistry, get_toolkit_metadata, list_toolkits
 
 
 def _write_icon(path: Path) -> None:
@@ -36,7 +36,7 @@ def _write_toolkit_package(
     )
     (package_dir / "runtime.py").write_text(
         """
-from miso.tools import Toolkit
+from unchain.tools import Toolkit
 
 
 class DemoToolkit(Toolkit):

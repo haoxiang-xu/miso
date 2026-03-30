@@ -9,8 +9,8 @@ import re
 import time
 
 from unchain.agent import Agent
-from miso.toolkits import AskUserToolkit, ExternalAPIToolkit, TerminalToolkit, WorkspaceToolkit
-from miso.runtime.payloads import load_model_capabilities
+from unchain.toolkits import AskUserToolkit, ExternalAPIToolkit, TerminalToolkit, WorkspaceToolkit
+from unchain.runtime.payloads import load_model_capabilities
 
 from .cases import build_eval_case, get_eval_case, list_eval_cases
 from .defaults import get_default_judge_model_spec

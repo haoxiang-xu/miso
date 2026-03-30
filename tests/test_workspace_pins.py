@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from miso.memory import InMemorySessionStore
-from miso.workspace import (
+from unchain.memory import InMemorySessionStore
+from unchain.workspace import (
     build_pin_record,
     build_pinned_prompt_messages,
     load_workspace_pins,

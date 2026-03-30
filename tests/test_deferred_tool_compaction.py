@@ -2,9 +2,9 @@ import json
 
 import pytest
 
-from miso.memory import MemoryConfig, MemoryManager
-from miso.toolkits import WorkspaceToolkit
-from miso.tools import tool
+from unchain.memory import MemoryConfig, MemoryManager
+from unchain.toolkits import WorkspaceToolkit
+from unchain.tools import tool
 
 
 def _build_openai_tool_turn(*, tool_name: str, call_id: str, arguments: dict, result: dict) -> list[dict]:

@@ -3,8 +3,8 @@ import types
 
 import pytest
 
-from miso.memory import LongTermMemoryConfig, MemoryConfig, MemoryManager
-from miso.memory.qdrant import (
+from unchain.memory import LongTermMemoryConfig, MemoryConfig, MemoryManager
+from unchain.memory.qdrant import (
     QdrantLongTermVectorAdapter,
     QdrantVectorAdapter,
     build_default_long_term_qdrant_vector_adapter,

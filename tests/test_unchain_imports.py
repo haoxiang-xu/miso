@@ -1,13 +1,12 @@
 import importlib
 
-import miso
 import unchain
 
 
-def test_unchain_top_level_aliases_miso_exports():
+def test_unchain_top_level_exports():
     from unchain.agent.agent import Agent as UnchainAgent
     assert unchain.Agent is UnchainAgent
-    assert unchain.__version__ == miso.__version__
+    assert unchain.__version__ == "0.2.0"
     assert unchain.__brand__ == "unchain"
     assert unchain.__tagline__ == "unchain harness"
 

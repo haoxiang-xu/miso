@@ -15,9 +15,9 @@ from unchain.optimizers import (
     WorkspacePinsOptimizerConfig,
 )
 from unchain.kernel.types import ToolCall as KernelToolCall
-from miso.memory import InMemorySessionStore
-from miso.tools import Toolkit
-from miso.workspace import build_pin_record, load_workspace_pins, save_workspace_pins
+from unchain.memory import InMemorySessionStore
+from unchain.tools import Toolkit
+from unchain.workspace import build_pin_record, load_workspace_pins, save_workspace_pins
 
 
 def _conversation_with_tool_turn() -> list[dict]:
