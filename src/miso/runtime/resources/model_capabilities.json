@@ -98,6 +98,7 @@
   },
   "claude-sonnet-4": {
     "provider": "anthropic",
+    "provider_model": "claude-sonnet-4-20250514",
     "max_context_window_tokens": 200000,
     "supports_tools": true,
     "supports_response_format": false,
@@ -137,6 +138,20 @@
       "pdf": ["url", "base64"]
     },
     "allowed_payload_keys": ["max_tokens", "temperature", "top_k"]
+  },
+  "claude-haiku-3.5": {
+    "provider": "anthropic",
+    "provider_model": "claude-3-5-haiku-20241022",
+    "max_context_window_tokens": 200000,
+    "supports_tools": true,
+    "supports_response_format": false,
+    "supports_previous_response_id": false,
+    "supports_reasoning": false,
+    "input_modalities": ["text", "image"],
+    "input_source_types": {
+      "image": ["url", "base64"]
+    },
+    "allowed_payload_keys": ["max_tokens", "temperature", "top_k", "top_p"]
   },
   "gpt-5.2-codex": {
     "provider": "openai",

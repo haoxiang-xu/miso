@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+import httpx
+
 from ..input.human_input import (
     ASK_USER_QUESTION_TOOL_NAME,
     HumanInputRequest,
@@ -527,6 +529,12 @@ class Broth:
         if not isinstance(model_caps, dict):
             return default
         return model_caps.get(key, default)
+
+    def _provider_request_model(self) -> str:
+        resolved_model = self._model_capability("provider_model", self.model)
+        if isinstance(resolved_model, str) and resolved_model.strip():
+            return resolved_model.strip()
+        return self.model
 
     @property
     def max_context_window_tokens(self) -> int:
@@ -2535,7 +2543,10 @@ class Broth:
         if not self.api_key:
             raise ValueError("error: api_key is required for anthropic provider")
 
-        client = anthropic_client_cls(api_key=self.api_key)
+        client = anthropic_client_cls(
+            api_key=self.api_key,
+            timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0),
+        )
         request_payload = self._merged_payload(payload)
 
         # ── separate system prompt from messages ───────────────────────────
@@ -2563,7 +2574,7 @@ class Broth:
         # ── build request kwargs ───────────────────────────────────────────
         max_tokens = request_payload.pop("max_tokens", 4096)
         request_kwargs: dict[str, Any] = {
-            "model": self.model,
+            "model": self._provider_request_model(),
             "messages": chat_messages,
             "max_tokens": max_tokens,
             **request_payload,

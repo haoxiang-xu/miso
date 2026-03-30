@@ -131,7 +131,7 @@ def test_anthropic_fetch_once_uses_stream_method(monkeypatch):
         emit_stream=False,
     )
 
-    assert captured_kwargs["model"] == "claude-sonnet-4"
+    assert captured_kwargs["model"] == "claude-sonnet-4-20250514"
     assert "stream" not in captured_kwargs  # stream() implies streaming; no explicit kwarg needed
     assert turn.final_text == "hello"
     assert turn.consumed_tokens == 15

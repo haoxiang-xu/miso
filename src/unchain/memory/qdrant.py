@@ -215,6 +215,12 @@ class QdrantVectorAdapter:
         self._collection_prefix = collection_prefix
         self._ensured: set[str] = set()
 
+    def __deepcopy__(self, memo):
+        return self
+
+    def __copy__(self):
+        return self
+
     def _collection_name(self, session_id: str) -> str:
         safe = "".join(c if c.isalnum() or c == "_" else "_" for c in session_id)
         return f"{self._collection_prefix}_{safe}"
@@ -321,6 +327,12 @@ class QdrantLongTermVectorAdapter:
         self._vector_size = vector_size
         self._collection_prefix = collection_prefix
         self._ensured: set[str] = set()
+
+    def __deepcopy__(self, memo):
+        return self
+
+    def __copy__(self):
+        return self
 
     def _collection_name(self, namespace: str) -> str:
         safe = "".join(c if c.isalnum() or c == "_" else "_" for c in namespace)

@@ -6,6 +6,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, TYPE_CHECKING, Protocol, runtime_checkable
 
+import httpx
+
 from openai import OpenAI
 
 from ..schemas import ResponseFormat
@@ -153,6 +155,12 @@ class _NativeModelIOBase:
         if not isinstance(model_caps, dict):
             return default
         return model_caps.get(key, default)
+
+    def _provider_request_model(self) -> str:
+        resolved_model = self._model_capability("provider_model", self.model)
+        if isinstance(resolved_model, str) and resolved_model.strip():
+            return resolved_model.strip()
+        return self.model
 
     def _merged_payload(self, payload: dict[str, Any] | None) -> dict[str, Any]:
         resolved_key = self._resolve_model_key(self.default_payloads)
@@ -550,8 +558,10 @@ class AnthropicModelIO(_NativeModelIOBase):
             client_factory = anthropic_client_cls
         self._client_factory = client_factory
 
+    _ANTHROPIC_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
+
     def fetch_turn(self, request: ModelTurnRequest) -> ModelTurnResult:
-        client = self._client_factory(api_key=self.api_key)
+        client = self._client_factory(api_key=self.api_key, timeout=self._ANTHROPIC_TIMEOUT)
         request_payload = self._merged_payload(request.payload)
 
         system_parts: list[str] = []
@@ -583,7 +593,7 @@ class AnthropicModelIO(_NativeModelIOBase):
 
         max_tokens = request_payload.pop("max_tokens", 4096)
         request_kwargs: dict[str, Any] = {
-            "model": self.model,
+            "model": self._provider_request_model(),
             "messages": chat_messages,
             "max_tokens": max_tokens,
             **request_payload,

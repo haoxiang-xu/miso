@@ -159,6 +159,35 @@ def test_anthropic_model_io_parses_tool_use_and_emits_token_delta():
     assert token_event["delta"] == "thinking"
 
 
+def test_anthropic_model_io_maps_sonnet_4_alias_to_provider_model():
+    captured_kwargs = {}
+    client_factory = lambda api_key: _FakeAnthropicClient(
+        events=[
+            SimpleNamespace(
+                type="message_start",
+                message=SimpleNamespace(usage={"input_tokens": 1, "output_tokens": 0}),
+            ),
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="text_delta", text="ok"),
+            ),
+            SimpleNamespace(
+                type="message_delta",
+                usage={"input_tokens": 1, "output_tokens": 1},
+            ),
+        ],
+        captured_kwargs=captured_kwargs,
+    )
+    io = AnthropicModelIO(model="claude-sonnet-4", api_key="test-key", client_factory=client_factory)
+
+    turn = io.fetch_turn(
+        ModelTurnRequest(messages=[{"role": "user", "content": "hi"}])
+    )
+
+    assert turn.final_text == "ok"
+    assert captured_kwargs["model"] == "claude-sonnet-4-20250514"
+
+
 def test_ollama_model_io_builds_request_and_parses_text():
     captured_kwargs = {}
 
