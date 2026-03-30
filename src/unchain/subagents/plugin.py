@@ -53,7 +53,12 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         return {template.name: template for template in self.templates}
 
     def can_handle(self, *, tool_call: ToolCall, context) -> bool:
-        return tool_call.name in {"delegate_to_subagent", "handoff_to_subagent", "spawn_worker_batch"}
+        if tool_call.name not in {"delegate_to_subagent", "handoff_to_subagent", "spawn_worker_batch"}:
+            return False
+        toolkit = getattr(context, "toolkit", None)
+        if toolkit is None or not hasattr(toolkit, "get"):
+            return False
+        return toolkit.get(tool_call.name) is not None
 
     def execute(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:
         try:
@@ -139,7 +144,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
     ) -> tuple["KernelAgent", str, str | None]:
         memory_policy = template.memory_policy if template is not None else ("ephemeral" if mode != "handoff" else "scoped_persistent")
         if template is not None:
-            base_agent = template.agent
+            base_agent = template.agent or self.parent_agent
             child = base_agent.fork_for_subagent(
                 subagent_name=child_id,
                 mode=mode,
@@ -149,6 +154,8 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 instructions=instructions,
                 expected_output=expected_output,
                 memory_policy=memory_policy,
+                model=template.model,
+                allowed_tools=template.allowed_tools,
             )
             return child, memory_policy, template.name
         if mode == "handoff" and self.policy.handoff_requires_template:

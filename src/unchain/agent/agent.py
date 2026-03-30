@@ -21,6 +21,7 @@ class Agent:
         model: str = "gpt-5",
         api_key: str | None = None,
         modules: tuple[Any, ...] = (),
+        allowed_tools: tuple[str, ...] | None = None,
         model_io_factory: Callable[..., Any] | None = None,
     ) -> None:
         if not isinstance(name, str) or not name.strip():
@@ -32,6 +33,7 @@ class Agent:
             model=model or "gpt-5",
             api_key=api_key,
             modules=tuple(modules or ()),
+            allowed_tools=tuple(allowed_tools) if allowed_tools is not None else None,
         )
         self.state = AgentState()
         self._model_io_registry = ModelIOFactoryRegistry()
@@ -52,6 +54,10 @@ class Agent:
     @property
     def model(self) -> str:
         return self.spec.model
+
+    @property
+    def allowed_tools(self) -> tuple[str, ...] | None:
+        return self.spec.allowed_tools
 
     def _normalize_messages(self, messages: str | list[dict[str, Any]]) -> list[dict[str, Any]]:
         if isinstance(messages, str):
@@ -88,14 +94,17 @@ class Agent:
         name: str | None = None,
         instructions: str | None = None,
         modules: tuple[Any, ...] | None = None,
+        model: str | None = None,
+        allowed_tools: tuple[str, ...] | None = None,
     ) -> "Agent":
         return Agent(
             name=name or self.name,
             instructions=self.instructions if instructions is None else instructions,
             provider=self.provider,
-            model=self.model,
+            model=self.model if model is None else model,
             api_key=self.spec.api_key,
             modules=tuple(self.spec.modules if modules is None else modules),
+            allowed_tools=self.spec.allowed_tools if allowed_tools is None else tuple(allowed_tools),
             model_io_factory=self._model_io_factory,
         )
 
@@ -110,6 +119,8 @@ class Agent:
         instructions: str,
         expected_output: str,
         memory_policy: str,
+        model: str | None = None,
+        allowed_tools: tuple[str, ...] | None = None,
     ) -> "Agent":
         overlay = (
             f'You are subagent "{subagent_name}" created by parent "{parent_name}".\n'
@@ -130,6 +141,8 @@ class Agent:
             name=subagent_name,
             instructions="\n\n".join(part for part in (self.instructions, overlay.strip()) if part.strip()),
             modules=tuple(modules),
+            model=model,
+            allowed_tools=allowed_tools,
         )
 
     def run(

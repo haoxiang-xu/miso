@@ -12,6 +12,7 @@ class AgentSpec:
     model: str = "gpt-5"
     api_key: str | None = None
     modules: tuple[Any, ...] = ()
+    allowed_tools: tuple[str, ...] | None = None
 
 
 @dataclass

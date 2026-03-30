@@ -63,6 +63,8 @@ class ToolContext:
         plugins = self.event.get("tool_runtime_plugins")
         if not isinstance(plugins, list):
             return []
+        from .runtime import ToolRuntimePlugin
+
         return [plugin for plugin in plugins if isinstance(plugin, ToolRuntimePlugin) or hasattr(plugin, "can_handle")]
 
     @property
