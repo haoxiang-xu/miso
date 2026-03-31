@@ -1,4 +1,5 @@
 from .base import BaseContextOptimizer, ContextOptimizer, OptimizerContext
+from .context_usage import ContextUsageOptimizer, ContextUsageOptimizerConfig
 from .last_n import LastNOptimizer, LastNOptimizerConfig
 from .llm_summary import LlmSummaryOptimizer, LlmSummaryOptimizerConfig, SummaryGenerator
 from .tool_history_compaction import (
@@ -10,6 +11,8 @@ from .workspace_pins import WorkspacePinsOptimizer, WorkspacePinsOptimizerConfig
 __all__ = [
     "BaseContextOptimizer",
     "ContextOptimizer",
+    "ContextUsageOptimizer",
+    "ContextUsageOptimizerConfig",
     "LastNOptimizer",
     "LastNOptimizerConfig",
     "LlmSummaryOptimizer",
