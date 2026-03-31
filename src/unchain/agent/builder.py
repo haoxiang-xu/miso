@@ -227,7 +227,25 @@ class AgentBuilder:
             api_key=self.spec.api_key,
         )
 
+    def _apply_allowed_tools_filter(self) -> None:
+        if self.spec.allowed_tools is None:
+            return
+        allowed_names = [str(name).strip() for name in self.spec.allowed_tools if str(name).strip()]
+        configured_names = list(self.toolkit.tools.keys())
+        missing = [name for name in dict.fromkeys(allowed_names) if name not in self.toolkit.tools]
+        if missing:
+            raise ValueError(
+                f"agent {self.spec.name!r} allowed_tools contains unknown tool names: {', '.join(missing)}"
+            )
+        allowed_name_set = set(allowed_names)
+        self.toolkit.tools = {
+            name: self.toolkit.tools[name]
+            for name in configured_names
+            if name in allowed_name_set
+        }
+
     def build(self) -> PreparedAgent:
+        self._apply_allowed_tools_filter()
         loop = KernelLoop(model_io=self._resolve_model_io())
         for harness in self.harnesses:
             loop.register_harness(harness)

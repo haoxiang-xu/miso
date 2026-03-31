@@ -41,6 +41,97 @@ def _last_assistant_text(messages: list[dict[str, Any]]) -> str:
     return ""
 
 
+def _matches_runtime_tool_call(raw: dict[str, Any], *, call_id: str, tool_name: str) -> bool:
+    raw_call_id = str(raw.get("id") or raw.get("call_id") or raw.get("tool_use_id") or "")
+    raw_name = str(raw.get("name") or "")
+    if call_id and raw_call_id == call_id:
+        return True
+    return bool(tool_name and raw_name == tool_name)
+
+
+def _sanitize_handoff_messages(
+    messages: list[dict[str, Any]],
+    *,
+    tool_call: ToolCall,
+) -> list[dict[str, Any]]:
+    """Remove the current runtime tool call from carried handoff context.
+
+    Handoff finishes the parent run without emitting a provider-native tool
+    result message. If the current handoff tool call is left in the transcript,
+    child providers such as Anthropic may reject the carried context as an
+    orphaned / unfinished tool-use turn.
+    """
+
+    call_id = str(tool_call.call_id or "")
+    tool_name = str(tool_call.name or "")
+    sanitized: list[dict[str, Any]] = []
+
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+
+        msg = copy.deepcopy(message)
+
+        if str(msg.get("type") or "") == "function_call" and _matches_runtime_tool_call(
+            msg,
+            call_id=call_id,
+            tool_name=tool_name,
+        ):
+            continue
+
+        removed_current_tool_call = False
+        raw_tool_calls = msg.get("tool_calls")
+        if isinstance(raw_tool_calls, list):
+            kept_tool_calls = [
+                copy.deepcopy(raw_tool_call)
+                for raw_tool_call in raw_tool_calls
+                if not (
+                    isinstance(raw_tool_call, dict)
+                    and _matches_runtime_tool_call(
+                        raw_tool_call,
+                        call_id=call_id,
+                        tool_name=tool_name,
+                    )
+                )
+            ]
+            removed_current_tool_call = len(kept_tool_calls) != len(raw_tool_calls)
+            if kept_tool_calls:
+                msg["tool_calls"] = kept_tool_calls
+            else:
+                msg.pop("tool_calls", None)
+
+        content = msg.get("content")
+        if isinstance(content, list):
+            kept_blocks: list[Any] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    kept_blocks.append(copy.deepcopy(block))
+                    continue
+                if str(block.get("type") or "") == "tool_use" and _matches_runtime_tool_call(
+                    block,
+                    call_id=call_id,
+                    tool_name=tool_name,
+                ):
+                    removed_current_tool_call = True
+                    continue
+                kept_blocks.append(copy.deepcopy(block))
+
+            if kept_blocks:
+                msg["content"] = kept_blocks
+            else:
+                msg["content"] = ""
+
+        if removed_current_tool_call:
+            continue
+
+        has_content = msg.get("content") not in ("", [], None)
+        has_tool_calls = bool(msg.get("tool_calls"))
+        if has_content or has_tool_calls or msg.get("role") != "assistant":
+            sanitized.append(msg)
+
+    return sanitized
+
+
 @dataclass
 class SubagentToolPlugin(ToolRuntimePlugin):
     parent_agent: "KernelAgent"
@@ -53,7 +144,12 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         return {template.name: template for template in self.templates}
 
     def can_handle(self, *, tool_call: ToolCall, context) -> bool:
-        return tool_call.name in {"delegate_to_subagent", "handoff_to_subagent", "spawn_worker_batch"}
+        if tool_call.name not in {"delegate_to_subagent", "handoff_to_subagent", "spawn_worker_batch"}:
+            return False
+        toolkit = getattr(context, "toolkit", None)
+        if toolkit is None or not hasattr(toolkit, "get"):
+            return False
+        return toolkit.get(tool_call.name) is not None
 
     def execute(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:
         try:
@@ -95,8 +191,8 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         parent_id = current.active_agent_id or self.parent_agent.name
         parent_lineage = list(current.active_lineage or [current.root_agent_id or self.parent_agent.name])
         next_depth = len(parent_lineage)
-        if next_depth >= int(self.policy.max_depth):
-            raise ValueError(f"subagent max_depth exceeded: attempted depth {next_depth + 1} > {self.policy.max_depth}")
+        if next_depth > int(self.policy.max_depth):
+            raise ValueError(f"subagent max_depth exceeded: attempted depth {next_depth} > {self.policy.max_depth}")
         key = parent_id
         current_children = int(current.lineage_counters.get(key, 0))
         if current_children >= int(self.policy.max_children_per_parent):
@@ -139,7 +235,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
     ) -> tuple["KernelAgent", str, str | None]:
         memory_policy = template.memory_policy if template is not None else ("ephemeral" if mode != "handoff" else "scoped_persistent")
         if template is not None:
-            base_agent = template.agent
+            base_agent = template.agent or self.parent_agent
             child = base_agent.fork_for_subagent(
                 subagent_name=child_id,
                 mode=mode,
@@ -149,6 +245,8 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 instructions=instructions,
                 expected_output=expected_output,
                 memory_policy=memory_policy,
+                model=template.model,
+                allowed_tools=template.allowed_tools,
             )
             return child, memory_policy, template.name
         if mode == "handoff" and self.policy.handoff_requires_template:
@@ -181,13 +279,28 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         memory_namespace: str,
         input_messages: str | list[dict[str, Any]],
         max_iterations: int,
+        callback: Any = None,
+        on_tool_confirm: Any = None,
+        on_human_input: Any = None,
+        on_max_iterations: Any = None,
     ) -> SubagentResult:
+        child_callback = callback
+        if callable(callback):
+            def _child_callback(event: dict[str, Any]) -> None:
+                if isinstance(event, dict) and event.get("type") == "human_input_requested":
+                    return None
+                callback(event)
+
+            child_callback = _child_callback
         result = agent.run(
             input_messages,
             session_id=session_id,
             memory_namespace=memory_namespace,
             max_iterations=max_iterations,
-            callback=None,
+            callback=child_callback,
+            on_tool_confirm=on_tool_confirm,
+            on_human_input=on_human_input,
+            on_max_iterations=on_max_iterations,
             run_id=f"{session_id}:{child_id}:{uuid.uuid4()}",
         )
         output = _last_assistant_text(result.messages)
@@ -298,6 +411,10 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             memory_namespace=memory_namespace if memory_policy == "scoped_persistent" else "",
             input_messages=task,
             max_iterations=int(context.event.get("max_iterations") or 6),
+            callback=context.callback,
+            on_tool_confirm=context.event.get("on_tool_confirm"),
+            on_human_input=context.event.get("on_human_input"),
+            on_max_iterations=context.event.get("on_max_iterations"),
         )
         template_payload = self._render_result(result=result, output_mode=output_mode, template_name=template_name)
         update = {
@@ -368,8 +485,12 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         self._emit_subagent_event(context, "subagent_spawned", subagent_id=child_id, parent_id=parent_id, mode="handoff", template=template_name, lineage=lineage)
         self._emit_subagent_event(context, "subagent_handoff", subagent_id=child_id, parent_id=parent_id, mode="handoff", template=template_name, lineage=lineage, reason=reason)
         self._emit_subagent_event(context, "subagent_started", subagent_id=child_id, parent_id=parent_id, mode="handoff", template=template_name, lineage=lineage)
+        sanitized_messages = _sanitize_handoff_messages(
+            context.latest_messages(),
+            tool_call=tool_call,
+        )
         if carry_context:
-            input_messages: str | list[dict[str, Any]] = context.latest_messages()
+            input_messages: str | list[dict[str, Any]] = sanitized_messages
         else:
             input_messages = reason or "Continue the task."
         result = self._run_child(
@@ -382,6 +503,10 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             memory_namespace=memory_namespace if memory_policy == "scoped_persistent" else "",
             input_messages=input_messages,
             max_iterations=int(context.event.get("max_iterations") or 6),
+            callback=context.callback,
+            on_tool_confirm=context.event.get("on_tool_confirm"),
+            on_human_input=context.event.get("on_human_input"),
+            on_max_iterations=context.event.get("on_max_iterations"),
         )
         if result.clarification_request is not None:
             blocked_state = next_state.merged(
@@ -442,7 +567,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             handled=True,
             state_updates={
                 "subagent_state": handoff_state,
-                "transcript_append": [final_message],
+                "transcript": [*sanitized_messages, final_message],
                 "run_status": "completed",
                 "pending_tool_calls": [],
                 "tool_batch_state": {},
@@ -571,6 +696,10 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 memory_namespace=str(item["memory_namespace"]),
                 input_messages=task,
                 max_iterations=int(context.event.get("max_iterations") or 6),
+                callback=context.callback,
+                on_tool_confirm=context.event.get("on_tool_confirm"),
+                on_human_input=context.event.get("on_human_input"),
+                on_max_iterations=context.event.get("on_max_iterations"),
             )
             rendered = self._render_result(result=result, output_mode=output_mode, template_name=template_name)
             result = SubagentResult(**rendered)

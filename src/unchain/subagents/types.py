@@ -14,11 +14,13 @@ SubagentMemoryPolicy = Literal["ephemeral", "scoped_persistent"]
 class SubagentTemplate:
     name: str
     description: str
-    agent: Any
+    agent: Any | None = None
     allowed_modes: tuple[SubagentMode, ...] = ("delegate", "handoff", "worker")
     output_mode: SubagentOutputMode = "summary"
     memory_policy: SubagentMemoryPolicy = "ephemeral"
     parallel_safe: bool = False
+    allowed_tools: tuple[str, ...] | None = None
+    model: str | None = None
 
     def supports_mode(self, mode: SubagentMode) -> bool:
         return mode in self.allowed_modes

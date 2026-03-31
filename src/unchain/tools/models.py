@@ -213,6 +213,7 @@ class ToolConfirmationRequest:
     description: str = ""
     interact_type: str = "confirmation"
     interact_config: dict[str, Any] | list[Any] | None = None
+    render_component: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -226,6 +227,8 @@ class ToolConfirmationRequest:
             payload["interact_type"] = self.interact_type
         if self.interact_config is not None:
             payload["interact_config"] = self.interact_config
+        if self.render_component is not None:
+            payload["render_component"] = self.render_component
         return payload
 
 

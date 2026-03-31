@@ -2,7 +2,7 @@ import json
 import threading
 import time
 
-from unchain.agent import Agent, MemoryModule, PoliciesModule, SubagentModule
+from unchain.agent import Agent, MemoryModule, PoliciesModule, SubagentModule, ToolsModule
 from unchain.kernel import ModelTurnResult, ToolCall
 from unchain.subagents import SubagentPolicy, SubagentTemplate
 from unchain.memory import MemoryManager
@@ -30,6 +30,18 @@ def _text_turn(text: str, *, response_id: str | None = None) -> ModelTurnResult:
         tool_calls=[],
         final_text=text,
         response_id=response_id,
+    )
+
+
+def _anthropic_tool_turn(*, call_id: str, name: str, arguments: dict, text: str = "") -> ModelTurnResult:
+    content: list[dict[str, object]] = []
+    if text:
+        content.append({"type": "text", "text": text})
+    content.append({"type": "tool_use", "id": call_id, "name": name, "input": arguments})
+    return ModelTurnResult(
+        assistant_messages=[{"role": "assistant", "content": content}],
+        tool_calls=[ToolCall(call_id=call_id, name=name, arguments=arguments)],
+        final_text=text,
     )
 
 
@@ -236,6 +248,75 @@ def test_subagent_handoff_completes_root_run_and_uses_scoped_persistent_memory()
     assert seen_child_context["session_id"] == "root-session:manager.specialist.1"
     assert seen_child_context["memory_namespace"] == "root-ns:manager.specialist.1"
     assert "MemoryModule" in seen_child_context["module_names"]
+
+
+def test_subagent_handoff_strips_runtime_tool_call_from_child_context_and_final_transcript():
+    seen_child_messages = {}
+
+    def _child_factory(spec, ctx):
+        def _fetch(request):
+            seen_child_messages["messages"] = request.messages
+            return _text_turn("specialist final")
+
+        return SequenceModelIO("anthropic", [_fetch])
+
+    specialist = Agent(
+        name="specialist",
+        provider="anthropic",
+        model_io_factory=_child_factory,
+    )
+    parent = Agent(
+        name="manager",
+        provider="anthropic",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="specialist",
+                        description="Specialist handoff target",
+                        agent=specialist,
+                        allowed_modes=("handoff",),
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "anthropic",
+            [
+                _anthropic_tool_turn(
+                    call_id="toolu_handoff_1",
+                    name="handoff_to_subagent",
+                    arguments={"target": "specialist", "reason": "Needs deep expertise"},
+                    text="Routing to the specialist.",
+                ),
+            ],
+        ),
+    )
+
+    result = parent.run("Need the specialist", max_iterations=2)
+
+    assert result.status == "completed"
+    assert result.messages == [
+        {"role": "user", "content": "Need the specialist"},
+        {"role": "assistant", "content": "specialist final"},
+    ]
+
+    child_messages = seen_child_messages["messages"]
+    non_system_messages = [
+        message
+        for message in child_messages
+        if isinstance(message, dict) and message.get("role") != "system"
+    ]
+    assert non_system_messages == [{"role": "user", "content": "Need the specialist"}]
+    assert all(message.get("type") != "function_call" for message in child_messages if isinstance(message, dict))
+    assert all(
+        not any(
+            isinstance(block, dict) and block.get("type") == "tool_use"
+            for block in (message.get("content") if isinstance(message.get("content"), list) else [])
+        )
+        for message in child_messages
+        if isinstance(message, dict)
+    )
 
 
 def test_subagent_worker_batch_runs_in_parallel_and_preserves_input_order():
@@ -447,3 +528,315 @@ def test_subagent_policy_limits_are_enforced_as_tool_errors():
 
     assert result.status == "completed"
     assert result.messages[-1]["content"] == "quota handled"
+
+
+def test_subagent_template_without_agent_inherits_parent_and_overrides_model():
+    seen_child = {}
+
+    def factory(spec, ctx):
+        if spec.name == "manager":
+            return SequenceModelIO(
+                "openai",
+                [
+                    _openai_tool_turn(
+                        call_id="call_1",
+                        name="delegate_to_subagent",
+                        arguments={"target": "researcher", "task": "Investigate the bug"},
+                    ),
+                    lambda request: _text_turn(json.loads(request.messages[-1]["output"])["summary"]),
+                ],
+            )
+        seen_child["name"] = spec.name
+        seen_child["provider"] = spec.provider
+        seen_child["model"] = spec.model
+        seen_child["allowed_tools"] = spec.allowed_tools
+        return SequenceModelIO("openai", [_text_turn("child model override ok")])
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        model="gpt-parent",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="researcher",
+                        description="Research specialist",
+                        allowed_modes=("delegate",),
+                        model="gpt-child",
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=factory,
+    )
+
+    result = parent.run("handle it", max_iterations=2)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "child model override ok"
+    assert seen_child["name"].startswith("manager.researcher.")
+    assert seen_child["provider"] == "openai"
+    assert seen_child["model"] == "gpt-child"
+    assert seen_child["allowed_tools"] is None
+
+
+def test_subagent_template_allowed_tools_limits_normal_tools():
+    calls = {"allowed": 0, "denied": 0}
+
+    def allowed_tool():
+        calls["allowed"] += 1
+        return {"value": "allowed"}
+
+    def denied_tool():
+        calls["denied"] += 1
+        return {"value": "denied"}
+
+    def _after_allowed(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["template_name"] == "scoped_child"
+        assert payload["summary"] == "allowed ok"
+        return _openai_tool_turn(
+            call_id="call_2",
+            name="delegate_to_subagent",
+            arguments={"target": "scoped_child", "task": "use denied"},
+        )
+
+    def _after_denied(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["template_name"] == "scoped_child"
+        assert payload["summary"] == "denied blocked"
+        return _text_turn("done")
+
+    def factory(spec, ctx):
+        if spec.name == "manager":
+            return SequenceModelIO(
+                "openai",
+                [
+                    _openai_tool_turn(
+                        call_id="call_1",
+                        name="delegate_to_subagent",
+                        arguments={"target": "scoped_child", "task": "use allowed"},
+                    ),
+                    _after_allowed,
+                    _after_denied,
+                ],
+            )
+
+        task_text = ctx.input_messages[-1]["content"]
+        if task_text == "use allowed":
+            return SequenceModelIO(
+                "openai",
+                [
+                    _openai_tool_turn(call_id="child_allowed", name="allowed_tool", arguments={}),
+                    lambda request: (
+                        _text_turn(
+                            "allowed ok"
+                            if json.loads(request.messages[-1]["output"])["value"] == "allowed"
+                            else "unexpected"
+                        )
+                    ),
+                ],
+            )
+        if task_text == "use denied":
+            return SequenceModelIO(
+                "openai",
+                [
+                    _openai_tool_turn(call_id="child_denied", name="denied_tool", arguments={}),
+                    lambda request: (
+                        _text_turn(
+                            "denied blocked"
+                            if json.loads(request.messages[-1]["output"])["error"] == "tool not found: denied_tool"
+                            else "unexpected"
+                        )
+                    ),
+                ],
+            )
+        raise AssertionError(f"unexpected child task: {task_text}")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            ToolsModule(tools=(allowed_tool, denied_tool)),
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="scoped_child",
+                        description="Scoped child",
+                        allowed_modes=("delegate",),
+                        allowed_tools=("allowed_tool",),
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=factory,
+    )
+
+    result = parent.run("handle it", max_iterations=3)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "done"
+    assert calls["allowed"] == 1
+    assert calls["denied"] == 0
+
+
+def test_subagent_template_allowed_tools_rejects_unknown_tool_names():
+    def _after_error(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert "allowed_tools contains unknown tool names: missing_tool" in payload["error"]
+        return _text_turn("invalid allowlist handled")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="scoped_child",
+                        description="Scoped child",
+                        allowed_modes=("delegate",),
+                        allowed_tools=("missing_tool",),
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="call_1",
+                    name="delegate_to_subagent",
+                    arguments={"target": "scoped_child", "task": "use missing tool"},
+                ),
+                _after_error,
+            ],
+        ),
+    )
+
+    result = parent.run("handle it", max_iterations=2)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "invalid allowlist handled"
+
+
+def test_subagent_template_allowed_tools_blocks_reserved_runtime_tools():
+    seen_children = []
+
+    def factory(spec, ctx):
+        if spec.name == "manager":
+            return SequenceModelIO(
+                "openai",
+                [
+                    _openai_tool_turn(
+                        call_id="call_1",
+                        name="delegate_to_subagent",
+                        arguments={"target": "scoped_child", "task": "try nested"},
+                    ),
+                    lambda request: _text_turn(json.loads(request.messages[-1]["output"])["summary"]),
+                ],
+            )
+
+        seen_children.append(spec.name)
+        return SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="child_call",
+                    name="delegate_to_subagent",
+                    arguments={"target": "ghost", "task": "nested"},
+                ),
+                lambda request: (
+                    _text_turn(
+                        "nested blocked"
+                        if json.loads(request.messages[-1]["output"])["error"] == "tool not found: delegate_to_subagent"
+                        else "unexpected"
+                    )
+                ),
+            ],
+        )
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="scoped_child",
+                        description="Scoped child",
+                        allowed_modes=("delegate",),
+                        allowed_tools=(),
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=factory,
+    )
+
+    result = parent.run("handle it", max_iterations=2)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "nested blocked"
+    assert len(seen_children) == 1
+
+
+def test_subagent_template_agent_keeps_provider_and_overrides_model():
+    seen_child = {}
+
+    specialist = Agent(
+        name="specialist",
+        provider="anthropic",
+        model="claude-base",
+        model_io_factory=lambda spec, ctx: (
+            seen_child.update(
+                {
+                    "name": spec.name,
+                    "provider": spec.provider,
+                    "model": spec.model,
+                    "allowed_tools": spec.allowed_tools,
+                }
+            )
+            or SequenceModelIO("anthropic", [_text_turn("specialist override ok")])
+        ),
+    )
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        model="gpt-parent",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="specialist",
+                        description="Specialist",
+                        agent=specialist,
+                        allowed_modes=("delegate",),
+                        model="claude-override",
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="call_1",
+                    name="delegate_to_subagent",
+                    arguments={"target": "specialist", "task": "Handle it"},
+                ),
+                lambda request: _text_turn(json.loads(request.messages[-1]["output"])["summary"]),
+            ],
+        ),
+    )
+
+    result = parent.run("start", max_iterations=2)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "specialist override ok"
+    assert seen_child["name"].startswith("manager.specialist.")
+    assert seen_child["provider"] == "anthropic"
+    assert seen_child["model"] == "claude-override"
+    assert seen_child["allowed_tools"] is None

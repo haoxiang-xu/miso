@@ -36,11 +36,17 @@ def execute_confirmable_tool_call(
     deny_reason = ""
 
     if tool_obj is not None and tool_obj.requires_confirmation and callable(on_tool_confirm):
+        tool_render = getattr(tool_obj, "render_component", None)
+        if isinstance(tool_render, dict) and tool_render:
+            effective_render = dict(tool_render)
+        else:
+            effective_render = {"version": 1, "type": "confirmation", "config": {}}
         confirmation_request = ToolConfirmationRequest(
             tool_name=tool_call.name,
             call_id=tool_call.call_id,
             arguments=tool_call.arguments if isinstance(tool_call.arguments, dict) else {},
             description=tool_obj.description,
+            render_component=effective_render,
         )
         response = ToolConfirmationResponse.from_raw(on_tool_confirm(confirmation_request))
         if not response.approved:
