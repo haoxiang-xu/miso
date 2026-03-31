@@ -33,6 +33,18 @@ def _text_turn(text: str, *, response_id: str | None = None) -> ModelTurnResult:
     )
 
 
+def _anthropic_tool_turn(*, call_id: str, name: str, arguments: dict, text: str = "") -> ModelTurnResult:
+    content: list[dict[str, object]] = []
+    if text:
+        content.append({"type": "text", "text": text})
+    content.append({"type": "tool_use", "id": call_id, "name": name, "input": arguments})
+    return ModelTurnResult(
+        assistant_messages=[{"role": "assistant", "content": content}],
+        tool_calls=[ToolCall(call_id=call_id, name=name, arguments=arguments)],
+        final_text=text,
+    )
+
+
 class SequenceModelIO:
     def __init__(self, provider: str, steps):
         self.provider = provider
@@ -236,6 +248,75 @@ def test_subagent_handoff_completes_root_run_and_uses_scoped_persistent_memory()
     assert seen_child_context["session_id"] == "root-session:manager.specialist.1"
     assert seen_child_context["memory_namespace"] == "root-ns:manager.specialist.1"
     assert "MemoryModule" in seen_child_context["module_names"]
+
+
+def test_subagent_handoff_strips_runtime_tool_call_from_child_context_and_final_transcript():
+    seen_child_messages = {}
+
+    def _child_factory(spec, ctx):
+        def _fetch(request):
+            seen_child_messages["messages"] = request.messages
+            return _text_turn("specialist final")
+
+        return SequenceModelIO("anthropic", [_fetch])
+
+    specialist = Agent(
+        name="specialist",
+        provider="anthropic",
+        model_io_factory=_child_factory,
+    )
+    parent = Agent(
+        name="manager",
+        provider="anthropic",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="specialist",
+                        description="Specialist handoff target",
+                        agent=specialist,
+                        allowed_modes=("handoff",),
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "anthropic",
+            [
+                _anthropic_tool_turn(
+                    call_id="toolu_handoff_1",
+                    name="handoff_to_subagent",
+                    arguments={"target": "specialist", "reason": "Needs deep expertise"},
+                    text="Routing to the specialist.",
+                ),
+            ],
+        ),
+    )
+
+    result = parent.run("Need the specialist", max_iterations=2)
+
+    assert result.status == "completed"
+    assert result.messages == [
+        {"role": "user", "content": "Need the specialist"},
+        {"role": "assistant", "content": "specialist final"},
+    ]
+
+    child_messages = seen_child_messages["messages"]
+    non_system_messages = [
+        message
+        for message in child_messages
+        if isinstance(message, dict) and message.get("role") != "system"
+    ]
+    assert non_system_messages == [{"role": "user", "content": "Need the specialist"}]
+    assert all(message.get("type") != "function_call" for message in child_messages if isinstance(message, dict))
+    assert all(
+        not any(
+            isinstance(block, dict) and block.get("type") == "tool_use"
+            for block in (message.get("content") if isinstance(message.get("content"), list) else [])
+        )
+        for message in child_messages
+        if isinstance(message, dict)
+    )
 
 
 def test_subagent_worker_batch_runs_in_parallel_and_preserves_input_order():

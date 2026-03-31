@@ -550,12 +550,11 @@ class AnthropicModelIO(_NativeModelIOBase):
         )
         self.api_key = api_key
         if client_factory is None:
-            from ..runtime import providers
-
-            anthropic_client_cls = providers.Anthropic
-            if anthropic_client_cls is None:
+            try:
+                import anthropic
+                client_factory = anthropic.Anthropic
+            except ImportError:
                 raise ImportError("anthropic package is required for anthropic provider — pip install anthropic")
-            client_factory = anthropic_client_cls
         self._client_factory = client_factory
 
     _ANTHROPIC_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
@@ -781,9 +780,7 @@ class OllamaModelIO(_NativeModelIOBase):
         )
         self.base_url = str(base_url or "http://localhost:11434").rstrip("/")
         if stream_factory is None:
-            from ..runtime import providers
-
-            stream_factory = providers.httpx.stream
+            stream_factory = httpx.stream
         self._stream_factory = stream_factory
 
     def fetch_turn(self, request: ModelTurnRequest) -> ModelTurnResult:
