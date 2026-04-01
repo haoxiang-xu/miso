@@ -28,18 +28,37 @@ OBSERVATION_MAX_OUTPUT_TOKENS = 512
 
 
 def inject_observation(tool_message: dict, observation: str) -> None:
+    def _inject_text_payload(existing_payload):
+        try:
+            parsed = (
+                json.loads(existing_payload)
+                if isinstance(existing_payload, str) and existing_payload.strip()
+                else {}
+            )
+            if not isinstance(parsed, dict):
+                parsed = {"result": parsed}
+            parsed["observation"] = observation
+            return json.dumps(parsed, default=str, ensure_ascii=False)
+        except Exception:
+            suffix = f"\n[OBSERVATION] {observation}"
+            return (
+                f"{existing_payload}{suffix}"
+                if existing_payload
+                else suffix.strip()
+            )
+
+    content = tool_message.get("content")
+    if isinstance(content, list):
+        for block in reversed(content):
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            block["content"] = _inject_text_payload(block.get("content", ""))
+            return
+
     content_key = "content" if "content" in tool_message else "output"
     existing = tool_message.get(content_key, "")
 
-    try:
-        parsed = json.loads(existing) if isinstance(existing, str) and existing.strip() else {}
-        if not isinstance(parsed, dict):
-            parsed = {"result": parsed}
-        parsed["observation"] = observation
-        tool_message[content_key] = json.dumps(parsed, default=str, ensure_ascii=False)
-    except Exception:
-        suffix = f"\n[OBSERVATION] {observation}"
-        tool_message[content_key] = f"{existing}{suffix}" if existing else suffix.strip()
+    tool_message[content_key] = _inject_text_payload(existing)
 
 
 def observation_token_state(

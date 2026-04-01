@@ -3,6 +3,7 @@ import json
 from unchain.input.human_input import ASK_USER_QUESTION_TOOL_NAME
 from unchain.kernel import KernelLoop, ModelTurnResult
 from unchain.kernel.types import ToolCall as KernelToolCall
+from unchain.tools.observation import inject_observation
 from unchain.tools import Toolkit, tool
 
 
@@ -205,6 +206,29 @@ def test_kernel_run_observe_injects_observation_without_interrupting():
     assert parsed["topic"] == "x"
     assert parsed["observation"] == "looks fine"
     assert any(event["type"] == "observation" for event in events)
+
+
+def test_inject_observation_preserves_anthropic_tool_result_blocks():
+    tool_message = {
+        "role": "user",
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": "toolu_1",
+                "content": json.dumps({"topic": "x", "ok": True}),
+            }
+        ],
+    }
+
+    inject_observation(tool_message, "looks fine")
+
+    assert isinstance(tool_message["content"], list)
+    assert tool_message["content"][0]["type"] == "tool_result"
+    assert tool_message["content"][0]["tool_use_id"] == "toolu_1"
+    parsed = json.loads(tool_message["content"][0]["content"])
+    assert parsed["topic"] == "x"
+    assert parsed["ok"] is True
+    assert parsed["observation"] == "looks fine"
 
 
 def test_kernel_run_ask_user_question_returns_awaiting_human_input():

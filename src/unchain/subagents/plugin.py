@@ -279,11 +279,14 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         memory_namespace: str,
         input_messages: str | list[dict[str, Any]],
         max_iterations: int,
+        child_run_id: str = "",
         callback: Any = None,
         on_tool_confirm: Any = None,
         on_human_input: Any = None,
         on_max_iterations: Any = None,
     ) -> SubagentResult:
+        if not child_run_id:
+            child_run_id = f"{session_id}:{child_id}:{uuid.uuid4()}"
         child_callback = callback
         if callable(callback):
             def _child_callback(event: dict[str, Any]) -> None:
@@ -301,7 +304,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             on_tool_confirm=on_tool_confirm,
             on_human_input=on_human_input,
             on_max_iterations=on_max_iterations,
-            run_id=f"{session_id}:{child_id}:{uuid.uuid4()}",
+            run_id=child_run_id,
         )
         output = _last_assistant_text(result.messages)
         if result.status == "awaiting_human_input":
@@ -399,8 +402,9 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         session_id = f"{context.session_id or context.run_id}:{child_id}"
         memory_namespace = f"{context.memory_namespace or context.session_id or context.run_id}:{child_id}"
         parent_id = state.active_agent_id or self.parent_agent.name
-        self._emit_subagent_event(context, "subagent_spawned", subagent_id=child_id, parent_id=parent_id, mode="delegate", template=template_name, lineage=lineage)
-        self._emit_subagent_event(context, "subagent_started", subagent_id=child_id, parent_id=parent_id, mode="delegate", template=template_name, lineage=lineage)
+        child_run_id = f"{session_id}:{child_id}:{uuid.uuid4()}"
+        self._emit_subagent_event(context, "subagent_spawned", subagent_id=child_id, parent_id=parent_id, mode="delegate", template=template_name, lineage=lineage, child_run_id=child_run_id)
+        self._emit_subagent_event(context, "subagent_started", subagent_id=child_id, parent_id=parent_id, mode="delegate", template=template_name, lineage=lineage, child_run_id=child_run_id)
         result = self._run_child(
             agent=child,
             mode="delegate",
@@ -411,6 +415,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             memory_namespace=memory_namespace if memory_policy == "scoped_persistent" else "",
             input_messages=task,
             max_iterations=int(context.event.get("max_iterations") or 6),
+            child_run_id=child_run_id,
             callback=context.callback,
             on_tool_confirm=context.event.get("on_tool_confirm"),
             on_human_input=context.event.get("on_human_input"),
@@ -482,9 +487,10 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         session_id = f"{context.session_id or context.run_id}:{child_id}"
         memory_namespace = f"{context.memory_namespace or context.session_id or context.run_id}:{child_id}"
         parent_id = state.active_agent_id or self.parent_agent.name
-        self._emit_subagent_event(context, "subagent_spawned", subagent_id=child_id, parent_id=parent_id, mode="handoff", template=template_name, lineage=lineage)
-        self._emit_subagent_event(context, "subagent_handoff", subagent_id=child_id, parent_id=parent_id, mode="handoff", template=template_name, lineage=lineage, reason=reason)
-        self._emit_subagent_event(context, "subagent_started", subagent_id=child_id, parent_id=parent_id, mode="handoff", template=template_name, lineage=lineage)
+        child_run_id = f"{session_id}:{child_id}:{uuid.uuid4()}"
+        self._emit_subagent_event(context, "subagent_spawned", subagent_id=child_id, parent_id=parent_id, mode="handoff", template=template_name, lineage=lineage, child_run_id=child_run_id)
+        self._emit_subagent_event(context, "subagent_handoff", subagent_id=child_id, parent_id=parent_id, mode="handoff", template=template_name, lineage=lineage, reason=reason, child_run_id=child_run_id)
+        self._emit_subagent_event(context, "subagent_started", subagent_id=child_id, parent_id=parent_id, mode="handoff", template=template_name, lineage=lineage, child_run_id=child_run_id)
         sanitized_messages = _sanitize_handoff_messages(
             context.latest_messages(),
             tool_call=tool_call,
@@ -503,6 +509,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             memory_namespace=memory_namespace if memory_policy == "scoped_persistent" else "",
             input_messages=input_messages,
             max_iterations=int(context.event.get("max_iterations") or 6),
+            child_run_id=child_run_id,
             callback=context.callback,
             on_tool_confirm=context.event.get("on_tool_confirm"),
             on_human_input=context.event.get("on_human_input"),
@@ -661,12 +668,14 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             )
             session_id = f"{context.session_id or context.run_id}:{child_id}"
             memory_namespace = f"{context.memory_namespace or context.session_id or context.run_id}:{child_id}"
+            worker_run_id = f"{session_id}:{child_id}:{uuid.uuid4()}"
             prepared_items.append(
                 {
                     "type": "run",
                     "index": index,
                     "task": task,
                     "child_id": child_id,
+                    "child_run_id": worker_run_id,
                     "lineage": lineage,
                     "template_name": template_name,
                     "output_mode": output_mode,
@@ -681,11 +690,12 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 return copy.deepcopy(item["result"])
             task = str(item.get("task") or "").strip()
             child_id = str(item["child_id"])
+            child_run_id = str(item.get("child_run_id") or "")
             lineage = list(item["lineage"])
             template_name = item.get("template_name")
             output_mode = str(item.get("output_mode") or "summary")
-            self._emit_subagent_event(context, "subagent_spawned", subagent_id=child_id, parent_id=parent_id, mode="worker", template=template_name, lineage=lineage, batch_id=batch_id)
-            self._emit_subagent_event(context, "subagent_started", subagent_id=child_id, parent_id=parent_id, mode="worker", template=template_name, lineage=lineage, batch_id=batch_id)
+            self._emit_subagent_event(context, "subagent_spawned", subagent_id=child_id, parent_id=parent_id, mode="worker", template=template_name, lineage=lineage, batch_id=batch_id, child_run_id=child_run_id)
+            self._emit_subagent_event(context, "subagent_started", subagent_id=child_id, parent_id=parent_id, mode="worker", template=template_name, lineage=lineage, batch_id=batch_id, child_run_id=child_run_id)
             result = self._run_child(
                 agent=item["agent"],
                 mode="worker",
@@ -694,6 +704,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 template_name=template_name,
                 session_id=str(item["session_id"]),
                 memory_namespace=str(item["memory_namespace"]),
+                child_run_id=child_run_id,
                 input_messages=task,
                 max_iterations=int(context.event.get("max_iterations") or 6),
                 callback=context.callback,

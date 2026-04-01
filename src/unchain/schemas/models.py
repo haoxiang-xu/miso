@@ -120,6 +120,58 @@ CLAUDE_HAIKU_35 = ModelConfiguration(
     )
 )
 
+CLAUDE_HAIKU_45 = ModelConfiguration(
+    name="claude-haiku-4.5",
+    capabilities=ModelCapabilities(
+        provider="anthropic",
+        provider_model="claude-haiku-4-5-20251001",
+        max_context_window_tokens=200000,
+        supports_tools=True,
+        supports_response_format=False,
+        supports_previous_response_id=False,
+        supports_reasoning=False,
+        input_modalities=["text", "image"],
+        input_source_types={
+            "image": ["url", "base64"]
+        },
+        allowed_payload_keys=["max_tokens", "temperature", "top_k", "top_p"]
+    ),
+    default_payload=ModelDefaultPayload(
+        payload={
+            "max_tokens": 32000,
+            "temperature": 0.7,
+        }
+    )
+)
+
+GPT_41_MINI = ModelConfiguration(
+    name="gpt-4.1-mini",
+    capabilities=ModelCapabilities(
+        provider="openai",
+        provider_model="gpt-4.1-mini",
+        max_context_window_tokens=1047576,
+        supports_tools=True,
+        supports_response_format=True,
+        supports_previous_response_id=True,
+        supports_reasoning=False,
+        input_modalities=["text", "image", "pdf"],
+        input_source_types={
+            "image": ["url", "base64"],
+            "pdf": ["url", "base64"]
+        },
+        allowed_payload_keys=["instructions", "temperature", "top_p", "max_output_tokens", "truncation", "tool_choice"]
+    ),
+    default_payload=ModelDefaultPayload(
+        payload={
+            "instructions": "",
+            "temperature": 0.7,
+            "top_p": 1,
+            "max_output_tokens": 32768,
+            "truncation": "auto",
+        }
+    )
+)
+
 GPT_4O = ModelConfiguration(
     name="gpt-4o",
     capabilities=ModelCapabilities(
@@ -205,6 +257,8 @@ __all__ = [
     "ModelDefaultPayload",
     "ModelConfiguration",
     "CLAUDE_HAIKU_35",
+    "CLAUDE_HAIKU_45",
+    "GPT_41_MINI",
     "GPT_4O",
     "CLAUDE_SONNET_35",
     "GEMINI_PRO_15",
