@@ -2,7 +2,7 @@
 id = "external_api"
 name = "External API"
 description = "Call external HTTP endpoints with basic GET and POST requests."
-factory = "miso.toolkits.builtin.external_api:ExternalAPIToolkit"
+factory = "unchain.toolkits.builtin.external_api:ExternalAPIToolkit"
 version = "1.0.0"
 readme = "README.md"
 icon = "global"
@@ -17,7 +17,7 @@ hidden = false
 
 [compat]
 python = ">=3.9"
-miso = ">=0"
+legacy = ">=0"
 
 [[tools]]
 name = "http_get"

@@ -84,7 +84,7 @@ hidden = false
 
 [compat]
 python = ">=3.9"
-miso = ">=0"
+legacy = ">=0"
 
 [[tools]]
 name = "{manifest_tool_name}"
@@ -114,7 +114,7 @@ def test_builtin_registry_lists_expected_toolkits_and_tools():
     toolkit_ids = {item["id"] for item in registry.list_toolkits(include_tools=False)}
 
     assert toolkit_ids == {"workspace", "terminal", "external_api", "ask_user"}
-    assert registry.require("workspace").to_summary()["tool_count"] == 20
+    assert registry.require("workspace").to_summary()["tool_count"] == 10
     assert registry.require("terminal").to_summary()["tool_count"] == 4
     assert registry.require("external_api").to_summary()["tool_count"] == 9
     assert registry.require("ask_user").to_summary()["tool_count"] == 1
@@ -241,7 +241,7 @@ def test_disabled_plugins_are_not_loaded(monkeypatch):
         raise AssertionError("plugin loader should not run when plugin is disabled")
 
     monkeypatch.setattr(
-        "miso.tools.registry._entry_points_for_group",
+        "unchain.tools.registry._entry_points_for_group",
         lambda group: [_FakeEntryPoint("demo", _load)],
     )
 
@@ -260,7 +260,7 @@ def test_enabled_plugin_is_loaded_only_when_explicitly_enabled(tmp_path, monkeyp
         return module.DemoToolkit
 
     monkeypatch.setattr(
-        "miso.tools.registry._entry_points_for_group",
+        "unchain.tools.registry._entry_points_for_group",
         lambda group: [_FakeEntryPoint("plugin_demo", _load)],
     )
 

@@ -1,14 +1,37 @@
 import tempfile
 from pathlib import Path
 
-# Broth removed
-from unchain.toolkits import TerminalToolkit, WorkspaceToolkit
+import pytest
+
 from unchain.memory import InMemorySessionStore
+from unchain.toolkits import TerminalToolkit, WorkspaceToolkit
+from unchain.workspace.syntax import is_language_supported
 from unchain.workspace import (
     MAX_FULL_FILE_PIN_CHARS,
     WorkspacePinExecutionContext,
     load_workspace_pins,
 )
+
+
+EXPECTED_WORKSPACE_TOOLS = {
+    "delete_lines",
+    "insert_lines",
+    "list_directories",
+    "pin_file_context",
+    "read_files",
+    "read_lines",
+    "replace_lines",
+    "search_text",
+    "unpin_file_context",
+    "write_file",
+}
+
+EXPECTED_TERMINAL_TOOLS = {
+    "terminal_exec",
+    "terminal_session_close",
+    "terminal_session_open",
+    "terminal_session_write",
+}
 
 
 def _read_single_file(toolkit: WorkspaceToolkit, path: str, max_chars_per_file: int = 20000) -> dict:
@@ -36,76 +59,83 @@ def _list_single_directory(toolkit: WorkspaceToolkit, path: str, recursive: bool
     return result["directories"][0]
 
 
-def test_workspace_toolkit_class_is_exposed():
-    assert WorkspaceToolkit.__name__ == "WorkspaceToolkit"
+def _read_files_ast(toolkit: WorkspaceToolkit, path: str, ast_threshold: int = 1) -> dict:
+    result = toolkit.execute(
+        "read_files",
+        {"paths": [path], "max_chars_per_file": 50000, "max_total_chars": 50000, "ast_threshold": ast_threshold},
+    )
+    return result["files"][0]
 
 
-def test_access_workspace_toolkit_registers_expected_tools():
+def _assert_ast_upgraded_result(item: dict, language: str):
+    assert item.get("ast_upgraded") is True
+    assert item["language"] == language
+    assert item["node_count"] >= item["returned_node_count"] >= 1
+    assert isinstance(item["ast"], dict)
+    assert isinstance(item["ast"]["type"], str)
+    assert "content" not in item
+
+
+def _require_ast_support(language: str) -> None:
+    try:
+        supported = is_language_supported(language)
+    except RuntimeError:
+        supported = False
+    if not supported:
+        pytest.skip(f"tree-sitter support for {language} is not available in this environment")
+
+
+def test_workspace_toolkit_registers_expected_tools():
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = WorkspaceToolkit(workspace_root=tmp)
 
-        names = set(toolkit.tools.keys())
-        # file-level
-        assert "read_files" in names
-        assert "read_file_ast" not in names
-        assert "write_file" in names
-        assert "create_file" in names
-        assert "delete_file" in names
-        assert "copy_file" in names
-        assert "move_file" in names
-        assert "file_exists" in names
-        # directory
-        assert "list_directories" in names
-        assert "create_directory" in names
-        assert "search_text" in names
-        # line-level
-        assert "read_lines" in names
-        assert "insert_lines" in names
-        assert "replace_lines" in names
-        assert "delete_lines" in names
-        assert "copy_lines" in names
-        assert "move_lines" in names
-        assert "search_and_replace" in names
-        assert "pin_file_context" in names
-        assert "unpin_file_context" in names
-        assert "terminal_exec" not in names
-        assert "terminal_session_open" not in names
-        assert "terminal_session_write" not in names
-        assert "terminal_session_close" not in names
-        assert "python_runtime_init" not in names
-        assert "python_runtime_install" not in names
-        assert "python_runtime_run" not in names
-        assert "python_runtime_reset" not in names
+        assert set(toolkit.tools.keys()) == EXPECTED_WORKSPACE_TOOLS
+        assert "create_file" not in toolkit.tools
+        assert "delete_file" not in toolkit.tools
+        assert "copy_file" not in toolkit.tools
+        assert "move_file" not in toolkit.tools
+        assert "file_exists" not in toolkit.tools
+        assert "create_directory" not in toolkit.tools
+        assert "copy_lines" not in toolkit.tools
+        assert "move_lines" not in toolkit.tools
+        assert "search_and_replace" not in toolkit.tools
+        assert "read_file_ast" not in toolkit.tools
 
 
-def test_workspace_toolkit_builds_without_terminal_tools():
+def test_terminal_toolkit_registers_expected_tools():
     with tempfile.TemporaryDirectory() as tmp:
-        tk = WorkspaceToolkit(workspace_root=tmp)
-        assert isinstance(tk, WorkspaceToolkit)
-        assert "read_files" in tk.tools
-        assert "read_file_ast" not in tk.tools
-        assert "terminal_exec" not in tk.tools
+        toolkit = TerminalToolkit(workspace_root=tmp)
 
-
-def test_workspace_toolkit_does_not_expose_legacy_single_read_tools():
-    with tempfile.TemporaryDirectory() as tmp:
-        tk = WorkspaceToolkit(workspace_root=tmp)
-
-        assert "read_file" not in tk.tools
-        assert "list_directory" not in tk.tools
-        assert tk.execute("read_file", {"path": "demo.txt"})["error"] == "tool not found: read_file"
-        assert tk.execute("list_directory", {"path": "."})["error"] == "tool not found: list_directory"
+        assert set(toolkit.tools.keys()) == EXPECTED_TERMINAL_TOOLS
 
 
 def test_workspace_toolkit_methods_are_declared_on_class_for_ui_discovery():
-    assert "read_files" in WorkspaceToolkit.__dict__
-    assert "read_file_ast" not in WorkspaceToolkit.__dict__
-    assert "write_file" in WorkspaceToolkit.__dict__
-    assert "list_directories" in WorkspaceToolkit.__dict__
-    assert "read_lines" in WorkspaceToolkit.__dict__
-    assert "search_and_replace" in WorkspaceToolkit.__dict__
-    assert "pin_file_context" in WorkspaceToolkit.__dict__
-    assert "unpin_file_context" in WorkspaceToolkit.__dict__
+    assert EXPECTED_WORKSPACE_TOOLS.issubset(set(WorkspaceToolkit.__dict__.keys()))
+    assert "create_file" not in WorkspaceToolkit.__dict__
+    assert "delete_file" not in WorkspaceToolkit.__dict__
+    assert "copy_lines" not in WorkspaceToolkit.__dict__
+    assert "search_and_replace" not in WorkspaceToolkit.__dict__
+
+
+def test_confirmation_flags_match_workspace_and_terminal_contract():
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = WorkspaceToolkit(workspace_root=tmp)
+        terminal = TerminalToolkit(workspace_root=tmp)
+
+        assert workspace.tools["write_file"].requires_confirmation is True
+        assert workspace.tools["insert_lines"].requires_confirmation is True
+        assert workspace.tools["replace_lines"].requires_confirmation is True
+        assert workspace.tools["delete_lines"].requires_confirmation is True
+
+        assert workspace.tools["read_files"].requires_confirmation is False
+        assert workspace.tools["list_directories"].requires_confirmation is False
+        assert workspace.tools["search_text"].requires_confirmation is False
+        assert workspace.tools["read_lines"].requires_confirmation is False
+        assert workspace.tools["pin_file_context"].requires_confirmation is False
+        assert workspace.tools["unpin_file_context"].requires_confirmation is False
+
+        for tool in terminal.tools.values():
+            assert tool.requires_confirmation is False
 
 
 def test_workspace_pin_tools_use_explicit_descriptions():
@@ -186,27 +216,40 @@ def test_workspace_pin_file_context_rejects_oversized_whole_file_pin():
         assert "Pin a smaller line range" in result["suggestion"]
 
 
-def test_access_workspace_toolkit_file_ops_and_search():
+def test_workspace_write_read_search_and_append():
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = WorkspaceToolkit(workspace_root=tmp)
 
-        write_result = toolkit.execute(
+        first_write = toolkit.execute(
             "write_file",
             {
                 "path": "notes/test.txt",
-                "content": "hello\nworld\nhello agent\n",
+                "content": "hello\nworld\n",
             },
         )
-        assert "error" not in write_result
+        second_write = toolkit.execute(
+            "write_file",
+            {
+                "path": "notes/test.txt",
+                "content": "hello agent\n",
+                "append": True,
+            },
+        )
+
+        assert first_write["created"] is True
+        assert second_write["append"] is True
 
         read_result = _read_single_file(toolkit, "notes/test.txt")
-        assert "hello" in read_result["content"]
+        assert read_result["content"] == "hello\nworld\nhello agent\n"
+        assert read_result["total_lines"] == 3
 
         search_result = toolkit.execute(
             "search_text",
-            {"pattern": "hello", "path": "notes", "max_results": 10},
+            {"pattern": "hello", "path": "notes", "max_results": 10, "context_lines": 1},
         )
         assert len(search_result["matches"]) == 2
+        assert search_result["matches"][0]["path"] == "notes/test.txt"
+        assert search_result["matches"][0]["context_after"] == ["world"]
 
 
 def test_workspace_toolkit_batch_reads_and_directory_listing():
@@ -244,7 +287,6 @@ def test_workspace_toolkit_batch_reads_and_directory_listing():
         )
         assert list_result["requested_paths"] == 2
         assert list_result["returned_directories"] == 2
-        # Recursive mode returns tree structure
         notes_tree = list_result["directories"][0]["tree"]
         notes_names = [e["name"] for e in notes_tree]
         assert "a.txt" in notes_names
@@ -252,7 +294,6 @@ def test_workspace_toolkit_batch_reads_and_directory_listing():
         docs_names = [e["name"] for e in docs_tree]
         assert "nested/" in docs_names
         assert "b.txt" in docs_names
-        # nested dir should contain c.txt
         nested_node = next(e for e in docs_tree if e["name"] == "nested/")
         assert any(c["name"] == "c.txt" for c in nested_node.get("children", []))
 
@@ -268,25 +309,8 @@ def test_list_directories_reject_file_path():
         assert result["error"] == f"not a directory: {file_path.resolve()}"
 
 
-def _read_files_ast(toolkit, path, ast_threshold=1):
-    """Read a single file via read_files with forced AST upgrade."""
-    result = toolkit.execute(
-        "read_files",
-        {"paths": [path], "max_chars_per_file": 50000, "max_total_chars": 50000, "ast_threshold": ast_threshold},
-    )
-    return result["files"][0]
-
-
-def _assert_ast_upgraded_result(item: dict, language: str):
-    assert item.get("ast_upgraded") is True
-    assert item["language"] == language
-    assert item["node_count"] >= item["returned_node_count"] >= 1
-    assert isinstance(item["ast"], dict)
-    assert isinstance(item["ast"]["type"], str)
-    assert "content" not in item
-
-
 def test_read_files_auto_ast_parses_python_file():
+    _require_ast_support("python")
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = WorkspaceToolkit(workspace_root=tmp)
         Path(tmp, "sample.py").write_text(
@@ -304,6 +328,7 @@ def test_read_files_auto_ast_parses_python_file():
 
 
 def test_read_files_auto_ast_parses_typescript_file():
+    _require_ast_support("typescript")
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = WorkspaceToolkit(workspace_root=tmp)
         Path(tmp, "sample.ts").write_text(
@@ -318,6 +343,7 @@ def test_read_files_auto_ast_parses_typescript_file():
 
 
 def test_read_files_auto_ast_parses_rust_file():
+    _require_ast_support("rust")
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = WorkspaceToolkit(workspace_root=tmp)
         Path(tmp, "sample.rs").write_text(
@@ -332,6 +358,7 @@ def test_read_files_auto_ast_parses_rust_file():
 
 
 def test_read_files_auto_ast_parses_go_file():
+    _require_ast_support("go")
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = WorkspaceToolkit(workspace_root=tmp)
         Path(tmp, "sample.go").write_text(
@@ -346,6 +373,7 @@ def test_read_files_auto_ast_parses_go_file():
 
 
 def test_read_files_auto_ast_detects_language_from_shebang():
+    _require_ast_support("bash")
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = WorkspaceToolkit(workspace_root=tmp)
         Path(tmp, "script").write_text(
@@ -365,7 +393,6 @@ def test_read_files_no_ast_for_unsupported_language():
 
         item = _read_files_ast(toolkit, "notes.txt")
 
-        # Unsupported language falls back to raw content
         assert item.get("ast_upgraded") is not True
         assert "content" in item
 
@@ -375,7 +402,6 @@ def test_read_files_no_ast_below_threshold():
         toolkit = WorkspaceToolkit(workspace_root=tmp)
         Path(tmp, "tiny.py").write_text("x = 1\n", encoding="utf-8")
 
-        # Use high threshold — file is only 6 chars
         item = _read_files_ast(toolkit, "tiny.py", ast_threshold=256)
 
         assert item.get("ast_upgraded") is not True
@@ -398,136 +424,115 @@ def test_line_level_read_insert_replace_delete():
     with tempfile.TemporaryDirectory() as tmp:
         tk = WorkspaceToolkit(workspace_root=tmp)
 
-        # Create a file with 5 lines
         tk.execute("write_file", {"path": "lines.txt", "content": "L1\nL2\nL3\nL4\nL5\n"})
 
-        # read_lines range
         result = tk.execute("read_lines", {"path": "lines.txt", "start": 2, "end": 4})
         assert result["content"] == "L2\nL3\nL4\n"
         assert result["total_lines"] == 5
 
-        # insert before line 3
         tk.execute("insert_lines", {"path": "lines.txt", "line": 3, "content": "NEW\n"})
         after_insert = _read_single_file(tk, "lines.txt")
         lines = after_insert["content"].splitlines()
         assert lines[2] == "NEW"
         assert len(lines) == 6
 
-        # replace lines 1-2 with single line
         tk.execute("replace_lines", {"path": "lines.txt", "start": 1, "end": 2, "content": "REPLACED\n"})
         after_replace = _read_single_file(tk, "lines.txt")
         lines = after_replace["content"].splitlines()
         assert lines[0] == "REPLACED"
         assert after_replace["total_lines"] == 5
 
-        # delete line 1
         tk.execute("delete_lines", {"path": "lines.txt", "start": 1, "end": 1})
         after_delete = _read_single_file(tk, "lines.txt")
         assert after_delete["total_lines"] == 4
 
 
-def test_copy_lines_and_move_lines():
+def test_workspace_and_terminal_support_multiple_roots():
+    with tempfile.TemporaryDirectory() as tmp1, tempfile.TemporaryDirectory() as tmp2:
+        first = Path(tmp1)
+        second = Path(tmp2)
+        target = second / "hello.txt"
+        target.write_text("hello\n", encoding="utf-8")
+
+        workspace = WorkspaceToolkit(workspace_roots=[first, second])
+        terminal = TerminalToolkit(workspace_roots=[first, second])
+
+        read_result = workspace.execute(
+            "read_files",
+            {"paths": [str(target)], "max_chars_per_file": 100, "max_total_chars": 100},
+        )
+        exec_result = terminal.execute("terminal_exec", {"command": "pwd", "cwd": str(second)})
+
+        assert read_result["files"][0]["content"] == "hello\n"
+        assert exec_result["ok"] is True
+        assert exec_result["stdout"].strip() == str(second.resolve())
+
+
+def test_terminal_exec_supports_real_shell_features():
     with tempfile.TemporaryDirectory() as tmp:
-        tk = WorkspaceToolkit(workspace_root=tmp)
+        tk = TerminalToolkit(workspace_root=tmp)
+        subdir = Path(tmp, "subdir")
+        subdir.mkdir()
 
-        tk.execute("write_file", {"path": "m.txt", "content": "A\nB\nC\nD\n"})
+        result = tk.execute(
+            "terminal_exec",
+            {
+                "command": "printf 'hello' | tr '[:lower:]' '[:upper:]' && printf ' done'",
+                "cwd": "subdir",
+            },
+        )
 
-        # Copy lines 1-2 to before line 4
-        tk.execute("copy_lines", {"path": "m.txt", "start": 1, "end": 2, "to_line": 5})
-        result = _read_single_file(tk, "m.txt")
-        lines = result["content"].splitlines()
-        assert lines == ["A", "B", "C", "D", "A", "B"]
-
-        # Rewrite and test move
-        tk.execute("write_file", {"path": "m.txt", "content": "A\nB\nC\nD\n"})
-        tk.execute("move_lines", {"path": "m.txt", "start": 3, "end": 4, "to_line": 1})
-        result = _read_single_file(tk, "m.txt")
-        lines = result["content"].splitlines()
-        assert lines == ["C", "D", "A", "B"]
+        assert result["ok"] is True
+        assert result["stdout"] == "HELLO done"
+        assert result["cwd"] == str(subdir.resolve())
+        assert result["command"].startswith("printf")
+        assert result["shell"] == "/bin/bash"
 
 
-def test_search_and_replace():
+def test_terminal_exec_reports_nonzero_exit():
     with tempfile.TemporaryDirectory() as tmp:
-        tk = WorkspaceToolkit(workspace_root=tmp)
+        tk = TerminalToolkit(workspace_root=tmp)
 
-        tk.execute("write_file", {"path": "sr.txt", "content": "foo bar foo baz foo\n"})
+        result = tk.execute(
+            "terminal_exec",
+            {"command": "printf 'boom' >&2; exit 7"},
+        )
 
-        result = tk.execute("search_and_replace", {
-            "path": "sr.txt",
-            "search": "foo",
-            "replace": "qux",
-            "max_count": 2,
-        })
-        assert result["replacements_made"] == 2
-
-        content = _read_single_file(tk, "sr.txt")["content"]
-        assert content.count("qux") == 2
-        assert content.count("foo") == 1
+        assert result["ok"] is False
+        assert result["returncode"] == 7
+        assert "boom" in result["stderr"]
 
 
-def test_file_create_delete_copy_move_exists():
+def test_terminal_exec_enforces_workspace_cwd_and_strict_mode():
     with tempfile.TemporaryDirectory() as tmp:
-        tk = WorkspaceToolkit(workspace_root=tmp)
+        tk = TerminalToolkit(workspace_root=tmp)
 
-        # create
-        result = tk.execute("create_file", {"path": "new.txt", "content": "hello"})
-        assert result["created"] is True
+        blocked = tk.execute("terminal_exec", {"command": "curl https://example.com"})
+        outside = tk.execute("terminal_exec", {"command": "pwd", "cwd": "/"})
 
-        # create again should error
-        result = tk.execute("create_file", {"path": "new.txt"})
-        assert "error" in result
-
-        # exists
-        result = tk.execute("file_exists", {"path": "new.txt"})
-        assert result["exists"] is True
-        assert result["type"] == "file"
-
-        # copy
-        result = tk.execute("copy_file", {"source": "new.txt", "destination": "copy.txt"})
-        assert result["copied"] is True
-
-        # move
-        result = tk.execute("move_file", {"source": "copy.txt", "destination": "moved.txt"})
-        assert result["moved"] is True
-
-        # original copy gone
-        result = tk.execute("file_exists", {"path": "copy.txt"})
-        assert result["exists"] is False
-
-        # delete
-        result = tk.execute("delete_file", {"path": "moved.txt"})
-        assert result["deleted"] is True
-
-        result = tk.execute("file_exists", {"path": "moved.txt"})
-        assert result["exists"] is False
+        assert "blocked by strict mode" in blocked["error"]
+        assert blocked["command"] == "curl https://example.com"
+        assert blocked["cwd"] == "."
+        assert blocked["shell"] == "/bin/bash"
+        assert outside["error"] == "cwd is outside all workspace roots"
+        assert outside["command"] == "pwd"
+        assert outside["cwd"] == "/"
+        assert outside["shell"] == "/bin/bash"
 
 
-def test_agent_uses_empty_toolkit_by_default():
-    agent = Broth()
-    assert agent.toolkit.tools == {}
-
-
-def test_agent_add_multiple_toolkits():
-    """Agent can hold multiple toolkits simultaneously."""
+def test_terminal_session_lifecycle_and_blocking():
     with tempfile.TemporaryDirectory() as tmp:
-        agent = Broth()
-        ws = WorkspaceToolkit(workspace_root=tmp)
-        term = TerminalToolkit(workspace_root=tmp)
+        tk = TerminalToolkit(workspace_root=tmp)
 
-        agent.add_toolkit(ws)
+        opened = tk.execute("terminal_session_open", {})
+        assert opened["ok"] is True
 
-        merged = agent.toolkit
-        names = set(merged.tools.keys())
-        assert "read_files" in names
-        assert "write_file" in names
-        assert "python_runtime_run" not in names
-        assert "terminal_exec" not in names
+        session_id = opened["session_id"]
+        first = tk.execute("terminal_session_write", {"session_id": session_id, "input": "printf 'hi'\n"})
+        blocked = tk.execute("terminal_session_write", {"session_id": session_id, "input": "curl https://example.com\n"})
+        closed = tk.execute("terminal_session_close", {"session_id": session_id})
 
-        agent.add_toolkit(term)
-        names = set(agent.toolkit.tools.keys())
-        assert "terminal_exec" in names
-
-        agent.remove_toolkit(term)
-        names_after = set(agent.toolkit.tools.keys())
-        assert "read_files" in names_after
-        assert "terminal_exec" not in names_after
+        assert first["ok"] is True
+        assert "hi" in first["stdout"]
+        assert "blocked by strict mode" in blocked["error"]
+        assert closed["ok"] is True

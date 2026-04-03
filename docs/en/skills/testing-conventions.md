@@ -137,7 +137,7 @@ def test_agent_calls_tool(monkeypatch):
     def fake_fetch(messages, tools, **kwargs):
         state["turn"] += 1
         if state["turn"] == 1:
-            return _tool_turn("read_file", {"path": "main.py"})
+            return _tool_turn("read_files", {"paths": ["main.py"]})
         return _final_turn("Done reading the file.")
 
     monkeypatch.setattr(agent, "_fetch_once", fake_fetch)
@@ -180,9 +180,9 @@ def test_multi_turn_flow(monkeypatch):
     def fake_fetch(messages, tools, **kwargs):
         state["turn"] += 1
         if state["turn"] == 1:
-            return _tool_turn("list_directory", {"path": "."})
+            return _tool_turn("list_directories", {"paths": ["."]})
         elif state["turn"] == 2:
-            return _tool_turn("read_file", {"path": "README.md"})
+            return _tool_turn("read_files", {"paths": ["README.md"]})
         else:
             return _final_turn("Here is the summary...")
 
@@ -215,8 +215,8 @@ def test_workspace_tool(tmp_path):
     (tmp_path / "subdir").mkdir()
 
     tk = WorkspaceToolkit(workspace_root=str(tmp_path))
-    result = tk.execute("read_file", {"path": "hello.txt"})
-    assert result["content"] == "world"
+    result = tk.execute("read_files", {"paths": ["hello.txt"]})
+    assert result["files"][0]["content"] == "world"
 ```
 
 ### Pattern 6: Toolkit Discovery with Temp Packages
@@ -299,8 +299,8 @@ case = EvalCase(
     allowed_toolkits=["workspace", "terminal"],
     rules={
         "required_paths": ["main.py"],
-        "required_tool_names": ["read_file"],
-        "forbidden_tool_names": ["delete_file", "write_file"],
+        "required_tool_names": ["read_files"],
+        "forbidden_tool_names": ["write_file", "delete_lines"],
         "min_tool_calls": 1,
         "min_final_chars": 100,
     },

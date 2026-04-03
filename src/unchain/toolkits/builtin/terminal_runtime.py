@@ -42,8 +42,15 @@ class _TerminalRuntime:
         re.IGNORECASE,
     )
 
-    def __init__(self, workspace_root: Path, strict_mode: bool = True):
+    def __init__(
+        self,
+        workspace_root: Path,
+        *,
+        workspace_roots: list[Path] | None = None,
+        strict_mode: bool = True,
+    ):
         self.workspace_root = workspace_root.resolve()
+        self.workspace_roots = [root.resolve() for root in (workspace_roots or [self.workspace_root])]
         self.strict_mode = strict_mode
         self.sessions: dict[str, _TerminalSession] = {}
 
@@ -62,6 +69,9 @@ class _TerminalRuntime:
             "stderr": "",
             "timed_out": False,
             "truncated": False,
+            "command": "",
+            "cwd": "",
+            "shell": "",
         }
 
     def _normalize_executable(self, raw: str) -> str:
@@ -85,17 +95,6 @@ class _TerminalRuntime:
                 return f"command blocked by strict mode: '{executable}' is not allowed"
 
         return None
-
-    def _parse_command(self, command: str) -> tuple[list[str] | None, str | None]:
-        if not command or not command.strip():
-            return None, "command is required"
-        try:
-            argv = shlex.split(command, posix=True)
-        except ValueError as exc:
-            return None, f"invalid command: {exc}"
-        if not argv:
-            return None, "command is required"
-        return argv, None
 
     def _read_pipe(self, pipe: Any, max_output_chars: int) -> tuple[str, bool]:
         if pipe is None:
@@ -149,11 +148,13 @@ class _TerminalRuntime:
         else:
             resolved = (self.workspace_root / path_obj).resolve()
 
-        try:
-            resolved.relative_to(self.workspace_root)
-        except ValueError:
-            return None, "cwd is outside workspace_root"
-        return resolved, None
+        for root in self.workspace_roots:
+            try:
+                resolved.relative_to(root)
+                return resolved, None
+            except ValueError:
+                continue
+        return None, "cwd is outside all workspace roots"
 
     def execute(
         self,
@@ -161,16 +162,23 @@ class _TerminalRuntime:
         cwd: str = ".",
         timeout_seconds: int = 30,
         max_output_chars: int = 20000,
+        shell: str = "/bin/bash",
     ) -> dict[str, Any]:
         result = self._default_result()
         result["command"] = command
+        result["cwd"] = cwd
+        result["shell"] = shell
 
-        parsed, parse_error = self._parse_command(command)
-        if parse_error:
-            result["error"] = parse_error
+        if not command or not command.strip():
+            result["error"] = "command is required"
             return result
 
-        blocked = self._is_command_blocked(command, parsed)
+        shell_argv, shell_error = self._validate_shell(shell)
+        if shell_error:
+            result["error"] = shell_error
+            return result
+
+        blocked = self._is_command_blocked(command)
         if blocked:
             result["error"] = blocked
             return result
@@ -183,9 +191,13 @@ class _TerminalRuntime:
         timeout_seconds = max(1, int(timeout_seconds))
         max_output_chars = max(0, int(max_output_chars))
 
+        argv = [*shell_argv, "-lc", command]
+        result["shell"] = shell
+        result["argv"] = argv
+
         try:
             completed = subprocess.run(
-                parsed,
+                argv,
                 cwd=str(resolved_cwd),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -211,7 +223,8 @@ class _TerminalRuntime:
                     "timed_out": True,
                     "truncated": stdout_truncated or stderr_truncated,
                     "cwd": str(resolved_cwd),
-                    "argv": parsed,
+                    "argv": argv,
+                    "shell": shell,
                 }
             )
             return result
@@ -223,13 +236,14 @@ class _TerminalRuntime:
         stderr, stderr_truncated = self._truncate_text(completed.stderr or "", max_output_chars)
         result.update(
             {
-                "ok": True,
+                "ok": completed.returncode == 0,
                 "returncode": completed.returncode,
                 "stdout": stdout,
                 "stderr": stderr,
                 "truncated": stdout_truncated or stderr_truncated,
                 "cwd": str(resolved_cwd),
-                "argv": parsed,
+                "argv": argv,
+                "shell": shell,
             }
         )
         return result

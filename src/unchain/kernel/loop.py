@@ -162,9 +162,13 @@ class KernelLoop:
                         "consumed_tokens": state.token_state.consumed_tokens + int(turn.consumed_tokens or 0),
                         "input_tokens": state.token_state.input_tokens + int(turn.input_tokens or 0),
                         "output_tokens": state.token_state.output_tokens + int(turn.output_tokens or 0),
+                        "cache_read_input_tokens": state.token_state.cache_read_input_tokens + int(turn.cache_read_input_tokens or 0),
+                        "cache_creation_input_tokens": state.token_state.cache_creation_input_tokens + int(turn.cache_creation_input_tokens or 0),
                         "last_turn_tokens": int(turn.consumed_tokens or 0),
                         "last_turn_input_tokens": int(turn.input_tokens or 0),
                         "last_turn_output_tokens": int(turn.output_tokens or 0),
+                        "last_turn_cache_read_input_tokens": int(turn.cache_read_input_tokens or 0),
+                        "last_turn_cache_creation_input_tokens": int(turn.cache_creation_input_tokens or 0),
                     },
                 },
                 trace={
@@ -559,6 +563,8 @@ class KernelLoop:
             last_turn_tokens=int(state.token_state.last_turn_tokens or 0),
             last_turn_input_tokens=int(state.token_state.last_turn_input_tokens or 0),
             last_turn_output_tokens=int(state.token_state.last_turn_output_tokens or 0),
+            cache_read_input_tokens=int(state.token_state.cache_read_input_tokens or 0),
+            cache_creation_input_tokens=int(state.token_state.cache_creation_input_tokens or 0),
             previous_response_id=state.provider_state.previous_response_id,
             iteration=int(state.iteration),
         )

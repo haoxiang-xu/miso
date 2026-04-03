@@ -16,10 +16,10 @@
 | `BuiltinToolkit` | `src/miso/toolkits/base.py:10` | subpackage | class |
 | `AskUserToolkit` | `src/miso/toolkits/builtin/ask_user/ask_user.py:7` | subpackage | class |
 | `ExternalAPIToolkit` | `src/miso/toolkits/builtin/external_api/external_api.py:12` | subpackage | class |
-| `TerminalToolkit` | `src/miso/toolkits/builtin/terminal/terminal.py:10` | subpackage | class |
-| `_TerminalSession` | `src/miso/toolkits/builtin/terminal_runtime.py:15` | internal | dataclass |
-| `_TerminalRuntime` | `src/miso/toolkits/builtin/terminal_runtime.py:22` | internal | class |
-| `WorkspaceToolkit` | `src/miso/toolkits/builtin/workspace/workspace.py:24` | subpackage | class |
+| `TerminalToolkit` | `src/unchain/toolkits/builtin/terminal/terminal.py:10` | subpackage | class |
+| `_TerminalSession` | `src/unchain/toolkits/builtin/terminal_runtime.py:15` | internal | dataclass |
+| `_TerminalRuntime` | `src/unchain/toolkits/builtin/terminal_runtime.py:22` | internal | class |
+| `WorkspaceToolkit` | `src/unchain/toolkits/builtin/workspace/workspace.py:24` | subpackage | class |
 | `MCPToolkit` | `src/miso/toolkits/mcp.py:62` | subpackage | class |
 
 ### `src/miso/toolkits/base.py`
@@ -224,7 +224,7 @@ obj = ExternalAPIToolkit(...)
 obj.http_get(...)
 ```
 
-### `src/miso/toolkits/builtin/terminal/terminal.py`
+### `src/unchain/toolkits/builtin/terminal/terminal.py`
 
 面向用户的 terminal toolkit，底层依赖内部 terminal runtime。
 
@@ -234,7 +234,7 @@ obj.http_get(...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/toolkits/builtin/terminal/terminal.py:10` |
+| 源码 | `src/unchain/toolkits/builtin/terminal/terminal.py:10` |
 | 模块职责 | 面向用户的 terminal toolkit，底层依赖内部 terminal runtime。 |
 | 继承/协议 | `BuiltinToolkit` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -253,16 +253,16 @@ obj.http_get(...)
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/toolkits/builtin/terminal/terminal.py:13`
+- 定义位置：`src/unchain/toolkits/builtin/terminal/terminal.py:13`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
-#### `terminal_exec(self, command: str, cwd: str='.', timeout_seconds: int=30, max_output_chars: int=20000)`
+#### `terminal_exec(self, command: str, cwd: str='.', timeout_seconds: int=30, max_output_chars: int=20000, shell: str='/bin/bash')`
 
-Execute one shell command with ``shell=False`` using shlex parsing.
+通过允许的 shell 执行真实命令字符串，保留管道、重定向、引用与 `&&` 等正常 shell 语义。
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/terminal/terminal.py:34`
+- 定义位置：`src/unchain/toolkits/builtin/terminal/terminal.py:34`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -271,7 +271,7 @@ Execute one shell command with ``shell=False`` using shlex parsing.
 Open a persistent shell session and return a session id.
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/terminal/terminal.py:49`
+- 定义位置：`src/unchain/toolkits/builtin/terminal/terminal.py:49`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -280,7 +280,7 @@ Open a persistent shell session and return a session id.
 Write to a session stdin and collect available output.
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/terminal/terminal.py:62`
+- 定义位置：`src/unchain/toolkits/builtin/terminal/terminal.py:62`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -289,7 +289,7 @@ Write to a session stdin and collect available output.
 Close a persistent shell session and return final output.
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/terminal/terminal.py:77`
+- 定义位置：`src/unchain/toolkits/builtin/terminal/terminal.py:77`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -298,7 +298,7 @@ Close a persistent shell session and return final output.
 `TerminalToolkit` 对外暴露的方法 `shutdown`。
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/terminal/terminal.py:81`
+- 定义位置：`src/unchain/toolkits/builtin/terminal/terminal.py:81`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -317,7 +317,7 @@ obj = TerminalToolkit(...)
 obj.terminal_exec(...)
 ```
 
-### `src/miso/toolkits/builtin/terminal_runtime.py`
+### `src/unchain/toolkits/builtin/terminal_runtime.py`
 
 TerminalToolkit 使用的内部 session/runtime 实现。
 
@@ -327,7 +327,7 @@ TerminalToolkit 使用的内部 session/runtime 实现。
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/toolkits/builtin/terminal_runtime.py:15` |
+| 源码 | `src/unchain/toolkits/builtin/terminal_runtime.py:15` |
 | 模块职责 | TerminalToolkit 使用的内部 session/runtime 实现。 |
 | 继承/协议 | `-` |
 | 导出状态 | 未导出，应视为实现细节。 |
@@ -366,7 +366,7 @@ _TerminalSession(process=..., cwd=..., opened_at=..., timeout_seconds=...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/toolkits/builtin/terminal_runtime.py:22` |
+| 源码 | `src/unchain/toolkits/builtin/terminal_runtime.py:22` |
 | 模块职责 | TerminalToolkit 使用的内部 session/runtime 实现。 |
 | 继承/协议 | `-` |
 | 导出状态 | 未导出，应视为实现细节。 |
@@ -389,7 +389,7 @@ Owned by `TerminalToolkit` as the stateful terminal backend.
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/toolkits/builtin/terminal_runtime.py:45`
+- 定义位置：`src/unchain/toolkits/builtin/terminal_runtime.py:45`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -398,7 +398,7 @@ Owned by `TerminalToolkit` as the stateful terminal backend.
 `_TerminalRuntime` 对外暴露的方法 `execute`。
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/terminal_runtime.py:158`
+- 定义位置：`src/unchain/toolkits/builtin/terminal_runtime.py:158`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -407,7 +407,7 @@ Owned by `TerminalToolkit` as the stateful terminal backend.
 `_TerminalRuntime` 对外暴露的方法 `open_session`。
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/terminal_runtime.py:275`
+- 定义位置：`src/unchain/toolkits/builtin/terminal_runtime.py:275`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -416,7 +416,7 @@ Owned by `TerminalToolkit` as the stateful terminal backend.
 `_TerminalRuntime` 对外暴露的方法 `write_session`。
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/terminal_runtime.py:349`
+- 定义位置：`src/unchain/toolkits/builtin/terminal_runtime.py:349`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -425,7 +425,7 @@ Owned by `TerminalToolkit` as the stateful terminal backend.
 `_TerminalRuntime` 对外暴露的方法 `close_session`。
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/terminal_runtime.py:415`
+- 定义位置：`src/unchain/toolkits/builtin/terminal_runtime.py:415`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -434,7 +434,7 @@ Owned by `TerminalToolkit` as the stateful terminal backend.
 `_TerminalRuntime` 对外暴露的方法 `close_all_sessions`。
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/terminal_runtime.py:446`
+- 定义位置：`src/unchain/toolkits/builtin/terminal_runtime.py:446`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -445,11 +445,11 @@ Owned by `TerminalToolkit` as the stateful terminal backend.
 ### 最小调用示例
 
 ```python
-# See `src/miso/toolkits/builtin/terminal_runtime.py` for the owning call flow.
+# See `src/unchain/toolkits/builtin/terminal_runtime.py` for the owning call flow.
 
 ```
 
-### `src/miso/toolkits/builtin/workspace/workspace.py`
+### `src/unchain/toolkits/builtin/workspace/workspace.py`
 
 工作区文件、行编辑、搜索、目录、AST 与 pin 管理 toolkit。
 
@@ -459,7 +459,7 @@ Owned by `TerminalToolkit` as the stateful terminal backend.
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/toolkits/builtin/workspace/workspace.py:24` |
+| 源码 | `src/unchain/toolkits/builtin/workspace/workspace.py:24` |
 | 模块职责 | 工作区文件、行编辑、搜索、目录、AST 与 pin 管理 toolkit。 |
 | 继承/协议 | `BuiltinToolkit` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -478,105 +478,41 @@ Owned by `TerminalToolkit` as the stateful terminal backend.
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:27`
+- 定义位置：`src/unchain/toolkits/builtin/workspace/workspace.py:27`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
-#### `read_files(self, paths: list[str], max_chars_per_file: int=20000, max_total_chars: int=50000)`
+#### `read_files(self, paths: list[str], max_chars_per_file: int=20000, max_total_chars: int=50000, ast_threshold: int=256)`
 
 Read multiple UTF-8 text files from workspace.
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:377`
+- 定义位置：`src/unchain/toolkits/builtin/workspace/workspace.py:377`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 - 补充：:param paths: File paths relative or absolute inside workspace.
 :param max_chars_per_file: Truncate each file after this many characters.
 :param max_total_chars: Stop once the combined returned content reaches this many characters.
-
-#### `read_file_ast(self, path: str, language: str | None=None, max_nodes: int=400)`
-
-Parse a source file and return a JSON-safe syntax tree.
-
-- 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:440`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-- 补充：:param path: Relative or absolute path inside workspace.
-:param language: Optional language override.
-:param max_nodes: Maximum AST nodes to serialize in the response.
+:param ast_threshold: 大于零时，大文件源码在支持的语言上可自动返回 AST 而不是纯文本。
 
 #### `write_file(self, path: str, content: str, append: bool=False)`
 
 Write UTF-8 text file into workspace (overwrite or append).
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:464`
+- 定义位置：`src/unchain/toolkits/builtin/workspace/workspace.py:464`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 - 补充：:param path: Relative or absolute path inside workspace.
 :param content: Text content to write.
 :param append: If True, append to existing content instead of overwriting.
 
-#### `create_file(self, path: str, content: str='')`
-
-Create a new file. Fails if the file already exists.
-
-- 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:484`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-- 补充：:param path: Relative or absolute path inside workspace.
-:param content: Optional initial content.
-
-#### `delete_file(self, path: str)`
-
-Delete a file from workspace.
-
-- 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:502`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-- 补充：:param path: Relative or absolute path inside workspace.
-
-#### `copy_file(self, source: str, destination: str)`
-
-Copy a file to another location within workspace.
-
-- 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:515`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-- 补充：:param source: Source file path.
-:param destination: Destination file path.
-
-#### `move_file(self, source: str, destination: str)`
-
-Move or rename a file within workspace.
-
-- 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:531`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-- 补充：:param source: Source file path.
-:param destination: Destination file path.
-
-#### `file_exists(self, path: str)`
-
-Check whether a path exists and its type.
-
-- 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:547`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-- 补充：:param path: Relative or absolute path inside workspace.
-
 #### `list_directories(self, paths: list[str], recursive: bool=False, max_entries_per_directory: int=200, max_total_entries: int=500)`
 
 List multiple workspace directories in one call.
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:564`
+- 定义位置：`src/unchain/toolkits/builtin/workspace/workspace.py:564`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 - 补充：:param paths: Directory paths relative or absolute inside workspace.
@@ -584,35 +520,27 @@ List multiple workspace directories in one call.
 :param max_entries_per_directory: Maximum entries to return per directory.
 :param max_total_entries: Stop once the combined returned entries reach this many items.
 
-#### `create_directory(self, path: str)`
-
-Create a directory (and parents) inside workspace.
-
-- 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:633`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-- 补充：:param path: Directory path relative to workspace root.
-
-#### `search_text(self, pattern: str, path: str='.', max_results: int=100, case_sensitive: bool=False)`
+#### `search_text(self, pattern: str, path: str='.', max_results: int=100, case_sensitive: bool=False, file_glob: str | None=None, context_lines: int=0)`
 
 Search text pattern across workspace files.
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:642`
+- 定义位置：`src/unchain/toolkits/builtin/workspace/workspace.py:642`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 - 补充：:param pattern: Regex pattern to search for.
 :param path: Directory or file path to search within.
 :param max_results: Maximum number of matches to return.
 :param case_sensitive: Whether the search is case-sensitive.
+:param file_glob: Optional filename filter applied while scanning files.
+:param context_lines: Optional number of surrounding lines to include with each match.
 
 #### `read_lines(self, path: str, start: int=1, end: int | None=None)`
 
 Read a range of lines from a file (1-based, inclusive).
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:799`
+- 定义位置：`src/unchain/toolkits/builtin/workspace/workspace.py:799`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 - 补充：:param path: File path relative to workspace root.
@@ -624,7 +552,7 @@ Read a range of lines from a file (1-based, inclusive).
 Insert text before a given line number (1-based).
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:833`
+- 定义位置：`src/unchain/toolkits/builtin/workspace/workspace.py:833`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 - 补充：:param path: File path relative to workspace root.
@@ -636,7 +564,7 @@ Insert text before a given line number (1-based).
 Replace a range of lines [start, end] (1-based, inclusive) with new content.
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:865`
+- 定义位置：`src/unchain/toolkits/builtin/workspace/workspace.py:865`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 - 补充：:param path: File path relative to workspace root.
@@ -649,60 +577,19 @@ Replace a range of lines [start, end] (1-based, inclusive) with new content.
 Delete a range of lines [start, end] (1-based, inclusive).
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:899`
+- 定义位置：`src/unchain/toolkits/builtin/workspace/workspace.py:899`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 - 补充：:param path: File path relative to workspace root.
 :param start: First line to delete (1-based).
 :param end: Last line to delete (inclusive).
 
-#### `copy_lines(self, path: str, start: int, end: int, to_line: int)`
-
-Copy lines [start, end] and insert them before to_line (same file).
-
-- 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:929`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-- 补充：:param path: File path relative to workspace root.
-:param start: First line to copy (1-based).
-:param end: Last line to copy (inclusive).
-:param to_line: Destination line number to insert before (1-based).
-
-#### `move_lines(self, path: str, start: int, end: int, to_line: int)`
-
-Cut lines [start, end] and paste them before to_line (same file).
-
-- 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:965`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-- 补充：:param path: File path relative to workspace root.
-:param start: First line to move (1-based).
-:param end: Last line to move (inclusive).
-:param to_line: Destination line number to paste before (1-based, in the original numbering).
-
-#### `search_and_replace(self, path: str, search: str, replace: str, regex: bool=False, case_sensitive: bool=True, max_count: int=0)`
-
-Find and replace text within a single file.
-
-- 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:1018`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-- 补充：:param path: File path relative to workspace root.
-:param search: Text or regex pattern to find.
-:param replace: Replacement string (supports backreferences when regex=True).
-:param regex: Treat search as a regular expression.
-:param case_sensitive: Case-sensitive matching.
-:param max_count: Stop after this many replacements (0 = unlimited).
-
 #### `pin_file_context(self, path: str, start: int | None=None, end: int | None=None, start_with: str | None=None, end_with: str | None=None, reason: str | None=None)`
 
 Pin a file or line range into the current session.
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:1064`
+- 定义位置：`src/unchain/toolkits/builtin/workspace/workspace.py:1064`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -711,13 +598,13 @@ Pin a file or line range into the current session.
 Remove one or more pinned file contexts from the current session.
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/workspace/workspace.py:1155`
+- 定义位置：`src/unchain/toolkits/builtin/workspace/workspace.py:1155`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
 ### 生命周期与运行时角色
 
-- 构造时会围绕 workspace root 注册文件、目录、行编辑、搜索、AST 与 pin 管理工具。
+- 构造时会围绕 workspace root 注册一组精简的结构化文件、目录、行编辑、搜索、AST 自动升级读取与 pin 管理工具。
 - 每个 workspace 操作都通过基类的安全路径解析，确保动作不会逃逸出 workspace root。
 - pin 相关操作通过 runtime 注入的 execution context 读写 session 级 pin 状态。
 - 从调用者视角看，这个类本身近似无状态；有状态部分主要在会话存储和文件系统里。

@@ -28,6 +28,8 @@ class ModelTurnResult:
     consumed_tokens: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -42,5 +44,7 @@ class KernelRunResult:
     last_turn_tokens: int = 0
     last_turn_input_tokens: int = 0
     last_turn_output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
     previous_response_id: str | None = None
     iteration: int = 0

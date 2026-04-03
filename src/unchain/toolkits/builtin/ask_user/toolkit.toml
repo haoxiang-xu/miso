@@ -2,7 +2,7 @@
 id = "ask_user"
 name = "Ask User"
 description = "Expose structured user-question tools. Strongly prefer asking the user whenever multiple plausible approaches or decisions could materially change the result. When ask_user_question is available, do not ask the user for structured choices in plain assistant text unless freeform explanation is genuinely required."
-factory = "miso.toolkits.builtin.ask_user:AskUserToolkit"
+factory = "unchain.toolkits.builtin.ask_user:AskUserToolkit"
 version = "1.0.0"
 readme = "README.md"
 icon = "question_mark"
@@ -17,7 +17,7 @@ hidden = false
 
 [compat]
 python = ">=3.9"
-miso = ">=0"
+legacy = ">=0"
 
 [[tools]]
 name = "ask_user_question"

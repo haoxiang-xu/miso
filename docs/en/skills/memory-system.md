@@ -210,10 +210,10 @@ After each run, large tool arguments and results from **previous turns** (not th
 
 ```python
 # Before compaction (in conversation history):
-{"tool_call": "read_file", "arguments": {"path": "main.py"}, "result": {"content": "... 50,000 chars ..."}}
+{"tool_call": "read_files", "arguments": {"paths": ["main.py"]}, "result": {"files": [{"content": "... 50,000 chars ..."}]}}
 
 # After compaction:
-{"tool_call": "read_file", "arguments": {"path": "main.py"}, "result": "[compacted: 50000 chars]"}
+{"tool_call": "read_files", "arguments": {"paths": ["main.py"]}, "result": "[compacted: 50000 chars]"}
 ```
 
 ### Configuration

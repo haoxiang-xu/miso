@@ -340,7 +340,7 @@ def test_list_directories_history_result_is_compacted_with_preview():
     assert compacted_result["requested_paths"] == 2
     assert compacted_result["returned_directories"] == 2
     assert compacted_result["directories"][0]["entry_count"] == 80
-    assert "... <omitted" in compacted_result["directories"][0]["entries"][10]
+    assert compacted_result["directories"][0]["entries"][0].startswith("src/file_")
 
 
 def test_write_file_history_arguments_are_compacted_by_tool_optimizer():

@@ -114,11 +114,11 @@ Parameters are **auto-inferred** from the function signature and docstring. Manu
 ### Inference Sources
 
 ```python
-def read_file(self, path: str, max_chars: int = 20000) -> dict[str, Any]:
-    """Read a UTF-8 text file from the workspace.
+def read_files(self, paths: list[str], max_chars_per_file: int = 20000) -> dict[str, Any]:
+    """Read UTF-8 text files from the workspace.
 
-    :param path: File path relative to workspace root.
-    :param max_chars: Maximum characters to return.
+    :param paths: File paths relative to workspace root.
+    :param max_chars_per_file: Maximum characters to return per file.
     """
 ```
 
@@ -126,10 +126,10 @@ What gets extracted:
 
 | Source               | Extracted                                                           |
 | -------------------- | ------------------------------------------------------------------- |
-| Function name        | → `tool.name` = `"read_file"`                                       |
-| Docstring first line | → `tool.description` = `"Read a UTF-8 text file..."`                |
-| Type hints           | → parameter types (`string`, `integer`)                             |
-| Default values       | → parameter `required` flag (`path` required, `max_chars` optional) |
+| Function name        | → `tool.name` = `"read_files"`                                             |
+| Docstring first line | → `tool.description` = `"Read UTF-8 text files..."`                        |
+| Type hints           | → parameter types (`array`, `integer`)                                     |
+| Default values       | → parameter `required` flag (`paths` required, `max_chars_per_file` optional) |
 | `:param ...:` lines  | → parameter descriptions                                            |
 | `self` parameter     | → **skipped** automatically                                         |
 
@@ -222,14 +222,14 @@ Use for: destructive operations (file deletion, database writes, irreversible ac
 ```
 
 ```python
-from miso.tools import ToolConfirmationRequest, ToolConfirmationResponse
+from unchain.tools import ToolConfirmationRequest, ToolConfirmationResponse
 
 # Request (built by framework)
 req = ToolConfirmationRequest(
-    tool_name="delete_file",
+    tool_name="write_file",
     call_id="call_abc123",
-    arguments={"path": "important.py"},
-    description="Delete important.py",
+    arguments={"path": "important.py", "content": "updated text"},
+    description="Write important.py",
 )
 
 # Response (from UI)
@@ -333,7 +333,7 @@ For tools that produce large outputs (file reads, API responses), register optim
 
 ```python
 self.register(
-    self.read_file,
+    self.read_files,
     history_arguments_optimizer=self._compact_args,
     history_result_optimizer=self._compact_result,
 )

@@ -183,7 +183,7 @@ Use when you need history optimizers or need to override auto-inferred metadata:
 ```python
 def _register_tools(self) -> None:
     self.register(
-        self.read_file,
+        self.read_files,
         history_arguments_optimizer=self._compact_read_args,
         history_result_optimizer=self._compact_read_result,
     )
@@ -366,7 +366,7 @@ History optimizers must reduce payload size. If your tool returns large content 
 
 ```python
 self.register(
-    self.read_file,
+    self.read_files,
     history_result_optimizer=self._compact_result,
 )
 

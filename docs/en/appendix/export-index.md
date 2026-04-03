@@ -85,8 +85,8 @@ Exports declared by package `__init__` files and where to read their reference.
 | `BuiltinToolkit` | `src/miso/toolkits/base.py:10` | `../api/toolkits.md#builtintoolkit` |
 | `ExternalAPIToolkit` | `src/miso/toolkits/builtin/external_api/external_api.py:12` | `../api/toolkits.md#externalapitoolkit` |
 | `MCPToolkit` | `src/miso/toolkits/mcp.py:62` | `../api/toolkits.md#mcptoolkit` |
-| `TerminalToolkit` | `src/miso/toolkits/builtin/terminal/terminal.py:10` | `../api/toolkits.md#terminaltoolkit` |
-| `WorkspaceToolkit` | `src/miso/toolkits/builtin/workspace/workspace.py:24` | `../api/toolkits.md#workspacetoolkit` |
+| `TerminalToolkit` | `src/unchain/toolkits/builtin/terminal/terminal.py:10` | `../api/toolkits.md#terminaltoolkit` |
+| `WorkspaceToolkit` | `src/unchain/toolkits/builtin/workspace/workspace.py:24` | `../api/toolkits.md#workspacetoolkit` |
 
 ## `src/miso/tools/__init__.py`
 

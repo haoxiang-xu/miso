@@ -316,23 +316,23 @@ def build_syntax_tree_payload(
         return payload
 
     if looks_binary(source_bytes):
-        payload["error"] = "read_file_ast does not support binary files"
+        payload["error"] = "AST parsing does not support binary files"
         payload["supported_languages"] = list(supported_languages())
         return payload
 
     if resolved_language is None:
-        payload["error"] = "read_file_ast could not detect a supported language for this file"
+        payload["error"] = "AST parsing could not detect a supported language for this file"
         payload["supported_languages"] = list(supported_languages())
         return payload
 
     if not is_language_supported(resolved_language):
-        payload["error"] = "read_file_ast does not support this language"
+        payload["error"] = "AST parsing does not support this language"
         payload["supported_languages"] = list(supported_languages())
         return payload
 
     parsed = parse_source_bytes(path, source_bytes=source_bytes, language=resolved_language)
     if parsed is None:
-        payload["error"] = "read_file_ast could not parse this file"
+        payload["error"] = "AST parsing could not parse this file"
         payload["supported_languages"] = list(supported_languages())
         return payload
 

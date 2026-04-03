@@ -598,9 +598,22 @@ class AnthropicModelIO(_NativeModelIOBase):
             **request_payload,
         }
         if system_prompt:
-            request_kwargs["system"] = system_prompt
+            request_kwargs["system"] = [
+                {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
+            ]
         if anthropic_tools:
+            anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
             request_kwargs["tools"] = anthropic_tools
+        # Annotate last message for prompt caching.
+        if chat_messages:
+            _last = chat_messages[-1]
+            _content = _last.get("content")
+            if isinstance(_content, str):
+                _last["content"] = [{"type": "text", "text": _content, "cache_control": {"type": "ephemeral"}}]
+            elif isinstance(_content, list) and _content:
+                _block = _content[-1]
+                if isinstance(_block, dict):
+                    _block["cache_control"] = {"type": "ephemeral"}
 
         self._emit_request_messages(
             callback=request.callback,
@@ -618,6 +631,8 @@ class AnthropicModelIO(_NativeModelIOBase):
         reasoning_items: list[dict[str, Any]] = []
         input_tokens = 0
         output_tokens = 0
+        cache_read_input_tokens = 0
+        cache_creation_input_tokens = 0
         current_tool_name = ""
         current_tool_id = ""
         current_tool_json_parts: list[str] = []
@@ -717,6 +732,8 @@ class AnthropicModelIO(_NativeModelIOBase):
                     if usage_dict:
                         input_tokens = max(input_tokens, self._coerce_token_count(usage_dict.get("input_tokens")))
                         output_tokens = max(output_tokens, self._coerce_token_count(usage_dict.get("output_tokens")))
+                        cache_read_input_tokens = max(cache_read_input_tokens, self._coerce_token_count(usage_dict.get("cache_read_input_tokens")))
+                        cache_creation_input_tokens = max(cache_creation_input_tokens, self._coerce_token_count(usage_dict.get("cache_creation_input_tokens")))
                     continue
 
                 if event_type == "message_start":
@@ -725,6 +742,8 @@ class AnthropicModelIO(_NativeModelIOBase):
                     if isinstance(usage_dict, dict):
                         input_tokens = max(input_tokens, self._coerce_token_count(usage_dict.get("input_tokens")))
                         output_tokens = max(output_tokens, self._coerce_token_count(usage_dict.get("output_tokens")))
+                        cache_read_input_tokens = max(cache_read_input_tokens, self._coerce_token_count(usage_dict.get("cache_read_input_tokens")))
+                        cache_creation_input_tokens = max(cache_creation_input_tokens, self._coerce_token_count(usage_dict.get("cache_creation_input_tokens")))
                     continue
 
         full_text = "".join(collected_chunks).strip()
@@ -756,6 +775,8 @@ class AnthropicModelIO(_NativeModelIOBase):
             consumed_tokens=token_usage.consumed_tokens,
             input_tokens=token_usage.input_tokens,
             output_tokens=token_usage.output_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
+            cache_creation_input_tokens=cache_creation_input_tokens,
         )
 
 
