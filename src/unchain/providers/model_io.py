@@ -203,6 +203,8 @@ class _NativeModelIOBase:
         tool_names: list[str] = []
         for tool in tools_json or []:
             name = str(tool.get("name", "")).strip()
+            if not name and isinstance(tool.get("function"), dict):
+                name = str(tool["function"].get("name", "")).strip()
             if name:
                 tool_names.append(name)
         return tool_names
@@ -307,7 +309,7 @@ class OpenAIModelIO(_NativeModelIOBase):
         if request.previous_response_id:
             request_kwargs["previous_response_id"] = request.previous_response_id
 
-        tools_json = request.toolkit.to_json()
+        tools_json = request.toolkit.to_provider_json(self.provider)
         if tools_json and self._model_capability("supports_tools", True):
             request_kwargs["tools"] = tools_json
 
@@ -579,16 +581,10 @@ class AnthropicModelIO(_NativeModelIOBase):
             system_parts.append(request.response_format.to_anthropic())
         system_prompt = "\n\n".join(part for part in system_parts if isinstance(part, str) and part.strip())
 
-        tools_json = request.toolkit.to_json()
+        tools_json = request.toolkit.to_provider_json(self.provider)
         anthropic_tools: list[dict[str, Any]] = []
         if tools_json and self._model_capability("supports_tools", True):
-            for tool_def in tools_json:
-                params = tool_def.get("parameters", {})
-                anthropic_tools.append({
-                    "name": tool_def.get("name", ""),
-                    "description": tool_def.get("description", ""),
-                    "input_schema": params,
-                })
+            anthropic_tools = copy.deepcopy(tools_json)
 
         max_tokens = request_payload.pop("max_tokens", 4096)
         request_kwargs: dict[str, Any] = {
@@ -811,14 +807,8 @@ class OllamaModelIO(_NativeModelIOBase):
             "stream": True,
         }
 
-        tools_json = request.toolkit.to_json()
-        tools: list[dict[str, Any]] = []
-        for tool_def in tools_json:
-            if tool_def.get("type") == "function":
-                function_def = {key: value for key, value in tool_def.items() if key != "type"}
-                tools.append({"type": "function", "function": function_def})
-            else:
-                tools.append(copy.deepcopy(tool_def))
+        tools_json = request.toolkit.to_provider_json(self.provider)
+        tools: list[dict[str, Any]] = copy.deepcopy(tools_json)
 
         if tools:
             request_body["tools"] = tools

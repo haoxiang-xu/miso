@@ -187,6 +187,17 @@ class ToolHistoryOptimizationContext:
     include_hash: bool = True
 
 
+@dataclass(frozen=True)
+class ToolExecutionContext:
+    session_id: str
+    run_id: str
+    provider: str
+    model: str
+    iteration: int
+    memory_namespace: str = ""
+    session_store: Any = None
+
+
 @dataclass
 class NormalizedToolHistoryRecord:
     tool_name: str
@@ -258,6 +269,7 @@ class ToolConfirmationResponse:
 
 __all__ = [
     "HistoryPayloadOptimizer",
+    "ToolExecutionContext",
     "NormalizedToolHistoryRecord",
     "ToolConfirmationRequest",
     "ToolConfirmationResponse",

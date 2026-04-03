@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from .models import ToolConfirmationRequest, ToolConfirmationResponse
+from ..toolkits.base import BuiltinToolkit
+from .models import ToolConfirmationRequest, ToolConfirmationResponse, ToolExecutionContext
 from .toolkit import Toolkit
 from ..kernel.types import ToolCall
 from .common import emit_loop_event
@@ -19,6 +21,33 @@ class ToolExecutionOutcome:
     effective_arguments: Any = None
 
 
+def _resolve_builtin_toolkit_owner(toolkit: Toolkit, tool_name: str) -> BuiltinToolkit | None:
+    tool_obj = toolkit.get(tool_name)
+    if tool_obj is None:
+        return None
+    owner = getattr(getattr(tool_obj, "func", None), "__self__", None)
+    return owner if isinstance(owner, BuiltinToolkit) else None
+
+
+@contextmanager
+def _tool_execution_scope(
+    *,
+    toolkit: Toolkit,
+    tool_name: str,
+    execution_context: ToolExecutionContext | None,
+):
+    owner = _resolve_builtin_toolkit_owner(toolkit, tool_name)
+    if owner is None or execution_context is None:
+        yield
+        return
+
+    owner.push_execution_context(execution_context)
+    try:
+        yield
+    finally:
+        owner.pop_execution_context()
+
+
 def execute_confirmable_tool_call(
     *,
     toolkit: Toolkit,
@@ -28,6 +57,7 @@ def execute_confirmable_tool_call(
     callback: Any,
     run_id: str,
     iteration: int,
+    execution_context: ToolExecutionContext | None = None,
 ) -> ToolExecutionOutcome:
     tool_obj = toolkit.get(tool_call.name)
     should_observe = bool(tool_obj is not None and tool_obj.observe)
@@ -81,7 +111,12 @@ def execute_confirmable_tool_call(
             "reason": deny_reason or "User denied execution.",
         }
     else:
-        tool_result = toolkit.execute(tool_call.name, effective_arguments)
+        with _tool_execution_scope(
+            toolkit=toolkit,
+            tool_name=tool_call.name,
+            execution_context=execution_context,
+        ):
+            tool_result = toolkit.execute(tool_call.name, effective_arguments)
 
     return ToolExecutionOutcome(
         tool_result=tool_result,

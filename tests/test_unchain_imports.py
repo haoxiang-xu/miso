@@ -30,6 +30,7 @@ def test_unchain_common_subpackages_are_available():
     assert hasattr(providers_pkg, "OpenAIModelIO")
     assert hasattr(subagents, "SubagentPolicy")
     assert hasattr(tools, "Toolkit")
+    assert hasattr(toolkits, "CodeToolkit")
     assert hasattr(toolkits, "WorkspaceToolkit")
     assert hasattr(runtime, "load_model_capabilities")
     assert "/src/unchain/kernel/" in kernel.__file__

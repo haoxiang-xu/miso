@@ -148,3 +148,30 @@ def test_tool_execute_repairs_unescaped_newlines_in_json_arguments():
     result = echo_tool.execute(bad_json_arguments)
 
     assert result == {"content": "line1\nline2"}
+
+
+def test_tool_provider_specific_schema_serialization():
+    def search(path: str, limit: int = 10):
+        return {"path": path, "limit": limit}
+
+    tool_obj = Tool.from_callable(search, name="read")
+
+    openai_schema = tool_obj.to_provider_json("openai")
+    anthropic_schema = tool_obj.to_provider_json("anthropic")
+    ollama_schema = tool_obj.to_provider_json("ollama")
+
+    assert openai_schema["type"] == "function"
+    assert openai_schema["name"] == "read"
+    assert anthropic_schema == {
+        "name": "read",
+        "description": "",
+        "input_schema": openai_schema["parameters"],
+    }
+    assert ollama_schema == {
+        "type": "function",
+        "function": {
+            "name": "read",
+            "description": "",
+            "parameters": openai_schema["parameters"],
+        },
+    }

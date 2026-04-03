@@ -164,15 +164,37 @@ class AgentBuilder:
     _model_io: ModelIO | None = None
     _model_io_factory: Callable[[AgentSpec, AgentCallContext], ModelIO] | None = None
 
+    def _ensure_unique_tool_names(
+        self,
+        incoming_names: list[str],
+        *,
+        source_label: str,
+    ) -> None:
+        duplicates = sorted({name for name in incoming_names if name in self.toolkit.tools})
+        if duplicates:
+            raise ValueError(
+                f"agent {self.spec.name!r} tool name conflict from {source_label}: "
+                + ", ".join(duplicates)
+                + ". Tool names must be unique across all configured tools and toolkits."
+            )
+
     def add_tool(self, entry: Tool | Toolkit | Callable[..., Any]) -> None:
         if isinstance(entry, Toolkit):
+            self._ensure_unique_tool_names(
+                list(entry.tools.keys()),
+                source_label=f"toolkit {entry.__class__.__name__}",
+            )
             for tool_obj in entry.tools.values():
                 self.toolkit.register(tool_obj)
             return
         if isinstance(entry, Tool):
+            self._ensure_unique_tool_names([entry.name], source_label=f"tool {entry.name}")
             self.toolkit.register(entry)
             return
         if callable(entry):
+            tool_name = getattr(entry, "__name__", "").strip()
+            if tool_name:
+                self._ensure_unique_tool_names([tool_name], source_label=f"callable {tool_name}")
             self.toolkit.register(entry)
             return
         raise TypeError(f"unsupported tool entry: {type(entry).__name__}")

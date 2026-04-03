@@ -1,9 +1,13 @@
 import json
+import tempfile
+from pathlib import Path
 
 from unchain.input import HumanInputResponse, build_ask_user_question_tool
 from unchain.kernel import BaseRuntimeHarness, HarnessDelta, ModelTurnResult, ToolCall
 from unchain.agent import Agent, MemoryModule, OptimizersModule, PoliciesModule, ToolsModule
 from unchain.memory import MemoryManager
+from unchain.tools import Toolkit
+from unchain.toolkits import CodeToolkit
 
 
 def test_kernel_agent_run_returns_kernel_run_result_and_supports_three_providers():
@@ -222,6 +226,29 @@ def test_kernel_agent_resume_human_input_returns_kernel_run_result():
     )
     assert resumed.status == "completed"
     assert resumed.messages[-1]["content"] == "resumed"
+
+
+def test_kernel_agent_rejects_duplicate_tool_names_across_toolkits():
+    class ConflictingToolkit(Toolkit):
+        def __init__(self):
+            super().__init__()
+            self.register(lambda path: {"path": path}, name="read")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, "demo.txt").write_text("hello\n", encoding="utf-8")
+        agent = Agent(
+            name="conflict-agent",
+            modules=(ToolsModule(tools=(CodeToolkit(workspace_root=tmp), ConflictingToolkit())),),
+            model_io_factory=lambda spec, ctx: None,
+        )
+
+        try:
+            agent.run("hi")
+        except ValueError as exc:
+            assert "tool name conflict" in str(exc)
+            assert "read" in str(exc)
+        else:
+            raise AssertionError("expected duplicate tool name conflict")
 
 
 def test_kernel_agent_as_tool_wraps_kernel_result():

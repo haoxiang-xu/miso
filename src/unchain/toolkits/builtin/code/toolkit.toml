@@ -1,0 +1,55 @@
+[toolkit]
+id = "code_toolkit"
+name = "Code Toolkit"
+description = "Claude-style coding tools for guarded file reads, writes, edits, globbing, and grep search inside the workspace."
+factory = "unchain.toolkits.builtin.code:CodeToolkit"
+version = "1.0.0"
+readme = "README.md"
+icon = "terminal"
+color = "#0f172a"
+backgroundcolor = "#dbeafe"
+tags = ["builtin", "code", "files", "search", "editing"]
+
+[display]
+category = "builtin"
+order = 15
+hidden = false
+
+[compat]
+python = ">=3.9"
+legacy = ">=0"
+
+[[tools]]
+name = "read"
+title = "Read"
+description = "Read a UTF-8 text file by absolute path with line-numbered output and optional line slicing."
+observe = false
+requires_confirmation = false
+
+[[tools]]
+name = "write"
+title = "Write"
+description = "Create or fully overwrite a UTF-8 text file by absolute path, requiring a prior full read for existing files."
+observe = false
+requires_confirmation = true
+
+[[tools]]
+name = "edit"
+title = "Edit"
+description = "Replace one unique string match, or all matches when requested, in an existing UTF-8 text file by absolute path."
+observe = false
+requires_confirmation = true
+
+[[tools]]
+name = "glob"
+title = "Glob"
+description = "List files matching a glob pattern inside the workspace, sorted by most recently modified first."
+observe = false
+requires_confirmation = false
+
+[[tools]]
+name = "grep"
+title = "Grep"
+description = "Search UTF-8 text files inside the workspace with regex, optional glob filters, and paginated result modes."
+observe = false
+requires_confirmation = false

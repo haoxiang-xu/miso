@@ -3,8 +3,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from ..tools.models import ToolExecutionContext
 from ..tools.toolkit import Toolkit
 from ..workspace.pins import WorkspacePinExecutionContext
+
+
+BuiltinExecutionContext = ToolExecutionContext | WorkspacePinExecutionContext
 
 
 class BuiltinToolkit(Toolkit):
@@ -38,7 +42,7 @@ class BuiltinToolkit(Toolkit):
             self.workspace_roots = [Path(os.getcwd()).resolve()]
         # Backward compat: workspace_root always points to the first root.
         self.workspace_root: Path = self.workspace_roots[0]
-        self._execution_context_stack: list[WorkspacePinExecutionContext] = []
+        self._execution_context_stack: list[BuiltinExecutionContext] = []
 
     # ── shared path helper ─────────────────────────────────────────────────
 
@@ -60,7 +64,7 @@ class BuiltinToolkit(Toolkit):
 
         raise ValueError("path is outside all workspace roots")
 
-    def push_execution_context(self, context: WorkspacePinExecutionContext) -> None:
+    def push_execution_context(self, context: BuiltinExecutionContext) -> None:
         self._execution_context_stack.append(context)
 
     def pop_execution_context(self) -> None:
@@ -68,10 +72,10 @@ class BuiltinToolkit(Toolkit):
             self._execution_context_stack.pop()
 
     @property
-    def current_execution_context(self) -> WorkspacePinExecutionContext | None:
+    def current_execution_context(self) -> BuiltinExecutionContext | None:
         if not self._execution_context_stack:
             return None
         return self._execution_context_stack[-1]
 
 
-__all__ = ["BuiltinToolkit"]
+__all__ = ["BuiltinExecutionContext", "BuiltinToolkit"]

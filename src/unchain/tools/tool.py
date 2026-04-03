@@ -149,7 +149,7 @@ class Tool:
             )
         return inferred
 
-    def to_json(self) -> dict[str, Any]:
+    def _parameters_json_schema(self) -> dict[str, Any]:
         json_parameters: dict[str, Any] = {
             "type": "object",
             "properties": {},
@@ -162,11 +162,42 @@ class Tool:
             if parameter.required:
                 json_parameters["required"].append(parameter.name)
 
+        return json_parameters
+
+    def to_json(self) -> dict[str, Any]:
         return {
             "type": "function",
             "name": self.name,
             "description": self.description,
-            "parameters": json_parameters,
+            "parameters": self._parameters_json_schema(),
+        }
+
+    def to_provider_json(self, provider: str | None = None) -> dict[str, Any]:
+        normalized_provider = str(provider or "openai").strip().lower()
+        parameters = self._parameters_json_schema()
+
+        if normalized_provider == "anthropic":
+            return {
+                "name": self.name,
+                "description": self.description,
+                "input_schema": parameters,
+            }
+
+        if normalized_provider == "ollama":
+            return {
+                "type": "function",
+                "function": {
+                    "name": self.name,
+                    "description": self.description,
+                    "parameters": parameters,
+                },
+            }
+
+        return {
+            "type": "function",
+            "name": self.name,
+            "description": self.description,
+            "parameters": parameters,
         }
 
     def execute(self, arguments: dict[str, Any] | str | None) -> dict[str, Any]:

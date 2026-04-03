@@ -12,6 +12,7 @@ from .common import append_executed_call_id, copy_messages, emit_loop_event
 from .confirmation import execute_confirmable_tool_call
 from .human_input import parse_human_input_request
 from .messages import get_provider_message_builder
+from .models import ToolExecutionContext
 from .observation import inject_observation, observation_token_state
 from .runtime import run_tool_runtime_plugins
 from .types import ToolBatchState
@@ -330,6 +331,14 @@ class ToolExecutionHarness(BaseToolHarness):
             callback=context.callback,
             run_id=context.run_id,
             iteration=context.iteration,
+            execution_context=ToolExecutionContext(
+                session_id=context.session_id,
+                run_id=context.run_id,
+                provider=context.provider,
+                model=context.model,
+                iteration=context.iteration,
+                memory_namespace=context.memory_namespace,
+            ),
         )
         should_observe = batch_state.should_observe or outcome.should_observe
         builder = get_provider_message_builder(context.provider)

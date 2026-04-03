@@ -119,6 +119,9 @@ class Toolkit:
     def to_json(self) -> list[dict[str, Any]]:
         return [tool_obj.to_json() for tool_obj in self.tools.values()]
 
+    def to_provider_json(self, provider: str | None = None) -> list[dict[str, Any]]:
+        return [tool_obj.to_provider_json(provider) for tool_obj in self.tools.values()]
+
     def shutdown(self) -> None:
         return None
 

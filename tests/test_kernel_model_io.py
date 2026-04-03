@@ -96,8 +96,13 @@ def test_anthropic_model_io_builds_request_and_parses_text():
     assert turn.assistant_messages == [{"role": "assistant", "content": "hello claude"}]
     assert turn.consumed_tokens == 7
     assert captured_kwargs["model"] == "claude-3-7-sonnet"
-    assert captured_kwargs["messages"] == [{"role": "user", "content": "hi"}]
-    assert captured_kwargs["system"] == "be helpful"
+    assert captured_kwargs["messages"] == [{
+        "role": "user",
+        "content": [{"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}],
+    }]
+    assert captured_kwargs["system"] == [
+        {"type": "text", "text": "be helpful", "cache_control": {"type": "ephemeral"}}
+    ]
     request_event = next(event for event in events if event["type"] == "request_messages")
     assert request_event["provider"] == "anthropic"
     assert request_event["system"] == "be helpful"
