@@ -40,7 +40,11 @@ class ModelIOFactoryRegistry:
 
     def _create_anthropic(self, *, model: str, api_key: str | None) -> ModelIO:
         resolved_api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
-        return AnthropicModelIO(model=model, api_key=resolved_api_key or "")
+        return AnthropicModelIO(
+            model=model,
+            api_key=resolved_api_key or "",
+            default_payloads={model: {"max_tokens": 4096}},
+        )
 
     def _create_ollama(self, *, model: str, api_key: str | None) -> ModelIO:
         del api_key

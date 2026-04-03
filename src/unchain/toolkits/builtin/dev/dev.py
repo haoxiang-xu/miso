@@ -38,9 +38,10 @@ class DevToolkit(BuiltinToolkit):
         self,
         *,
         workspace_root: str | Path | None = None,
+        workspace_roots: list[str | Path] | None = None,
         terminal_strict_mode: bool = True,
     ) -> None:
-        super().__init__(workspace_root=workspace_root)
+        super().__init__(workspace_root=workspace_root, workspace_roots=workspace_roots)
         self._terminal_runtime = _TerminalRuntime(
             self.workspace_root,
             strict_mode=terminal_strict_mode,
@@ -55,10 +56,12 @@ class DevToolkit(BuiltinToolkit):
         )
         self.register(
             self.edit,
+            requires_confirmation=True,
             history_arguments_optimizer=self._compact_edit_args,
         )
         self.register(
             self.write,
+            requires_confirmation=True,
             history_arguments_optimizer=self._compact_write_args,
         )
         self.register(self.glob)
@@ -68,9 +71,6 @@ class DevToolkit(BuiltinToolkit):
             history_result_optimizer=self._compact_grep_result,
         )
 
-    def shutdown(self) -> None:
-        self._terminal_runtime.close_all_sessions()
-
     # ── helpers ────────────────────────────────────────────────────────────
 
     def _resolve_safe(self, path: str) -> tuple[Path | None, str | None]:
@@ -78,6 +78,15 @@ class DevToolkit(BuiltinToolkit):
             return self._resolve_workspace_path(path), None
         except Exception as exc:
             return None, str(exc)
+
+    def _relative_path(self, resolved: Path) -> str:
+        """Return path relative to whichever workspace root contains it."""
+        for root in self.workspace_roots:
+            try:
+                return str(resolved.relative_to(root))
+            except ValueError:
+                continue
+        return str(resolved)
 
     def _should_skip(self, path: Path) -> bool:
         return any(part in self._SKIP_DIR_NAMES for part in path.parts)
@@ -132,10 +141,6 @@ class DevToolkit(BuiltinToolkit):
     ) -> dict[str, Any]:
         """Execute a shell command and return its output.
 
-        Reserve bash for system operations: builds, tests, git, package managers.
-        Do NOT use bash for file reading (use ``read``), editing (use ``edit``),
-        searching (use ``grep``), or file finding (use ``glob``).
-
         :param command: The shell command to execute.
         :param cwd: Working directory relative to workspace root.
         :param timeout_seconds: Max execution time before killing the process.
@@ -160,19 +165,11 @@ class DevToolkit(BuiltinToolkit):
     ) -> dict[str, Any]:
         """Read a file and return content with line numbers.
 
-        Returns content in numbered-line format (like ``cat -n``)::
-
-            1\\tfirst line
-            2\\tsecond line
-
-        For large source files, ``ast_mode="auto"`` returns a compact AST
-        instead of raw text when the file exceeds a size threshold.
-
         :param path: File path relative to workspace root.
         :param offset: Skip this many lines from the start (0-based).
         :param limit: Maximum number of lines to return.
         :param max_chars: Character budget for the returned content.
-        :param ast_mode: ``"auto"`` (AST for large supported files), ``"always"``, or ``"never"``.
+        :param ast_mode: "auto" (AST for large files), "always", or "never".
         """
         target, err = self._resolve_safe(path)
         if target is None:
@@ -208,7 +205,7 @@ class DevToolkit(BuiltinToolkit):
                     )
                     if "error" not in ast_payload:
                         return {
-                            "path": str(target.relative_to(self.workspace_root)),
+                            "path": str(self._relative_path(target)),
                             "ast": ast_payload.get("ast"),
                             "language": lang,
                             "node_count": ast_payload.get("node_count"),
@@ -225,7 +222,7 @@ class DevToolkit(BuiltinToolkit):
             formatted = formatted[:max_chars]
 
         return {
-            "path": str(target.relative_to(self.workspace_root)),
+            "path": str(self._relative_path(target)),
             "content": formatted,
             "start_line": start_line,
             "end_line": end_line,
@@ -243,13 +240,6 @@ class DevToolkit(BuiltinToolkit):
         replace_all: bool = False,
     ) -> dict[str, Any]:
         """Perform exact string replacement in a file.
-
-        You MUST use ``read`` first to see the file content, then copy the
-        exact text you want to change into *old_string*.
-
-        To insert text: set *old_string* to a nearby anchor line, and
-        *new_string* to that anchor line plus your new content.
-        To delete text: set *new_string* to empty string.
 
         :param path: File path relative to workspace root.
         :param old_string: The exact text to find (must exist in the file).
@@ -272,7 +262,7 @@ class DevToolkit(BuiltinToolkit):
             hint = self._find_closest_match(content, old_string)
             result: dict[str, Any] = {
                 "error": "old_string not found in file",
-                "path": str(target.relative_to(self.workspace_root)),
+                "path": str(self._relative_path(target)),
             }
             if hint:
                 result["hint"] = f"Did you mean: {hint!r}?"
@@ -284,7 +274,7 @@ class DevToolkit(BuiltinToolkit):
                     f"old_string found {count} times. "
                     "Set replace_all=True or provide more surrounding context to make it unique."
                 ),
-                "path": str(target.relative_to(self.workspace_root)),
+                "path": str(self._relative_path(target)),
                 "occurrences": count,
             }
 
@@ -294,7 +284,7 @@ class DevToolkit(BuiltinToolkit):
 
         replacements = count if replace_all else 1
         return {
-            "path": str(target.relative_to(self.workspace_root)),
+            "path": str(self._relative_path(target)),
             "replacements": replacements,
             "bytes_written": len(new_content.encode("utf-8")),
         }
@@ -324,8 +314,6 @@ class DevToolkit(BuiltinToolkit):
     ) -> dict[str, Any]:
         """Create a new file or completely overwrite an existing file.
 
-        For modifications to existing files, prefer ``edit`` instead.
-
         :param path: File path relative to workspace root.
         :param content: Full file content to write.
         :param overwrite: If False (default), fail when file already exists.
@@ -338,14 +326,14 @@ class DevToolkit(BuiltinToolkit):
         if not created and not overwrite:
             return {
                 "error": "file already exists, set overwrite=True to replace",
-                "path": str(target.relative_to(self.workspace_root)),
+                "path": str(self._relative_path(target)),
             }
 
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
 
         return {
-            "path": str(target.relative_to(self.workspace_root)),
+            "path": str(self._relative_path(target)),
             "bytes_written": len(content.encode("utf-8")),
             "created": created,
         }
@@ -360,9 +348,7 @@ class DevToolkit(BuiltinToolkit):
     ) -> dict[str, Any]:
         """Find files matching a glob pattern, sorted by modification time.
 
-        Use this to find files by name. Do NOT use bash with ``find`` or ``ls``.
-
-        :param pattern: Glob pattern (e.g. ``"**/*.py"``, ``"src/**/*.ts"``).
+        :param pattern: Glob pattern (e.g. "**/*.py", "src/**/*.ts").
         :param path: Base directory for the search.
         :param max_results: Maximum number of file paths to return.
         """
@@ -385,13 +371,13 @@ class DevToolkit(BuiltinToolkit):
             return {"error": f"glob failed: {exc}"}
 
         for p in candidates:
-            matches.append(str(p.relative_to(self.workspace_root)))
+            matches.append(self._relative_path(p))
             if len(matches) >= max_results:
                 break
 
         return {
             "pattern": pattern,
-            "path": str(base.relative_to(self.workspace_root)),
+            "path": self._relative_path(base),
             "matches": matches,
             "num_matches": len(matches),
             "truncated": len(candidates) > max_results,
@@ -410,22 +396,14 @@ class DevToolkit(BuiltinToolkit):
         max_results: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
-        """Search file contents with regex, supporting multiple output modes.
-
-        Use this to search code. Do NOT use bash with ``grep`` or ``rg``.
-
-        Output modes:
-
-        - ``"files_with_matches"``: Return only file paths that contain matches.
-        - ``"content"``: Return matching lines with line numbers and context.
-        - ``"count"``: Return match count per file.
+        """Search file contents with regex.
 
         :param pattern: Regex pattern to search for.
         :param path: Directory or file to search within.
-        :param output_mode: One of ``"files_with_matches"``, ``"content"``, ``"count"``.
-        :param context_lines: Lines of context before and after each match (content mode only).
+        :param output_mode: "files_with_matches", "content", or "count".
+        :param context_lines: Lines of context before/after each match (content mode).
         :param case_sensitive: Case-sensitive matching.
-        :param file_glob: Optional glob filter for files (e.g. ``"*.py"``).
+        :param file_glob: Glob filter for files (e.g. "*.py").
         :param max_results: Maximum results to return.
         :param offset: Skip this many results (pagination).
         """
@@ -473,7 +451,7 @@ class DevToolkit(BuiltinToolkit):
                 if skipped < offset:
                     skipped += 1
                     continue
-                matches.append(str(fp.relative_to(self.workspace_root)))
+                matches.append(str(self._relative_path(fp)))
                 if len(matches) >= max_results:
                     return {
                         "pattern": compiled.pattern,
@@ -507,7 +485,7 @@ class DevToolkit(BuiltinToolkit):
             except Exception:
                 continue
             lines = text.splitlines()
-            rel = str(fp.relative_to(self.workspace_root))
+            rel = str(self._relative_path(fp))
             for i, line in enumerate(lines):
                 if compiled.search(line):
                     if skipped < offset:
@@ -560,7 +538,7 @@ class DevToolkit(BuiltinToolkit):
                     skipped += 1
                     continue
                 counts.append({
-                    "path": str(fp.relative_to(self.workspace_root)),
+                    "path": str(self._relative_path(fp)),
                     "count": n,
                 })
                 total += n

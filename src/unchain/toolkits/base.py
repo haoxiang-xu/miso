@@ -18,29 +18,47 @@ class BuiltinToolkit(Toolkit):
     workspace_root:
         Root directory the toolkit is allowed to access.  Defaults to the
         current working directory when *None*.
+    workspace_roots:
+        Multiple root directories.  When provided, takes precedence over
+        *workspace_root*.  Paths are validated against **any** listed root.
     """
 
-    def __init__(self, *, workspace_root: str | Path | None = None):
+    def __init__(
+        self,
+        *,
+        workspace_root: str | Path | None = None,
+        workspace_roots: list[str | Path] | None = None,
+    ):
         super().__init__()
-        self.workspace_root: Path = Path(workspace_root or os.getcwd()).resolve()
+        if workspace_roots:
+            self.workspace_roots: list[Path] = [Path(r).resolve() for r in workspace_roots]
+        elif workspace_root:
+            self.workspace_roots = [Path(workspace_root).resolve()]
+        else:
+            self.workspace_roots = [Path(os.getcwd()).resolve()]
+        # Backward compat: workspace_root always points to the first root.
+        self.workspace_root: Path = self.workspace_roots[0]
         self._execution_context_stack: list[WorkspacePinExecutionContext] = []
 
     # ── shared path helper ─────────────────────────────────────────────────
 
     def _resolve_workspace_path(self, path: str) -> Path:
-        """Resolve *path* relative to ``workspace_root`` and verify it stays inside."""
+        """Resolve *path* relative to the first workspace root and verify it
+        stays inside **any** of the registered roots."""
         path_obj = Path(path)
         if path_obj.is_absolute():
             resolved = path_obj.resolve()
         else:
             resolved = (self.workspace_root / path_obj).resolve()
 
-        try:
-            resolved.relative_to(self.workspace_root)
-        except ValueError:
-            raise ValueError("path is outside workspace_root")
+        for root in self.workspace_roots:
+            try:
+                resolved.relative_to(root)
+                return resolved
+            except ValueError:
+                continue
 
-        return resolved
+        raise ValueError("path is outside all workspace roots")
 
     def push_execution_context(self, context: WorkspacePinExecutionContext) -> None:
         self._execution_context_stack.append(context)
