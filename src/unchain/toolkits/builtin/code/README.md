@@ -1,6 +1,6 @@
 # Code Toolkit
 
-`CodeToolkit` is the Claude-style builtin coding toolkit for precise file reads, guarded writes, string edits, globbing, grep-style search, public web fetch, and cross-platform shell execution.
+`CodeToolkit` is the Claude-style builtin coding toolkit for precise file reads, guarded writes, string edits, globbing, grep-style search, public web fetch, cross-platform shell execution, and LSP-powered code intelligence.
 
 ## What this README is for
 

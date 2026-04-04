@@ -1,7 +1,7 @@
 [toolkit]
 id = "code_toolkit"
 name = "Code Toolkit"
-description = "Claude-style coding tools for guarded file reads, writes, edits, globbing, grep search, public web fetch, and cross-platform shell execution inside the workspace."
+description = "Claude-style coding tools for guarded file reads, writes, edits, globbing, grep search, public web fetch, cross-platform shell execution, and LSP-powered code intelligence inside the workspace."
 factory = "unchain.toolkits.builtin.code:CodeToolkit"
 version = "1.0.0"
 readme = "README.md"
@@ -67,3 +67,10 @@ title = "Shell"
 description = "Run a shell command, poll a background task, or kill a background task inside the workspace."
 observe = false
 requires_confirmation = true
+
+[[tools]]
+name = "lsp"
+title = "LSP"
+description = "Query a language server for definitions, references, hover text, and symbols for Python or TS/JS files."
+observe = false
+requires_confirmation = false

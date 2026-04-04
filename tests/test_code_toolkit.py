@@ -1,17 +1,277 @@
 import os
+import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 from pathlib import Path
 
 from unchain.kernel.types import ToolCall
 from unchain.tools import ToolExecutionContext, Toolkit, execute_confirmable_tool_call
 from unchain.toolkits import CodeToolkit
+from unchain.toolkits.builtin.code.lsp_runtime import LSPServerSpec
 from unchain.toolkits.builtin.code import web_fetch as web_fetch_module
 from unchain.toolkits.builtin.code.shell_runtime import ShellRuntime
 
 
-EXPECTED_CODE_TOOLS = {"read", "write", "edit", "glob", "grep", "web_fetch", "shell"}
+EXPECTED_CODE_TOOLS = {"read", "write", "edit", "glob", "grep", "web_fetch", "shell", "lsp"}
+
+
+def _write_fake_lsp_server(root: Path) -> Path:
+    script_path = root / "fake_lsp_server.py"
+    script_path.write_text(
+        textwrap.dedent(
+            """
+            import json
+            import sys
+            from pathlib import Path
+            from urllib.parse import unquote, urlparse
+
+            ROOT_URI = ""
+            OPEN_DOCS = {}
+
+
+            def read_message():
+                headers = {}
+                while True:
+                    line = sys.stdin.buffer.readline()
+                    if not line:
+                        return None
+                    if line in {b"\\r\\n", b"\\n"}:
+                        break
+                    key, value = line.decode("utf-8", errors="replace").split(":", 1)
+                    headers[key.strip().lower()] = value.strip()
+                content_length = int(headers.get("content-length", "0"))
+                if content_length <= 0:
+                    return None
+                body = sys.stdin.buffer.read(content_length)
+                return json.loads(body.decode("utf-8", errors="replace"))
+
+
+            def write_message(payload):
+                body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                header = f"Content-Length: {len(body)}\\r\\n\\r\\n".encode("ascii")
+                sys.stdout.buffer.write(header)
+                sys.stdout.buffer.write(body)
+                sys.stdout.buffer.flush()
+
+
+            def uri_to_path(uri):
+                parsed = urlparse(uri)
+                raw_path = parsed.path or uri.replace("file://", "", 1)
+                if raw_path.startswith("/") and len(raw_path) > 3 and raw_path[2] == ":":
+                    raw_path = raw_path[1:]
+                return Path(unquote(raw_path))
+
+
+            def path_to_uri(path):
+                return Path(path).resolve().as_uri()
+
+
+            def current_doc_uri():
+                if OPEN_DOCS:
+                    return next(iter(OPEN_DOCS))
+                if ROOT_URI:
+                    root_path = uri_to_path(ROOT_URI)
+                    return path_to_uri(root_path / "main.py")
+                return path_to_uri(Path.cwd() / "main.py")
+
+
+            while True:
+                message = read_message()
+                if message is None:
+                    break
+
+                method = message.get("method")
+                if method == "initialize":
+                    ROOT_URI = message.get("params", {}).get("rootUri", "")
+                    write_message(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": message.get("id"),
+                            "result": {"capabilities": {}},
+                        }
+                    )
+                    continue
+
+                if method == "initialized":
+                    continue
+
+                if method == "textDocument/didOpen":
+                    params = message.get("params", {})
+                    text_document = params.get("textDocument", {})
+                    OPEN_DOCS[text_document.get("uri")] = text_document.get("text", "")
+                    continue
+
+                if method == "textDocument/didChange":
+                    params = message.get("params", {})
+                    text_document = params.get("textDocument", {})
+                    changes = params.get("contentChanges", [])
+                    if changes:
+                        OPEN_DOCS[text_document.get("uri")] = changes[0].get("text", "")
+                    continue
+
+                if method == "shutdown":
+                    write_message({"jsonrpc": "2.0", "id": message.get("id"), "result": None})
+                    continue
+
+                if method == "exit":
+                    break
+
+                if method == "textDocument/definition":
+                    uri = message.get("params", {}).get("textDocument", {}).get("uri") or current_doc_uri()
+                    write_message(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": message.get("id"),
+                            "result": [
+                                {
+                                    "uri": uri,
+                                    "range": {
+                                        "start": {"line": 0, "character": 0},
+                                        "end": {"line": 0, "character": 4},
+                                    },
+                                }
+                            ],
+                        }
+                    )
+                    continue
+
+                if method == "textDocument/references":
+                    uri = message.get("params", {}).get("textDocument", {}).get("uri") or current_doc_uri()
+                    current_path = uri_to_path(uri)
+                    ignored_path = current_path.with_name("ignored" + current_path.suffix)
+                    write_message(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": message.get("id"),
+                            "result": [
+                                {
+                                    "uri": uri,
+                                    "range": {
+                                        "start": {"line": 1, "character": 0},
+                                        "end": {"line": 1, "character": 4},
+                                    },
+                                },
+                                {
+                                    "uri": path_to_uri(ignored_path),
+                                    "range": {
+                                        "start": {"line": 2, "character": 0},
+                                        "end": {"line": 2, "character": 4},
+                                    },
+                                },
+                            ],
+                        }
+                    )
+                    continue
+
+                if method == "textDocument/hover":
+                    write_message(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": message.get("id"),
+                            "result": {
+                                "contents": {"kind": "plaintext", "value": "DemoType -> int"},
+                                "range": {
+                                    "start": {"line": 0, "character": 0},
+                                    "end": {"line": 0, "character": 4},
+                                },
+                            },
+                        }
+                    )
+                    continue
+
+                if method == "textDocument/documentSymbol":
+                    write_message(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": message.get("id"),
+                            "result": [
+                                {
+                                    "name": "Demo",
+                                    "kind": 5,
+                                    "detail": "class",
+                                    "range": {
+                                        "start": {"line": 0, "character": 0},
+                                        "end": {"line": 4, "character": 0},
+                                    },
+                                    "selectionRange": {
+                                        "start": {"line": 0, "character": 0},
+                                        "end": {"line": 0, "character": 4},
+                                    },
+                                    "children": [
+                                        {
+                                            "name": "method",
+                                            "kind": 6,
+                                            "detail": "()",
+                                            "range": {
+                                                "start": {"line": 1, "character": 2},
+                                                "end": {"line": 3, "character": 0},
+                                            },
+                                            "selectionRange": {
+                                                "start": {"line": 1, "character": 2},
+                                                "end": {"line": 1, "character": 8},
+                                            },
+                                            "children": [],
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    )
+                    continue
+
+                if method == "workspace/symbol":
+                    uri = current_doc_uri()
+                    current_path = uri_to_path(uri)
+                    util_path = current_path.with_name("util" + current_path.suffix)
+                    write_message(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": message.get("id"),
+                            "result": [
+                                {
+                                    "name": "Demo",
+                                    "kind": 5,
+                                    "location": {
+                                        "uri": uri,
+                                        "range": {
+                                            "start": {"line": 0, "character": 0},
+                                            "end": {"line": 0, "character": 4},
+                                        },
+                                    },
+                                    "containerName": "",
+                                },
+                                {
+                                    "name": "helper",
+                                    "kind": 12,
+                                    "location": {
+                                        "uri": path_to_uri(util_path),
+                                        "range": {
+                                            "start": {"line": 0, "character": 0},
+                                            "end": {"line": 0, "character": 6},
+                                        },
+                                    },
+                                    "containerName": "Demo",
+                                },
+                            ],
+                        }
+                    )
+                    continue
+
+                write_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": message.get("id"),
+                        "error": {"code": -32601, "message": f"Unhandled method: {method}"},
+                    }
+                )
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    return script_path
 
 
 def _merge_toolkit(source: Toolkit) -> Toolkit:
@@ -33,6 +293,7 @@ def test_code_toolkit_registers_expected_tools_and_confirmation_contract():
         assert toolkit.tools["edit"].requires_confirmation is True
         assert toolkit.tools["web_fetch"].requires_confirmation is True
         assert toolkit.tools["shell"].requires_confirmation is True
+        assert toolkit.tools["lsp"].requires_confirmation is False
 
 
 def test_code_toolkit_requires_full_read_before_mutating_existing_files():
@@ -606,3 +867,185 @@ def test_shell_runtime_detect_executor_prefers_pwsh_and_env_shell(monkeypatch):
     )
     assert posix_spec.family == "posix"
     assert posix_spec.program == "/bin/zsh"
+
+
+def test_code_toolkit_lsp_python_operations_use_fake_server(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp).resolve()
+        script = _write_fake_lsp_server(root)
+        toolkit = CodeToolkit(workspace_root=root)
+        target = root / "main.py"
+        target.write_text("class Demo:\n    pass\n", encoding="utf-8")
+        (root / "ignored.py").write_text("ignored\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            toolkit._lsp_runtime,
+            "_server_spec_for_language",
+            lambda language: LSPServerSpec(language=language, server_name="fake-lsp", command=[sys.executable, "-u", str(script)]),
+        )
+        monkeypatch.setattr(
+            toolkit._lsp_runtime,
+            "_gitignored_paths",
+            lambda paths, *, root: {path for path in paths if path.name == "ignored.py"},
+        )
+
+        definition = toolkit.execute(
+            "lsp",
+            {
+                "operation": "goToDefinition",
+                "file_path": str(target),
+                "line": 1,
+                "character": 1,
+            },
+        )
+        references = toolkit.execute(
+            "lsp",
+            {
+                "operation": "findReferences",
+                "file_path": str(target),
+                "line": 1,
+                "character": 1,
+            },
+        )
+        hover = toolkit.execute(
+            "lsp",
+            {
+                "operation": "hover",
+                "file_path": str(target),
+                "line": 1,
+                "character": 1,
+            },
+        )
+
+        assert definition["ok"] is True
+        assert definition["server"] == "fake-lsp"
+        assert "Defined in main.py:1:1" in definition["result"]
+        assert references["ok"] is True
+        assert references["result_count"] == 1
+        assert "ignored.py" not in references["result"]
+        assert hover["ok"] is True
+        assert "DemoType -> int" in hover["result"]
+
+        toolkit.shutdown()
+
+
+def test_code_toolkit_lsp_typescript_symbols_reuse_session_and_shutdown(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp).resolve()
+        script = _write_fake_lsp_server(root)
+        toolkit = CodeToolkit(workspace_root=root)
+        target = root / "main.ts"
+        target.write_text("export class Demo {}\n", encoding="utf-8")
+        (root / "util.ts").write_text("export function helper() {}\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            toolkit._lsp_runtime,
+            "_server_spec_for_language",
+            lambda language: LSPServerSpec(language=language, server_name="fake-lsp", command=[sys.executable, "-u", str(script)]),
+        )
+
+        first = toolkit.execute(
+            "lsp",
+            {
+                "operation": "documentSymbol",
+                "file_path": str(target),
+            },
+        )
+        assert first["ok"] is True
+        assert "Document symbols:" in first["result"]
+        assert "Demo (Class)" in first["result"]
+
+        session_before = next(iter(toolkit._lsp_runtime._sessions.values()))
+        second = toolkit.execute(
+            "lsp",
+            {
+                "operation": "workspaceSymbol",
+                "file_path": str(target),
+                "query": "Demo",
+            },
+        )
+        session_after = next(iter(toolkit._lsp_runtime._sessions.values()))
+
+        assert second["ok"] is True
+        assert second["result_count"] == 2
+        assert "main.ts" in second["result"]
+        assert "util.ts" in second["result"]
+        assert session_before is session_after
+
+        process = session_before.process
+        toolkit.shutdown()
+        process.wait(timeout=2.0)
+        assert process.poll() is not None
+
+
+def test_code_toolkit_lsp_validates_paths_and_missing_servers(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp).resolve()
+        toolkit = CodeToolkit(workspace_root=root)
+        target = root / "main.py"
+        target.write_text("print('hi')\n", encoding="utf-8")
+        unsupported = root / "main.rb"
+        unsupported.write_text("puts 'hi'\n", encoding="utf-8")
+
+        invalid_op = toolkit.execute("lsp", {"operation": "rename", "file_path": str(target)})
+        relative_path = toolkit.execute("lsp", {"operation": "documentSymbol", "file_path": "main.py"})
+        missing_position = toolkit.execute(
+            "lsp",
+            {"operation": "hover", "file_path": str(target)},
+        )
+        unsupported_language = toolkit.execute(
+            "lsp",
+            {"operation": "documentSymbol", "file_path": str(unsupported)},
+        )
+
+        monkeypatch.setattr(toolkit._lsp_runtime, "_server_spec_for_language", lambda language: None)
+        missing_server = toolkit.execute(
+            "lsp",
+            {"operation": "documentSymbol", "file_path": str(target)},
+        )
+
+        assert "operation must be one of" in invalid_op["error"]
+        assert "absolute path" in relative_path["error"]
+        assert "line and character are required" in missing_position["error"]
+        assert "unsupported language" in unsupported_language["error"]
+        assert "no LSP server available" in missing_server["error"]
+
+
+def test_code_toolkit_lsp_compacts_large_results():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = CodeToolkit(workspace_root=tmp)
+        optimizer = toolkit.tools["lsp"].history_result_optimizer
+        assert optimizer is not None
+
+        payload = {
+            "ok": True,
+            "operation": "workspaceSymbol",
+            "file_path": "/tmp/main.ts",
+            "result": "x" * 5000,
+            "result_count": 20,
+            "file_count": 4,
+            "language": "typescript",
+            "server": "fake-lsp",
+            "error": "",
+        }
+        compacted = optimizer(
+            payload,
+            type(
+                "Ctx",
+                (),
+                {
+                    "tool_name": "lsp",
+                    "call_id": "call-1",
+                    "kind": "result",
+                    "provider": "openai",
+                    "session_id": "session-1",
+                    "latest_messages": [],
+                    "max_chars": 200,
+                    "preview_chars": 32,
+                    "include_hash": True,
+                },
+            )(),
+        )
+
+        assert compacted["compacted"] is True
+        assert compacted["digest"]

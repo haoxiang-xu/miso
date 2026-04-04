@@ -360,6 +360,14 @@ class ShellRuntime:
             "truncated": stdout_truncated or stderr_truncated,
         }
 
+    def shutdown(self) -> None:
+        for task_id in list(self.background_tasks):
+            try:
+                self.kill(task_id, max_output_chars=self.DEFAULT_MAX_OUTPUT_CHARS)
+            except Exception:
+                continue
+        self.background_tasks.clear()
+
     def _run_foreground(
         self,
         *,
