@@ -37,6 +37,7 @@ class AgentCallContext:
     session_id: str | None = None
     memory_namespace: str | None = None
     run_id: str | None = None
+    tool_runtime_config: dict[str, Any] | None = None
 
 
 @dataclass
@@ -114,6 +115,7 @@ class PreparedAgent:
             toolkit=self.toolkit,
             run_id=self.call_context.run_id,
             tool_runtime_plugins=list(self.tool_runtime_plugins),
+            tool_runtime_config=copy.deepcopy(self.call_context.tool_runtime_config or {}),
         )
         return self._apply_run_hooks(result)
 
@@ -138,6 +140,7 @@ class PreparedAgent:
             toolkit=self.toolkit,
             run_id=self.call_context.run_id,
             tool_runtime_plugins=list(self.tool_runtime_plugins),
+            tool_runtime_config=copy.deepcopy(self.call_context.tool_runtime_config or {}),
         )
         return self._apply_run_hooks(result)
 

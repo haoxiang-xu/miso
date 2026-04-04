@@ -162,6 +162,7 @@ class Agent:
         session_id: str | None = None,
         memory_namespace: str | None = None,
         run_id: str | None = None,
+        tool_runtime_config: dict[str, Any] | None = None,
     ) -> KernelRunResult:
         prepared = self._prepare(
             AgentCallContext(
@@ -180,6 +181,9 @@ class Agent:
                 session_id=session_id,
                 memory_namespace=memory_namespace,
                 run_id=run_id,
+                tool_runtime_config=copy.deepcopy(tool_runtime_config)
+                if isinstance(tool_runtime_config, dict)
+                else None,
             )
         )
         return prepared.run()
@@ -200,6 +204,7 @@ class Agent:
         session_id: str | None = None,
         memory_namespace: str | None = None,
         run_id: str | None = None,
+        tool_runtime_config: dict[str, Any] | None = None,
     ) -> KernelRunResult:
         prepared = self._prepare(
             AgentCallContext(
@@ -217,6 +222,9 @@ class Agent:
                 session_id=session_id,
                 memory_namespace=memory_namespace,
                 run_id=run_id,
+                tool_runtime_config=copy.deepcopy(tool_runtime_config)
+                if isinstance(tool_runtime_config, dict)
+                else None,
             )
         )
         return prepared.resume_human_input()

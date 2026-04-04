@@ -338,6 +338,9 @@ class ToolExecutionHarness(BaseToolHarness):
                 model=context.model,
                 iteration=context.iteration,
                 memory_namespace=context.memory_namespace,
+                tool_runtime_config=context.event.get("tool_runtime_config")
+                if isinstance(context.event.get("tool_runtime_config"), dict)
+                else {},
             ),
         )
         should_observe = batch_state.should_observe or outcome.should_observe

@@ -1,7 +1,7 @@
 [toolkit]
 id = "code_toolkit"
 name = "Code Toolkit"
-description = "Claude-style coding tools for guarded file reads, writes, edits, globbing, and grep search inside the workspace."
+description = "Claude-style coding tools for guarded file reads, writes, edits, globbing, grep search, and public web fetch inside the workspace."
 factory = "unchain.toolkits.builtin.code:CodeToolkit"
 version = "1.0.0"
 readme = "README.md"
@@ -53,3 +53,10 @@ title = "Grep"
 description = "Search UTF-8 text files inside the workspace with regex, optional glob filters, and paginated result modes."
 observe = false
 requires_confirmation = false
+
+[[tools]]
+name = "web_fetch"
+title = "Web Fetch"
+description = "Fetch a public web page over HTTP(S), return raw page content or run a runtime-configured extraction model."
+observe = false
+requires_confirmation = true

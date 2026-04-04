@@ -5,9 +5,10 @@ from pathlib import Path
 from unchain.kernel.types import ToolCall
 from unchain.tools import ToolExecutionContext, Toolkit, execute_confirmable_tool_call
 from unchain.toolkits import CodeToolkit
+from unchain.toolkits.builtin.code import web_fetch as web_fetch_module
 
 
-EXPECTED_CODE_TOOLS = {"read", "write", "edit", "glob", "grep"}
+EXPECTED_CODE_TOOLS = {"read", "write", "edit", "glob", "grep", "web_fetch"}
 
 
 def _merge_toolkit(source: Toolkit) -> Toolkit:
@@ -27,6 +28,7 @@ def test_code_toolkit_registers_expected_tools_and_confirmation_contract():
         assert toolkit.tools["grep"].requires_confirmation is False
         assert toolkit.tools["write"].requires_confirmation is True
         assert toolkit.tools["edit"].requires_confirmation is True
+        assert toolkit.tools["web_fetch"].requires_confirmation is True
 
 
 def test_code_toolkit_requires_full_read_before_mutating_existing_files():
@@ -214,3 +216,188 @@ def test_execute_confirmable_tool_call_pushes_code_toolkit_execution_context_by_
         )
         assert same_session_outcome.tool_result["operation"] == "update"
         assert target.read_text(encoding="utf-8") == "from same session\n"
+
+
+def test_code_toolkit_web_fetch_raw_uses_cache_and_paginates(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = CodeToolkit(workspace_root=tmp)
+        monkeypatch.setattr(web_fetch_module, "validate_public_url", lambda url: (url, None))
+
+        calls = {"count": 0}
+
+        def fake_request(url: str):
+            calls["count"] += 1
+            return (
+                {
+                    "ok": True,
+                    "url": url,
+                    "final_url": url,
+                    "host": "example.com",
+                    "status_code": 200,
+                    "content_type": "text/plain",
+                    "file_kind": "text",
+                    "result": "",
+                    "content_length": len("alpha beta gamma delta"),
+                    "returned_chars": 0,
+                    "truncated": False,
+                    "next_offset": None,
+                    "cached": False,
+                    "redirect": None,
+                    "skipped": False,
+                    "error": "",
+                },
+                "alpha beta gamma delta",
+            )
+
+        monkeypatch.setattr(toolkit._web_fetch_service, "_request", fake_request)
+
+        first = toolkit.execute(
+            "web_fetch",
+            {"url": "https://example.com/docs", "mode": "raw", "offset": 6, "max_chars": 4},
+        )
+        assert first["ok"] is True
+        assert first["result"] == "beta"
+        assert first["truncated"] is True
+        assert first["next_offset"] == 10
+        assert first["cached"] is False
+
+        second = toolkit.execute(
+            "web_fetch",
+            {"url": "https://example.com/docs", "mode": "raw", "offset": 0, "max_chars": 5},
+        )
+        assert second["result"] == "alpha"
+        assert second["cached"] is True
+        assert calls["count"] == 1
+
+
+def test_code_toolkit_web_fetch_extract_uses_runtime_config(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = CodeToolkit(workspace_root=tmp)
+        merged = _merge_toolkit(toolkit)
+        monkeypatch.setattr(web_fetch_module, "validate_public_url", lambda url: (url, None))
+
+        monkeypatch.setattr(
+            toolkit._web_fetch_service,
+            "_request",
+            lambda url: (
+                {
+                    "ok": True,
+                    "url": url,
+                    "final_url": url,
+                    "host": "example.com",
+                    "status_code": 200,
+                    "content_type": "text/html",
+                    "file_kind": "text",
+                    "result": "",
+                    "content_length": 21,
+                    "returned_chars": 0,
+                    "truncated": False,
+                    "next_offset": None,
+                    "cached": False,
+                    "redirect": None,
+                    "skipped": False,
+                    "error": "",
+                },
+                "React documentation body",
+            ),
+        )
+
+        seen: dict[str, object] = {}
+
+        def fake_extract(*, url: str, content: str, prompt: str, extract_model_config: dict[str, object]) -> str:
+            seen["url"] = url
+            seen["content"] = content
+            seen["prompt"] = prompt
+            seen["config"] = dict(extract_model_config)
+            return "summary output"
+
+        monkeypatch.setattr("unchain.toolkits.builtin.code.code.run_extract_model", fake_extract)
+
+        outcome = execute_confirmable_tool_call(
+            toolkit=merged,
+            tool_call=ToolCall(
+                call_id="call_fetch_extract",
+                name="web_fetch",
+                arguments={
+                    "url": "https://example.com/react",
+                    "mode": "extract",
+                    "prompt": "Summarize the docs changes",
+                },
+            ),
+            on_tool_confirm=None,
+            loop=None,
+            callback=None,
+            run_id="run-fetch",
+            iteration=0,
+            execution_context=ToolExecutionContext(
+                session_id="session-fetch",
+                run_id="run-fetch",
+                provider="openai",
+                model="gpt-5",
+                iteration=0,
+                tool_runtime_config={
+                    "web_fetch": {
+                        "extract_model": {
+                            "provider": "openai",
+                            "model": "gpt-5-mini",
+                            "payload": {"store": False},
+                        }
+                    }
+                },
+            ),
+        )
+
+        assert outcome.tool_result["ok"] is True
+        assert outcome.tool_result["result"] == "summary output"
+        assert seen["prompt"] == "Summarize the docs changes"
+        assert seen["config"] == {
+            "provider": "openai",
+            "model": "gpt-5-mini",
+            "payload": {"store": False},
+        }
+
+
+def test_code_toolkit_web_fetch_rejects_private_urls_and_requires_extract_config(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = CodeToolkit(workspace_root=tmp)
+
+        denied = toolkit.execute("web_fetch", {"url": "http://localhost:3000", "mode": "raw"})
+        assert denied["ok"] is False
+        assert "private or localhost" in denied["error"]
+
+        monkeypatch.setattr(web_fetch_module, "validate_public_url", lambda url: (url, None))
+        monkeypatch.setattr(
+            toolkit._web_fetch_service,
+            "_request",
+            lambda url: (
+                {
+                    "ok": True,
+                    "url": url,
+                    "final_url": url,
+                    "host": "example.com",
+                    "status_code": 200,
+                    "content_type": "text/plain",
+                    "file_kind": "text",
+                    "result": "",
+                    "content_length": 12,
+                    "returned_chars": 0,
+                    "truncated": False,
+                    "next_offset": None,
+                    "cached": False,
+                    "redirect": None,
+                    "skipped": False,
+                    "error": "",
+                },
+                "plain text body",
+            ),
+        )
+        missing_config = toolkit.execute(
+            "web_fetch",
+            {
+                "url": "https://example.com/plain",
+                "mode": "extract",
+                "prompt": "Summarize",
+            },
+        )
+        assert missing_config["ok"] is False
+        assert "tool_runtime_config['web_fetch']['extract_model']" in missing_config["error"]

@@ -4,7 +4,7 @@ import inspect
 import json
 import re
 import types
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Union, get_args, get_origin, get_type_hints
 
 _UNION_TYPE = getattr(types, "UnionType", None)
@@ -196,6 +196,7 @@ class ToolExecutionContext:
     iteration: int
     memory_namespace: str = ""
     session_store: Any = None
+    tool_runtime_config: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

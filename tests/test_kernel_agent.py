@@ -8,6 +8,7 @@ from unchain.agent import Agent, MemoryModule, OptimizersModule, PoliciesModule,
 from unchain.memory import MemoryManager
 from unchain.tools import Toolkit
 from unchain.toolkits import CodeToolkit
+from unchain.toolkits.base import BuiltinToolkit
 
 
 def test_kernel_agent_run_returns_kernel_run_result_and_supports_three_providers():
@@ -90,6 +91,87 @@ def test_kernel_agent_tools_module_executes_tool_calls():
     )
 
     result = agent.run("use the tool", max_iterations=2)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "done"
+
+
+def test_kernel_agent_passes_tool_runtime_config_to_builtin_toolkits():
+    class ConfigToolkit(BuiltinToolkit):
+        def __init__(self):
+            super().__init__()
+            self.register(self.show_config)
+
+        def show_config(self) -> dict[str, object]:
+            context = self.current_execution_context
+            return {
+                "config": dict(getattr(context, "tool_runtime_config", {}) or {}) if context is not None else {}
+            }
+
+    class FakeModelIO:
+        provider = "ollama"
+        model = "llama3"
+
+        def __init__(self):
+            self.calls = 0
+
+        def fetch_turn(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                return ModelTurnResult(
+                    assistant_messages=[
+                        {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_cfg",
+                                    "type": "function",
+                                    "function": {"name": "show_config", "arguments": "{}"},
+                                }
+                            ],
+                        }
+                    ],
+                    tool_calls=[ToolCall(call_id="call_cfg", name="show_config", arguments={})],
+                    final_text="",
+                )
+            assert json.loads(request.messages[-1]["content"]) == {
+                "config": {
+                    "web_fetch": {
+                        "extract_model": {
+                            "provider": "openai",
+                            "model": "gpt-5-mini",
+                        }
+                    }
+                }
+            }
+            return ModelTurnResult(
+                assistant_messages=[{"role": "assistant", "content": "done"}],
+                tool_calls=[],
+                final_text="done",
+            )
+
+    fake_model_io = FakeModelIO()
+    agent = Agent(
+        name="config_agent",
+        provider="ollama",
+        model="llama3",
+        modules=(ToolsModule(tools=(ConfigToolkit(),)),),
+        model_io_factory=lambda spec, ctx: fake_model_io,
+    )
+
+    result = agent.run(
+        "show runtime config",
+        max_iterations=2,
+        tool_runtime_config={
+            "web_fetch": {
+                "extract_model": {
+                    "provider": "openai",
+                    "model": "gpt-5-mini",
+                }
+            }
+        },
+    )
 
     assert result.status == "completed"
     assert result.messages[-1]["content"] == "done"

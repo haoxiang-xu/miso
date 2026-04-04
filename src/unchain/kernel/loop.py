@@ -196,6 +196,7 @@ class KernelLoop:
         on_human_input: Any = None,
         max_iterations: int = 0,
         tool_runtime_plugins: list[Any] | None = None,
+        tool_runtime_config: dict[str, Any] | None = None,
     ) -> ModelTurnResult:
         runtime_toolkit = toolkit if toolkit is not None else Toolkit()
         current_iteration = int(state.iteration)
@@ -220,6 +221,7 @@ class KernelLoop:
             "supports_tools": True,
             "loop": self,
             "tool_runtime_plugins": list(tool_runtime_plugins or []),
+            "tool_runtime_config": copy.deepcopy(tool_runtime_config or {}),
         }
 
         if self._memory_runtime is not None and current_iteration > 0:
@@ -322,6 +324,7 @@ class KernelLoop:
         toolkit: Toolkit | None,
         run_id: str,
         resume_mode: bool,
+        tool_runtime_config: dict[str, Any] | None = None,
     ) -> None:
         if self._memory_runtime is None:
             return
@@ -339,6 +342,7 @@ class KernelLoop:
                 "supports_tools": True,
                 "resume_mode": resume_mode,
                 "loop": self,
+                "tool_runtime_config": copy.deepcopy(tool_runtime_config or {}),
             },
         )
 
@@ -607,6 +611,7 @@ class KernelLoop:
         run_id: str | None = None,
         skip_bootstrap: bool = False,
         tool_runtime_plugins: list[Any] | None = None,
+        tool_runtime_config: dict[str, Any] | None = None,
     ) -> KernelRunResult:
         if self._model_io is None:
             raise RuntimeError("KernelLoop.model_io is not configured")
@@ -634,6 +639,7 @@ class KernelLoop:
                 toolkit=runtime_toolkit,
                 run_id=run_id,
                 resume_mode=False,
+                tool_runtime_config=tool_runtime_config,
             )
         self.emit_event(
             callback,
@@ -694,6 +700,7 @@ class KernelLoop:
                 on_human_input=on_human_input,
                 max_iterations=effective_max,
                 tool_runtime_plugins=tool_runtime_plugins,
+                tool_runtime_config=tool_runtime_config,
             )
             self.emit_event(
                 callback,
@@ -776,6 +783,7 @@ class KernelLoop:
         toolkit: Toolkit | None = None,
         run_id: str | None = None,
         tool_runtime_plugins: list[Any] | None = None,
+        tool_runtime_config: dict[str, Any] | None = None,
     ) -> KernelRunResult:
         resolved_payload = dict(payload or {})
         resolved_provider = provider or self._infer_provider() or "openai"
@@ -813,6 +821,7 @@ class KernelLoop:
             toolkit=toolkit,
             run_id=resolved_run_id,
             tool_runtime_plugins=tool_runtime_plugins,
+            tool_runtime_config=tool_runtime_config,
         )
 
     def resume_human_input(
@@ -833,6 +842,7 @@ class KernelLoop:
         toolkit: Toolkit | None = None,
         run_id: str | None = None,
         tool_runtime_plugins: list[Any] | None = None,
+        tool_runtime_config: dict[str, Any] | None = None,
     ) -> KernelRunResult:
         if not isinstance(conversation, list):
             raise TypeError("conversation must be a list of provider-projected messages")
@@ -890,6 +900,7 @@ class KernelLoop:
             toolkit=toolkit,
             run_id=resolved_run_id,
             resume_mode=True,
+            tool_runtime_config=tool_runtime_config,
         )
         self.dispatch_phase(
             state,
@@ -916,4 +927,5 @@ class KernelLoop:
             run_id=resolved_run_id,
             skip_bootstrap=True,
             tool_runtime_plugins=tool_runtime_plugins,
+            tool_runtime_config=tool_runtime_config,
         )
