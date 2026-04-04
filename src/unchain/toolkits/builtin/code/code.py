@@ -6,12 +6,14 @@ import json
 import mimetypes
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ...base import BuiltinToolkit
-from ....tools.models import ToolHistoryOptimizationContext
+from ....tools.models import ToolConfirmationPolicy, ToolExecutionContext, ToolHistoryOptimizationContext
+from .shell_runtime import ShellRuntime
 from .web_fetch import WebFetchService, run_extract_model
 
 
@@ -66,6 +68,7 @@ class CodeToolkit(BuiltinToolkit):
     ) -> None:
         super().__init__(workspace_root=workspace_root, workspace_roots=workspace_roots)
         self._read_snapshots: dict[str, dict[str, _ReadSnapshot]] = {}
+        self._shell_runtime = ShellRuntime(self.workspace_roots)
         self._web_fetch_service = WebFetchService()
         self._register_tools()
 
@@ -106,6 +109,14 @@ class CodeToolkit(BuiltinToolkit):
             requires_confirmation=True,
             history_arguments_optimizer=self._compact_web_fetch_args,
             history_result_optimizer=self._compact_web_fetch_result,
+        )
+        self.register(
+            self.shell,
+            description="Run a shell command, poll a background task, or kill a background task within the workspace.",
+            requires_confirmation=True,
+            confirmation_resolver=self._resolve_shell_confirmation,
+            history_arguments_optimizer=self._compact_shell_args,
+            history_result_optimizer=self._compact_shell_result,
         )
 
     def _session_key(self) -> str:
@@ -665,6 +676,91 @@ class CodeToolkit(BuiltinToolkit):
         result["next_offset"] = next_offset
         return result
 
+    def shell(
+        self,
+        action: str,
+        command: str = "",
+        cwd: str | None = None,
+        timeout_ms: int = 120000,
+        run_in_background: bool = False,
+        max_output_chars: int = 20000,
+        yield_time_ms: int = 300,
+        task_id: str = "",
+    ) -> dict[str, Any]:
+        """Run, poll, or kill a shell task inside the workspace.
+
+        Args:
+            action: One of `run`, `poll`, or `kill`.
+            command: Shell command used when `action="run"`.
+            cwd: Optional working directory. Relative paths resolve from the session cwd.
+            timeout_ms: Maximum runtime for `run`. Clamped to 1s..600s.
+            run_in_background: When true, start a background task and return a `task_id`.
+            max_output_chars: Maximum characters returned per stream, capped at 100,000.
+            yield_time_ms: Small delay before returning a background task so early output can accumulate.
+            task_id: Background task id used by `poll` and `kill`.
+        """
+        resolved_action = str(action or "").strip().lower()
+        if resolved_action not in {"run", "poll", "kill"}:
+            return {
+                "ok": False,
+                "action": resolved_action or str(action or ""),
+                "status": "error",
+                "shell_family": "",
+                "platform": sys.platform,
+                "cwd": "",
+                "task_id": str(task_id or ""),
+                "error": "action must be one of: run, poll, kill",
+            }
+
+        session_key = self._session_key()
+        if resolved_action == "run":
+            return self._shell_runtime.run(
+                session_key=session_key,
+                command=command,
+                cwd=cwd,
+                timeout_ms=timeout_ms,
+                run_in_background=run_in_background,
+                max_output_chars=max_output_chars,
+                yield_time_ms=yield_time_ms,
+            )
+        if not isinstance(task_id, str) or not task_id.strip():
+            return {
+                "ok": False,
+                "action": resolved_action,
+                "status": "error",
+                "shell_family": "",
+                "platform": sys.platform,
+                "cwd": "",
+                "task_id": str(task_id or ""),
+                "error": "task_id is required",
+            }
+        if resolved_action == "poll":
+            return self._shell_runtime.poll(task_id=task_id, max_output_chars=max_output_chars)
+        return self._shell_runtime.kill(task_id=task_id, max_output_chars=max_output_chars)
+
+    def _resolve_shell_confirmation(
+        self,
+        arguments: dict[str, Any],
+        execution_context: ToolExecutionContext | None,
+    ) -> ToolConfirmationPolicy:
+        action = str(arguments.get("action") or "").strip().lower()
+        if action in {"poll", "kill"}:
+            return ToolConfirmationPolicy(requires_confirmation=False)
+        if action != "run":
+            return ToolConfirmationPolicy(requires_confirmation=False)
+
+        if bool(arguments.get("run_in_background")):
+            return ToolConfirmationPolicy(requires_confirmation=True)
+
+        command = arguments.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return ToolConfirmationPolicy(requires_confirmation=False)
+
+        shell_family = self._shell_runtime.detect_executor().family
+        if self._shell_runtime.is_low_risk_command(command, shell_family):
+            return ToolConfirmationPolicy(requires_confirmation=False)
+        return ToolConfirmationPolicy(requires_confirmation=True)
+
     def _compact_read_args(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
         if not isinstance(payload, dict):
             return payload
@@ -805,6 +901,47 @@ class CodeToolkit(BuiltinToolkit):
         compacted["compacted"] = True
         if context.include_hash:
             compacted["digest"] = hashlib.sha1(result_text.encode("utf-8", errors="replace")).hexdigest()
+        return compacted
+
+    def _compact_shell_args(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
+        if not isinstance(payload, dict):
+            return payload
+        compacted = {
+            "action": payload.get("action"),
+            "cwd": payload.get("cwd"),
+            "timeout_ms": payload.get("timeout_ms"),
+            "run_in_background": payload.get("run_in_background"),
+            "max_output_chars": payload.get("max_output_chars"),
+            "yield_time_ms": payload.get("yield_time_ms"),
+            "task_id": payload.get("task_id"),
+            "compacted": True,
+        }
+        command = payload.get("command")
+        if isinstance(command, str):
+            compacted["command"] = (
+                self._preview_text(command, context.preview_chars)
+                if len(command) > context.max_chars
+                else command
+            )
+            if len(command) > context.max_chars and context.include_hash:
+                compacted["command_digest"] = hashlib.sha1(command.encode("utf-8", errors="replace")).hexdigest()
+        return compacted
+
+    def _compact_shell_result(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
+        if not isinstance(payload, dict):
+            return payload
+        compacted = dict(payload)
+        did_compact = False
+        for key in ("stdout", "stderr"):
+            value = compacted.get(key)
+            if isinstance(value, str) and len(value) > context.max_chars:
+                compacted[key] = self._preview_text(value, context.preview_chars)
+                digest_key = f"{key}_digest"
+                if context.include_hash:
+                    compacted[digest_key] = hashlib.sha1(value.encode("utf-8", errors="replace")).hexdigest()
+                did_compact = True
+        if did_compact:
+            compacted["compacted"] = True
         return compacted
 
 

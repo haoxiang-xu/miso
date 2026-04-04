@@ -151,6 +151,78 @@ def test_kernel_run_confirmation_denied_and_modified_arguments():
     assert json.loads(modified_output["output"]) == {"path": "final.txt"}
 
 
+def test_kernel_run_dynamic_confirmation_resolver_skips_low_risk_but_prompts_high_risk():
+    confirm_requests = []
+    resolver_tool = tool(
+        name="resolver_tool",
+        func=lambda action=None: {"action": action},
+        requires_confirmation=True,
+        confirmation_resolver=lambda arguments, context: {
+            "requires_confirmation": arguments.get("action") == "dangerous"
+        },
+    )
+
+    class FakeModelIO:
+        provider = "openai"
+        model = "gpt-4.1"
+
+        def __init__(self, action: str):
+            self.action = action
+            self.calls = 0
+
+        def fetch_turn(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                return ModelTurnResult(
+                    assistant_messages=[
+                        {
+                            "type": "function_call",
+                            "call_id": f"call_{self.action}",
+                            "name": "resolver_tool",
+                            "arguments": json.dumps({"action": self.action}),
+                        }
+                    ],
+                    tool_calls=[
+                        KernelToolCall(
+                            call_id=f"call_{self.action}",
+                            name="resolver_tool",
+                            arguments={"action": self.action},
+                        )
+                    ],
+                    response_id=f"resp_{self.action}_1",
+                )
+            return ModelTurnResult(
+                assistant_messages=[{"role": "assistant", "content": self.action}],
+                tool_calls=[],
+                final_text=self.action,
+                response_id=f"resp_{self.action}_2",
+            )
+
+    safe_toolkit = Toolkit()
+    safe_toolkit.register(resolver_tool)
+    safe_result = KernelLoop(model_io=FakeModelIO("safe")).run(
+        [{"role": "user", "content": "safe"}],
+        provider="openai",
+        model="gpt-4.1",
+        toolkit=safe_toolkit,
+        on_tool_confirm=lambda req: confirm_requests.append(req) or {"approved": True},
+    )
+    assert safe_result.status == "completed"
+    assert confirm_requests == []
+
+    dangerous_toolkit = Toolkit()
+    dangerous_toolkit.register(resolver_tool)
+    dangerous_result = KernelLoop(model_io=FakeModelIO("dangerous")).run(
+        [{"role": "user", "content": "dangerous"}],
+        provider="openai",
+        model="gpt-4.1",
+        toolkit=dangerous_toolkit,
+        on_tool_confirm=lambda req: confirm_requests.append(req) or {"approved": True},
+    )
+    assert dangerous_result.status == "completed"
+    assert len(confirm_requests) == 1
+
+
 def test_kernel_run_observe_injects_observation_without_interrupting():
     events = []
     model_io = _QueueModelIO([

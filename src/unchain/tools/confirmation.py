@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..toolkits.base import BuiltinToolkit
-from .models import ToolConfirmationRequest, ToolConfirmationResponse, ToolExecutionContext
+from .models import (
+    ToolConfirmationPolicy,
+    ToolConfirmationRequest,
+    ToolConfirmationResponse,
+    ToolExecutionContext,
+)
 from .toolkit import Toolkit
 from ..kernel.types import ToolCall
 from .common import emit_loop_event
@@ -64,18 +69,46 @@ def execute_confirmable_tool_call(
     effective_arguments = copy.deepcopy(tool_call.arguments)
     denied = False
     deny_reason = ""
+    confirmation_policy: ToolConfirmationPolicy | None = None
 
-    if tool_obj is not None and tool_obj.requires_confirmation and callable(on_tool_confirm):
+    if tool_obj is not None and callable(getattr(tool_obj, "confirmation_resolver", None)):
+        resolver_arguments = tool_call.arguments if isinstance(tool_call.arguments, dict) else {}
+        try:
+            confirmation_policy = ToolConfirmationPolicy.from_raw(
+                tool_obj.confirmation_resolver(resolver_arguments, execution_context)
+            )
+        except Exception as exc:
+            return ToolExecutionOutcome(
+                tool_result={
+                    "error": f"tool confirmation resolver failed: {type(exc).__name__}: {exc}",
+                    "tool": tool_call.name,
+                },
+                should_observe=should_observe,
+                effective_arguments=effective_arguments,
+            )
+
+    requires_confirmation = bool(tool_obj is not None and tool_obj.requires_confirmation)
+    if confirmation_policy is not None:
+        requires_confirmation = requires_confirmation and confirmation_policy.requires_confirmation
+
+    if tool_obj is not None and requires_confirmation and callable(on_tool_confirm):
         tool_render = getattr(tool_obj, "render_component", None)
         if isinstance(tool_render, dict) and tool_render:
             effective_render = dict(tool_render)
         else:
             effective_render = {"version": 1, "type": "confirmation", "config": {}}
+        policy_render = confirmation_policy.render_component if confirmation_policy is not None else None
+        if isinstance(policy_render, dict) and policy_render:
+            effective_render = dict(policy_render)
         confirmation_request = ToolConfirmationRequest(
             tool_name=tool_call.name,
             call_id=tool_call.call_id,
             arguments=tool_call.arguments if isinstance(tool_call.arguments, dict) else {},
-            description=tool_obj.description,
+            description=(
+                confirmation_policy.description
+                if confirmation_policy is not None and confirmation_policy.description
+                else tool_obj.description
+            ),
             render_component=effective_render,
         )
         response = ToolConfirmationResponse.from_raw(on_tool_confirm(confirmation_request))

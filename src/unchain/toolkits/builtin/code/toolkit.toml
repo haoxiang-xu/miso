@@ -1,11 +1,11 @@
 [toolkit]
 id = "code_toolkit"
 name = "Code Toolkit"
-description = "Claude-style coding tools for guarded file reads, writes, edits, globbing, grep search, and public web fetch inside the workspace."
+description = "Claude-style coding tools for guarded file reads, writes, edits, globbing, grep search, public web fetch, and cross-platform shell execution inside the workspace."
 factory = "unchain.toolkits.builtin.code:CodeToolkit"
 version = "1.0.0"
 readme = "README.md"
-icon = "terminal"
+icon = "icon.svg"
 color = "#0f172a"
 backgroundcolor = "#dbeafe"
 tags = ["builtin", "code", "files", "search", "editing"]
@@ -58,5 +58,12 @@ requires_confirmation = false
 name = "web_fetch"
 title = "Web Fetch"
 description = "Fetch a public web page over HTTP(S), return raw page content or run a runtime-configured extraction model."
+observe = false
+requires_confirmation = true
+
+[[tools]]
+name = "shell"
+title = "Shell"
+description = "Run a shell command, poll a background task, or kill a background task inside the workspace."
 observe = false
 requires_confirmation = true

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from .models import HistoryPayloadOptimizer, ToolParameter
+from .models import HistoryPayloadOptimizer, ToolConfirmationPolicy, ToolExecutionContext, ToolParameter
 from .tool import Tool
 
 
@@ -20,6 +20,10 @@ class Toolkit:
         observe: bool | None = None,
         requires_confirmation: bool | None = None,
         render_component: dict[str, Any] | None = None,
+        confirmation_resolver: (
+            Callable[[dict[str, Any], ToolExecutionContext | None], ToolConfirmationPolicy | bool | dict[str, Any] | None]
+            | None
+        ) = None,
         name: str | None = None,
         description: str | None = None,
         parameters: list[ToolParameter | dict[str, Any]] | None = None,
@@ -39,6 +43,8 @@ class Toolkit:
                 tool_obj.requires_confirmation = requires_confirmation
             if render_component is not None:
                 tool_obj.render_component = render_component
+            if confirmation_resolver is not None:
+                tool_obj.confirmation_resolver = confirmation_resolver
             if history_arguments_optimizer is not None:
                 tool_obj.history_arguments_optimizer = history_arguments_optimizer
             if history_result_optimizer is not None:
@@ -55,6 +61,7 @@ class Toolkit:
                 observe=bool(observe),
                 requires_confirmation=bool(requires_confirmation),
                 render_component=render_component,
+                confirmation_resolver=confirmation_resolver,
                 history_arguments_optimizer=history_arguments_optimizer,
                 history_result_optimizer=history_result_optimizer,
             )
@@ -77,6 +84,10 @@ class Toolkit:
         requires_confirmation: bool = False,
         name: str | None = None,
         description: str | None = None,
+        confirmation_resolver: (
+            Callable[[dict[str, Any], ToolExecutionContext | None], ToolConfirmationPolicy | bool | dict[str, Any] | None]
+            | None
+        ) = None,
         parameters: list[ToolParameter | dict[str, Any]] | None = None,
         history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
         history_result_optimizer: HistoryPayloadOptimizer | None = None,
@@ -88,6 +99,7 @@ class Toolkit:
                 requires_confirmation=requires_confirmation,
                 name=name,
                 description=description,
+                confirmation_resolver=confirmation_resolver,
                 parameters=parameters,
                 history_arguments_optimizer=history_arguments_optimizer,
                 history_result_optimizer=history_result_optimizer,
@@ -100,6 +112,7 @@ class Toolkit:
                 requires_confirmation=requires_confirmation,
                 name=name,
                 description=description,
+                confirmation_resolver=confirmation_resolver,
                 parameters=parameters,
                 history_arguments_optimizer=history_arguments_optimizer,
                 history_result_optimizer=history_result_optimizer,

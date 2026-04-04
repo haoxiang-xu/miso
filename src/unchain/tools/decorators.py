@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from .models import HistoryPayloadOptimizer, ToolParameter
+from .models import HistoryPayloadOptimizer, ToolConfirmationPolicy, ToolExecutionContext, ToolParameter
 from .tool import Tool
 
 
@@ -16,6 +16,10 @@ def tool(
     observe: bool = False,
     requires_confirmation: bool = False,
     render_component: dict[str, Any] | None = None,
+    confirmation_resolver: (
+        Callable[[dict[str, Any], ToolExecutionContext | None], ToolConfirmationPolicy | bool | dict[str, Any] | None]
+        | None
+    ) = None,
     history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
     history_result_optimizer: HistoryPayloadOptimizer | None = None,
 ):
@@ -32,6 +36,7 @@ def tool(
             observe=observe,
             requires_confirmation=requires_confirmation,
             render_component=render_component,
+            confirmation_resolver=confirmation_resolver,
             history_arguments_optimizer=history_arguments_optimizer,
             history_result_optimizer=history_result_optimizer,
         )
@@ -45,6 +50,7 @@ def tool(
             observe=observe,
             requires_confirmation=requires_confirmation,
             render_component=render_component,
+            confirmation_resolver=confirmation_resolver,
             history_arguments_optimizer=history_arguments_optimizer,
             history_result_optimizer=history_result_optimizer,
         )

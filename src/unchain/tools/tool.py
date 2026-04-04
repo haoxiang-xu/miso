@@ -6,6 +6,8 @@ from typing import Any, Callable, get_type_hints
 
 from .models import (
     HistoryPayloadOptimizer,
+    ToolConfirmationPolicy,
+    ToolExecutionContext,
     ToolParameter,
     _annotation_to_json_schema,
     _escape_control_chars_inside_json_strings,
@@ -23,6 +25,10 @@ class Tool:
         observe: bool = False,
         requires_confirmation: bool = False,
         render_component: dict[str, Any] | None = None,
+        confirmation_resolver: (
+            Callable[[dict[str, Any], ToolExecutionContext | None], ToolConfirmationPolicy | bool | dict[str, Any] | None]
+            | None
+        ) = None,
         history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
         history_result_optimizer: HistoryPayloadOptimizer | None = None,
     ):
@@ -36,6 +42,7 @@ class Tool:
         self.observe = observe
         self.requires_confirmation = requires_confirmation
         self.render_component = render_component
+        self.confirmation_resolver = confirmation_resolver
         self.history_arguments_optimizer = history_arguments_optimizer
         self.history_result_optimizer = history_result_optimizer
         self.parameters = self._construct_parameters(parameters)
@@ -61,6 +68,7 @@ class Tool:
                 observe=self.observe,
                 requires_confirmation=self.requires_confirmation,
                 render_component=self.render_component,
+                confirmation_resolver=self.confirmation_resolver,
                 history_arguments_optimizer=self.history_arguments_optimizer,
                 history_result_optimizer=self.history_result_optimizer,
             )
@@ -81,6 +89,10 @@ class Tool:
         observe: bool = False,
         requires_confirmation: bool = False,
         render_component: dict[str, Any] | None = None,
+        confirmation_resolver: (
+            Callable[[dict[str, Any], ToolExecutionContext | None], ToolConfirmationPolicy | bool | dict[str, Any] | None]
+            | None
+        ) = None,
         history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
         history_result_optimizer: HistoryPayloadOptimizer | None = None,
     ) -> "Tool":
@@ -93,6 +105,7 @@ class Tool:
             observe=observe,
             requires_confirmation=requires_confirmation,
             render_component=render_component,
+            confirmation_resolver=confirmation_resolver,
             history_arguments_optimizer=history_arguments_optimizer,
             history_result_optimizer=history_result_optimizer,
         )

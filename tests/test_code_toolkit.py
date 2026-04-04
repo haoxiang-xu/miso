@@ -1,14 +1,17 @@
 import os
+import sys
 import tempfile
+import time
 from pathlib import Path
 
 from unchain.kernel.types import ToolCall
 from unchain.tools import ToolExecutionContext, Toolkit, execute_confirmable_tool_call
 from unchain.toolkits import CodeToolkit
 from unchain.toolkits.builtin.code import web_fetch as web_fetch_module
+from unchain.toolkits.builtin.code.shell_runtime import ShellRuntime
 
 
-EXPECTED_CODE_TOOLS = {"read", "write", "edit", "glob", "grep", "web_fetch"}
+EXPECTED_CODE_TOOLS = {"read", "write", "edit", "glob", "grep", "web_fetch", "shell"}
 
 
 def _merge_toolkit(source: Toolkit) -> Toolkit:
@@ -29,6 +32,7 @@ def test_code_toolkit_registers_expected_tools_and_confirmation_contract():
         assert toolkit.tools["write"].requires_confirmation is True
         assert toolkit.tools["edit"].requires_confirmation is True
         assert toolkit.tools["web_fetch"].requires_confirmation is True
+        assert toolkit.tools["shell"].requires_confirmation is True
 
 
 def test_code_toolkit_requires_full_read_before_mutating_existing_files():
@@ -401,3 +405,204 @@ def test_code_toolkit_web_fetch_rejects_private_urls_and_requires_extract_config
         )
         assert missing_config["ok"] is False
         assert "tool_runtime_config['web_fetch']['extract_model']" in missing_config["error"]
+
+
+def test_code_toolkit_shell_persists_cwd_between_runs():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = CodeToolkit(workspace_root=tmp)
+        subdir = Path(tmp, "subdir").resolve()
+        subdir.mkdir()
+
+        enter_command = (
+            "Set-Location subdir; (Get-Location).Path"
+            if sys.platform.startswith("win")
+            else "cd subdir && pwd"
+        )
+        pwd_command = "(Get-Location).Path" if sys.platform.startswith("win") else "pwd"
+
+        first = toolkit.execute("shell", {"action": "run", "command": enter_command})
+        second = toolkit.execute("shell", {"action": "run", "command": pwd_command})
+
+        assert first["status"] == "completed"
+        assert first["cwd"] == str(subdir)
+        assert str(subdir) in first["stdout"]
+        assert second["status"] == "completed"
+        assert second["cwd"] == str(subdir)
+        assert second["stdout"].strip() == str(subdir)
+
+
+def test_code_toolkit_shell_confirmation_policy_and_background_lifecycle():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = CodeToolkit(workspace_root=tmp)
+        merged = _merge_toolkit(toolkit)
+        confirm_requests = []
+
+        low_risk_command = "Get-Location" if sys.platform.startswith("win") else "pwd"
+        low_risk = execute_confirmable_tool_call(
+            toolkit=merged,
+            tool_call=ToolCall(
+                call_id="call_shell_low",
+                name="shell",
+                arguments={"action": "run", "command": low_risk_command},
+            ),
+            on_tool_confirm=lambda req: confirm_requests.append(req) or {"approved": True},
+            loop=None,
+            callback=None,
+            run_id="run-shell-low",
+            iteration=0,
+            execution_context=ToolExecutionContext(
+                session_id="session-shell",
+                run_id="run-shell-low",
+                provider="openai",
+                model="gpt-5",
+                iteration=0,
+            ),
+        )
+        assert low_risk.tool_result["status"] == "completed"
+        assert confirm_requests == []
+
+        high_risk_command = (
+            "'boom' | Set-Content note.txt" if sys.platform.startswith("win") else "echo boom > note.txt"
+        )
+        high_risk = execute_confirmable_tool_call(
+            toolkit=merged,
+            tool_call=ToolCall(
+                call_id="call_shell_high",
+                name="shell",
+                arguments={"action": "run", "command": high_risk_command},
+            ),
+            on_tool_confirm=lambda req: confirm_requests.append(req) or {"approved": True},
+            loop=None,
+            callback=None,
+            run_id="run-shell-high",
+            iteration=1,
+            execution_context=ToolExecutionContext(
+                session_id="session-shell",
+                run_id="run-shell-high",
+                provider="openai",
+                model="gpt-5",
+                iteration=1,
+            ),
+        )
+        assert high_risk.tool_result["status"] == "completed"
+        assert len(confirm_requests) == 1
+
+        background_command = "Start-Sleep -Seconds 30" if sys.platform.startswith("win") else "sleep 30"
+        background = execute_confirmable_tool_call(
+            toolkit=merged,
+            tool_call=ToolCall(
+                call_id="call_shell_background",
+                name="shell",
+                arguments={
+                    "action": "run",
+                    "command": background_command,
+                    "run_in_background": True,
+                    "yield_time_ms": 0,
+                },
+            ),
+            on_tool_confirm=lambda req: confirm_requests.append(req) or {"approved": True},
+            loop=None,
+            callback=None,
+            run_id="run-shell-bg",
+            iteration=2,
+            execution_context=ToolExecutionContext(
+                session_id="session-shell",
+                run_id="run-shell-bg",
+                provider="openai",
+                model="gpt-5",
+                iteration=2,
+            ),
+        )
+        task_id = background.tool_result["task_id"]
+        assert background.tool_result["status"] == "running"
+        assert len(confirm_requests) == 2
+
+        poll = execute_confirmable_tool_call(
+            toolkit=merged,
+            tool_call=ToolCall(
+                call_id="call_shell_poll",
+                name="shell",
+                arguments={"action": "poll", "task_id": task_id},
+            ),
+            on_tool_confirm=lambda req: confirm_requests.append(req) or {"approved": True},
+            loop=None,
+            callback=None,
+            run_id="run-shell-poll",
+            iteration=3,
+            execution_context=ToolExecutionContext(
+                session_id="session-shell",
+                run_id="run-shell-poll",
+                provider="openai",
+                model="gpt-5",
+                iteration=3,
+            ),
+        )
+        assert poll.tool_result["action"] == "poll"
+        assert len(confirm_requests) == 2
+
+        killed = execute_confirmable_tool_call(
+            toolkit=merged,
+            tool_call=ToolCall(
+                call_id="call_shell_kill",
+                name="shell",
+                arguments={"action": "kill", "task_id": task_id},
+            ),
+            on_tool_confirm=lambda req: confirm_requests.append(req) or {"approved": True},
+            loop=None,
+            callback=None,
+            run_id="run-shell-kill",
+            iteration=4,
+            execution_context=ToolExecutionContext(
+                session_id="session-shell",
+                run_id="run-shell-kill",
+                provider="openai",
+                model="gpt-5",
+                iteration=4,
+            ),
+        )
+        assert killed.tool_result["status"] == "killed"
+        assert len(confirm_requests) == 2
+
+
+def test_code_toolkit_shell_background_poll_returns_incremental_output():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = CodeToolkit(workspace_root=tmp)
+        command = (
+            "Write-Output alpha; Start-Sleep -Milliseconds 300; Write-Output beta"
+            if sys.platform.startswith("win")
+            else "printf 'alpha\\n'; sleep 0.3; printf 'beta\\n'"
+        )
+        started = toolkit.execute(
+            "shell",
+            {
+                "action": "run",
+                "command": command,
+                "run_in_background": True,
+                "yield_time_ms": 0,
+            },
+        )
+        task_id = started["task_id"]
+        time.sleep(0.1)
+        first_poll = toolkit.execute("shell", {"action": "poll", "task_id": task_id})
+        time.sleep(0.4)
+        second_poll = toolkit.execute("shell", {"action": "poll", "task_id": task_id})
+
+        assert "alpha" in (first_poll["stdout"] + second_poll["stdout"])
+        assert "beta" in second_poll["stdout"]
+        assert second_poll["status"] in {"completed", "timed_out"}
+        assert second_poll["completed"] is True
+
+
+def test_shell_runtime_detect_executor_prefers_pwsh_and_env_shell(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: "/opt/homebrew/bin/pwsh" if name == "pwsh" else None)
+    windows_spec = ShellRuntime.detect_executor(platform_name="win32")
+    assert windows_spec.family == "powershell"
+    assert windows_spec.program == "/opt/homebrew/bin/pwsh"
+
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    posix_spec = ShellRuntime.detect_executor(
+        platform_name="linux",
+        env={"SHELL": "/bin/zsh"},
+    )
+    assert posix_spec.family == "posix"
+    assert posix_spec.program == "/bin/zsh"

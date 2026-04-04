@@ -199,6 +199,31 @@ class ToolExecutionContext:
     tool_runtime_config: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ToolConfirmationPolicy:
+    requires_confirmation: bool = True
+    description: str = ""
+    render_component: dict[str, Any] | None = None
+
+    @classmethod
+    def from_raw(
+        cls,
+        raw: bool | dict[str, Any] | "ToolConfirmationPolicy" | None,
+    ) -> "ToolConfirmationPolicy":
+        if isinstance(raw, ToolConfirmationPolicy):
+            return raw
+        if isinstance(raw, bool):
+            return cls(requires_confirmation=raw)
+        if isinstance(raw, dict):
+            render_component = raw.get("render_component")
+            return cls(
+                requires_confirmation=bool(raw.get("requires_confirmation", True)),
+                description=str(raw.get("description") or ""),
+                render_component=render_component if isinstance(render_component, dict) else None,
+            )
+        return cls()
+
+
 @dataclass
 class NormalizedToolHistoryRecord:
     tool_name: str
