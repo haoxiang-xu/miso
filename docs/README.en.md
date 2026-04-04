@@ -20,6 +20,18 @@ Language switch: [English](README.en.md) | [简体中文](README.zh-CN.md)
 - [Creating Builtin Toolkits](en/skills/creating-builtin-toolkits.md)
 - [Testing Conventions](en/skills/testing-conventions.md)
 
+## Guides
+
+- [Adding a Kernel Harness](en/guides/add-harness.md)
+- [Adding a New Model](en/guides/add-model.md)
+- [Adding a New Provider](en/guides/add-provider.md)
+- [Adding a New Tool](en/guides/add-tool.md)
+- [Adding a New Toolkit](en/guides/add-toolkit.md)
+- [Debugging Stream Issues](en/guides/debug-stream.md)
+- [Exploring Architecture](en/guides/explore.md)
+- [Syncing Packages](en/guides/sync-packages.md)
+- [Running Tests](en/guides/test.md)
+
 ## API reference
 
 - [Agents API Reference](en/api/agents.md)

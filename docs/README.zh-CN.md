@@ -20,6 +20,18 @@ Language switch: [English](README.en.md) | [简体中文](README.zh-CN.md)
 - [创建内置 Toolkit](zh-CN/skills/creating-builtin-toolkits.md)
 - [测试约定](zh-CN/skills/testing-conventions.md)
 
+## 操作指南
+
+- [添加 Kernel Harness](zh-CN/guides/add-harness.md)
+- [添加新模型](zh-CN/guides/add-model.md)
+- [添加新 Provider](zh-CN/guides/add-provider.md)
+- [添加新工具](zh-CN/guides/add-tool.md)
+- [添加新 Toolkit](zh-CN/guides/add-toolkit.md)
+- [调试流式问题](zh-CN/guides/debug-stream.md)
+- [探索架构](zh-CN/guides/explore.md)
+- [同步包](zh-CN/guides/sync-packages.md)
+- [运行测试](zh-CN/guides/test.md)
+
 ## API 参考
 
 - [Agents API 参考](zh-CN/api/agents.md)
