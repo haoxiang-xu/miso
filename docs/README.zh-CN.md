@@ -1,6 +1,6 @@
-# Miso 百科文档
+# Unchain 百科文档
 
-`miso` 现在采用双层文档体系：仓库入口页保持精简，完整的中英双语百科正文覆盖 skills 章节和 `src/miso` 下全部生产类。
+`unchain` 现在采用双层文档体系：仓库入口页保持精简，完整的中英双语百科正文覆盖 skills 章节和 `src/unchain` 下全部生产类。
 
 Language switch: [English](README.en.md) | [简体中文](README.zh-CN.md)
 
@@ -38,6 +38,6 @@ Language switch: [English](README.en.md) | [简体中文](README.zh-CN.md)
 
 ## 覆盖承诺
 
-- `src/miso` 下全部 55 个生产类都会被准确索引一次。
+- `src/unchain` 下全部 55 个生产类都会被准确索引一次。
 - 各包 `__init__` 中的公开导出会被交叉链接到参考树。
 - 中英文文档保持相同的章节和页面布局。

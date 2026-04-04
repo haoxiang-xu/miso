@@ -13,13 +13,13 @@
 
 | 类 | 源码 | 导出 | 类型 |
 | --- | --- | --- | --- |
-| `_SubagentConfig` | `src/miso/agents/agent.py:74` | internal | dataclass |
-| `_SubagentCounters` | `src/miso/agents/agent.py:83` | internal | dataclass |
-| `_SubagentRuntime` | `src/miso/agents/agent.py:89` | internal | dataclass |
-| `Agent` | `src/miso/agents/agent.py:114` | top-level | class |
-| `Team` | `src/miso/agents/team.py:11` | top-level | class |
+| `_SubagentConfig` | `src/unchain/agents/agent.py:74` | internal | dataclass |
+| `_SubagentCounters` | `src/unchain/agents/agent.py:83` | internal | dataclass |
+| `_SubagentRuntime` | `src/unchain/agents/agent.py:89` | internal | dataclass |
+| `Agent` | `src/unchain/agents/agent.py:114` | top-level | class |
+| `Team` | `src/unchain/agents/team.py:11` | top-level | class |
 
-### `src/miso/agents/agent.py`
+### `src/unchain/agents/agent.py`
 
 高层单 Agent 编排入口，负责 memory、toolkit 合并、暂停/恢复以及可选的子代理派生。
 
@@ -29,7 +29,7 @@
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/agents/agent.py:74` |
+| 源码 | `src/unchain/agents/agent.py:74` |
 | 模块职责 | 高层单 Agent 编排入口，负责 memory、toolkit 合并、暂停/恢复以及可选的子代理派生。 |
 | 继承/协议 | `-` |
 | 导出状态 | 未导出，应视为实现细节。 |
@@ -71,7 +71,7 @@ _SubagentConfig(tool_name=..., description=..., max_depth=..., max_children_per_
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/agents/agent.py:83` |
+| 源码 | `src/unchain/agents/agent.py:83` |
 | 模块职责 | 高层单 Agent 编排入口，负责 memory、toolkit 合并、暂停/恢复以及可选的子代理派生。 |
 | 继承/协议 | `-` |
 | 导出状态 | 未导出，应视为实现细节。 |
@@ -110,7 +110,7 @@ _SubagentCounters(total_created=..., direct_children=...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/agents/agent.py:89` |
+| 源码 | `src/unchain/agents/agent.py:89` |
 | 模块职责 | 高层单 Agent 编排入口，负责 memory、toolkit 合并、暂停/恢复以及可选的子代理派生。 |
 | 继承/协议 | `-` |
 | 导出状态 | 未导出，应视为实现细节。 |
@@ -159,10 +159,10 @@ _SubagentRuntime(config=..., current_depth=..., lineage=..., counters=...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/agents/agent.py:114` |
+| 源码 | `src/unchain/agents/agent.py:114` |
 | 模块职责 | 高层单 Agent 编排入口，负责 memory、toolkit 合并、暂停/恢复以及可选的子代理派生。 |
 | 继承/协议 | `-` |
-| 导出状态 | 通过 `miso` 顶层导出。 |
+| 导出状态 | 通过 `unchain` 顶层导出。 |
 | 对象类型 | 类；公开或包内可见。 |
 
 ### 构造表面
@@ -178,7 +178,7 @@ _SubagentRuntime(config=..., current_depth=..., lineage=..., counters=...)
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/agents/agent.py:115`
+- 定义位置：`src/unchain/agents/agent.py:115`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -187,7 +187,7 @@ _SubagentRuntime(config=..., current_depth=..., lineage=..., counters=...)
 `Agent` 对外暴露的方法 `enable_subagents`。
 
 - 类型：方法
-- 定义位置：`src/miso/agents/agent.py:185`
+- 定义位置：`src/unchain/agents/agent.py:185`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -196,7 +196,7 @@ _SubagentRuntime(config=..., current_depth=..., lineage=..., counters=...)
 `Agent` 对外暴露的方法 `enable_toolkit_catalog`。
 
 - 类型：方法
-- 定义位置：`src/miso/agents/agent.py:213`
+- 定义位置：`src/unchain/agents/agent.py:213`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -205,7 +205,7 @@ _SubagentRuntime(config=..., current_depth=..., lineage=..., counters=...)
 `Agent` 对外暴露的方法 `run`。
 
 - 类型：方法
-- 定义位置：`src/miso/agents/agent.py:613`
+- 定义位置：`src/unchain/agents/agent.py:613`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -214,7 +214,7 @@ _SubagentRuntime(config=..., current_depth=..., lineage=..., counters=...)
 `Agent` 对外暴露的方法 `resume_human_input`。
 
 - 类型：方法
-- 定义位置：`src/miso/agents/agent.py:695`
+- 定义位置：`src/unchain/agents/agent.py:695`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -223,7 +223,7 @@ _SubagentRuntime(config=..., current_depth=..., lineage=..., counters=...)
 `Agent` 对外暴露的方法 `step`。
 
 - 类型：方法
-- 定义位置：`src/miso/agents/agent.py:776`
+- 定义位置：`src/unchain/agents/agent.py:776`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -232,7 +232,7 @@ _SubagentRuntime(config=..., current_depth=..., lineage=..., counters=...)
 `Agent` 对外暴露的方法 `as_tool`。
 
 - 类型：方法
-- 定义位置：`src/miso/agents/agent.py:928`
+- 定义位置：`src/unchain/agents/agent.py:928`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -256,7 +256,7 @@ obj = Agent(...)
 obj.enable_subagents(...)
 ```
 
-### `src/miso/agents/team.py`
+### `src/unchain/agents/team.py`
 
 多 Agent channel 协作层，负责投递、调度打分、handoff 和 owner 完成控制。
 
@@ -266,10 +266,10 @@ obj.enable_subagents(...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/agents/team.py:11` |
+| 源码 | `src/unchain/agents/team.py:11` |
 | 模块职责 | 多 Agent channel 协作层，负责投递、调度打分、handoff 和 owner 完成控制。 |
 | 继承/协议 | `-` |
-| 导出状态 | 通过 `miso` 顶层导出。 |
+| 导出状态 | 通过 `unchain` 顶层导出。 |
 | 对象类型 | 类；公开或包内可见。 |
 
 ### 构造表面
@@ -285,7 +285,7 @@ obj.enable_subagents(...)
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/agents/team.py:12`
+- 定义位置：`src/unchain/agents/team.py:12`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -294,7 +294,7 @@ obj.enable_subagents(...)
 `Team` 对外暴露的方法 `run`。
 
 - 类型：方法
-- 定义位置：`src/miso/agents/team.py:139`
+- 定义位置：`src/unchain/agents/team.py:139`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 

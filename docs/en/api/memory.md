@@ -13,24 +13,24 @@ Short-term and long-term memory contracts, stores, strategies, adapters, and the
 
 | Class | Source | Exposure | Kind |
 | --- | --- | --- | --- |
-| `SessionStore` | `src/miso/memory/manager.py:21` | subpackage | protocol |
-| `VectorStoreAdapter` | `src/miso/memory/manager.py:30` | subpackage | protocol |
-| `LongTermProfileStore` | `src/miso/memory/manager.py:52` | subpackage | protocol |
-| `LongTermVectorAdapter` | `src/miso/memory/manager.py:61` | subpackage | protocol |
-| `ContextStrategy` | `src/miso/memory/manager.py:84` | subpackage | protocol |
-| `InMemorySessionStore` | `src/miso/memory/manager.py:104` | subpackage | class |
-| `JsonFileLongTermProfileStore` | `src/miso/memory/manager.py:117` | subpackage | class |
-| `LongTermMemoryConfig` | `src/miso/memory/manager.py:144` | subpackage | dataclass |
-| `MemoryConfig` | `src/miso/memory/manager.py:167` | subpackage | dataclass |
-| `LastNTurnsStrategy` | `src/miso/memory/manager.py:1642` | subpackage | class |
-| `SummaryTokenStrategy` | `src/miso/memory/manager.py:1675` | subpackage | class |
-| `HybridContextStrategy` | `src/miso/memory/manager.py:1779` | subpackage | class |
-| `MemoryManager` | `src/miso/memory/manager.py:1866` | subpackage | class |
-| `QdrantVectorAdapter` | `src/miso/memory/qdrant.py:198` | internal | class |
-| `QdrantLongTermVectorAdapter` | `src/miso/memory/qdrant.py:305` | internal | class |
-| `JsonFileSessionStore` | `src/miso/memory/qdrant.py:410` | internal | class |
+| `SessionStore` | `src/unchain/memory/manager.py:21` | subpackage | protocol |
+| `VectorStoreAdapter` | `src/unchain/memory/manager.py:30` | subpackage | protocol |
+| `LongTermProfileStore` | `src/unchain/memory/manager.py:52` | subpackage | protocol |
+| `LongTermVectorAdapter` | `src/unchain/memory/manager.py:61` | subpackage | protocol |
+| `ContextStrategy` | `src/unchain/memory/manager.py:84` | subpackage | protocol |
+| `InMemorySessionStore` | `src/unchain/memory/manager.py:104` | subpackage | class |
+| `JsonFileLongTermProfileStore` | `src/unchain/memory/manager.py:117` | subpackage | class |
+| `LongTermMemoryConfig` | `src/unchain/memory/manager.py:144` | subpackage | dataclass |
+| `MemoryConfig` | `src/unchain/memory/manager.py:167` | subpackage | dataclass |
+| `LastNTurnsStrategy` | `src/unchain/memory/manager.py:1642` | subpackage | class |
+| `SummaryTokenStrategy` | `src/unchain/memory/manager.py:1675` | subpackage | class |
+| `HybridContextStrategy` | `src/unchain/memory/manager.py:1779` | subpackage | class |
+| `MemoryManager` | `src/unchain/memory/manager.py:1866` | subpackage | class |
+| `QdrantVectorAdapter` | `src/unchain/memory/qdrant.py:198` | internal | class |
+| `QdrantLongTermVectorAdapter` | `src/unchain/memory/qdrant.py:305` | internal | class |
+| `JsonFileSessionStore` | `src/unchain/memory/qdrant.py:410` | internal | class |
 
-### `src/miso/memory/manager.py`
+### `src/unchain/memory/manager.py`
 
 Memory contracts, configuration, strategies, and the top-level MemoryManager orchestration layer.
 
@@ -40,7 +40,7 @@ Protocol that defines a stable contract within memory contracts, configuration, 
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/memory/manager.py:21` |
+| Source | `src/unchain/memory/manager.py:21` |
 | Module role | Memory contracts, configuration, strategies, and the top-level MemoryManager orchestration layer. |
 | Inheritance | `Protocol` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -53,7 +53,7 @@ Protocol that defines a stable contract within memory contracts, configuration, 
 Public method `load` exposed by `SessionStore`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:22`
+- Declared at: `src/unchain/memory/manager.py:22`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -62,7 +62,7 @@ Public method `load` exposed by `SessionStore`.
 Public method `save` exposed by `SessionStore`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:25`
+- Declared at: `src/unchain/memory/manager.py:25`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -87,7 +87,7 @@ Protocol that defines a stable contract within memory contracts, configuration, 
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/memory/manager.py:30` |
+| Source | `src/unchain/memory/manager.py:30` |
 | Module role | Memory contracts, configuration, strategies, and the top-level MemoryManager orchestration layer. |
 | Inheritance | `Protocol` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -100,7 +100,7 @@ Protocol that defines a stable contract within memory contracts, configuration, 
 Public method `add_texts` exposed by `VectorStoreAdapter`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:31`
+- Declared at: `src/unchain/memory/manager.py:31`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -109,7 +109,7 @@ Public method `add_texts` exposed by `VectorStoreAdapter`.
 Public method `similarity_search` exposed by `VectorStoreAdapter`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:40`
+- Declared at: `src/unchain/memory/manager.py:40`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -134,7 +134,7 @@ Protocol that defines a stable contract within memory contracts, configuration, 
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/memory/manager.py:52` |
+| Source | `src/unchain/memory/manager.py:52` |
 | Module role | Memory contracts, configuration, strategies, and the top-level MemoryManager orchestration layer. |
 | Inheritance | `Protocol` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -147,7 +147,7 @@ Protocol that defines a stable contract within memory contracts, configuration, 
 Public method `load` exposed by `LongTermProfileStore`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:53`
+- Declared at: `src/unchain/memory/manager.py:53`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -156,7 +156,7 @@ Public method `load` exposed by `LongTermProfileStore`.
 Public method `save` exposed by `LongTermProfileStore`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:56`
+- Declared at: `src/unchain/memory/manager.py:56`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -181,7 +181,7 @@ Protocol that defines a stable contract within memory contracts, configuration, 
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/memory/manager.py:61` |
+| Source | `src/unchain/memory/manager.py:61` |
 | Module role | Memory contracts, configuration, strategies, and the top-level MemoryManager orchestration layer. |
 | Inheritance | `Protocol` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -194,7 +194,7 @@ Protocol that defines a stable contract within memory contracts, configuration, 
 Public method `add_texts` exposed by `LongTermVectorAdapter`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:62`
+- Declared at: `src/unchain/memory/manager.py:62`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -203,7 +203,7 @@ Public method `add_texts` exposed by `LongTermVectorAdapter`.
 Public method `similarity_search` exposed by `LongTermVectorAdapter`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:71`
+- Declared at: `src/unchain/memory/manager.py:71`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -228,7 +228,7 @@ Protocol that defines a stable contract within memory contracts, configuration, 
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/memory/manager.py:84` |
+| Source | `src/unchain/memory/manager.py:84` |
 | Module role | Memory contracts, configuration, strategies, and the top-level MemoryManager orchestration layer. |
 | Inheritance | `Protocol` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -241,7 +241,7 @@ Protocol that defines a stable contract within memory contracts, configuration, 
 Public method `prepare` exposed by `ContextStrategy`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:85`
+- Declared at: `src/unchain/memory/manager.py:85`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -250,7 +250,7 @@ Public method `prepare` exposed by `ContextStrategy`.
 Public method `commit` exposed by `ContextStrategy`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:95`
+- Declared at: `src/unchain/memory/manager.py:95`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -275,7 +275,7 @@ Implementation class used by memory contracts, configuration, strategies, and th
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/memory/manager.py:104` |
+| Source | `src/unchain/memory/manager.py:104` |
 | Module role | Memory contracts, configuration, strategies, and the top-level MemoryManager orchestration layer. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -294,7 +294,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/memory/manager.py:107`
+- Declared at: `src/unchain/memory/manager.py:107`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -303,7 +303,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Public method `load` exposed by `InMemorySessionStore`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:110`
+- Declared at: `src/unchain/memory/manager.py:110`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -312,7 +312,7 @@ Public method `load` exposed by `InMemorySessionStore`.
 Public method `save` exposed by `InMemorySessionStore`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:113`
+- Declared at: `src/unchain/memory/manager.py:113`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -337,7 +337,7 @@ Implementation class used by memory contracts, configuration, strategies, and th
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/memory/manager.py:117` |
+| Source | `src/unchain/memory/manager.py:117` |
 | Module role | Memory contracts, configuration, strategies, and the top-level MemoryManager orchestration layer. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -356,7 +356,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/memory/manager.py:120`
+- Declared at: `src/unchain/memory/manager.py:120`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -365,7 +365,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Public method `load` exposed by `JsonFileLongTermProfileStore`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:128`
+- Declared at: `src/unchain/memory/manager.py:128`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -374,7 +374,7 @@ Public method `load` exposed by `JsonFileLongTermProfileStore`.
 Public method `save` exposed by `JsonFileLongTermProfileStore`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:138`
+- Declared at: `src/unchain/memory/manager.py:138`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -399,7 +399,7 @@ Dataclass payload used by memory contracts, configuration, strategies, and the t
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/memory/manager.py:144` |
+| Source | `src/unchain/memory/manager.py:144` |
 | Module role | Memory contracts, configuration, strategies, and the top-level MemoryManager orchestration layer. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -453,7 +453,7 @@ Dataclass payload used by memory contracts, configuration, strategies, and the t
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/memory/manager.py:167` |
+| Source | `src/unchain/memory/manager.py:167` |
 | Module role | Memory contracts, configuration, strategies, and the top-level MemoryManager orchestration layer. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -502,7 +502,7 @@ Implementation class used by memory contracts, configuration, strategies, and th
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/memory/manager.py:1642` |
+| Source | `src/unchain/memory/manager.py:1642` |
 | Module role | Memory contracts, configuration, strategies, and the top-level MemoryManager orchestration layer. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -521,7 +521,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/memory/manager.py:1643`
+- Declared at: `src/unchain/memory/manager.py:1643`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -530,7 +530,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Public method `prepare` exposed by `LastNTurnsStrategy`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:1646`
+- Declared at: `src/unchain/memory/manager.py:1646`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -539,7 +539,7 @@ Public method `prepare` exposed by `LastNTurnsStrategy`.
 Public method `commit` exposed by `LastNTurnsStrategy`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:1666`
+- Declared at: `src/unchain/memory/manager.py:1666`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -564,7 +564,7 @@ Implementation class used by memory contracts, configuration, strategies, and th
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/memory/manager.py:1675` |
+| Source | `src/unchain/memory/manager.py:1675` |
 | Module role | Memory contracts, configuration, strategies, and the top-level MemoryManager orchestration layer. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -583,7 +583,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/memory/manager.py:1676`
+- Declared at: `src/unchain/memory/manager.py:1676`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -592,7 +592,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Public method `prepare` exposed by `SummaryTokenStrategy`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:1687`
+- Declared at: `src/unchain/memory/manager.py:1687`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -601,7 +601,7 @@ Public method `prepare` exposed by `SummaryTokenStrategy`.
 Public method `commit` exposed by `SummaryTokenStrategy`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:1770`
+- Declared at: `src/unchain/memory/manager.py:1770`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -626,7 +626,7 @@ Implementation class used by memory contracts, configuration, strategies, and th
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/memory/manager.py:1779` |
+| Source | `src/unchain/memory/manager.py:1779` |
 | Module role | Memory contracts, configuration, strategies, and the top-level MemoryManager orchestration layer. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -645,7 +645,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/memory/manager.py:1780`
+- Declared at: `src/unchain/memory/manager.py:1780`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -654,7 +654,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Public method `prepare` exposed by `HybridContextStrategy`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:1795`
+- Declared at: `src/unchain/memory/manager.py:1795`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -663,7 +663,7 @@ Public method `prepare` exposed by `HybridContextStrategy`.
 Public method `commit` exposed by `HybridContextStrategy`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:1856`
+- Declared at: `src/unchain/memory/manager.py:1856`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -688,7 +688,7 @@ Top-level memory orchestrator that prepares messages from session state and comm
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/memory/manager.py:1866` |
+| Source | `src/unchain/memory/manager.py:1866` |
 | Module role | Memory contracts, configuration, strategies, and the top-level MemoryManager orchestration layer. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -712,7 +712,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/memory/manager.py:1867`
+- Declared at: `src/unchain/memory/manager.py:1867`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -721,7 +721,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Public method `ensure_long_term_components` exposed by `MemoryManager`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:1897`
+- Declared at: `src/unchain/memory/manager.py:1897`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -730,7 +730,7 @@ Public method `ensure_long_term_components` exposed by `MemoryManager`.
 Public method `estimate_tokens` exposed by `MemoryManager`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:1919`
+- Declared at: `src/unchain/memory/manager.py:1919`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -739,7 +739,7 @@ Public method `estimate_tokens` exposed by `MemoryManager`.
 Public method `prepare_messages` exposed by `MemoryManager`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:2070`
+- Declared at: `src/unchain/memory/manager.py:2070`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -748,7 +748,7 @@ Public method `prepare_messages` exposed by `MemoryManager`.
 Public method `commit_messages` exposed by `MemoryManager`.
 
 - Category: Method
-- Declared at: `src/miso/memory/manager.py:2269`
+- Declared at: `src/unchain/memory/manager.py:2269`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -774,7 +774,7 @@ obj = MemoryManager(...)
 obj.ensure_long_term_components(...)
 ```
 
-### `src/miso/memory/qdrant.py`
+### `src/unchain/memory/qdrant.py`
 
 Qdrant-backed vector adapters plus a JSON session-store implementation.
 
@@ -784,7 +784,7 @@ Implementation class used by qdrant-backed vector adapters plus a json session-s
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/memory/qdrant.py:198` |
+| Source | `src/unchain/memory/qdrant.py:198` |
 | Module role | Qdrant-backed vector adapters plus a JSON session-store implementation. |
 | Inheritance | `-` |
 | Exposure | Not exported; treat as implementation detail. |
@@ -803,7 +803,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/memory/qdrant.py:205`
+- Declared at: `src/unchain/memory/qdrant.py:205`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -812,7 +812,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Public method `add_texts` exposed by `QdrantVectorAdapter`.
 
 - Category: Method
-- Declared at: `src/miso/memory/qdrant.py:236`
+- Declared at: `src/unchain/memory/qdrant.py:236`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -821,7 +821,7 @@ Public method `add_texts` exposed by `QdrantVectorAdapter`.
 Public method `similarity_search` exposed by `QdrantVectorAdapter`.
 
 - Category: Method
-- Declared at: `src/miso/memory/qdrant.py:256`
+- Declared at: `src/unchain/memory/qdrant.py:256`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -843,7 +843,7 @@ Implementation class used by qdrant-backed vector adapters plus a json session-s
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/memory/qdrant.py:305` |
+| Source | `src/unchain/memory/qdrant.py:305` |
 | Module role | Qdrant-backed vector adapters plus a JSON session-store implementation. |
 | Inheritance | `-` |
 | Exposure | Not exported; treat as implementation detail. |
@@ -862,7 +862,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/memory/qdrant.py:312`
+- Declared at: `src/unchain/memory/qdrant.py:312`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -871,7 +871,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Public method `add_texts` exposed by `QdrantLongTermVectorAdapter`.
 
 - Category: Method
-- Declared at: `src/miso/memory/qdrant.py:343`
+- Declared at: `src/unchain/memory/qdrant.py:343`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -880,7 +880,7 @@ Public method `add_texts` exposed by `QdrantLongTermVectorAdapter`.
 Public method `similarity_search` exposed by `QdrantLongTermVectorAdapter`.
 
 - Category: Method
-- Declared at: `src/miso/memory/qdrant.py:363`
+- Declared at: `src/unchain/memory/qdrant.py:363`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -902,7 +902,7 @@ Implementation class used by qdrant-backed vector adapters plus a json session-s
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/memory/qdrant.py:410` |
+| Source | `src/unchain/memory/qdrant.py:410` |
 | Module role | Qdrant-backed vector adapters plus a JSON session-store implementation. |
 | Inheritance | `-` |
 | Exposure | Not exported; treat as implementation detail. |
@@ -921,7 +921,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/memory/qdrant.py:421`
+- Declared at: `src/unchain/memory/qdrant.py:421`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -930,7 +930,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Public method `load` exposed by `JsonFileSessionStore`.
 
 - Category: Method
-- Declared at: `src/miso/memory/qdrant.py:429`
+- Declared at: `src/unchain/memory/qdrant.py:429`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -939,7 +939,7 @@ Public method `load` exposed by `JsonFileSessionStore`.
 Public method `save` exposed by `JsonFileSessionStore`.
 
 - Category: Method
-- Declared at: `src/miso/memory/qdrant.py:438`
+- Declared at: `src/unchain/memory/qdrant.py:438`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 

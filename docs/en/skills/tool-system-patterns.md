@@ -55,10 +55,10 @@ This chapter covers the framework tool abstraction from raw callable inference t
 
 ## Source entry points
 
-- `src/miso/tools/tool.py`
-- `src/miso/tools/toolkit.py`
-- `src/miso/tools/registry.py`
-- `src/miso/tools/catalog.py`
+- `src/unchain/tools/tool.py`
+- `src/unchain/tools/toolkit.py`
+- `src/unchain/tools/registry.py`
+- `src/unchain/tools/catalog.py`
 
 ## Detailed legacy reference
 
@@ -78,7 +78,7 @@ ToolParameter Manual parameter definition (rarely needed — auto-inference hand
 ## Tool Class Anatomy
 
 ```python
-from miso.tools import Tool
+from unchain.tools import Tool
 
 t = Tool(
     name="greet",
@@ -159,7 +159,7 @@ Both produce the same parameter schema.
 ### Bare usage (most common)
 
 ```python
-from miso.tools import tool
+from unchain.tools import tool
 
 @tool
 def greet(name: str) -> dict:
@@ -243,7 +243,7 @@ resp = ToolConfirmationResponse(approved=True)
 ### Adding tools to a Toolkit
 
 ```python
-from miso.tools import Toolkit
+from unchain.tools import Toolkit
 
 tk = Toolkit()
 
@@ -290,15 +290,15 @@ The `ToolkitRegistry` discovers toolkits from three sources:
 
 | Source      | Location                                        | When                                    |
 | ----------- | ----------------------------------------------- | --------------------------------------- |
-| **Builtin** | `src/miso/toolkits/builtin/*/toolkit.toml`      | Always (unless `include_builtin=False`) |
+| **Builtin** | `src/unchain/toolkits/builtin/*/toolkit.toml`      | Always (unless `include_builtin=False`) |
 | **Local**   | Directories in `ToolRegistryConfig.local_roots` | When configured                         |
-| **Plugins** | `entry_points(group="miso.toolkits")`           | When installed packages declare them    |
+| **Plugins** | `entry_points(group="unchain.toolkits")`           | When installed packages declare them    |
 
 ### Plugin entry point convention
 
 ```toml
 # In the plugin's pyproject.toml
-[project.entry-points."miso.toolkits"]
+[project.entry-points."unchain.toolkits"]
 my_plugin = "my_package.toolkit:MyToolkit"
 ```
 

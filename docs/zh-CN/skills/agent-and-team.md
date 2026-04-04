@@ -52,8 +52,8 @@
 
 ## 源码入口
 
-- `src/miso/agents/agent.py`
-- `src/miso/agents/team.py`
+- `src/unchain/agents/agent.py`
+- `src/unchain/agents/team.py`
 
 ## Agent 是什么
 

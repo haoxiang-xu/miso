@@ -13,22 +13,22 @@
 
 | 类 | 源码 | 导出 | 类型 |
 | --- | --- | --- | --- |
-| `ToolkitCatalogConfig` | `src/miso/tools/catalog.py:34` | subpackage | dataclass |
-| `ToolkitCatalogRuntime` | `src/miso/tools/catalog.py:76` | subpackage | class |
-| `ToolParameter` | `src/miso/tools/models.py:155` | subpackage | dataclass |
-| `ToolHistoryOptimizationContext` | `src/miso/tools/models.py:178` | subpackage | dataclass |
-| `NormalizedToolHistoryRecord` | `src/miso/tools/models.py:191` | subpackage | dataclass |
-| `ToolConfirmationRequest` | `src/miso/tools/models.py:209` | subpackage | dataclass |
-| `ToolConfirmationResponse` | `src/miso/tools/models.py:233` | subpackage | dataclass |
-| `ToolRegistryConfig` | `src/miso/tools/registry.py:192` | subpackage | dataclass |
-| `ToolDescriptor` | `src/miso/tools/registry.py:222` | subpackage | dataclass |
-| `IconDescriptor` | `src/miso/tools/registry.py:246` | internal | dataclass |
-| `ToolkitDescriptor` | `src/miso/tools/registry.py:286` | subpackage | dataclass |
-| `ToolkitRegistry` | `src/miso/tools/registry.py:378` | subpackage | class |
-| `Tool` | `src/miso/tools/tool.py:16` | subpackage | class |
-| `Toolkit` | `src/miso/tools/toolkit.py:9` | subpackage | class |
+| `ToolkitCatalogConfig` | `src/unchain/tools/catalog.py:34` | subpackage | dataclass |
+| `ToolkitCatalogRuntime` | `src/unchain/tools/catalog.py:76` | subpackage | class |
+| `ToolParameter` | `src/unchain/tools/models.py:155` | subpackage | dataclass |
+| `ToolHistoryOptimizationContext` | `src/unchain/tools/models.py:178` | subpackage | dataclass |
+| `NormalizedToolHistoryRecord` | `src/unchain/tools/models.py:191` | subpackage | dataclass |
+| `ToolConfirmationRequest` | `src/unchain/tools/models.py:209` | subpackage | dataclass |
+| `ToolConfirmationResponse` | `src/unchain/tools/models.py:233` | subpackage | dataclass |
+| `ToolRegistryConfig` | `src/unchain/tools/registry.py:192` | subpackage | dataclass |
+| `ToolDescriptor` | `src/unchain/tools/registry.py:222` | subpackage | dataclass |
+| `IconDescriptor` | `src/unchain/tools/registry.py:246` | internal | dataclass |
+| `ToolkitDescriptor` | `src/unchain/tools/registry.py:286` | subpackage | dataclass |
+| `ToolkitRegistry` | `src/unchain/tools/registry.py:378` | subpackage | class |
+| `Tool` | `src/unchain/tools/tool.py:16` | subpackage | class |
+| `Toolkit` | `src/unchain/tools/toolkit.py:9` | subpackage | class |
 
-### `src/miso/tools/catalog.py`
+### `src/unchain/tools/catalog.py`
 
 在运行时列出、描述、激活受管 toolkit 的 catalog 层。
 
@@ -38,7 +38,7 @@
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/tools/catalog.py:34` |
+| 源码 | `src/unchain/tools/catalog.py:34` |
 | 模块职责 | 在运行时列出、描述、激活受管 toolkit 的 catalog 层。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -60,7 +60,7 @@
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/tools/catalog.py:40`
+- 定义位置：`src/unchain/tools/catalog.py:40`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -69,7 +69,7 @@
 `ToolkitCatalogConfig` 对外暴露的方法 `coerce`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/catalog.py:66`
+- 定义位置：`src/unchain/tools/catalog.py:66`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -89,7 +89,7 @@ ToolkitCatalogConfig(managed_toolkit_ids=..., always_active_toolkit_ids=..., reg
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/tools/catalog.py:76` |
+| 源码 | `src/unchain/tools/catalog.py:76` |
 | 模块职责 | 在运行时列出、描述、激活受管 toolkit 的 catalog 层。 |
 | 继承/协议 | `Toolkit` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -108,7 +108,7 @@ ToolkitCatalogConfig(managed_toolkit_ids=..., always_active_toolkit_ids=..., reg
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/tools/catalog.py:77`
+- 定义位置：`src/unchain/tools/catalog.py:77`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -117,7 +117,7 @@ ToolkitCatalogConfig(managed_toolkit_ids=..., always_active_toolkit_ids=..., reg
 `ToolkitCatalogRuntime` 对外暴露的方法 `visible_toolkits`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/catalog.py:147`
+- 定义位置：`src/unchain/tools/catalog.py:147`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -126,7 +126,7 @@ ToolkitCatalogConfig(managed_toolkit_ids=..., always_active_toolkit_ids=..., reg
 `ToolkitCatalogRuntime` 对外暴露的方法 `active_toolkit_ids`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/catalog.py:150`
+- 定义位置：`src/unchain/tools/catalog.py:150`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -135,7 +135,7 @@ ToolkitCatalogConfig(managed_toolkit_ids=..., always_active_toolkit_ids=..., reg
 `ToolkitCatalogRuntime` 对外暴露的方法 `toolkit_list`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/catalog.py:219`
+- 定义位置：`src/unchain/tools/catalog.py:219`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -144,7 +144,7 @@ ToolkitCatalogConfig(managed_toolkit_ids=..., always_active_toolkit_ids=..., reg
 `ToolkitCatalogRuntime` 对外暴露的方法 `toolkit_describe`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/catalog.py:228`
+- 定义位置：`src/unchain/tools/catalog.py:228`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -153,7 +153,7 @@ ToolkitCatalogConfig(managed_toolkit_ids=..., always_active_toolkit_ids=..., reg
 `ToolkitCatalogRuntime` 对外暴露的方法 `toolkit_activate`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/catalog.py:259`
+- 定义位置：`src/unchain/tools/catalog.py:259`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -162,7 +162,7 @@ ToolkitCatalogConfig(managed_toolkit_ids=..., always_active_toolkit_ids=..., reg
 `ToolkitCatalogRuntime` 对外暴露的方法 `toolkit_deactivate`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/catalog.py:262`
+- 定义位置：`src/unchain/tools/catalog.py:262`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -171,7 +171,7 @@ ToolkitCatalogConfig(managed_toolkit_ids=..., always_active_toolkit_ids=..., reg
 `ToolkitCatalogRuntime` 对外暴露的方法 `toolkit_list_active`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/catalog.py:292`
+- 定义位置：`src/unchain/tools/catalog.py:292`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -180,7 +180,7 @@ ToolkitCatalogConfig(managed_toolkit_ids=..., always_active_toolkit_ids=..., reg
 `ToolkitCatalogRuntime` 对外暴露的方法 `build_continuation_state`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/catalog.py:303`
+- 定义位置：`src/unchain/tools/catalog.py:303`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -189,7 +189,7 @@ ToolkitCatalogConfig(managed_toolkit_ids=..., always_active_toolkit_ids=..., reg
 `ToolkitCatalogRuntime` 对外暴露的方法 `shutdown`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/catalog.py:313`
+- 定义位置：`src/unchain/tools/catalog.py:313`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -198,7 +198,7 @@ ToolkitCatalogConfig(managed_toolkit_ids=..., always_active_toolkit_ids=..., reg
 `ToolkitCatalogRuntime` 对外暴露的方法 `to_summary`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/catalog.py:320`
+- 定义位置：`src/unchain/tools/catalog.py:320`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -219,7 +219,7 @@ obj = ToolkitCatalogRuntime(...)
 obj.visible_toolkits(...)
 ```
 
-### `src/miso/tools/models.py`
+### `src/unchain/tools/models.py`
 
 为参数、历史压缩和确认流提供的小型支撑模型。
 
@@ -229,7 +229,7 @@ obj.visible_toolkits(...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/tools/models.py:155` |
+| 源码 | `src/unchain/tools/models.py:155` |
 | 模块职责 | 为参数、历史压缩和确认流提供的小型支撑模型。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -253,7 +253,7 @@ obj.visible_toolkits(...)
 `ToolParameter` 对外暴露的方法 `to_json`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/models.py:163`
+- 定义位置：`src/unchain/tools/models.py:163`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -276,7 +276,7 @@ ToolParameter(name=..., description=..., type_=..., required=...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/tools/models.py:178` |
+| 源码 | `src/unchain/tools/models.py:178` |
 | 模块职责 | 为参数、历史压缩和确认流提供的小型支撑模型。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -319,7 +319,7 @@ ToolHistoryOptimizationContext(tool_name=..., call_id=..., kind=..., provider=..
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/tools/models.py:191` |
+| 源码 | `src/unchain/tools/models.py:191` |
 | 模块职责 | 为参数、历史压缩和确认流提供的小型支撑模型。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -364,7 +364,7 @@ NormalizedToolHistoryRecord(tool_name=..., call_id=..., kind=..., payload=...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/tools/models.py:209` |
+| 源码 | `src/unchain/tools/models.py:209` |
 | 模块职责 | 为参数、历史压缩和确认流提供的小型支撑模型。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -388,7 +388,7 @@ NormalizedToolHistoryRecord(tool_name=..., call_id=..., kind=..., payload=...)
 `ToolConfirmationRequest` 对外暴露的方法 `to_dict`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/models.py:217`
+- 定义位置：`src/unchain/tools/models.py:217`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -411,7 +411,7 @@ ToolConfirmationRequest(tool_name=..., call_id=..., arguments=..., description=.
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/tools/models.py:233` |
+| 源码 | `src/unchain/tools/models.py:233` |
 | 模块职责 | 为参数、历史压缩和确认流提供的小型支撑模型。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -432,7 +432,7 @@ ToolConfirmationRequest(tool_name=..., call_id=..., arguments=..., description=.
 `ToolConfirmationResponse` 对外暴露的方法 `from_raw`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/models.py:239`
+- 定义位置：`src/unchain/tools/models.py:239`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -449,7 +449,7 @@ ToolConfirmationRequest(tool_name=..., call_id=..., arguments=..., description=.
 ToolConfirmationResponse(approved=..., modified_arguments=..., reason=...)
 ```
 
-### `src/miso/tools/registry.py`
+### `src/unchain/tools/registry.py`
 
 负责 manifest 发现、元数据校验、icon 解析与 toolkit 实例化。
 
@@ -459,7 +459,7 @@ ToolConfirmationResponse(approved=..., modified_arguments=..., reason=...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/tools/registry.py:192` |
+| 源码 | `src/unchain/tools/registry.py:192` |
 | 模块职责 | 负责 manifest 发现、元数据校验、icon 解析与 toolkit 实例化。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -481,7 +481,7 @@ ToolConfirmationResponse(approved=..., modified_arguments=..., reason=...)
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/tools/registry.py:198`
+- 定义位置：`src/unchain/tools/registry.py:198`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -490,7 +490,7 @@ ToolConfirmationResponse(approved=..., modified_arguments=..., reason=...)
 `ToolRegistryConfig` 对外暴露的方法 `coerce`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/registry.py:211`
+- 定义位置：`src/unchain/tools/registry.py:211`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -513,7 +513,7 @@ ToolRegistryConfig(local_roots=..., enabled_plugins=..., include_builtin=..., va
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/tools/registry.py:222` |
+| 源码 | `src/unchain/tools/registry.py:222` |
 | 模块职责 | 负责 manifest 发现、元数据校验、icon 解析与 toolkit 实例化。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -539,7 +539,7 @@ ToolRegistryConfig(local_roots=..., enabled_plugins=..., include_builtin=..., va
 `ToolDescriptor` 对外暴露的方法 `to_summary`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/registry.py:232`
+- 定义位置：`src/unchain/tools/registry.py:232`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -562,7 +562,7 @@ ToolDescriptor(name=..., title=..., description=..., icon_path=...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/tools/registry.py:246` |
+| 源码 | `src/unchain/tools/registry.py:246` |
 | 模块职责 | 负责 manifest 发现、元数据校验、icon 解析与 toolkit 实例化。 |
 | 继承/协议 | `-` |
 | 导出状态 | 未导出，应视为实现细节。 |
@@ -585,7 +585,7 @@ ToolDescriptor(name=..., title=..., description=..., icon_path=...)
 `IconDescriptor` 对外暴露的方法 `from_file`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/registry.py:254`
+- 定义位置：`src/unchain/tools/registry.py:254`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -594,7 +594,7 @@ ToolDescriptor(name=..., title=..., description=..., icon_path=...)
 `IconDescriptor` 对外暴露的方法 `from_builtin`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/registry.py:258`
+- 定义位置：`src/unchain/tools/registry.py:258`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -603,7 +603,7 @@ ToolDescriptor(name=..., title=..., description=..., icon_path=...)
 `IconDescriptor` 对外暴露的方法 `to_summary`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/registry.py:271`
+- 定义位置：`src/unchain/tools/registry.py:271`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -626,7 +626,7 @@ IconDescriptor(type=..., path=..., name=..., color=...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/tools/registry.py:286` |
+| 源码 | `src/unchain/tools/registry.py:286` |
 | 模块职责 | 负责 manifest 发现、元数据校验、icon 解析与 toolkit 实例化。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -652,7 +652,7 @@ IconDescriptor(type=..., path=..., name=..., color=...)
 | `display_order` | `int` | 默认值：`0`。 |
 | `hidden` | `bool` | 默认值：`False`。 |
 | `compat_python` | `str | None` | 默认值：`None`。 |
-| `compat_miso` | `str | None` | 默认值：`None`。 |
+| `compat_unchain` | `str | None` | 默认值：`None`。 |
 | `tools` | `dict[str, ToolDescriptor]` | 默认值：`field(default_factory=dict)`。 |
 | `import_roots` | `tuple[Path, ...]` | 默认值：`field(default_factory=tuple, repr=False)`。 |
 
@@ -663,7 +663,7 @@ IconDescriptor(type=..., path=..., name=..., color=...)
 `ToolkitDescriptor` 对外暴露的方法 `sorted_tools`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/registry.py:307`
+- 定义位置：`src/unchain/tools/registry.py:307`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -672,7 +672,7 @@ IconDescriptor(type=..., path=..., name=..., color=...)
 `ToolkitDescriptor` 对外暴露的方法 `to_summary`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/registry.py:313`
+- 定义位置：`src/unchain/tools/registry.py:313`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -681,7 +681,7 @@ IconDescriptor(type=..., path=..., name=..., color=...)
 `ToolkitDescriptor` 对外暴露的方法 `to_metadata`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/registry.py:342`
+- 定义位置：`src/unchain/tools/registry.py:342`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -704,7 +704,7 @@ ToolkitDescriptor(id=..., name=..., description=..., factory=...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/tools/registry.py:378` |
+| 源码 | `src/unchain/tools/registry.py:378` |
 | 模块职责 | 负责 manifest 发现、元数据校验、icon 解析与 toolkit 实例化。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -727,7 +727,7 @@ ToolkitDescriptor(id=..., name=..., description=..., factory=...)
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/tools/registry.py:381`
+- 定义位置：`src/unchain/tools/registry.py:381`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -736,7 +736,7 @@ ToolkitDescriptor(id=..., name=..., description=..., factory=...)
 `ToolkitRegistry` 对外暴露的方法 `list_toolkits`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/registry.py:390`
+- 定义位置：`src/unchain/tools/registry.py:390`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -745,7 +745,7 @@ ToolkitDescriptor(id=..., name=..., description=..., factory=...)
 `ToolkitRegistry` 对外暴露的方法 `get`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/registry.py:396`
+- 定义位置：`src/unchain/tools/registry.py:396`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -754,7 +754,7 @@ ToolkitDescriptor(id=..., name=..., description=..., factory=...)
 `ToolkitRegistry` 对外暴露的方法 `require`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/registry.py:399`
+- 定义位置：`src/unchain/tools/registry.py:399`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -763,7 +763,7 @@ ToolkitDescriptor(id=..., name=..., description=..., factory=...)
 `ToolkitRegistry` 对外暴露的方法 `get_toolkit_metadata`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/registry.py:405`
+- 定义位置：`src/unchain/tools/registry.py:405`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -772,7 +772,7 @@ ToolkitDescriptor(id=..., name=..., description=..., factory=...)
 `ToolkitRegistry` 对外暴露的方法 `instantiate_toolkit`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/registry.py:419`
+- 定义位置：`src/unchain/tools/registry.py:419`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -796,7 +796,7 @@ obj = ToolkitRegistry(...)
 obj.list_toolkits(...)
 ```
 
-### `src/miso/tools/tool.py`
+### `src/unchain/tools/tool.py`
 
 核心 Tool 封装，负责携带元数据并执行规范化后的参数。
 
@@ -806,7 +806,7 @@ obj.list_toolkits(...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/tools/tool.py:16` |
+| 源码 | `src/unchain/tools/tool.py:16` |
 | 模块职责 | 核心 Tool 封装，负责携带元数据并执行规范化后的参数。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -825,7 +825,7 @@ obj.list_toolkits(...)
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/tools/tool.py:17`
+- 定义位置：`src/unchain/tools/tool.py:17`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -834,7 +834,7 @@ obj.list_toolkits(...)
 `Tool` 对外暴露的方法 `from_callable`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/tool.py:71`
+- 定义位置：`src/unchain/tools/tool.py:71`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -843,7 +843,7 @@ obj.list_toolkits(...)
 `Tool` 对外暴露的方法 `to_json`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/tool.py:147`
+- 定义位置：`src/unchain/tools/tool.py:147`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -852,7 +852,7 @@ obj.list_toolkits(...)
 `Tool` 对外暴露的方法 `execute`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/tool.py:167`
+- 定义位置：`src/unchain/tools/tool.py:167`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -871,7 +871,7 @@ obj = Tool(...)
 obj.from_callable(...)
 ```
 
-### `src/miso/tools/toolkit.py`
+### `src/unchain/tools/toolkit.py`
 
 Tool 容器与注册表面，被 runtime 与 toolkit 实现共同使用。
 
@@ -881,7 +881,7 @@ Tool 容器与注册表面，被 runtime 与 toolkit 实现共同使用。
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/tools/toolkit.py:9` |
+| 源码 | `src/unchain/tools/toolkit.py:9` |
 | 模块职责 | Tool 容器与注册表面，被 runtime 与 toolkit 实现共同使用。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -900,7 +900,7 @@ Tool 容器与注册表面，被 runtime 与 toolkit 实现共同使用。
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/tools/toolkit.py:10`
+- 定义位置：`src/unchain/tools/toolkit.py:10`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -909,7 +909,7 @@ Tool 容器与注册表面，被 runtime 与 toolkit 实现共同使用。
 `Toolkit` 对外暴露的方法 `register`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/toolkit.py:16`
+- 定义位置：`src/unchain/tools/toolkit.py:16`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -918,7 +918,7 @@ Tool 容器与注册表面，被 runtime 与 toolkit 实现共同使用。
 `Toolkit` 对外暴露的方法 `register_many`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/toolkit.py:62`
+- 定义位置：`src/unchain/tools/toolkit.py:62`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -927,7 +927,7 @@ Tool 容器与注册表面，被 runtime 与 toolkit 实现共同使用。
 `Toolkit` 对外暴露的方法 `tool`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/toolkit.py:68`
+- 定义位置：`src/unchain/tools/toolkit.py:68`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -936,7 +936,7 @@ Tool 容器与注册表面，被 runtime 与 toolkit 实现共同使用。
 `Toolkit` 对外暴露的方法 `get`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/toolkit.py:106`
+- 定义位置：`src/unchain/tools/toolkit.py:106`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -945,7 +945,7 @@ Tool 容器与注册表面，被 runtime 与 toolkit 实现共同使用。
 `Toolkit` 对外暴露的方法 `execute`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/toolkit.py:109`
+- 定义位置：`src/unchain/tools/toolkit.py:109`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -954,7 +954,7 @@ Tool 容器与注册表面，被 runtime 与 toolkit 实现共同使用。
 `Toolkit` 对外暴露的方法 `to_json`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/toolkit.py:115`
+- 定义位置：`src/unchain/tools/toolkit.py:115`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -963,7 +963,7 @@ Tool 容器与注册表面，被 runtime 与 toolkit 实现共同使用。
 `Toolkit` 对外暴露的方法 `shutdown`。
 
 - 类型：方法
-- 定义位置：`src/miso/tools/toolkit.py:118`
+- 定义位置：`src/unchain/tools/toolkit.py:118`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 

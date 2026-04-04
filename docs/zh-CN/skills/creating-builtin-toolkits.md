@@ -4,7 +4,7 @@
 
 ## 角色与边界
 
-本章是为 miso 新增或维护 builtin toolkit 的实现指南。
+本章是为 unchain 新增或维护 builtin toolkit 的实现指南。
 
 ## 依赖关系
 
@@ -54,9 +54,9 @@
 
 ## 源码入口
 
-- `src/miso/toolkits/base.py`
-- `src/miso/toolkits/builtin/`
-- `src/miso/tools/registry.py`
+- `src/unchain/toolkits/base.py`
+- `src/unchain/toolkits/builtin/`
+- `src/unchain/tools/registry.py`
 
 ## 详细说明
 

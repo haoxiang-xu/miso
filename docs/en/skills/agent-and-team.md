@@ -52,8 +52,8 @@ This chapter documents the high-level orchestration surface: how a single agent 
 
 ## Source entry points
 
-- `src/miso/agents/agent.py`
-- `src/miso/agents/team.py`
+- `src/unchain/agents/agent.py`
+- `src/unchain/agents/team.py`
 
 ## Agent In Practice
 
@@ -86,9 +86,9 @@ The original repository skill note is preserved below for continuity and extra e
 ### Construction
 
 ```python
-from miso import Agent
-from miso.toolkits import WorkspaceToolkit, TerminalToolkit
-from miso.memory import MemoryConfig
+from unchain import Agent
+from unchain.toolkits import WorkspaceToolkit, TerminalToolkit
+from unchain.memory import MemoryConfig
 
 agent = Agent(
     name="coder",                            # Agent identity
@@ -212,7 +212,7 @@ agent.enable_subagents(
 ### Construction
 
 ```python
-from miso import Agent, Team
+from unchain import Agent, Team
 
 analyst = Agent(name="analyst", provider="openai", model="gpt-5", instructions="...")
 coder = Agent(name="coder", provider="openai", model="gpt-5", instructions="...")

@@ -13,16 +13,16 @@
 
 | 类 | 源码 | 导出 | 类型 |
 | --- | --- | --- | --- |
-| `BuiltinToolkit` | `src/miso/toolkits/base.py:10` | subpackage | class |
-| `AskUserToolkit` | `src/miso/toolkits/builtin/ask_user/ask_user.py:7` | subpackage | class |
-| `ExternalAPIToolkit` | `src/miso/toolkits/builtin/external_api/external_api.py:12` | subpackage | class |
+| `BuiltinToolkit` | `src/unchain/toolkits/base.py:10` | subpackage | class |
+| `AskUserToolkit` | `src/unchain/toolkits/builtin/ask_user/ask_user.py:7` | subpackage | class |
+| `ExternalAPIToolkit` | `src/unchain/toolkits/builtin/external_api/external_api.py:12` | subpackage | class |
 | `TerminalToolkit` | `src/unchain/toolkits/builtin/terminal/terminal.py:10` | subpackage | class |
 | `_TerminalSession` | `src/unchain/toolkits/builtin/terminal_runtime.py:15` | internal | dataclass |
 | `_TerminalRuntime` | `src/unchain/toolkits/builtin/terminal_runtime.py:22` | internal | class |
 | `WorkspaceToolkit` | `src/unchain/toolkits/builtin/workspace/workspace.py:24` | subpackage | class |
-| `MCPToolkit` | `src/miso/toolkits/mcp.py:62` | subpackage | class |
+| `MCPToolkit` | `src/unchain/toolkits/mcp.py:62` | subpackage | class |
 
-### `src/miso/toolkits/base.py`
+### `src/unchain/toolkits/base.py`
 
 内置 toolkit 共享的 workspace 感知基类。
 
@@ -32,7 +32,7 @@
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/toolkits/base.py:10` |
+| 源码 | `src/unchain/toolkits/base.py:10` |
 | 模块职责 | 内置 toolkit 共享的 workspace 感知基类。 |
 | 继承/协议 | `Toolkit` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -55,7 +55,7 @@
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/toolkits/base.py:23`
+- 定义位置：`src/unchain/toolkits/base.py:23`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -64,7 +64,7 @@
 `BuiltinToolkit` 对外暴露的方法 `push_execution_context`。
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/base.py:45`
+- 定义位置：`src/unchain/toolkits/base.py:45`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -73,7 +73,7 @@
 `BuiltinToolkit` 对外暴露的方法 `pop_execution_context`。
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/base.py:48`
+- 定义位置：`src/unchain/toolkits/base.py:48`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -92,7 +92,7 @@ obj = BuiltinToolkit(...)
 obj.push_execution_context(...)
 ```
 
-### `src/miso/toolkits/builtin/ask_user/ask_user.py`
+### `src/unchain/toolkits/builtin/ask_user/ask_user.py`
 
 承载 ask-user 保留工具的内置 toolkit。
 
@@ -102,7 +102,7 @@ obj.push_execution_context(...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/toolkits/builtin/ask_user/ask_user.py:7` |
+| 源码 | `src/unchain/toolkits/builtin/ask_user/ask_user.py:7` |
 | 模块职责 | 承载 ask-user 保留工具的内置 toolkit。 |
 | 继承/协议 | `Toolkit` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -121,7 +121,7 @@ obj.push_execution_context(...)
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/toolkits/builtin/ask_user/ask_user.py:10`
+- 定义位置：`src/unchain/toolkits/builtin/ask_user/ask_user.py:10`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -130,7 +130,7 @@ obj.push_execution_context(...)
 Reserved runtime placeholder for structured user input requests.
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/ask_user/ask_user.py:20`
+- 定义位置：`src/unchain/toolkits/builtin/ask_user/ask_user.py:20`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -149,7 +149,7 @@ obj = AskUserToolkit(...)
 obj.ask_user_question(...)
 ```
 
-### `src/miso/toolkits/builtin/external_api/external_api.py`
+### `src/unchain/toolkits/builtin/external_api/external_api.py`
 
 提供简单 GET/POST HTTP 能力的外部 API toolkit。
 
@@ -159,7 +159,7 @@ obj.ask_user_question(...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/toolkits/builtin/external_api/external_api.py:12` |
+| 源码 | `src/unchain/toolkits/builtin/external_api/external_api.py:12` |
 | 模块职责 | 提供简单 GET/POST HTTP 能力的外部 API toolkit。 |
 | 继承/协议 | `BuiltinToolkit` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -178,7 +178,7 @@ obj.ask_user_question(...)
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/toolkits/builtin/external_api/external_api.py:15`
+- 定义位置：`src/unchain/toolkits/builtin/external_api/external_api.py:15`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -187,7 +187,7 @@ obj.ask_user_question(...)
 Send a GET request to an external API endpoint.
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/external_api/external_api.py:29`
+- 定义位置：`src/unchain/toolkits/builtin/external_api/external_api.py:29`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 - 补充：:param url: Full URL to send the GET request to.
@@ -200,7 +200,7 @@ Send a GET request to an external API endpoint.
 Send a POST request to an external API endpoint.
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/builtin/external_api/external_api.py:90`
+- 定义位置：`src/unchain/toolkits/builtin/external_api/external_api.py:90`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 - 补充：:param url: Full URL to send the POST request to.
@@ -624,7 +624,7 @@ obj = WorkspaceToolkit(...)
 obj.read_files(...)
 ```
 
-### `src/miso/toolkits/mcp.py`
+### `src/unchain/toolkits/mcp.py`
 
 把远端 MCP server 工具桥接为本地 Toolkit 的实现。
 
@@ -634,7 +634,7 @@ obj.read_files(...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/toolkits/mcp.py:62` |
+| 源码 | `src/unchain/toolkits/mcp.py:62` |
 | 模块职责 | 把远端 MCP server 工具桥接为本地 Toolkit 的实现。 |
 | 继承/协议 | `Toolkit` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -657,7 +657,7 @@ obj.read_files(...)
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/toolkits/mcp.py:83`
+- 定义位置：`src/unchain/toolkits/mcp.py:83`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -666,7 +666,7 @@ obj.read_files(...)
 Connect to the MCP server, discover tools, and populate the toolkit.
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/mcp.py:127`
+- 定义位置：`src/unchain/toolkits/mcp.py:127`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 - 补充：This method blocks until the session is ready and tools have been
@@ -680,7 +680,7 @@ Returns ``self`` for convenient chaining.
 Disconnect from the MCP server and clean up resources.
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/mcp.py:156`
+- 定义位置：`src/unchain/toolkits/mcp.py:156`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -689,7 +689,7 @@ Disconnect from the MCP server and clean up resources.
 Execute a tool on the MCP server.
 
 - 类型：方法
-- 定义位置：`src/miso/toolkits/mcp.py:185`
+- 定义位置：`src/unchain/toolkits/mcp.py:185`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 - 补充：Falls back to local toolkit execution if the server is disconnected.

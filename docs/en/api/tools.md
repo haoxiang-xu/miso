@@ -13,22 +13,22 @@ Tool primitives, toolkit containers, catalog runtime, and discovery/descriptor t
 
 | Class | Source | Exposure | Kind |
 | --- | --- | --- | --- |
-| `ToolkitCatalogConfig` | `src/miso/tools/catalog.py:34` | subpackage | dataclass |
-| `ToolkitCatalogRuntime` | `src/miso/tools/catalog.py:76` | subpackage | class |
-| `ToolParameter` | `src/miso/tools/models.py:155` | subpackage | dataclass |
-| `ToolHistoryOptimizationContext` | `src/miso/tools/models.py:178` | subpackage | dataclass |
-| `NormalizedToolHistoryRecord` | `src/miso/tools/models.py:191` | subpackage | dataclass |
-| `ToolConfirmationRequest` | `src/miso/tools/models.py:209` | subpackage | dataclass |
-| `ToolConfirmationResponse` | `src/miso/tools/models.py:233` | subpackage | dataclass |
-| `ToolRegistryConfig` | `src/miso/tools/registry.py:192` | subpackage | dataclass |
-| `ToolDescriptor` | `src/miso/tools/registry.py:222` | subpackage | dataclass |
-| `IconDescriptor` | `src/miso/tools/registry.py:246` | internal | dataclass |
-| `ToolkitDescriptor` | `src/miso/tools/registry.py:286` | subpackage | dataclass |
-| `ToolkitRegistry` | `src/miso/tools/registry.py:378` | subpackage | class |
-| `Tool` | `src/miso/tools/tool.py:16` | subpackage | class |
-| `Toolkit` | `src/miso/tools/toolkit.py:9` | subpackage | class |
+| `ToolkitCatalogConfig` | `src/unchain/tools/catalog.py:34` | subpackage | dataclass |
+| `ToolkitCatalogRuntime` | `src/unchain/tools/catalog.py:76` | subpackage | class |
+| `ToolParameter` | `src/unchain/tools/models.py:155` | subpackage | dataclass |
+| `ToolHistoryOptimizationContext` | `src/unchain/tools/models.py:178` | subpackage | dataclass |
+| `NormalizedToolHistoryRecord` | `src/unchain/tools/models.py:191` | subpackage | dataclass |
+| `ToolConfirmationRequest` | `src/unchain/tools/models.py:209` | subpackage | dataclass |
+| `ToolConfirmationResponse` | `src/unchain/tools/models.py:233` | subpackage | dataclass |
+| `ToolRegistryConfig` | `src/unchain/tools/registry.py:192` | subpackage | dataclass |
+| `ToolDescriptor` | `src/unchain/tools/registry.py:222` | subpackage | dataclass |
+| `IconDescriptor` | `src/unchain/tools/registry.py:246` | internal | dataclass |
+| `ToolkitDescriptor` | `src/unchain/tools/registry.py:286` | subpackage | dataclass |
+| `ToolkitRegistry` | `src/unchain/tools/registry.py:378` | subpackage | class |
+| `Tool` | `src/unchain/tools/tool.py:16` | subpackage | class |
+| `Toolkit` | `src/unchain/tools/toolkit.py:9` | subpackage | class |
 
-### `src/miso/tools/catalog.py`
+### `src/unchain/tools/catalog.py`
 
 Runtime catalog activation layer that can list, describe, and activate managed toolkits.
 
@@ -38,7 +38,7 @@ Dataclass payload used by runtime catalog activation layer that can list, descri
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/tools/catalog.py:34` |
+| Source | `src/unchain/tools/catalog.py:34` |
 | Module role | Runtime catalog activation layer that can list, describe, and activate managed toolkits. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -60,7 +60,7 @@ Dataclass payload used by runtime catalog activation layer that can list, descri
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/tools/catalog.py:40`
+- Declared at: `src/unchain/tools/catalog.py:40`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -69,7 +69,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Public method `coerce` exposed by `ToolkitCatalogConfig`.
 
 - Category: Method
-- Declared at: `src/miso/tools/catalog.py:66`
+- Declared at: `src/unchain/tools/catalog.py:66`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -89,7 +89,7 @@ Runtime-visible toolkit that lists, describes, activates, and deactivates manage
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/tools/catalog.py:76` |
+| Source | `src/unchain/tools/catalog.py:76` |
 | Module role | Runtime catalog activation layer that can list, describe, and activate managed toolkits. |
 | Inheritance | `Toolkit` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -108,7 +108,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/tools/catalog.py:77`
+- Declared at: `src/unchain/tools/catalog.py:77`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -117,7 +117,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Public method `visible_toolkits` exposed by `ToolkitCatalogRuntime`.
 
 - Category: Method
-- Declared at: `src/miso/tools/catalog.py:147`
+- Declared at: `src/unchain/tools/catalog.py:147`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -126,7 +126,7 @@ Public method `visible_toolkits` exposed by `ToolkitCatalogRuntime`.
 Public method `active_toolkit_ids` exposed by `ToolkitCatalogRuntime`.
 
 - Category: Method
-- Declared at: `src/miso/tools/catalog.py:150`
+- Declared at: `src/unchain/tools/catalog.py:150`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -135,7 +135,7 @@ Public method `active_toolkit_ids` exposed by `ToolkitCatalogRuntime`.
 Public method `toolkit_list` exposed by `ToolkitCatalogRuntime`.
 
 - Category: Method
-- Declared at: `src/miso/tools/catalog.py:219`
+- Declared at: `src/unchain/tools/catalog.py:219`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -144,7 +144,7 @@ Public method `toolkit_list` exposed by `ToolkitCatalogRuntime`.
 Public method `toolkit_describe` exposed by `ToolkitCatalogRuntime`.
 
 - Category: Method
-- Declared at: `src/miso/tools/catalog.py:228`
+- Declared at: `src/unchain/tools/catalog.py:228`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -153,7 +153,7 @@ Public method `toolkit_describe` exposed by `ToolkitCatalogRuntime`.
 Public method `toolkit_activate` exposed by `ToolkitCatalogRuntime`.
 
 - Category: Method
-- Declared at: `src/miso/tools/catalog.py:259`
+- Declared at: `src/unchain/tools/catalog.py:259`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -162,7 +162,7 @@ Public method `toolkit_activate` exposed by `ToolkitCatalogRuntime`.
 Public method `toolkit_deactivate` exposed by `ToolkitCatalogRuntime`.
 
 - Category: Method
-- Declared at: `src/miso/tools/catalog.py:262`
+- Declared at: `src/unchain/tools/catalog.py:262`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -171,7 +171,7 @@ Public method `toolkit_deactivate` exposed by `ToolkitCatalogRuntime`.
 Public method `toolkit_list_active` exposed by `ToolkitCatalogRuntime`.
 
 - Category: Method
-- Declared at: `src/miso/tools/catalog.py:292`
+- Declared at: `src/unchain/tools/catalog.py:292`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -180,7 +180,7 @@ Public method `toolkit_list_active` exposed by `ToolkitCatalogRuntime`.
 Public method `build_continuation_state` exposed by `ToolkitCatalogRuntime`.
 
 - Category: Method
-- Declared at: `src/miso/tools/catalog.py:303`
+- Declared at: `src/unchain/tools/catalog.py:303`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -189,7 +189,7 @@ Public method `build_continuation_state` exposed by `ToolkitCatalogRuntime`.
 Public method `shutdown` exposed by `ToolkitCatalogRuntime`.
 
 - Category: Method
-- Declared at: `src/miso/tools/catalog.py:313`
+- Declared at: `src/unchain/tools/catalog.py:313`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -198,7 +198,7 @@ Public method `shutdown` exposed by `ToolkitCatalogRuntime`.
 Public method `to_summary` exposed by `ToolkitCatalogRuntime`.
 
 - Category: Method
-- Declared at: `src/miso/tools/catalog.py:320`
+- Declared at: `src/unchain/tools/catalog.py:320`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -219,7 +219,7 @@ obj = ToolkitCatalogRuntime(...)
 obj.visible_toolkits(...)
 ```
 
-### `src/miso/tools/models.py`
+### `src/unchain/tools/models.py`
 
 Small supporting models for tool parameters, history compaction, and confirmation flow.
 
@@ -229,7 +229,7 @@ Dataclass payload used by small supporting models for tool parameters, history c
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/tools/models.py:155` |
+| Source | `src/unchain/tools/models.py:155` |
 | Module role | Small supporting models for tool parameters, history compaction, and confirmation flow. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -253,7 +253,7 @@ Dataclass payload used by small supporting models for tool parameters, history c
 Public method `to_json` exposed by `ToolParameter`.
 
 - Category: Method
-- Declared at: `src/miso/tools/models.py:163`
+- Declared at: `src/unchain/tools/models.py:163`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -276,7 +276,7 @@ Dataclass payload used by small supporting models for tool parameters, history c
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/tools/models.py:178` |
+| Source | `src/unchain/tools/models.py:178` |
 | Module role | Small supporting models for tool parameters, history compaction, and confirmation flow. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -319,7 +319,7 @@ Dataclass payload used by small supporting models for tool parameters, history c
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/tools/models.py:191` |
+| Source | `src/unchain/tools/models.py:191` |
 | Module role | Small supporting models for tool parameters, history compaction, and confirmation flow. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -364,7 +364,7 @@ Dataclass payload used by small supporting models for tool parameters, history c
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/tools/models.py:209` |
+| Source | `src/unchain/tools/models.py:209` |
 | Module role | Small supporting models for tool parameters, history compaction, and confirmation flow. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -388,7 +388,7 @@ Dataclass payload used by small supporting models for tool parameters, history c
 Public method `to_dict` exposed by `ToolConfirmationRequest`.
 
 - Category: Method
-- Declared at: `src/miso/tools/models.py:217`
+- Declared at: `src/unchain/tools/models.py:217`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -411,7 +411,7 @@ Dataclass payload used by small supporting models for tool parameters, history c
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/tools/models.py:233` |
+| Source | `src/unchain/tools/models.py:233` |
 | Module role | Small supporting models for tool parameters, history compaction, and confirmation flow. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -432,7 +432,7 @@ Dataclass payload used by small supporting models for tool parameters, history c
 Public method `from_raw` exposed by `ToolConfirmationResponse`.
 
 - Category: Method
-- Declared at: `src/miso/tools/models.py:239`
+- Declared at: `src/unchain/tools/models.py:239`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -449,7 +449,7 @@ Public method `from_raw` exposed by `ToolConfirmationResponse`.
 ToolConfirmationResponse(approved=..., modified_arguments=..., reason=...)
 ```
 
-### `src/miso/tools/registry.py`
+### `src/unchain/tools/registry.py`
 
 Manifest discovery, metadata validation, icon resolution, and toolkit instantiation.
 
@@ -459,7 +459,7 @@ Dataclass payload used by manifest discovery, metadata validation, icon resoluti
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/tools/registry.py:192` |
+| Source | `src/unchain/tools/registry.py:192` |
 | Module role | Manifest discovery, metadata validation, icon resolution, and toolkit instantiation. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -481,7 +481,7 @@ Dataclass payload used by manifest discovery, metadata validation, icon resoluti
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/tools/registry.py:198`
+- Declared at: `src/unchain/tools/registry.py:198`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -490,7 +490,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Public method `coerce` exposed by `ToolRegistryConfig`.
 
 - Category: Method
-- Declared at: `src/miso/tools/registry.py:211`
+- Declared at: `src/unchain/tools/registry.py:211`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -513,7 +513,7 @@ Dataclass payload used by manifest discovery, metadata validation, icon resoluti
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/tools/registry.py:222` |
+| Source | `src/unchain/tools/registry.py:222` |
 | Module role | Manifest discovery, metadata validation, icon resolution, and toolkit instantiation. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -539,7 +539,7 @@ Dataclass payload used by manifest discovery, metadata validation, icon resoluti
 Public method `to_summary` exposed by `ToolDescriptor`.
 
 - Category: Method
-- Declared at: `src/miso/tools/registry.py:232`
+- Declared at: `src/unchain/tools/registry.py:232`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -562,7 +562,7 @@ Dataclass payload used by manifest discovery, metadata validation, icon resoluti
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/tools/registry.py:246` |
+| Source | `src/unchain/tools/registry.py:246` |
 | Module role | Manifest discovery, metadata validation, icon resolution, and toolkit instantiation. |
 | Inheritance | `-` |
 | Exposure | Not exported; treat as implementation detail. |
@@ -585,7 +585,7 @@ Dataclass payload used by manifest discovery, metadata validation, icon resoluti
 Public method `from_file` exposed by `IconDescriptor`.
 
 - Category: Method
-- Declared at: `src/miso/tools/registry.py:254`
+- Declared at: `src/unchain/tools/registry.py:254`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -594,7 +594,7 @@ Public method `from_file` exposed by `IconDescriptor`.
 Public method `from_builtin` exposed by `IconDescriptor`.
 
 - Category: Method
-- Declared at: `src/miso/tools/registry.py:258`
+- Declared at: `src/unchain/tools/registry.py:258`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -603,7 +603,7 @@ Public method `from_builtin` exposed by `IconDescriptor`.
 Public method `to_summary` exposed by `IconDescriptor`.
 
 - Category: Method
-- Declared at: `src/miso/tools/registry.py:271`
+- Declared at: `src/unchain/tools/registry.py:271`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -626,7 +626,7 @@ Dataclass payload used by manifest discovery, metadata validation, icon resoluti
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/tools/registry.py:286` |
+| Source | `src/unchain/tools/registry.py:286` |
 | Module role | Manifest discovery, metadata validation, icon resolution, and toolkit instantiation. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -652,7 +652,7 @@ Dataclass payload used by manifest discovery, metadata validation, icon resoluti
 | `display_order` | `int` | Default: `0`. |
 | `hidden` | `bool` | Default: `False`. |
 | `compat_python` | `str | None` | Default: `None`. |
-| `compat_miso` | `str | None` | Default: `None`. |
+| `compat_unchain` | `str | None` | Default: `None`. |
 | `tools` | `dict[str, ToolDescriptor]` | Default: `field(default_factory=dict)`. |
 | `import_roots` | `tuple[Path, ...]` | Default: `field(default_factory=tuple, repr=False)`. |
 
@@ -663,7 +663,7 @@ Dataclass payload used by manifest discovery, metadata validation, icon resoluti
 Public method `sorted_tools` exposed by `ToolkitDescriptor`.
 
 - Category: Method
-- Declared at: `src/miso/tools/registry.py:307`
+- Declared at: `src/unchain/tools/registry.py:307`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -672,7 +672,7 @@ Public method `sorted_tools` exposed by `ToolkitDescriptor`.
 Public method `to_summary` exposed by `ToolkitDescriptor`.
 
 - Category: Method
-- Declared at: `src/miso/tools/registry.py:313`
+- Declared at: `src/unchain/tools/registry.py:313`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -681,7 +681,7 @@ Public method `to_summary` exposed by `ToolkitDescriptor`.
 Public method `to_metadata` exposed by `ToolkitDescriptor`.
 
 - Category: Method
-- Declared at: `src/miso/tools/registry.py:342`
+- Declared at: `src/unchain/tools/registry.py:342`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -704,7 +704,7 @@ Discovery and validation service that reads toolkit manifests, resolves assets, 
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/tools/registry.py:378` |
+| Source | `src/unchain/tools/registry.py:378` |
 | Module role | Manifest discovery, metadata validation, icon resolution, and toolkit instantiation. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -727,7 +727,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/tools/registry.py:381`
+- Declared at: `src/unchain/tools/registry.py:381`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -736,7 +736,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Public method `list_toolkits` exposed by `ToolkitRegistry`.
 
 - Category: Method
-- Declared at: `src/miso/tools/registry.py:390`
+- Declared at: `src/unchain/tools/registry.py:390`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -745,7 +745,7 @@ Public method `list_toolkits` exposed by `ToolkitRegistry`.
 Public method `get` exposed by `ToolkitRegistry`.
 
 - Category: Method
-- Declared at: `src/miso/tools/registry.py:396`
+- Declared at: `src/unchain/tools/registry.py:396`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -754,7 +754,7 @@ Public method `get` exposed by `ToolkitRegistry`.
 Public method `require` exposed by `ToolkitRegistry`.
 
 - Category: Method
-- Declared at: `src/miso/tools/registry.py:399`
+- Declared at: `src/unchain/tools/registry.py:399`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -763,7 +763,7 @@ Public method `require` exposed by `ToolkitRegistry`.
 Public method `get_toolkit_metadata` exposed by `ToolkitRegistry`.
 
 - Category: Method
-- Declared at: `src/miso/tools/registry.py:405`
+- Declared at: `src/unchain/tools/registry.py:405`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -772,7 +772,7 @@ Public method `get_toolkit_metadata` exposed by `ToolkitRegistry`.
 Public method `instantiate_toolkit` exposed by `ToolkitRegistry`.
 
 - Category: Method
-- Declared at: `src/miso/tools/registry.py:419`
+- Declared at: `src/unchain/tools/registry.py:419`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -796,7 +796,7 @@ obj = ToolkitRegistry(...)
 obj.list_toolkits(...)
 ```
 
-### `src/miso/tools/tool.py`
+### `src/unchain/tools/tool.py`
 
 The core callable wrapper that carries tool metadata and executes normalized arguments.
 
@@ -806,7 +806,7 @@ Metadata-bearing wrapper around a callable, used as the atomic executable tool u
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/tools/tool.py:16` |
+| Source | `src/unchain/tools/tool.py:16` |
 | Module role | The core callable wrapper that carries tool metadata and executes normalized arguments. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -825,7 +825,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/tools/tool.py:17`
+- Declared at: `src/unchain/tools/tool.py:17`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -834,7 +834,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Public method `from_callable` exposed by `Tool`.
 
 - Category: Method
-- Declared at: `src/miso/tools/tool.py:71`
+- Declared at: `src/unchain/tools/tool.py:71`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -843,7 +843,7 @@ Public method `from_callable` exposed by `Tool`.
 Public method `to_json` exposed by `Tool`.
 
 - Category: Method
-- Declared at: `src/miso/tools/tool.py:147`
+- Declared at: `src/unchain/tools/tool.py:147`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -852,7 +852,7 @@ Public method `to_json` exposed by `Tool`.
 Public method `execute` exposed by `Tool`.
 
 - Category: Method
-- Declared at: `src/miso/tools/tool.py:167`
+- Declared at: `src/unchain/tools/tool.py:167`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -871,7 +871,7 @@ obj = Tool(...)
 obj.from_callable(...)
 ```
 
-### `src/miso/tools/toolkit.py`
+### `src/unchain/tools/toolkit.py`
 
 Tool container and registration surface used by runtimes and toolkit implementations.
 
@@ -881,7 +881,7 @@ Dictionary-like container of `Tool` instances with registration, lookup, executi
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/tools/toolkit.py:9` |
+| Source | `src/unchain/tools/toolkit.py:9` |
 | Module role | Tool container and registration surface used by runtimes and toolkit implementations. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -900,7 +900,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/tools/toolkit.py:10`
+- Declared at: `src/unchain/tools/toolkit.py:10`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -909,7 +909,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Public method `register` exposed by `Toolkit`.
 
 - Category: Method
-- Declared at: `src/miso/tools/toolkit.py:16`
+- Declared at: `src/unchain/tools/toolkit.py:16`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -918,7 +918,7 @@ Public method `register` exposed by `Toolkit`.
 Public method `register_many` exposed by `Toolkit`.
 
 - Category: Method
-- Declared at: `src/miso/tools/toolkit.py:62`
+- Declared at: `src/unchain/tools/toolkit.py:62`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -927,7 +927,7 @@ Public method `register_many` exposed by `Toolkit`.
 Public method `tool` exposed by `Toolkit`.
 
 - Category: Method
-- Declared at: `src/miso/tools/toolkit.py:68`
+- Declared at: `src/unchain/tools/toolkit.py:68`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -936,7 +936,7 @@ Public method `tool` exposed by `Toolkit`.
 Public method `get` exposed by `Toolkit`.
 
 - Category: Method
-- Declared at: `src/miso/tools/toolkit.py:106`
+- Declared at: `src/unchain/tools/toolkit.py:106`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -945,7 +945,7 @@ Public method `get` exposed by `Toolkit`.
 Public method `execute` exposed by `Toolkit`.
 
 - Category: Method
-- Declared at: `src/miso/tools/toolkit.py:109`
+- Declared at: `src/unchain/tools/toolkit.py:109`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -954,7 +954,7 @@ Public method `execute` exposed by `Toolkit`.
 Public method `to_json` exposed by `Toolkit`.
 
 - Category: Method
-- Declared at: `src/miso/tools/toolkit.py:115`
+- Declared at: `src/unchain/tools/toolkit.py:115`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -963,7 +963,7 @@ Public method `to_json` exposed by `Toolkit`.
 Public method `shutdown` exposed by `Toolkit`.
 
 - Category: Method
-- Declared at: `src/miso/tools/toolkit.py:118`
+- Declared at: `src/unchain/tools/toolkit.py:118`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 

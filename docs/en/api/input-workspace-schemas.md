@@ -13,15 +13,15 @@ Structured human input models, workspace pin/syntax objects, and structured outp
 
 | Class | Source | Exposure | Kind |
 | --- | --- | --- | --- |
-| `HumanInputOption` | `src/miso/input/human_input.py:61` | subpackage | dataclass |
-| `HumanInputRequest` | `src/miso/input/human_input.py:89` | subpackage | dataclass |
-| `HumanInputResponse` | `src/miso/input/human_input.py:225` | subpackage | dataclass |
-| `ResponseFormat` | `src/miso/schemas/response.py:7` | subpackage | class |
-| `WorkspacePinExecutionContext` | `src/miso/workspace/pins.py:35` | subpackage | dataclass |
-| `ParsedSyntaxTree` | `src/miso/workspace/syntax.py:215` | internal | dataclass |
-| `DeclarationCandidate` | `src/miso/workspace/syntax.py:228` | internal | dataclass |
+| `HumanInputOption` | `src/unchain/input/human_input.py:61` | subpackage | dataclass |
+| `HumanInputRequest` | `src/unchain/input/human_input.py:89` | subpackage | dataclass |
+| `HumanInputResponse` | `src/unchain/input/human_input.py:225` | subpackage | dataclass |
+| `ResponseFormat` | `src/unchain/schemas/response.py:7` | subpackage | class |
+| `WorkspacePinExecutionContext` | `src/unchain/workspace/pins.py:35` | subpackage | dataclass |
+| `ParsedSyntaxTree` | `src/unchain/workspace/syntax.py:215` | internal | dataclass |
+| `DeclarationCandidate` | `src/unchain/workspace/syntax.py:228` | internal | dataclass |
 
-### `src/miso/input/human_input.py`
+### `src/unchain/input/human_input.py`
 
 Structured question/response models used by the ask-user flow.
 
@@ -31,7 +31,7 @@ Dataclass payload used by structured question/response models used by the ask-us
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/input/human_input.py:61` |
+| Source | `src/unchain/input/human_input.py:61` |
 | Module role | Structured question/response models used by the ask-user flow. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -52,7 +52,7 @@ Dataclass payload used by structured question/response models used by the ask-us
 Public method `from_raw` exposed by `HumanInputOption`.
 
 - Category: Method
-- Declared at: `src/miso/input/human_input.py:67`
+- Declared at: `src/unchain/input/human_input.py:67`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -61,7 +61,7 @@ Public method `from_raw` exposed by `HumanInputOption`.
 Public method `to_dict` exposed by `HumanInputOption`.
 
 - Category: Method
-- Declared at: `src/miso/input/human_input.py:80`
+- Declared at: `src/unchain/input/human_input.py:80`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -82,7 +82,7 @@ Dataclass payload used by structured question/response models used by the ask-us
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/input/human_input.py:89` |
+| Source | `src/unchain/input/human_input.py:89` |
 | Module role | Structured question/response models used by the ask-user flow. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -111,7 +111,7 @@ Dataclass payload used by structured question/response models used by the ask-us
 Public method `from_tool_arguments` exposed by `HumanInputRequest`.
 
 - Category: Method
-- Declared at: `src/miso/input/human_input.py:103`
+- Declared at: `src/unchain/input/human_input.py:103`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -120,7 +120,7 @@ Public method `from_tool_arguments` exposed by `HumanInputRequest`.
 Public method `from_dict` exposed by `HumanInputRequest`.
 
 - Category: Method
-- Declared at: `src/miso/input/human_input.py:180`
+- Declared at: `src/unchain/input/human_input.py:180`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -129,7 +129,7 @@ Public method `from_dict` exposed by `HumanInputRequest`.
 Public method `to_dict` exposed by `HumanInputRequest`.
 
 - Category: Method
-- Declared at: `src/miso/input/human_input.py:202`
+- Declared at: `src/unchain/input/human_input.py:202`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -138,7 +138,7 @@ Public method `to_dict` exposed by `HumanInputRequest`.
 Public method `allowed_values` exposed by `HumanInputRequest`.
 
 - Category: Method
-- Declared at: `src/miso/input/human_input.py:217`
+- Declared at: `src/unchain/input/human_input.py:217`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -159,7 +159,7 @@ Dataclass payload used by structured question/response models used by the ask-us
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/input/human_input.py:225` |
+| Source | `src/unchain/input/human_input.py:225` |
 | Module role | Structured question/response models used by the ask-user flow. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -180,7 +180,7 @@ Dataclass payload used by structured question/response models used by the ask-us
 Public method `from_raw` exposed by `HumanInputResponse`.
 
 - Category: Method
-- Declared at: `src/miso/input/human_input.py:231`
+- Declared at: `src/unchain/input/human_input.py:231`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -189,7 +189,7 @@ Public method `from_raw` exposed by `HumanInputResponse`.
 Public method `to_dict` exposed by `HumanInputResponse`.
 
 - Category: Method
-- Declared at: `src/miso/input/human_input.py:295`
+- Declared at: `src/unchain/input/human_input.py:295`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -198,7 +198,7 @@ Public method `to_dict` exposed by `HumanInputResponse`.
 Public method `to_tool_result` exposed by `HumanInputResponse`.
 
 - Category: Method
-- Declared at: `src/miso/input/human_input.py:302`
+- Declared at: `src/unchain/input/human_input.py:302`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -213,7 +213,7 @@ Public method `to_tool_result` exposed by `HumanInputResponse`.
 HumanInputResponse(request_id=..., selected_values=..., other_text=...)
 ```
 
-### `src/miso/schemas/response.py`
+### `src/unchain/schemas/response.py`
 
 Structured output schema wrapper with provider-specific projections and parsing.
 
@@ -223,7 +223,7 @@ Structured-output schema wrapper that can project the same schema into multiple 
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/schemas/response.py:7` |
+| Source | `src/unchain/schemas/response.py:7` |
 | Module role | Structured output schema wrapper with provider-specific projections and parsing. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -242,7 +242,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/schemas/response.py:10`
+- Declared at: `src/unchain/schemas/response.py:10`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -251,7 +251,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Public method `to_openai` exposed by `ResponseFormat`.
 
 - Category: Method
-- Declared at: `src/miso/schemas/response.py:27`
+- Declared at: `src/unchain/schemas/response.py:27`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -260,7 +260,7 @@ Public method `to_openai` exposed by `ResponseFormat`.
 Public method `to_ollama` exposed by `ResponseFormat`.
 
 - Category: Method
-- Declared at: `src/miso/schemas/response.py:34`
+- Declared at: `src/unchain/schemas/response.py:34`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -269,7 +269,7 @@ Public method `to_ollama` exposed by `ResponseFormat`.
 Return a system-prompt suffix that instructs Claude to output JSON.
 
 - Category: Method
-- Declared at: `src/miso/schemas/response.py:38`
+- Declared at: `src/unchain/schemas/response.py:38`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -278,7 +278,7 @@ Return a system-prompt suffix that instructs Claude to output JSON.
 Return Gemini-compatible structured output config.
 
 - Category: Method
-- Declared at: `src/miso/schemas/response.py:46`
+- Declared at: `src/unchain/schemas/response.py:46`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 - Notes: Returns a dict with ``response_mime_type`` and ``response_schema``
@@ -289,7 +289,7 @@ suitable for passing into Gemini's ``generation_config``.
 Public method `parse` exposed by `ResponseFormat`.
 
 - Category: Method
-- Declared at: `src/miso/schemas/response.py:57`
+- Declared at: `src/unchain/schemas/response.py:57`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -308,7 +308,7 @@ obj = ResponseFormat(...)
 obj.to_openai(...)
 ```
 
-### `src/miso/workspace/pins.py`
+### `src/unchain/workspace/pins.py`
 
 Workspace pin execution context and relocation helpers for pinned file context.
 
@@ -318,7 +318,7 @@ Dataclass payload used by workspace pin execution context and relocation helpers
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/workspace/pins.py:35` |
+| Source | `src/unchain/workspace/pins.py:35` |
 | Module role | Workspace pin execution context and relocation helpers for pinned file context. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -349,7 +349,7 @@ This type does not expose public methods beyond dataclass/protocol structure.
 WorkspacePinExecutionContext(session_id=..., session_store=...)
 ```
 
-### `src/miso/workspace/syntax.py`
+### `src/unchain/workspace/syntax.py`
 
 Syntax-tree parsing output types shared by the workspace toolkit.
 
@@ -359,7 +359,7 @@ Dataclass payload used by syntax-tree parsing output types shared by the workspa
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/workspace/syntax.py:215` |
+| Source | `src/unchain/workspace/syntax.py:215` |
 | Module role | Syntax-tree parsing output types shared by the workspace toolkit. |
 | Inheritance | `-` |
 | Exposure | Not exported; treat as implementation detail. |
@@ -399,7 +399,7 @@ Dataclass payload used by syntax-tree parsing output types shared by the workspa
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/workspace/syntax.py:228` |
+| Source | `src/unchain/workspace/syntax.py:228` |
 | Module role | Syntax-tree parsing output types shared by the workspace toolkit. |
 | Inheritance | `-` |
 | Exposure | Not exported; treat as implementation detail. |

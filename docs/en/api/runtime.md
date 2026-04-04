@@ -13,13 +13,13 @@ Core execution loop types for provider turns, tool execution, token accounting, 
 
 | Class | Source | Exposure | Kind |
 | --- | --- | --- | --- |
-| `ToolCall` | `src/miso/runtime/engine.py:68` | subpackage | dataclass |
-| `ProviderTurnResult` | `src/miso/runtime/engine.py:74` | subpackage | dataclass |
-| `TokenUsage` | `src/miso/runtime/engine.py:86` | internal | dataclass |
-| `ToolExecutionOutcome` | `src/miso/runtime/engine.py:93` | subpackage | dataclass |
-| `Broth` | `src/miso/runtime/engine.py:103` | subpackage | class |
+| `ToolCall` | `src/unchain/runtime/engine.py:68` | subpackage | dataclass |
+| `ProviderTurnResult` | `src/unchain/runtime/engine.py:74` | subpackage | dataclass |
+| `TokenUsage` | `src/unchain/runtime/engine.py:86` | internal | dataclass |
+| `ToolExecutionOutcome` | `src/unchain/runtime/engine.py:93` | subpackage | dataclass |
+| `Broth` | `src/unchain/runtime/engine.py:103` | subpackage | class |
 
-### `src/miso/runtime/engine.py`
+### `src/unchain/runtime/engine.py`
 
 Provider-facing execution loop and the canonical runtime message/tool execution types.
 
@@ -29,7 +29,7 @@ Dataclass payload used by provider-facing execution loop and the canonical runti
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/runtime/engine.py:68` |
+| Source | `src/unchain/runtime/engine.py:68` |
 | Module role | Provider-facing execution loop and the canonical runtime message/tool execution types. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -66,7 +66,7 @@ Dataclass payload used by provider-facing execution loop and the canonical runti
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/runtime/engine.py:74` |
+| Source | `src/unchain/runtime/engine.py:74` |
 | Module role | Provider-facing execution loop and the canonical runtime message/tool execution types. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -108,7 +108,7 @@ Dataclass payload used by provider-facing execution loop and the canonical runti
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/runtime/engine.py:86` |
+| Source | `src/unchain/runtime/engine.py:86` |
 | Module role | Provider-facing execution loop and the canonical runtime message/tool execution types. |
 | Inheritance | `-` |
 | Exposure | Not exported; treat as implementation detail. |
@@ -145,7 +145,7 @@ Dataclass payload used by provider-facing execution loop and the canonical runti
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/runtime/engine.py:93` |
+| Source | `src/unchain/runtime/engine.py:93` |
 | Module role | Provider-facing execution loop and the canonical runtime message/tool execution types. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -183,7 +183,7 @@ Canonical provider/runtime loop that prepares context, executes tools, handles s
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/runtime/engine.py:103` |
+| Source | `src/unchain/runtime/engine.py:103` |
 | Module role | Provider-facing execution loop and the canonical runtime message/tool execution types. |
 | Inheritance | `-` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -207,7 +207,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/runtime/engine.py:104`
+- Declared at: `src/unchain/runtime/engine.py:104`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -216,7 +216,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Append a toolkit to the agent's toolkit list.
 
 - Category: Method
-- Declared at: `src/miso/runtime/engine.py:262`
+- Declared at: `src/unchain/runtime/engine.py:262`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -225,7 +225,7 @@ Append a toolkit to the agent's toolkit list.
 Remove a toolkit from the agent's toolkit list.
 
 - Category: Method
-- Declared at: `src/miso/runtime/engine.py:266`
+- Declared at: `src/unchain/runtime/engine.py:266`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -234,7 +234,7 @@ Remove a toolkit from the agent's toolkit list.
 Public method `run` exposed by `Broth`.
 
 - Category: Method
-- Declared at: `src/miso/runtime/engine.py:1737`
+- Declared at: `src/unchain/runtime/engine.py:1737`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -243,7 +243,7 @@ Public method `run` exposed by `Broth`.
 Public method `resume_human_input` exposed by `Broth`.
 
 - Category: Method
-- Declared at: `src/miso/runtime/engine.py:1826`
+- Declared at: `src/unchain/runtime/engine.py:1826`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 

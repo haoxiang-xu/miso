@@ -80,7 +80,7 @@ python -m pytest tests/test_agent_core.py -v
 python -m pytest -k "test_tool_parameter" -v
 ```
 
-`run_tests.sh` validates Python 3.12, pytest, and that miso is installed before running.
+`run_tests.sh` validates Python 3.12, pytest, and that unchain is installed before running.
 
 ### pytest Configuration
 
@@ -112,7 +112,7 @@ All test files are in the top-level `tests/` directory (flat structure, no subdi
 The most common pattern — test agent logic without making LLM calls:
 
 ```python
-from miso.runtime import ProviderTurnResult, ToolCall
+from unchain.runtime import ProviderTurnResult, ToolCall
 
 def _tool_turn(tool_name, arguments):
     """Simulate an LLM turn that calls a tool."""

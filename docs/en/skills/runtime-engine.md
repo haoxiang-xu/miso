@@ -53,9 +53,9 @@ This chapter explains the `Broth` runtime, canonical provider-turn types, callba
 
 ## Source entry points
 
-- `src/miso/runtime/engine.py`
-- `src/miso/runtime/payloads.py`
-- `src/miso/runtime/providers/`
+- `src/unchain/runtime/engine.py`
+- `src/unchain/runtime/payloads.py`
+- `src/unchain/runtime/providers/`
 
 ## Broth In Practice
 
@@ -86,8 +86,8 @@ The original repository skill note is preserved below for continuity and extra e
 `Broth` is the low-level engine that orchestrates LLM calls, tool execution, memory integration, and event emission. `Agent` creates a fresh `Broth` for every `run()` call.
 
 ```python
-from miso.runtime import Broth
-from miso.toolkits import WorkspaceToolkit
+from unchain.runtime import Broth
+from unchain.toolkits import WorkspaceToolkit
 
 runtime = Broth(provider="openai", model="gpt-5")
 runtime.add_toolkit(WorkspaceToolkit(workspace_root="."))
@@ -187,7 +187,7 @@ Broth speaks a **canonical message format** internally. Provider-specific SDKs a
 
 ### Model Capabilities
 
-Model capabilities are declared in JSON resource files under `src/miso/runtime/resources/`. These declare what features each model supports:
+Model capabilities are declared in JSON resource files under `src/unchain/runtime/resources/`. These declare what features each model supports:
 
 ```json
 {
@@ -209,7 +209,7 @@ Provider-specific defaults (temperature, top_p, etc.) are also in resource JSON 
 
 ### Adding a New Provider
 
-1. Create `src/miso/runtime/providers/my_provider.py`
+1. Create `src/unchain/runtime/providers/my_provider.py`
 2. Implement the provider dispatch function matching the existing pattern
 3. Add model capabilities to resources JSON
 4. Add default payloads to resources JSON
@@ -280,8 +280,8 @@ The **toolkit catalog state** is preserved across this suspension via state toke
 Force the LLM to return JSON matching a schema:
 
 ```python
-from miso.runtime import Broth
-from miso.schemas import ResponseFormat
+from unchain.runtime import Broth
+from unchain.schemas import ResponseFormat
 
 fmt = ResponseFormat(
     name="analysis",

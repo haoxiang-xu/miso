@@ -8,9 +8,9 @@
 
 ## 依赖关系
 
-- `miso.tools` 是基础层，依赖最少。
-- `miso.runtime` 建立在 tools、memory、workspace、input、schema 之上。
-- `miso.agents` 负责编排 `Broth`、memory 和 toolkits，但不会反向污染底层依赖。
+- `unchain.tools` 是基础层，依赖最少。
+- `unchain.runtime` 建立在 tools、memory、workspace、input、schema 之上。
+- `unchain.agents` 负责编排 `Broth`、memory 和 toolkits，但不会反向污染底层依赖。
 
 ## 核心对象
 
@@ -53,10 +53,10 @@
 
 ## 源码入口
 
-- `src/miso/__init__.py`
-- `src/miso/agents/`
-- `src/miso/runtime/`
-- `src/miso/tools/`
+- `src/unchain/__init__.py`
+- `src/unchain/agents/`
+- `src/unchain/runtime/`
+- `src/unchain/tools/`
 
 ## 详细说明
 

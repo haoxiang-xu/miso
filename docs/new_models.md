@@ -1,6 +1,6 @@
 # 新增模型配置
 
-本文档描述了最近添加到miso项目中的新模型配置。
+本文档描述了最近添加到unchain项目中的新模型配置。
 
 ## 新增模型
 
@@ -60,7 +60,7 @@ Google的Gemini Pro 1.5模型配置，具有以下特性：
 ### 基本导入和使用
 
 ```python
-from miso.schemas.models import GPT_4O, CLAUDE_SONNET_35, GEMINI_PRO_15
+from unchain.schemas.models import GPT_4O, CLAUDE_SONNET_35, GEMINI_PRO_15
 
 # 选择一个模型
 model = GPT_4O
@@ -93,7 +93,7 @@ custom_model = ModelConfiguration.from_dict(
 ### 创建自定义模型
 
 ```python
-from miso.schemas.models import ModelConfiguration, ModelCapabilities, ModelDefaultPayload
+from unchain.schemas.models import ModelConfiguration, ModelCapabilities, ModelDefaultPayload
 
 # 创建自定义模型配置
 custom_model = ModelConfiguration(

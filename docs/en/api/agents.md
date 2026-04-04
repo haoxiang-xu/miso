@@ -13,13 +13,13 @@ Single-agent orchestration, team coordination, and the internal subagent runtime
 
 | Class | Source | Exposure | Kind |
 | --- | --- | --- | --- |
-| `_SubagentConfig` | `src/miso/agents/agent.py:74` | internal | dataclass |
-| `_SubagentCounters` | `src/miso/agents/agent.py:83` | internal | dataclass |
-| `_SubagentRuntime` | `src/miso/agents/agent.py:89` | internal | dataclass |
-| `Agent` | `src/miso/agents/agent.py:114` | top-level | class |
-| `Team` | `src/miso/agents/team.py:11` | top-level | class |
+| `_SubagentConfig` | `src/unchain/agents/agent.py:74` | internal | dataclass |
+| `_SubagentCounters` | `src/unchain/agents/agent.py:83` | internal | dataclass |
+| `_SubagentRuntime` | `src/unchain/agents/agent.py:89` | internal | dataclass |
+| `Agent` | `src/unchain/agents/agent.py:114` | top-level | class |
+| `Team` | `src/unchain/agents/team.py:11` | top-level | class |
 
-### `src/miso/agents/agent.py`
+### `src/unchain/agents/agent.py`
 
 High-level single-agent orchestration with memory, toolkit merging, suspension/resume handling, and optional subagent spawning.
 
@@ -29,7 +29,7 @@ Dataclass payload used by high-level single-agent orchestration with memory, too
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/agents/agent.py:74` |
+| Source | `src/unchain/agents/agent.py:74` |
 | Module role | High-level single-agent orchestration with memory, toolkit merging, suspension/resume handling, and optional subagent spawning. |
 | Inheritance | `-` |
 | Exposure | Not exported; treat as implementation detail. |
@@ -71,7 +71,7 @@ Dataclass payload used by high-level single-agent orchestration with memory, too
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/agents/agent.py:83` |
+| Source | `src/unchain/agents/agent.py:83` |
 | Module role | High-level single-agent orchestration with memory, toolkit merging, suspension/resume handling, and optional subagent spawning. |
 | Inheritance | `-` |
 | Exposure | Not exported; treat as implementation detail. |
@@ -110,7 +110,7 @@ Dataclass payload used by high-level single-agent orchestration with memory, too
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/agents/agent.py:89` |
+| Source | `src/unchain/agents/agent.py:89` |
 | Module role | High-level single-agent orchestration with memory, toolkit merging, suspension/resume handling, and optional subagent spawning. |
 | Inheritance | `-` |
 | Exposure | Not exported; treat as implementation detail. |
@@ -159,10 +159,10 @@ High-level single-agent facade that owns configuration, normalizes tools, create
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/agents/agent.py:114` |
+| Source | `src/unchain/agents/agent.py:114` |
 | Module role | High-level single-agent orchestration with memory, toolkit merging, suspension/resume handling, and optional subagent spawning. |
 | Inheritance | `-` |
-| Exposure | Top-level export via `miso`. |
+| Exposure | Top-level export via `unchain`. |
 | Kind | Class; public-facing or package-visible. |
 
 ### Constructor surface
@@ -178,7 +178,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/agents/agent.py:115`
+- Declared at: `src/unchain/agents/agent.py:115`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -187,7 +187,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Public method `enable_subagents` exposed by `Agent`.
 
 - Category: Method
-- Declared at: `src/miso/agents/agent.py:185`
+- Declared at: `src/unchain/agents/agent.py:185`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -196,7 +196,7 @@ Public method `enable_subagents` exposed by `Agent`.
 Public method `enable_toolkit_catalog` exposed by `Agent`.
 
 - Category: Method
-- Declared at: `src/miso/agents/agent.py:213`
+- Declared at: `src/unchain/agents/agent.py:213`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -205,7 +205,7 @@ Public method `enable_toolkit_catalog` exposed by `Agent`.
 Public method `run` exposed by `Agent`.
 
 - Category: Method
-- Declared at: `src/miso/agents/agent.py:613`
+- Declared at: `src/unchain/agents/agent.py:613`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -214,7 +214,7 @@ Public method `run` exposed by `Agent`.
 Public method `resume_human_input` exposed by `Agent`.
 
 - Category: Method
-- Declared at: `src/miso/agents/agent.py:695`
+- Declared at: `src/unchain/agents/agent.py:695`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -223,7 +223,7 @@ Public method `resume_human_input` exposed by `Agent`.
 Public method `step` exposed by `Agent`.
 
 - Category: Method
-- Declared at: `src/miso/agents/agent.py:776`
+- Declared at: `src/unchain/agents/agent.py:776`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -232,7 +232,7 @@ Public method `step` exposed by `Agent`.
 Public method `as_tool` exposed by `Agent`.
 
 - Category: Method
-- Declared at: `src/miso/agents/agent.py:928`
+- Declared at: `src/unchain/agents/agent.py:928`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -256,7 +256,7 @@ obj = Agent(...)
 obj.enable_subagents(...)
 ```
 
-### `src/miso/agents/team.py`
+### `src/unchain/agents/team.py`
 
 Multi-agent coordination via channel delivery, scoring, handoff handling, and owner-controlled completion.
 
@@ -266,10 +266,10 @@ Coordinator that routes envelopes across named channels, scores pending work, an
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/agents/team.py:11` |
+| Source | `src/unchain/agents/team.py:11` |
 | Module role | Multi-agent coordination via channel delivery, scoring, handoff handling, and owner-controlled completion. |
 | Inheritance | `-` |
-| Exposure | Top-level export via `miso`. |
+| Exposure | Top-level export via `unchain`. |
 | Kind | Class; public-facing or package-visible. |
 
 ### Constructor surface
@@ -285,7 +285,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/agents/team.py:12`
+- Declared at: `src/unchain/agents/team.py:12`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -294,7 +294,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Public method `run` exposed by `Team`.
 
 - Category: Method
-- Declared at: `src/miso/agents/team.py:139`
+- Declared at: `src/unchain/agents/team.py:139`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 

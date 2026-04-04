@@ -55,8 +55,8 @@
 
 ## 源码入口
 
-- `src/miso/memory/manager.py`
-- `src/miso/memory/qdrant.py`
+- `src/unchain/memory/manager.py`
+- `src/unchain/memory/qdrant.py`
 
 ## 详细说明
 

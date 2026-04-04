@@ -13,16 +13,16 @@ Builtin and MCP toolkit implementations, including terminal runtime internals an
 
 | Class | Source | Exposure | Kind |
 | --- | --- | --- | --- |
-| `BuiltinToolkit` | `src/miso/toolkits/base.py:10` | subpackage | class |
-| `AskUserToolkit` | `src/miso/toolkits/builtin/ask_user/ask_user.py:7` | subpackage | class |
-| `ExternalAPIToolkit` | `src/miso/toolkits/builtin/external_api/external_api.py:12` | subpackage | class |
+| `BuiltinToolkit` | `src/unchain/toolkits/base.py:10` | subpackage | class |
+| `AskUserToolkit` | `src/unchain/toolkits/builtin/ask_user/ask_user.py:7` | subpackage | class |
+| `ExternalAPIToolkit` | `src/unchain/toolkits/builtin/external_api/external_api.py:12` | subpackage | class |
 | `TerminalToolkit` | `src/unchain/toolkits/builtin/terminal/terminal.py:10` | subpackage | class |
 | `_TerminalSession` | `src/unchain/toolkits/builtin/terminal_runtime.py:15` | internal | dataclass |
 | `_TerminalRuntime` | `src/unchain/toolkits/builtin/terminal_runtime.py:22` | internal | class |
 | `WorkspaceToolkit` | `src/unchain/toolkits/builtin/workspace/workspace.py:24` | subpackage | class |
-| `MCPToolkit` | `src/miso/toolkits/mcp.py:62` | subpackage | class |
+| `MCPToolkit` | `src/unchain/toolkits/mcp.py:62` | subpackage | class |
 
-### `src/miso/toolkits/base.py`
+### `src/unchain/toolkits/base.py`
 
 Workspace-aware base class shared by builtin toolkits.
 
@@ -32,7 +32,7 @@ Workspace-aware base toolkit that resolves a root directory and manages workspac
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/toolkits/base.py:10` |
+| Source | `src/unchain/toolkits/base.py:10` |
 | Module role | Workspace-aware base class shared by builtin toolkits. |
 | Inheritance | `Toolkit` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -55,7 +55,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/toolkits/base.py:23`
+- Declared at: `src/unchain/toolkits/base.py:23`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -64,7 +64,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Public method `push_execution_context` exposed by `BuiltinToolkit`.
 
 - Category: Method
-- Declared at: `src/miso/toolkits/base.py:45`
+- Declared at: `src/unchain/toolkits/base.py:45`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -73,7 +73,7 @@ Public method `push_execution_context` exposed by `BuiltinToolkit`.
 Public method `pop_execution_context` exposed by `BuiltinToolkit`.
 
 - Category: Method
-- Declared at: `src/miso/toolkits/base.py:48`
+- Declared at: `src/unchain/toolkits/base.py:48`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -92,7 +92,7 @@ obj = BuiltinToolkit(...)
 obj.push_execution_context(...)
 ```
 
-### `src/miso/toolkits/builtin/ask_user/ask_user.py`
+### `src/unchain/toolkits/builtin/ask_user/ask_user.py`
 
 Reserved human-input toolkit that surfaces the ask-user runtime tool.
 
@@ -102,7 +102,7 @@ Implementation class used by reserved human-input toolkit that surfaces the ask-
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/toolkits/builtin/ask_user/ask_user.py:7` |
+| Source | `src/unchain/toolkits/builtin/ask_user/ask_user.py:7` |
 | Module role | Reserved human-input toolkit that surfaces the ask-user runtime tool. |
 | Inheritance | `Toolkit` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -121,7 +121,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/toolkits/builtin/ask_user/ask_user.py:10`
+- Declared at: `src/unchain/toolkits/builtin/ask_user/ask_user.py:10`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -130,7 +130,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Reserved runtime placeholder for structured user input requests.
 
 - Category: Method
-- Declared at: `src/miso/toolkits/builtin/ask_user/ask_user.py:20`
+- Declared at: `src/unchain/toolkits/builtin/ask_user/ask_user.py:20`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -149,7 +149,7 @@ obj = AskUserToolkit(...)
 obj.ask_user_question(...)
 ```
 
-### `src/miso/toolkits/builtin/external_api/external_api.py`
+### `src/unchain/toolkits/builtin/external_api/external_api.py`
 
 Outbound HTTP toolkit with simple GET/POST helpers.
 
@@ -159,7 +159,7 @@ Implementation class used by outbound http toolkit with simple get/post helpers.
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/toolkits/builtin/external_api/external_api.py:12` |
+| Source | `src/unchain/toolkits/builtin/external_api/external_api.py:12` |
 | Module role | Outbound HTTP toolkit with simple GET/POST helpers. |
 | Inheritance | `BuiltinToolkit` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -178,7 +178,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/toolkits/builtin/external_api/external_api.py:15`
+- Declared at: `src/unchain/toolkits/builtin/external_api/external_api.py:15`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -187,7 +187,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Send a GET request to an external API endpoint.
 
 - Category: Method
-- Declared at: `src/miso/toolkits/builtin/external_api/external_api.py:29`
+- Declared at: `src/unchain/toolkits/builtin/external_api/external_api.py:29`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 - Notes: :param url: Full URL to send the GET request to.
@@ -200,7 +200,7 @@ Send a GET request to an external API endpoint.
 Send a POST request to an external API endpoint.
 
 - Category: Method
-- Declared at: `src/miso/toolkits/builtin/external_api/external_api.py:90`
+- Declared at: `src/unchain/toolkits/builtin/external_api/external_api.py:90`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 - Notes: :param url: Full URL to send the POST request to.
@@ -624,7 +624,7 @@ obj = WorkspaceToolkit(...)
 obj.read_files(...)
 ```
 
-### `src/miso/toolkits/mcp.py`
+### `src/unchain/toolkits/mcp.py`
 
 MCP bridge that exposes remote server tools through the local toolkit abstraction.
 
@@ -634,7 +634,7 @@ Toolkit bridge that connects to an MCP server and proxies its tools into the loc
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/toolkits/mcp.py:62` |
+| Source | `src/unchain/toolkits/mcp.py:62` |
 | Module role | MCP bridge that exposes remote server tools through the local toolkit abstraction. |
 | Inheritance | `Toolkit` |
 | Exposure | Exported from its subpackage `__init__`. |
@@ -657,7 +657,7 @@ The constructor is the primary place where this class defines required inputs an
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
 - Category: Constructor
-- Declared at: `src/miso/toolkits/mcp.py:83`
+- Declared at: `src/unchain/toolkits/mcp.py:83`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -666,7 +666,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 Connect to the MCP server, discover tools, and populate the toolkit.
 
 - Category: Method
-- Declared at: `src/miso/toolkits/mcp.py:127`
+- Declared at: `src/unchain/toolkits/mcp.py:127`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 - Notes: This method blocks until the session is ready and tools have been
@@ -680,7 +680,7 @@ Returns ``self`` for convenient chaining.
 Disconnect from the MCP server and clean up resources.
 
 - Category: Method
-- Declared at: `src/miso/toolkits/mcp.py:156`
+- Declared at: `src/unchain/toolkits/mcp.py:156`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
@@ -689,7 +689,7 @@ Disconnect from the MCP server and clean up resources.
 Execute a tool on the MCP server.
 
 - Category: Method
-- Declared at: `src/miso/toolkits/mcp.py:185`
+- Declared at: `src/unchain/toolkits/mcp.py:185`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 - Notes: Falls back to local toolkit execution if the server is disconnected.

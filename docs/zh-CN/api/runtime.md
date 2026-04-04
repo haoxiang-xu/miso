@@ -13,13 +13,13 @@
 
 | 类 | 源码 | 导出 | 类型 |
 | --- | --- | --- | --- |
-| `ToolCall` | `src/miso/runtime/engine.py:68` | subpackage | dataclass |
-| `ProviderTurnResult` | `src/miso/runtime/engine.py:74` | subpackage | dataclass |
-| `TokenUsage` | `src/miso/runtime/engine.py:86` | internal | dataclass |
-| `ToolExecutionOutcome` | `src/miso/runtime/engine.py:93` | subpackage | dataclass |
-| `Broth` | `src/miso/runtime/engine.py:103` | subpackage | class |
+| `ToolCall` | `src/unchain/runtime/engine.py:68` | subpackage | dataclass |
+| `ProviderTurnResult` | `src/unchain/runtime/engine.py:74` | subpackage | dataclass |
+| `TokenUsage` | `src/unchain/runtime/engine.py:86` | internal | dataclass |
+| `ToolExecutionOutcome` | `src/unchain/runtime/engine.py:93` | subpackage | dataclass |
+| `Broth` | `src/unchain/runtime/engine.py:103` | subpackage | class |
 
-### `src/miso/runtime/engine.py`
+### `src/unchain/runtime/engine.py`
 
 面向 provider 的执行循环，以及统一的消息/工具执行数据类型。
 
@@ -29,7 +29,7 @@
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/runtime/engine.py:68` |
+| 源码 | `src/unchain/runtime/engine.py:68` |
 | 模块职责 | 面向 provider 的执行循环，以及统一的消息/工具执行数据类型。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -66,7 +66,7 @@ ToolCall(call_id=..., name=..., arguments=...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/runtime/engine.py:74` |
+| 源码 | `src/unchain/runtime/engine.py:74` |
 | 模块职责 | 面向 provider 的执行循环，以及统一的消息/工具执行数据类型。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -108,7 +108,7 @@ ProviderTurnResult(assistant_messages=..., tool_calls=..., final_text=..., respo
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/runtime/engine.py:86` |
+| 源码 | `src/unchain/runtime/engine.py:86` |
 | 模块职责 | 面向 provider 的执行循环，以及统一的消息/工具执行数据类型。 |
 | 继承/协议 | `-` |
 | 导出状态 | 未导出，应视为实现细节。 |
@@ -145,7 +145,7 @@ TokenUsage(consumed_tokens=..., input_tokens=..., output_tokens=...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/runtime/engine.py:93` |
+| 源码 | `src/unchain/runtime/engine.py:93` |
 | 模块职责 | 面向 provider 的执行循环，以及统一的消息/工具执行数据类型。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -183,7 +183,7 @@ ToolExecutionOutcome(result_messages=..., should_observe=..., awaiting_human_inp
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/runtime/engine.py:103` |
+| 源码 | `src/unchain/runtime/engine.py:103` |
 | 模块职责 | 面向 provider 的执行循环，以及统一的消息/工具执行数据类型。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -207,7 +207,7 @@ ToolExecutionOutcome(result_messages=..., should_observe=..., awaiting_human_inp
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/runtime/engine.py:104`
+- 定义位置：`src/unchain/runtime/engine.py:104`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -216,7 +216,7 @@ ToolExecutionOutcome(result_messages=..., should_observe=..., awaiting_human_inp
 Append a toolkit to the agent's toolkit list.
 
 - 类型：方法
-- 定义位置：`src/miso/runtime/engine.py:262`
+- 定义位置：`src/unchain/runtime/engine.py:262`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -225,7 +225,7 @@ Append a toolkit to the agent's toolkit list.
 Remove a toolkit from the agent's toolkit list.
 
 - 类型：方法
-- 定义位置：`src/miso/runtime/engine.py:266`
+- 定义位置：`src/unchain/runtime/engine.py:266`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -234,7 +234,7 @@ Remove a toolkit from the agent's toolkit list.
 `Broth` 对外暴露的方法 `run`。
 
 - 类型：方法
-- 定义位置：`src/miso/runtime/engine.py:1737`
+- 定义位置：`src/unchain/runtime/engine.py:1737`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -243,7 +243,7 @@ Remove a toolkit from the agent's toolkit list.
 `Broth` 对外暴露的方法 `resume_human_input`。
 
 - 类型：方法
-- 定义位置：`src/miso/runtime/engine.py:1826`
+- 定义位置：`src/unchain/runtime/engine.py:1826`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 

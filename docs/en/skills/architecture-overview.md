@@ -8,9 +8,9 @@ This chapter explains how the package is layered, which modules are foundational
 
 ## Dependency view
 
-- `miso.tools` stays foundational and dependency-light.
-- `miso.runtime` depends on tools, memory, workspace, input, and schema layers.
-- `miso.agents` orchestrates `Broth`, memory, and toolkits without inverting dependencies.
+- `unchain.tools` stays foundational and dependency-light.
+- `unchain.runtime` depends on tools, memory, workspace, input, and schema layers.
+- `unchain.agents` orchestrates `Broth`, memory, and toolkits without inverting dependencies.
 
 ## Core objects
 
@@ -53,21 +53,21 @@ This chapter explains how the package is layered, which modules are foundational
 
 ## Source entry points
 
-- `src/miso/__init__.py`
-- `src/miso/agents/`
-- `src/miso/runtime/`
-- `src/miso/tools/`
+- `src/unchain/__init__.py`
+- `src/unchain/agents/`
+- `src/unchain/runtime/`
+- `src/unchain/tools/`
 
 ## Detailed legacy reference
 
 The original repository skill note is preserved below for continuity and extra examples. The canonical copy now lives in this docs tree.
 
-> Module map, dependency graph, and data flow for the miso agent framework.
+> Module map, dependency graph, and data flow for the unchain agent framework.
 
 ## Package Layout
 
 ```text
-src/miso/
+src/unchain/
 ├── __init__.py          # Public API: Agent, Team
 ├── agents/              # High-level Agent and Team
 │   ├── agent.py         #   Agent – single agent orchestration
@@ -114,16 +114,16 @@ src/miso/
 The dependency direction flows **downward** — upper layers import from lower layers, never the reverse.
 
 ```text
-Layer 0  (public API)      miso              → exports Agent, Team
-Layer 1  (orchestration)   miso.agents       → imports runtime, tools, toolkits, memory
-Layer 2  (engine)          miso.runtime      → imports tools, memory, workspace, input, schemas
-Layer 3  (tool system)     miso.tools        → imports nothing from miso (self-contained)
-Layer 3  (toolkit impls)   miso.toolkits     → imports tools, workspace
-Layer 3  (memory)          miso.memory       → imports runtime (for summarisation calls), tools
-Layer 4  (primitives)      miso.input, miso.workspace, miso.schemas, miso._internal
+Layer 0  (public API)      unchain              → exports Agent, Team
+Layer 1  (orchestration)   unchain.agents       → imports runtime, tools, toolkits, memory
+Layer 2  (engine)          unchain.runtime      → imports tools, memory, workspace, input, schemas
+Layer 3  (tool system)     unchain.tools        → imports nothing from unchain (self-contained)
+Layer 3  (toolkit impls)   unchain.toolkits     → imports tools, workspace
+Layer 3  (memory)          unchain.memory       → imports runtime (for summarisation calls), tools
+Layer 4  (primitives)      unchain.input, unchain.workspace, unchain.schemas, unchain._internal
 ```
 
-**Rule**: `miso.tools` is the foundation — it has **zero internal dependencies**. Everything else builds on top of it.
+**Rule**: `unchain.tools` is the foundation — it has **zero internal dependencies**. Everything else builds on top of it.
 
 ## Data Flow: Request → Response
 
@@ -191,7 +191,7 @@ Back to Agent.run() → returns to user code
 
 3. **Tools are data** — A `Tool` is just metadata + a callable. Parameter schemas are auto-inferred from Python type hints and docstrings.
 
-4. **Three toolkit discovery sources** — Builtin (shipped with miso), local (user directories), plugins (entry points). All use the same `toolkit.toml` manifest.
+4. **Three toolkit discovery sources** — Builtin (shipped with unchain), local (user directories), plugins (entry points). All use the same `toolkit.toml` manifest.
 
 5. **Memory is optional and layered** — Short-term context strategies and long-term vector-backed profiles are independently configurable.
 
