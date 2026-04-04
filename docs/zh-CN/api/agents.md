@@ -1,319 +1,366 @@
 # Agents API 参考
 
-覆盖单 Agent 编排、Team 协作，以及用于受控子代理执行的内部运行时支架。
+通过 `Agent` 类、`AgentBuilder` 管线、不可变 `AgentSpec`/`AgentState`，以及可插拔的 `AgentModule` 系统（tools、memory、policies、optimizers、subagents）实现模块化 Agent 组合。
 
 | 指标 | 值 |
 | --- | --- |
-| 类数量 | 5 |
-| Dataclass | 3 |
-| 协议 | 0 |
-| 仅内部类型 | 3 |
+| 类数量 | 3 |
+| Dataclass | 5 |
+| 协议 | 1 |
+| Agent 模块 | 5 |
 
 ## 覆盖地图
 
 | 类 | 源码 | 导出 | 类型 |
 | --- | --- | --- | --- |
-| `_SubagentConfig` | `src/unchain/agents/agent.py:74` | internal | dataclass |
-| `_SubagentCounters` | `src/unchain/agents/agent.py:83` | internal | dataclass |
-| `_SubagentRuntime` | `src/unchain/agents/agent.py:89` | internal | dataclass |
-| `Agent` | `src/unchain/agents/agent.py:114` | top-level | class |
-| `Team` | `src/unchain/agents/team.py:11` | top-level | class |
+| `AgentSpec` | `src/unchain/agent/spec.py` | subpackage | dataclass (frozen) |
+| `AgentState` | `src/unchain/agent/spec.py` | subpackage | dataclass |
+| `Agent` | `src/unchain/agent/agent.py` | top-level | class |
+| `AgentCallContext` | `src/unchain/agent/builder.py` | subpackage | dataclass |
+| `PreparedAgent` | `src/unchain/agent/builder.py` | subpackage | dataclass |
+| `AgentBuilder` | `src/unchain/agent/builder.py` | subpackage | dataclass |
+| `AgentModule` | `src/unchain/agent/modules/base.py` | subpackage | protocol |
+| `BaseAgentModule` | `src/unchain/agent/modules/base.py` | subpackage | dataclass (frozen) |
+| `ToolsModule` | `src/unchain/agent/modules/tools.py` | subpackage | dataclass (frozen) |
+| `MemoryModule` | `src/unchain/agent/modules/memory.py` | subpackage | dataclass (frozen) |
+| `PoliciesModule` | `src/unchain/agent/modules/policies.py` | subpackage | dataclass (frozen) |
+| `OptimizersModule` | `src/unchain/agent/modules/optimizers.py` | subpackage | dataclass (frozen) |
+| `SubagentModule` | `src/unchain/agent/modules/subagents.py` | subpackage | dataclass (frozen) |
 
-### `src/unchain/agents/agent.py`
+### `src/unchain/agent/spec.py`
 
-高层单 Agent 编排入口，负责 memory、toolkit 合并、暂停/恢复以及可选的子代理派生。
+不可变 Agent 规格与可变 Agent 状态。
 
-## _SubagentConfig
+## AgentSpec
 
-用于高层单 Agent 编排入口，负责 memory、toolkit 合并、暂停/恢复以及可选的子代理派生的 dataclass 载荷。
+Frozen dataclass，持有 Agent 实例的不可变配置。
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/unchain/agents/agent.py:74` |
-| 模块职责 | 高层单 Agent 编排入口，负责 memory、toolkit 合并、暂停/恢复以及可选的子代理派生。 |
+| 源码 | `src/unchain/agent/spec.py` |
 | 继承/协议 | `-` |
-| 导出状态 | 未导出，应视为实现细节。 |
-| 对象类型 | Dataclass；内部实现。 |
-
-### 内部实现说明
-
-Owned by `Agent` as the stored subagent configuration.
+| 导出状态 | 通过 `unchain.agent` 导出。 |
+| 对象类型 | Dataclass (frozen)。 |
 
 ### 字段
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `tool_name` | `str` | 构造时必需。 |
-| `description` | `str | None` | 构造时必需。 |
-| `max_depth` | `int` | 构造时必需。 |
-| `max_children_per_agent` | `int` | 构造时必需。 |
-| `max_total_subagents` | `int` | 构造时必需。 |
+| `name` | `str` | 构造时必需。 |
+| `instructions` | `str` | 默认值：`""`。 |
+| `provider` | `str` | 默认值：`"openai"`。 |
+| `model` | `str` | 默认值：`"gpt-5"`。 |
+| `api_key` | `str \| None` | 默认值：`None`。 |
+| `modules` | `tuple[Any, ...]` | 默认值：`()`。 |
+| `allowed_tools` | `tuple[str, ...] \| None` | 默认值：`None`。 |
 
-### 公共方法
+## AgentState
 
-该类型除了 dataclass/protocol 结构外不暴露公共方法。
-
-### 协作关系与关联类型
-
-- `_SubagentCounters`
-- `_SubagentRuntime`
-- `Agent`
-
-### 最小调用示例
-
-```python
-_SubagentConfig(tool_name=..., description=..., max_depth=..., max_children_per_agent=...)
-```
-
-## _SubagentCounters
-
-用于高层单 Agent 编排入口，负责 memory、toolkit 合并、暂停/恢复以及可选的子代理派生的 dataclass 载荷。
+可变 dataclass，用于每个 Agent 的运行时状态。
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/unchain/agents/agent.py:83` |
-| 模块职责 | 高层单 Agent 编排入口，负责 memory、toolkit 合并、暂停/恢复以及可选的子代理派生。 |
+| 源码 | `src/unchain/agent/spec.py` |
 | 继承/协议 | `-` |
-| 导出状态 | 未导出，应视为实现细节。 |
-| 对象类型 | Dataclass；内部实现。 |
-
-### 内部实现说明
-
-Owned by `Agent` subagent runtime bookkeeping.
+| 导出状态 | 通过 `unchain.agent` 导出。 |
+| 对象类型 | Dataclass。 |
 
 ### 字段
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `total_created` | `int` | 默认值：`0`。 |
-| `direct_children` | `dict[tuple[str, ...], int]` | 默认值：`field(default_factory=dict)`。 |
+| `module_state` | `dict[str, Any]` | 默认值：`field(default_factory=dict)`。 |
 
-### 公共方法
+### `src/unchain/agent/agent.py`
 
-该类型除了 dataclass/protocol 结构外不暴露公共方法。
-
-### 协作关系与关联类型
-
-- `_SubagentConfig`
-- `_SubagentRuntime`
-- `Agent`
-
-### 最小调用示例
-
-```python
-_SubagentCounters(total_created=..., direct_children=...)
-```
-
-## _SubagentRuntime
-
-用于高层单 Agent 编排入口，负责 memory、toolkit 合并、暂停/恢复以及可选的子代理派生的 dataclass 载荷。
-
-| 项目 | 细节 |
-| --- | --- |
-| 源码 | `src/unchain/agents/agent.py:89` |
-| 模块职责 | 高层单 Agent 编排入口，负责 memory、toolkit 合并、暂停/恢复以及可选的子代理派生。 |
-| 继承/协议 | `-` |
-| 导出状态 | 未导出，应视为实现细节。 |
-| 对象类型 | Dataclass；内部实现。 |
-
-### 内部实现说明
-
-Created inside `Agent` subagent execution paths and passed through nested runs.
-
-### 字段
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `config` | `_SubagentConfig` | 构造时必需。 |
-| `current_depth` | `int` | 构造时必需。 |
-| `lineage` | `tuple[str, ...]` | 构造时必需。 |
-| `counters` | `_SubagentCounters` | 构造时必需。 |
-| `current_session_id` | `str` | 构造时必需。 |
-| `current_memory_namespace` | `str` | 构造时必需。 |
-| `payload` | `dict[str, Any] | None` | 构造时必需。 |
-| `callback` | `Callable[[dict[str, Any]], None] | None` | 构造时必需。 |
-| `max_iterations` | `int | None` | 构造时必需。 |
-| `verbose` | `bool` | 构造时必需。 |
-| `on_tool_confirm` | `Callable | None` | 构造时必需。 |
-| `on_continuation_request` | `Callable | None` | 构造时必需。 |
-
-### 公共方法
-
-该类型除了 dataclass/protocol 结构外不暴露公共方法。
-
-### 协作关系与关联类型
-
-- `_SubagentConfig`
-- `_SubagentCounters`
-- `Agent`
-
-### 最小调用示例
-
-```python
-_SubagentRuntime(config=..., current_depth=..., lineage=..., counters=...)
-```
+顶层 `Agent` 门面：持有配置、规范化消息、通过 `AgentBuilder` 准备 kernel loop，并暴露 `run`/`resume_human_input`/`clone`/`fork_for_subagent`/`as_tool` 入口。
 
 ## Agent
 
-高层单 Agent 门面对象，负责持有配置、归一化 tools、创建新的 runtime，并暴露 run/resume/step/as-tool 入口。
+面向用户的 Agent 类，组合模块、构建 `PreparedAgent`，并将执行委托给 `KernelLoop`。
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/unchain/agents/agent.py:114` |
-| 模块职责 | 高层单 Agent 编排入口，负责 memory、toolkit 合并、暂停/恢复以及可选的子代理派生。 |
+| 源码 | `src/unchain/agent/agent.py` |
 | 继承/协议 | `-` |
 | 导出状态 | 通过 `unchain` 顶层导出。 |
-| 对象类型 | 类；公开或包内可见。 |
+| 对象类型 | 类；公开。 |
 
 ### 构造表面
 
-该类主要通过构造函数定义必需输入和校验逻辑。
+- `__init__(self, *, name: str, instructions: str='', provider: str='openai', model: str='gpt-5', api_key: str | None=None, modules: tuple[Any, ...]=(), allowed_tools: tuple[str, ...] | None=None, model_io_factory: Callable[..., Any] | None=None)`
 
-- `__init__(self, *, name: str, instructions: str='', provider: str='openai', model: str='gpt-5', api_key: str | None=None, tools: list[Tool | Toolkit | Callable[..., Any]] | None=None, short_term_memory: MemoryManager | MemoryConfig | dict[str, Any] | None=None, long_term_memory: LongTermMemoryConfig | dict[str, Any] | None=None, defaults: dict[str, Any] | None=None, broth_options: dict[str, Any] | None=None, toolkit_catalog_config: ToolkitCatalogConfig | dict[str, Any] | None=None)`
+### 属性
+
+- `@property name` -> `str`
+- `@property instructions` -> `str`
+- `@property provider` -> `str`
+- `@property model` -> `str`
+- `@property allowed_tools` -> `tuple[str, ...] | None`
 
 ### 公共方法
 
-#### `__init__(self, *, name: str, instructions: str='', provider: str='openai', model: str='gpt-5', api_key: str | None=None, tools: list[Tool | Toolkit | Callable[..., Any]] | None=None, short_term_memory: MemoryManager | MemoryConfig | dict[str, Any] | None=None, long_term_memory: LongTermMemoryConfig | dict[str, Any] | None=None, defaults: dict[str, Any] | None=None, broth_options: dict[str, Any] | None=None, toolkit_catalog_config: ToolkitCatalogConfig | dict[str, Any] | None=None)`
+#### `__init__(self, *, name: str, instructions: str='', provider: str='openai', model: str='gpt-5', api_key: str | None=None, modules: tuple[Any, ...]=(), allowed_tools: tuple[str, ...] | None=None, model_io_factory: Callable[..., Any] | None=None)`
 
-初始化实例，并在类有约束时校验或强制转换构造参数。
+初始化 Agent，创建 `AgentSpec`、`AgentState` 和 `ModelIOFactoryRegistry`。
 
 - 类型：构造函数
-- 定义位置：`src/unchain/agents/agent.py:115`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
+- 错误：如果 `name` 为空或非字符串则抛出 `ValueError`。
 
-#### `enable_subagents(self, *, tool_name: str='spawn_subagent', description: str | None=None, max_depth: int=6, max_children_per_agent: int=10, max_total_subagents: int=100)`
+#### `run(self, messages: str | list[dict[str, Any]], *, payload: dict[str, Any] | None=None, response_format: Any=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, max_iterations: int | None=None, max_context_window_tokens: int | None=None, previous_response_id: str | None=None, on_tool_confirm: Callable[..., Any] | None=None, on_human_input: Callable[..., Any] | None=None, on_max_iterations: Callable[..., Any] | None=None, session_id: str | None=None, memory_namespace: str | None=None, run_id: str | None=None, tool_runtime_config: dict[str, Any] | None=None) -> KernelRunResult`
 
-`Agent` 对外暴露的方法 `enable_subagents`。
+主入口。规范化消息、通过 `AgentBuilder` 准备 `PreparedAgent`，然后运行 kernel loop。
 
 - 类型：方法
-- 定义位置：`src/unchain/agents/agent.py:185`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
+- 返回：`KernelRunResult`
 
-#### `enable_toolkit_catalog(self, *, managed_toolkit_ids: tuple[str, ...] | list[str] | None, always_active_toolkit_ids: tuple[str, ...] | list[str] | None=None, registry: dict[str, Any] | None=None, readme_max_chars: int=8000)`
+#### `resume_human_input(self, *, conversation: list[dict[str, Any]], continuation: dict[str, Any], response: dict[str, Any] | Any, payload: dict[str, Any] | None=None, response_format: Any=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, on_tool_confirm: Callable[..., Any] | None=None, on_human_input: Callable[..., Any] | None=None, on_max_iterations: Callable[..., Any] | None=None, session_id: str | None=None, memory_namespace: str | None=None, run_id: str | None=None, tool_runtime_config: dict[str, Any] | None=None) -> KernelRunResult`
 
-`Agent` 对外暴露的方法 `enable_toolkit_catalog`。
+在收集到人类输入后恢复暂停的运行。
 
 - 类型：方法
-- 定义位置：`src/unchain/agents/agent.py:213`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
+- 返回：`KernelRunResult`
 
-#### `run(self, messages: str | list[dict[str, Any]] | None, *, payload: dict[str, Any] | None=None, response_format: ResponseFormat | None=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, max_iterations: int | None=None, previous_response_id: str | None=None, on_tool_confirm: Callable | None=None, on_continuation_request: Callable | None=None, session_id: str | None=None, memory_namespace: str | None=None)`
+#### `clone(self, *, name: str | None=None, instructions: str | None=None, modules: tuple[Any, ...] | None=None, model: str | None=None, allowed_tools: tuple[str, ...] | None=None) -> Agent`
 
-`Agent` 对外暴露的方法 `run`。
+创建一个选择性覆盖字段的新 `Agent`。
 
 - 类型：方法
-- 定义位置：`src/unchain/agents/agent.py:613`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
+- 返回：新的 `Agent` 实例。
 
-#### `resume_human_input(self, *, conversation: list[dict[str, Any]], continuation: dict[str, Any], response: dict[str, Any] | Any, payload: dict[str, Any] | None=None, response_format: ResponseFormat | None=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, on_tool_confirm: Callable | None=None, on_continuation_request: Callable | None=None, session_id: str | None=None, memory_namespace: str | None=None)`
+#### `fork_for_subagent(self, *, subagent_name: str, mode: str, parent_name: str, lineage: list[str], task: str, instructions: str, expected_output: str, memory_policy: str, model: str | None=None, allowed_tools: tuple[str, ...] | None=None) -> Agent`
 
-`Agent` 对外暴露的方法 `resume_human_input`。
+为子代理执行创建子 Agent。叠加委托指令，当 `memory_policy` 为 `"ephemeral"` 时可选地剥离 `MemoryModule`。
 
 - 类型：方法
-- 定义位置：`src/unchain/agents/agent.py:695`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
+- 返回：新的 `Agent` 实例。
 
-#### `step(self, *, inbox: list[dict[str, Any]], channels: dict[str, list[str]], owner: str, team_transcript: list[dict[str, Any]] | None=None, mode: str='channel_collab', payload: dict[str, Any] | None=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, max_iterations: int | None=None, session_id: str | None=None, memory_namespace: str | None=None)`
+#### `as_tool(self, *, name: str | None=None, description: str | None=None, max_iterations: int | None=None) -> Tool`
 
-`Agent` 对外暴露的方法 `step`。
+将该 Agent 包装为可调用的 `Tool`，委托到 `self.run()`。
 
 - 类型：方法
-- 定义位置：`src/unchain/agents/agent.py:776`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-
-#### `as_tool(self, *, name: str | None=None, description: str | None=None)`
-
-`Agent` 对外暴露的方法 `as_tool`。
-
-- 类型：方法
-- 定义位置：`src/unchain/agents/agent.py:928`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
+- 返回：`Tool`
 
 ### 生命周期与运行时角色
 
-- 构造阶段会校验 identity、复制配置字典，并在需要时把 memory 配置强制转换为 `MemoryManager`。
-- `run()` 会先合并 toolkit、创建新的 `Broth`、转发运行时参数，并在暂停时捕获 toolkit catalog continuation 状态。
-- `resume_human_input()` 会把挂起的 catalog 状态恢复到新的 runtime，再继续原会话。
-- `step()` 是 Team 场景下的包装层，用结构化 step schema 驱动模型输出 publish/handoff/finalize。
-
-### 协作关系与关联类型
-
-- `_SubagentConfig`
-- `_SubagentCounters`
-- `_SubagentRuntime`
+- 构造阶段校验 identity，构建 `AgentSpec` 和 `AgentState`。
+- `run()` 规范化消息，创建 `AgentCallContext`，调用 `_prepare()` 让每个模块的 `configure()` 作用于 `AgentBuilder`，然后调用 `builder.build()` 获得 `PreparedAgent`，最后调用 `prepared.run()`。
+- 模块组合行为：`ToolsModule` 注册工具，`MemoryModule` 挂载 memory，`PoliciesModule` 设置默认值，`OptimizersModule` 添加 harness，`SubagentModule` 添加委托工具。
 
 ### 最小调用示例
 
 ```python
-obj = Agent(...)
-obj.enable_subagents(...)
+from unchain import Agent
+from unchain.agent import ToolsModule, MemoryModule
+
+agent = Agent(
+    name="assistant",
+    instructions="You are a helpful assistant.",
+    modules=(
+        ToolsModule(tools=(my_tool,)),
+        MemoryModule(memory=my_memory_config),
+    ),
+)
+result = agent.run("Hello!")
 ```
 
-### `src/unchain/agents/team.py`
+### `src/unchain/agent/builder.py`
 
-多 Agent channel 协作层，负责投递、调度打分、handoff 和 owner 完成控制。
+Agent 准备管线：`AgentCallContext` 捕获调用端选项，`AgentBuilder` 累积模块贡献，`PreparedAgent` 持有最终组装好的 kernel loop。
 
-## Team
+## AgentCallContext
 
-通过具名 channel 路由 envelope、给待办工作打分，并允许 owner agent 结束多 Agent 运行的协调器。
+Dataclass，捕获传给 `Agent.run()` 或 `Agent.resume_human_input()` 的每次调用选项。
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/unchain/agents/team.py:11` |
-| 模块职责 | 多 Agent channel 协作层，负责投递、调度打分、handoff 和 owner 完成控制。 |
+| 源码 | `src/unchain/agent/builder.py` |
 | 继承/协议 | `-` |
-| 导出状态 | 通过 `unchain` 顶层导出。 |
-| 对象类型 | 类；公开或包内可见。 |
+| 导出状态 | 通过 `unchain.agent` 导出。 |
+| 对象类型 | Dataclass。 |
 
-### 构造表面
+### 字段
 
-该类主要通过构造函数定义必需输入和校验逻辑。
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `mode` | `str` | `"run"` 或 `"resume_human_input"`。 |
+| `input_messages` | `list[dict[str, Any]] \| None` | 默认值：`None`。 |
+| `conversation` | `list[dict[str, Any]] \| None` | 默认值：`None`。 |
+| `continuation` | `dict[str, Any] \| None` | 默认值：`None`。 |
+| `response` | `dict[str, Any] \| Any` | 默认值：`None`。 |
+| `payload` | `dict[str, Any] \| None` | 默认值：`None`。 |
+| `response_format` | `ResponseFormat \| None` | 默认值：`None`。 |
+| `callback` | `Callable[[dict[str, Any]], None] \| None` | 默认值：`None`。 |
+| `verbose` | `bool` | 默认值：`False`。 |
+| `max_iterations` | `int \| None` | 默认值：`None`。 |
+| `max_context_window_tokens` | `int \| None` | 默认值：`None`。 |
+| `previous_response_id` | `str \| None` | 默认值：`None`。 |
+| `on_tool_confirm` | `Callable[..., Any] \| None` | 默认值：`None`。 |
+| `on_human_input` | `Callable[..., Any] \| None` | 默认值：`None`。 |
+| `on_max_iterations` | `Callable[..., Any] \| None` | 默认值：`None`。 |
+| `session_id` | `str \| None` | 默认值：`None`。 |
+| `memory_namespace` | `str \| None` | 默认值：`None`。 |
+| `run_id` | `str \| None` | 默认值：`None`。 |
+| `tool_runtime_config` | `dict[str, Any] \| None` | 默认值：`None`。 |
 
-- `__init__(self, *, agents: list[Agent], owner: str, channels: dict[str, list[str]], mode: str='channel_collab', visible_transcript: bool=True, completion_policy: str='owner_finalize', max_steps: int=24)`
+## AgentBuilder
+
+可变 builder，模块通过它注册 tools、harness、memory、默认值和 hook。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/agent/builder.py` |
+| 继承/协议 | `-` |
+| 导出状态 | 通过 `unchain.agent` 导出。 |
+| 对象类型 | Dataclass。 |
 
 ### 公共方法
 
-#### `__init__(self, *, agents: list[Agent], owner: str, channels: dict[str, list[str]], mode: str='channel_collab', visible_transcript: bool=True, completion_policy: str='owner_finalize', max_steps: int=24)`
+| 方法 | 说明 |
+| --- | --- |
+| `add_tool(entry)` | 注册 `Tool`、`Toolkit` 或 callable。 |
+| `add_harness(harness)` | 挂载运行时 harness。 |
+| `attach_memory_runtime(memory_runtime)` | 挂载 `KernelMemoryRuntime`。 |
+| `set_model_io(model_io)` | 覆盖 `ModelIO` 实例。 |
+| `set_model_io_factory(factory)` | 设置延迟 `ModelIO` 创建工厂。 |
+| `add_run_hook(hook)` | 追加运行后 hook。 |
+| `add_tool_runtime_plugin(plugin)` | 追加工具运行时插件。 |
+| `set_payload_defaults(payload)` | 合并默认 payload。 |
+| `set_response_format_default(response_format)` | 设置默认响应格式。 |
+| `set_max_iterations_default(max_iterations)` | 设置默认最大迭代数。 |
+| `set_max_context_window_tokens_default(tokens)` | 设置默认上下文窗口限制。 |
+| `set_on_tool_confirm_default(on_tool_confirm)` | 设置默认工具确认回调。 |
+| `set_on_human_input_default(on_human_input)` | 设置默认人类输入回调。 |
+| `set_on_max_iterations_default(on_max_iterations)` | 设置默认最大迭代回调。 |
+| `build()` | 完成构建并返回 `PreparedAgent`。 |
 
-初始化实例，并在类有约束时校验或强制转换构造参数。
+## PreparedAgent
 
-- 类型：构造函数
-- 定义位置：`src/unchain/agents/team.py:12`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
+已组装完毕、可执行的 Agent。持有 `KernelLoop`、合并后的 `Toolkit` 和解析后的默认值。
 
-#### `run(self, messages: str | list[dict[str, Any]], *, entry_channel: str | None=None, payload: dict[str, Any] | None=None, callback: Callable[[dict[str, Any]], None] | None=None, session_id: str | None=None, memory_namespace: str | None=None, max_steps: int | None=None)`
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/agent/builder.py` |
+| 继承/协议 | `-` |
+| 导出状态 | 通过 `unchain.agent` 导出。 |
+| 对象类型 | Dataclass。 |
 
-`Team` 对外暴露的方法 `run`。
+### 公共方法
 
-- 类型：方法
-- 定义位置：`src/unchain/agents/team.py:139`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
+| 方法 | 返回 | 说明 |
+| --- | --- | --- |
+| `run()` | `KernelRunResult` | 执行 kernel loop。 |
+| `resume_human_input()` | `KernelRunResult` | 从人类输入暂停恢复。 |
 
-### 生命周期与运行时角色
+### `src/unchain/agent/modules/`
 
-- 构造阶段会规范化 agent 名称、校验 channel 订阅者，并固定 step limit 默认值。
-- `run()` 会把初始用户请求转换为 channel envelope，维护每个 agent 的 pending inbox，并持续调度得分最高的 agent。
-- 每个 agent 都拿到独立的 session/memory namespace，可向 channel 发布消息、执行 handoff，且只有 owner 可以 finalize。
+可插拔模块，在准备阶段配置 `AgentBuilder`。
 
-### 协作关系与关联类型
+## AgentModule（协议）
 
-- `_SubagentConfig`
-- `_SubagentCounters`
-- `_SubagentRuntime`
-- `Agent`
+所有 Agent 模块必须满足的协议。
 
-### 最小调用示例
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/agent/modules/base.py` |
+| 对象类型 | 协议。 |
 
-```python
-obj = Team(...)
-obj.run(...)
-```
+### 必需接口
+
+| 属性/方法 | 类型 | 说明 |
+| --- | --- | --- |
+| `name` | `str` | 模块标识符。 |
+| `configure(builder)` | `-> None` | 在 Agent 准备阶段调用。 |
+
+## ToolsModule
+
+将 tools、toolkits 和 callable 注册到 builder。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/agent/modules/tools.py` |
+| 继承/协议 | `BaseAgentModule` |
+| 对象类型 | Dataclass (frozen)。 |
+
+### 字段
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `tools` | `tuple[Any, ...]` | 默认值：`()`。 |
+| `name` | `str` | 默认值：`"tools"`。 |
+
+## MemoryModule
+
+将 memory 挂载到 builder。接受 `KernelMemoryRuntime`、`MemoryManager`、`MemoryConfig` 或原始 dict。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/agent/modules/memory.py` |
+| 继承/协议 | `BaseAgentModule` |
+| 对象类型 | Dataclass (frozen)。 |
+
+### 字段
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `memory` | `KernelMemoryRuntime \| MemoryManager \| MemoryConfig \| dict[str, Any] \| None` | 默认值：`None`。 |
+| `store` | `SessionStore \| None` | 默认值：`None`。 |
+| `name` | `str` | 默认值：`"memory"`。 |
+
+## PoliciesModule
+
+设置默认 payload、响应格式、最大迭代数、上下文窗口 token 数和工具确认回调。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/agent/modules/policies.py` |
+| 继承/协议 | `BaseAgentModule` |
+| 对象类型 | Dataclass (frozen)。 |
+
+### 字段
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `payload` | `dict[str, Any]` | 默认值：`{}`。 |
+| `response_format` | `ResponseFormat \| None` | 默认值：`None`。 |
+| `max_iterations` | `int \| None` | 默认值：`None`。 |
+| `max_context_window_tokens` | `int \| None` | 默认值：`None`。 |
+| `on_tool_confirm` | `Callable[..., Any] \| None` | 默认值：`None`。 |
+| `name` | `str` | 默认值：`"policies"`。 |
+
+## OptimizersModule
+
+将运行时 harness（如上下文窗口优化器）挂载到 builder。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/agent/modules/optimizers.py` |
+| 继承/协议 | `BaseAgentModule` |
+| 对象类型 | Dataclass (frozen)。 |
+
+### 字段
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `harnesses` | `tuple[object, ...]` | 默认值：`()`。 |
+| `name` | `str` | 默认值：`"optimizers"`。 |
+
+## SubagentModule
+
+注册委托、handoff 和 worker-batch 工具，以及 `SubagentToolPlugin`。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/agent/modules/subagents.py` |
+| 继承/协议 | `BaseAgentModule` |
+| 对象类型 | Dataclass (frozen)。 |
+
+### 字段
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `templates` | `tuple[SubagentTemplate, ...]` | 默认值：`()`。 |
+| `policy` | `SubagentPolicy` | 默认值：`SubagentPolicy()`。 |
+| `executor` | `SubagentExecutor \| None` | 默认值：`None`。 |
+| `name` | `str` | 默认值：`"subagents"`。 |

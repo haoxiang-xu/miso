@@ -652,7 +652,7 @@ IconDescriptor(type=..., path=..., name=..., color=...)
 | `display_order` | `int` | 默认值：`0`。 |
 | `hidden` | `bool` | 默认值：`False`。 |
 | `compat_python` | `str | None` | 默认值：`None`。 |
-| `compat_unchain` | `str | None` | 默认值：`None`。 |
+| `compat_legacy` | `str | None` | 默认值：`None`。 |
 | `tools` | `dict[str, ToolDescriptor]` | 默认值：`field(default_factory=dict)`。 |
 | `import_roots` | `tuple[Path, ...]` | 默认值：`field(default_factory=tuple, repr=False)`。 |
 
@@ -816,7 +816,7 @@ obj.list_toolkits(...)
 
 该类主要通过构造函数定义必需输入和校验逻辑。
 
-- `__init__(self, name: str | Callable[..., Any]='', description: str='', func: Callable[..., Any] | None=None, parameters: list[ToolParameter | dict[str, Any]] | None=None, observe: bool=False, requires_confirmation: bool=False, history_arguments_optimizer: HistoryPayloadOptimizer | None=None, history_result_optimizer: HistoryPayloadOptimizer | None=None)`
+- `__init__(self, name: str | Callable[..., Any]='', description: str='', func: Callable[..., Any] | None=None, parameters: list[ToolParameter | dict[str, Any]] | None=None, observe: bool=False, requires_confirmation: bool=False, render_component: dict[str, Any] | None=None, confirmation_resolver: Callable | None=None, history_arguments_optimizer: HistoryPayloadOptimizer | None=None, history_result_optimizer: HistoryPayloadOptimizer | None=None)`
 
 ### 公共方法
 
@@ -829,7 +829,7 @@ obj.list_toolkits(...)
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
-#### `from_callable(cls, func: Callable[..., Any], *, name: str | None=None, description: str | None=None, parameters: list[ToolParameter | dict[str, Any]] | None=None, observe: bool=False, requires_confirmation: bool=False, history_arguments_optimizer: HistoryPayloadOptimizer | None=None, history_result_optimizer: HistoryPayloadOptimizer | None=None)`
+#### `from_callable(cls, func: Callable[..., Any], *, name: str | None=None, description: str | None=None, parameters: list[ToolParameter | dict[str, Any]] | None=None, observe: bool=False, requires_confirmation: bool=False, render_component: dict[str, Any] | None=None, confirmation_resolver: Callable | None=None, history_arguments_optimizer: HistoryPayloadOptimizer | None=None, history_result_optimizer: HistoryPayloadOptimizer | None=None)`
 
 `Tool` 对外暴露的方法 `from_callable`。
 
@@ -847,14 +847,19 @@ obj.list_toolkits(...)
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
-#### `execute(self, arguments: dict[str, Any] | str | None)`
+#### `to_provider_json(self, provider: str | None=None)`
 
-`Tool` 对外暴露的方法 `execute`。
+返回特定 provider 的 JSON tool schema（OpenAI、Anthropic、Ollama 格式）。
 
 - 类型：方法
-- 定义位置：`src/unchain/tools/tool.py:167`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
+- 返回：`dict[str, Any]`
+
+#### `execute(self, arguments: dict[str, Any] | str | None)`
+
+使用给定参数执行工具函数（如为 JSON 字符串则先解析）。
+
+- 类型：方法
+- 返回：`dict[str, Any]` -- 结果 dict 或失败时 `{"error": ...}`。
 
 ### 协作关系与关联类型
 
@@ -904,7 +909,7 @@ Tool 容器与注册表面，被 runtime 与 toolkit 实现共同使用。
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
-#### `register(self, tool_obj: Tool | Callable[..., Any], *, observe: bool | None=None, requires_confirmation: bool | None=None, name: str | None=None, description: str | None=None, parameters: list[ToolParameter | dict[str, Any]] | None=None, history_arguments_optimizer: HistoryPayloadOptimizer | None=None, history_result_optimizer: HistoryPayloadOptimizer | None=None)`
+#### `register(self, tool_obj: Tool | Callable[..., Any], *, observe: bool | None=None, requires_confirmation: bool | None=None, render_component: dict[str, Any] | None=None, confirmation_resolver: Callable | None=None, name: str | None=None, description: str | None=None, parameters: list[ToolParameter | dict[str, Any]] | None=None, history_arguments_optimizer: HistoryPayloadOptimizer | None=None, history_result_optimizer: HistoryPayloadOptimizer | None=None)`
 
 `Toolkit` 对外暴露的方法 `register`。
 
@@ -922,7 +927,7 @@ Tool 容器与注册表面，被 runtime 与 toolkit 实现共同使用。
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
-#### `tool(self, func: Callable[..., Any] | None=None, *, observe: bool=False, requires_confirmation: bool=False, name: str | None=None, description: str | None=None, parameters: list[ToolParameter | dict[str, Any]] | None=None, history_arguments_optimizer: HistoryPayloadOptimizer | None=None, history_result_optimizer: HistoryPayloadOptimizer | None=None)`
+#### `tool(self, func: Callable[..., Any] | None=None, *, observe: bool=False, requires_confirmation: bool=False, name: str | None=None, description: str | None=None, confirmation_resolver: Callable | None=None, parameters: list[ToolParameter | dict[str, Any]] | None=None, history_arguments_optimizer: HistoryPayloadOptimizer | None=None, history_result_optimizer: HistoryPayloadOptimizer | None=None)`
 
 `Toolkit` 对外暴露的方法 `tool`。
 
@@ -954,9 +959,16 @@ Tool 容器与注册表面，被 runtime 与 toolkit 实现共同使用。
 `Toolkit` 对外暴露的方法 `to_json`。
 
 - 类型：方法
-- 定义位置：`src/unchain/tools/toolkit.py:115`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
+- 定义位置：`src/unchain/tools/toolkit.py:132`
+- 返回：`list[dict[str, Any]]`
+
+#### `to_provider_json(self, provider: str | None=None)`
+
+返回所有已注册工具的 provider 特定 JSON schema。
+
+- 类型：方法
+- 定义位置：`src/unchain/tools/toolkit.py:135`
+- 返回：`list[dict[str, Any]]`
 
 #### `shutdown(self)`
 

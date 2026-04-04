@@ -1,39 +1,40 @@
 # Runtime API 参考
 
-覆盖 provider turn、工具执行、token 统计以及 Broth 主运行时。
+核心执行类型：kernel loop、provider 抽象（`ModelIO`）、模型 turn 结果、工具调用、token 统计和运行结果。
 
 | 指标 | 值 |
 | --- | --- |
-| 类数量 | 5 |
-| Dataclass | 4 |
-| 协议 | 0 |
+| 类数量 | 2 |
+| Dataclass | 5 |
+| 协议 | 1 |
 | 仅内部类型 | 0 |
 
 ## 覆盖地图
 
 | 类 | 源码 | 导出 | 类型 |
 | --- | --- | --- | --- |
-| `ToolCall` | `src/unchain/runtime/engine.py:68` | subpackage | dataclass |
-| `ProviderTurnResult` | `src/unchain/runtime/engine.py:74` | subpackage | dataclass |
-| `TokenUsage` | `src/unchain/runtime/engine.py:86` | internal | dataclass |
-| `ToolExecutionOutcome` | `src/unchain/runtime/engine.py:93` | subpackage | dataclass |
-| `Broth` | `src/unchain/runtime/engine.py:103` | subpackage | class |
+| `ToolCall` | `src/unchain/kernel/types.py` | subpackage | dataclass (frozen) |
+| `TokenUsage` | `src/unchain/kernel/types.py` | subpackage | dataclass (frozen) |
+| `ModelTurnResult` | `src/unchain/kernel/types.py` | subpackage | dataclass (frozen) |
+| `KernelRunResult` | `src/unchain/kernel/types.py` | subpackage | dataclass (frozen) |
+| `ModelTurnRequest` | `src/unchain/providers/model_io.py` | subpackage | dataclass (frozen) |
+| `ModelIO` | `src/unchain/providers/model_io.py` | subpackage | protocol |
+| `KernelLoop` | `src/unchain/kernel/loop.py` | subpackage | class |
 
-### `src/unchain/runtime/engine.py`
+### `src/unchain/kernel/types.py`
 
-面向 provider 的执行循环，以及统一的消息/工具执行数据类型。
+跨 kernel、provider 和 agent 层共享的不可变值类型。
 
 ## ToolCall
 
-用于面向 provider 的执行循环，以及统一的消息/工具执行数据类型的 dataclass 载荷。
+Frozen dataclass，表示模型请求的单次工具调用。
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/unchain/runtime/engine.py:68` |
-| 模块职责 | 面向 provider 的执行循环，以及统一的消息/工具执行数据类型。 |
+| 源码 | `src/unchain/kernel/types.py` |
 | 继承/协议 | `-` |
-| 导出状态 | 通过所属子包 `__init__` 导出。 |
-| 对象类型 | Dataclass；公开或包内可见。 |
+| 导出状态 | 通过 `unchain.kernel` 导出。 |
+| 对象类型 | Dataclass (frozen)。 |
 
 ### 字段
 
@@ -41,36 +42,43 @@
 | --- | --- | --- |
 | `call_id` | `str` | 构造时必需。 |
 | `name` | `str` | 构造时必需。 |
-| `arguments` | `dict[str, Any] | str | None` | 构造时必需。 |
-
-### 公共方法
-
-该类型除了 dataclass/protocol 结构外不暴露公共方法。
-
-### 协作关系与关联类型
-
-- `ProviderTurnResult`
-- `TokenUsage`
-- `ToolExecutionOutcome`
-- `Broth`
+| `arguments` | `dict[str, Any] \| str \| None` | 构造时必需。 |
 
 ### 最小调用示例
 
 ```python
-ToolCall(call_id=..., name=..., arguments=...)
+ToolCall(call_id="call_abc", name="search_text", arguments={"pattern": "foo"})
 ```
 
-## ProviderTurnResult
+## TokenUsage
 
-用于面向 provider 的执行循环，以及统一的消息/工具执行数据类型的 dataclass 载荷。
+Frozen dataclass，用于单次模型 turn 的 token 统计。
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/unchain/runtime/engine.py:74` |
-| 模块职责 | 面向 provider 的执行循环，以及统一的消息/工具执行数据类型。 |
+| 源码 | `src/unchain/kernel/types.py` |
 | 继承/协议 | `-` |
-| 导出状态 | 通过所属子包 `__init__` 导出。 |
-| 对象类型 | Dataclass；公开或包内可见。 |
+| 导出状态 | 通过 `unchain.kernel` 导出。 |
+| 对象类型 | Dataclass (frozen)。 |
+
+### 字段
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `consumed_tokens` | `int` | 默认值：`0`。 |
+| `input_tokens` | `int` | 默认值：`0`。 |
+| `output_tokens` | `int` | 默认值：`0`。 |
+
+## ModelTurnResult
+
+Frozen dataclass，由 `ModelIO.fetch_turn()` 返回，包含模型的 assistant 消息、工具调用和 token 统计。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/kernel/types.py` |
+| 继承/协议 | `-` |
+| 导出状态 | 通过 `unchain.kernel` 导出。 |
+| 对象类型 | Dataclass (frozen)。 |
 
 ### 字段
 
@@ -78,192 +86,128 @@ ToolCall(call_id=..., name=..., arguments=...)
 | --- | --- | --- |
 | `assistant_messages` | `list[dict[str, Any]]` | 构造时必需。 |
 | `tool_calls` | `list[ToolCall]` | 构造时必需。 |
-| `final_text` | `str` | 默认值：`''`。 |
-| `response_id` | `str | None` | 默认值：`None`。 |
-| `reasoning_items` | `list[dict[str, Any]] | None` | 默认值：`None`。 |
+| `final_text` | `str` | 默认值：`""`。 |
+| `response_id` | `str \| None` | 默认值：`None`。 |
+| `reasoning_items` | `list[dict[str, Any]] \| None` | 默认值：`None`。 |
 | `consumed_tokens` | `int` | 默认值：`0`。 |
 | `input_tokens` | `int` | 默认值：`0`。 |
 | `output_tokens` | `int` | 默认值：`0`。 |
+| `cache_read_input_tokens` | `int` | 默认值：`0`。 |
+| `cache_creation_input_tokens` | `int` | 默认值：`0`。 |
 
-### 公共方法
+## KernelRunResult
 
-该类型除了 dataclass/protocol 结构外不暴露公共方法。
-
-### 协作关系与关联类型
-
-- `ToolCall`
-- `TokenUsage`
-- `ToolExecutionOutcome`
-- `Broth`
-
-### 最小调用示例
-
-```python
-ProviderTurnResult(assistant_messages=..., tool_calls=..., final_text=..., response_id=...)
-```
-
-## TokenUsage
-
-用于面向 provider 的执行循环，以及统一的消息/工具执行数据类型的 dataclass 载荷。
+Frozen dataclass，由 `Agent.run()` 和 `PreparedAgent.run()` 返回，包含最终对话、状态及可选的 continuation/human-input 状态。
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/unchain/runtime/engine.py:86` |
-| 模块职责 | 面向 provider 的执行循环，以及统一的消息/工具执行数据类型。 |
+| 源码 | `src/unchain/kernel/types.py` |
 | 继承/协议 | `-` |
-| 导出状态 | 未导出，应视为实现细节。 |
-| 对象类型 | Dataclass；公开或包内可见。 |
+| 导出状态 | 通过 `unchain.kernel` 导出。 |
+| 对象类型 | Dataclass (frozen)。 |
 
 ### 字段
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
+| `messages` | `list[dict[str, Any]]` | 最终对话消息。 |
+| `status` | `str` | 运行结果状态。 |
+| `continuation` | `dict[str, Any] \| None` | 默认值：`None`。 |
+| `human_input_request` | `dict[str, Any] \| None` | 默认值：`None`。 |
 | `consumed_tokens` | `int` | 默认值：`0`。 |
 | `input_tokens` | `int` | 默认值：`0`。 |
 | `output_tokens` | `int` | 默认值：`0`。 |
+| `last_turn_tokens` | `int` | 默认值：`0`。 |
+| `last_turn_input_tokens` | `int` | 默认值：`0`。 |
+| `last_turn_output_tokens` | `int` | 默认值：`0`。 |
+| `cache_read_input_tokens` | `int` | 默认值：`0`。 |
+| `cache_creation_input_tokens` | `int` | 默认值：`0`。 |
+| `previous_response_id` | `str \| None` | 默认值：`None`。 |
+| `iteration` | `int` | 默认值：`0`。 |
 
-### 公共方法
+### `src/unchain/providers/model_io.py`
 
-该类型除了 dataclass/protocol 结构外不暴露公共方法。
+Provider 抽象层。`ModelIO` 是所有 provider 实现必须满足的协议；`ModelTurnRequest` 是 frozen 输入。
 
-### 协作关系与关联类型
+## ModelTurnRequest
 
-- `ToolCall`
-- `ProviderTurnResult`
-- `ToolExecutionOutcome`
-- `Broth`
-
-### 最小调用示例
-
-```python
-TokenUsage(consumed_tokens=..., input_tokens=..., output_tokens=...)
-```
-
-## ToolExecutionOutcome
-
-用于面向 provider 的执行循环，以及统一的消息/工具执行数据类型的 dataclass 载荷。
+Frozen dataclass，打包单次模型 turn 的消息、payload、格式和 toolkit。
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/unchain/runtime/engine.py:93` |
-| 模块职责 | 面向 provider 的执行循环，以及统一的消息/工具执行数据类型。 |
+| 源码 | `src/unchain/providers/model_io.py` |
 | 继承/协议 | `-` |
-| 导出状态 | 通过所属子包 `__init__` 导出。 |
-| 对象类型 | Dataclass；公开或包内可见。 |
+| 导出状态 | 通过 `unchain.providers` 导出。 |
+| 对象类型 | Dataclass (frozen)。 |
 
 ### 字段
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `result_messages` | `list[dict[str, Any]]` | 构造时必需。 |
-| `should_observe` | `bool` | 默认值：`False`。 |
-| `awaiting_human_input` | `bool` | 默认值：`False`。 |
-| `human_input_request` | `HumanInputRequest | None` | 默认值：`None`。 |
+| `messages` | `list[dict[str, Any]]` | 构造时必需。 |
+| `payload` | `dict[str, Any]` | 默认值：`{}`。 |
+| `response_format` | `ResponseFormat \| None` | 默认值：`None`。 |
+| `callback` | `Callable[[dict[str, Any]], None] \| None` | 默认值：`None`。 |
+| `verbose` | `bool` | 默认值：`False`。 |
+| `run_id` | `str` | 默认值：`"kernel"`。 |
+| `iteration` | `int` | 默认值：`0`。 |
+| `toolkit` | `Toolkit` | 默认值：`Toolkit()`。 |
+| `emit_stream` | `bool` | 默认值：`False`。 |
+| `previous_response_id` | `str \| None` | 默认值：`None`。 |
+| `openai_text_format` | `dict[str, Any] \| None` | 默认值：`None`。 |
 
 ### 公共方法
 
-该类型除了 dataclass/protocol 结构外不暴露公共方法。
+| 方法 | 返回 | 说明 |
+| --- | --- | --- |
+| `copied_messages()` | `list[dict[str, Any]]` | 请求消息的深拷贝。 |
 
-### 协作关系与关联类型
+## ModelIO（协议）
 
-- `ToolCall`
-- `ProviderTurnResult`
-- `TokenUsage`
-- `Broth`
-
-### 最小调用示例
-
-```python
-ToolExecutionOutcome(result_messages=..., should_observe=..., awaiting_human_input=..., human_input_request=...)
-```
-
-## Broth
-
-规范化的 provider/runtime 主循环，负责准备上下文、执行工具、处理暂停，并返回消息与 bundle。
+Kernel loop 使用的 provider 边界。所有 provider 实现（OpenAI、Anthropic、Ollama、Gemini）满足此协议。
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/unchain/runtime/engine.py:103` |
-| 模块职责 | 面向 provider 的执行循环，以及统一的消息/工具执行数据类型。 |
+| 源码 | `src/unchain/providers/model_io.py` |
+| 对象类型 | 协议（runtime-checkable）。 |
+
+### 必需接口
+
+| 属性/方法 | 类型 | 说明 |
+| --- | --- | --- |
+| `provider` | `str` | Provider 名称标识符。 |
+| `fetch_turn(request)` | `-> ModelTurnResult` | 执行一次模型 turn。 |
+
+### `src/unchain/kernel/loop.py`
+
+Harness 驱动的执行循环，编排模型 turn、工具执行、memory 提交和暂停。
+
+## KernelLoop
+
+主执行引擎。运行 step-once 循环：分发 harness phase、获取模型 turn、执行工具、提交 memory，重复直到完成或暂停。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/kernel/loop.py` |
 | 继承/协议 | `-` |
-| 导出状态 | 通过所属子包 `__init__` 导出。 |
-| 对象类型 | 类；公开或包内可见。 |
-
-### 构造表面
-
-该类主要通过构造函数定义必需输入和校验逻辑。
-
-- `__init__(self, *, provider: str | None=None, model: str | None=None, api_key: str | None=None, memory_manager: MemoryManager | None=None, toolkit_catalog_config: ToolkitCatalogConfig | dict[str, Any] | None=None)`
-
-### 属性
-
-- `@property toolkit`: Return a merged view of all registered toolkits.
-- `@property max_context_window_tokens`: Return the context window token limit.
-
-### 公共方法
-
-#### `__init__(self, *, provider: str | None=None, model: str | None=None, api_key: str | None=None, memory_manager: MemoryManager | None=None, toolkit_catalog_config: ToolkitCatalogConfig | dict[str, Any] | None=None)`
-
-初始化实例，并在类有约束时校验或强制转换构造参数。
-
-- 类型：构造函数
-- 定义位置：`src/unchain/runtime/engine.py:104`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-
-#### `add_toolkit(self, tk: BaseToolkit)`
-
-Append a toolkit to the agent's toolkit list.
-
-- 类型：方法
-- 定义位置：`src/unchain/runtime/engine.py:262`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-
-#### `remove_toolkit(self, tk: BaseToolkit)`
-
-Remove a toolkit from the agent's toolkit list.
-
-- 类型：方法
-- 定义位置：`src/unchain/runtime/engine.py:266`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-
-#### `run(self, messages, payload: dict[str, Any] | None=None, response_format: ResponseFormat | None=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, max_iterations: int | None=None, previous_response_id: str | None=None, on_tool_confirm: Callable | None=None, on_continuation_request: Callable | None=None, session_id: str | None=None, memory_namespace: str | None=None)`
-
-`Broth` 对外暴露的方法 `run`。
-
-- 类型：方法
-- 定义位置：`src/unchain/runtime/engine.py:1737`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-
-#### `resume_human_input(self, *, conversation: list[dict[str, Any]], continuation: dict[str, Any], response: HumanInputResponse | dict[str, Any], payload: dict[str, Any] | None=None, response_format: ResponseFormat | None=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, on_tool_confirm: Callable | None=None, on_continuation_request: Callable | None=None, session_id: str | None=None, memory_namespace: str | None=None)`
-
-`Broth` 对外暴露的方法 `resume_human_input`。
-
-- 类型：方法
-- 定义位置：`src/unchain/runtime/engine.py:1826`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
+| 导出状态 | 通过 `unchain.kernel` 导出。 |
+| 对象类型 | 类。 |
 
 ### 生命周期与运行时角色
 
-- 初始化时会加载 provider 默认 payload 与 model capability，建立计数器，并把 provider SDK import 延迟到真正执行时。
-- `run()` 会规范化消息、注入 workspace pins、准备 memory context、抓取 provider turn、执行工具、运行 observation 并在每轮提交 memory。
-- 当工具需要确认或人类输入时，runtime 会打包 continuation 状态并提前返回，后续通过 `resume_human_input()` 恢复。
-- toolkit catalog runtime 通过 state token 暂存，因此恢复后的运行可继续看到相同的 active/managed toolkit 集。
-
-### 协作关系与关联类型
-
-- `ToolCall`
-- `ProviderTurnResult`
-- `TokenUsage`
-- `ToolExecutionOutcome`
+- 构造时接受一个 `ModelIO` 实例。
+- `register_harness(harness)` 挂载运行时 harness（工具执行、优化器等）。
+- `attach_memory(memory_runtime)` 连接 `KernelMemoryRuntime`。
+- `run()` 规范化消息、进入 step 循环、分发 harness phase、获取模型 turn，并返回 `KernelRunResult`。
+- `resume_human_input()` 恢复暂停的对话并继续循环。
 
 ### 最小调用示例
 
 ```python
-obj = Broth(...)
-obj.add_toolkit(...)
+from unchain.kernel.loop import KernelLoop
+from unchain.providers.model_io import ModelIO
+
+loop = KernelLoop(model_io=my_model_io)
+loop.register_harness(my_harness)
+result = loop.run(messages=[...], toolkit=my_toolkit)
 ```

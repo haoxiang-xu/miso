@@ -652,7 +652,7 @@ Dataclass payload used by manifest discovery, metadata validation, icon resoluti
 | `display_order` | `int` | Default: `0`. |
 | `hidden` | `bool` | Default: `False`. |
 | `compat_python` | `str | None` | Default: `None`. |
-| `compat_unchain` | `str | None` | Default: `None`. |
+| `compat_legacy` | `str | None` | Default: `None`. |
 | `tools` | `dict[str, ToolDescriptor]` | Default: `field(default_factory=dict)`. |
 | `import_roots` | `tuple[Path, ...]` | Default: `field(default_factory=tuple, repr=False)`. |
 
@@ -816,11 +816,11 @@ Metadata-bearing wrapper around a callable, used as the atomic executable tool u
 
 The constructor is the primary place where this class defines required inputs and validation.
 
-- `__init__(self, name: str | Callable[..., Any]='', description: str='', func: Callable[..., Any] | None=None, parameters: list[ToolParameter | dict[str, Any]] | None=None, observe: bool=False, requires_confirmation: bool=False, history_arguments_optimizer: HistoryPayloadOptimizer | None=None, history_result_optimizer: HistoryPayloadOptimizer | None=None)`
+- `__init__(self, name: str | Callable[..., Any]='', description: str='', func: Callable[..., Any] | None=None, parameters: list[ToolParameter | dict[str, Any]] | None=None, observe: bool=False, requires_confirmation: bool=False, render_component: dict[str, Any] | None=None, confirmation_resolver: Callable | None=None, history_arguments_optimizer: HistoryPayloadOptimizer | None=None, history_result_optimizer: HistoryPayloadOptimizer | None=None)`
 
 ### Public methods
 
-#### `__init__(self, name: str | Callable[..., Any]='', description: str='', func: Callable[..., Any] | None=None, parameters: list[ToolParameter | dict[str, Any]] | None=None, observe: bool=False, requires_confirmation: bool=False, history_arguments_optimizer: HistoryPayloadOptimizer | None=None, history_result_optimizer: HistoryPayloadOptimizer | None=None)`
+#### `__init__(self, name: str | Callable[..., Any]='', description: str='', func: Callable[..., Any] | None=None, parameters: list[ToolParameter | dict[str, Any]] | None=None, observe: bool=False, requires_confirmation: bool=False, render_component: dict[str, Any] | None=None, confirmation_resolver: Callable | None=None, history_arguments_optimizer: HistoryPayloadOptimizer | None=None, history_result_optimizer: HistoryPayloadOptimizer | None=None)`
 
 Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
 
@@ -829,7 +829,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
-#### `from_callable(cls, func: Callable[..., Any], *, name: str | None=None, description: str | None=None, parameters: list[ToolParameter | dict[str, Any]] | None=None, observe: bool=False, requires_confirmation: bool=False, history_arguments_optimizer: HistoryPayloadOptimizer | None=None, history_result_optimizer: HistoryPayloadOptimizer | None=None)`
+#### `from_callable(cls, func: Callable[..., Any], *, name: str | None=None, description: str | None=None, parameters: list[ToolParameter | dict[str, Any]] | None=None, observe: bool=False, requires_confirmation: bool=False, render_component: dict[str, Any] | None=None, confirmation_resolver: Callable | None=None, history_arguments_optimizer: HistoryPayloadOptimizer | None=None, history_result_optimizer: HistoryPayloadOptimizer | None=None)`
 
 Public method `from_callable` exposed by `Tool`.
 
@@ -847,14 +847,19 @@ Public method `to_json` exposed by `Tool`.
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
-#### `execute(self, arguments: dict[str, Any] | str | None)`
+#### `to_provider_json(self, provider: str | None=None)`
 
-Public method `execute` exposed by `Tool`.
+Returns a provider-specific JSON tool schema (OpenAI, Anthropic, Ollama formats).
 
 - Category: Method
-- Declared at: `src/unchain/tools/tool.py:167`
-- Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
-- Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
+- Returns: `dict[str, Any]`
+
+#### `execute(self, arguments: dict[str, Any] | str | None)`
+
+Execute the tool function with the given arguments (parsed from JSON string if needed).
+
+- Category: Method
+- Returns: `dict[str, Any]` -- result dict or `{"error": ...}` on failure.
 
 ### Collaboration and related types
 
@@ -904,7 +909,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
-#### `register(self, tool_obj: Tool | Callable[..., Any], *, observe: bool | None=None, requires_confirmation: bool | None=None, name: str | None=None, description: str | None=None, parameters: list[ToolParameter | dict[str, Any]] | None=None, history_arguments_optimizer: HistoryPayloadOptimizer | None=None, history_result_optimizer: HistoryPayloadOptimizer | None=None)`
+#### `register(self, tool_obj: Tool | Callable[..., Any], *, observe: bool | None=None, requires_confirmation: bool | None=None, render_component: dict[str, Any] | None=None, confirmation_resolver: Callable | None=None, name: str | None=None, description: str | None=None, parameters: list[ToolParameter | dict[str, Any]] | None=None, history_arguments_optimizer: HistoryPayloadOptimizer | None=None, history_result_optimizer: HistoryPayloadOptimizer | None=None)`
 
 Public method `register` exposed by `Toolkit`.
 
@@ -922,7 +927,7 @@ Public method `register_many` exposed by `Toolkit`.
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
-#### `tool(self, func: Callable[..., Any] | None=None, *, observe: bool=False, requires_confirmation: bool=False, name: str | None=None, description: str | None=None, parameters: list[ToolParameter | dict[str, Any]] | None=None, history_arguments_optimizer: HistoryPayloadOptimizer | None=None, history_result_optimizer: HistoryPayloadOptimizer | None=None)`
+#### `tool(self, func: Callable[..., Any] | None=None, *, observe: bool=False, requires_confirmation: bool=False, name: str | None=None, description: str | None=None, confirmation_resolver: Callable | None=None, parameters: list[ToolParameter | dict[str, Any]] | None=None, history_arguments_optimizer: HistoryPayloadOptimizer | None=None, history_result_optimizer: HistoryPayloadOptimizer | None=None)`
 
 Public method `tool` exposed by `Toolkit`.
 
@@ -954,9 +959,16 @@ Public method `execute` exposed by `Toolkit`.
 Public method `to_json` exposed by `Toolkit`.
 
 - Category: Method
-- Declared at: `src/unchain/tools/toolkit.py:115`
-- Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
-- Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
+- Declared at: `src/unchain/tools/toolkit.py:132`
+- Returns: `list[dict[str, Any]]`
+
+#### `to_provider_json(self, provider: str | None=None)`
+
+Returns provider-specific JSON schemas for all registered tools.
+
+- Category: Method
+- Declared at: `src/unchain/tools/toolkit.py:135`
+- Returns: `list[dict[str, Any]]`
 
 #### `shutdown(self)`
 
