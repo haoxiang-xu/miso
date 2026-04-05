@@ -63,6 +63,7 @@ def execute_confirmable_tool_call(
     run_id: str,
     iteration: int,
     execution_context: ToolExecutionContext | None = None,
+    on_input: Any = None,
 ) -> ToolExecutionOutcome:
     tool_obj = toolkit.get(tool_call.name)
     should_observe = bool(tool_obj is not None and tool_obj.observe)
@@ -91,7 +92,37 @@ def execute_confirmable_tool_call(
     if confirmation_policy is not None:
         requires_confirmation = requires_confirmation and confirmation_policy.requires_confirmation
 
-    if tool_obj is not None and requires_confirmation and callable(on_tool_confirm):
+    if tool_obj is not None and requires_confirmation and callable(on_input):
+        from ..types.input import InputRequest
+
+        description = (
+            confirmation_policy.description
+            if confirmation_policy is not None and confirmation_policy.description
+            else tool_obj.description
+        )
+        resp = on_input(InputRequest(
+            kind="approval",
+            run_id=run_id,
+            call_id=tool_call.call_id,
+            tool_name=tool_call.name,
+            config={
+                "arguments": copy.deepcopy(
+                    tool_call.arguments if isinstance(tool_call.arguments, dict) else {}
+                ),
+                "description": description or "",
+            },
+        ))
+        if resp.decision == "approved":
+            modified_args = resp.response.get("modified_arguments") if resp.response else None
+            if modified_args is not None:
+                effective_arguments = copy.deepcopy(modified_args)
+            # No tool_confirmed event — adapter handles input.resolved
+        else:
+            denied = True
+            deny_reason = (resp.response.get("reason") if resp.response else None) or "denied"
+            # No tool_denied event — adapter handles input.resolved
+
+    elif tool_obj is not None and requires_confirmation and callable(on_tool_confirm):
         tool_render = getattr(tool_obj, "render_component", None)
         if isinstance(tool_render, dict) and tool_render:
             effective_render = dict(tool_render)

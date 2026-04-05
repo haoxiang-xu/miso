@@ -11,11 +11,25 @@ from .base import BaseToolHarness, ToolContext
 from .common import append_executed_call_id, copy_messages, emit_loop_event
 from .confirmation import execute_confirmable_tool_call
 from .human_input import parse_human_input_request
+from ..types.input import InputRequest, InputResponse
 from .messages import get_provider_message_builder
 from .models import ToolExecutionContext
 from .observation import inject_observation, observation_token_state
 from .runtime import run_tool_runtime_plugins
 from .types import ToolBatchState
+
+
+def _build_human_input_result(request, resp: InputResponse) -> dict:
+    """Convert an InputResponse to a tool result dict for the agent."""
+    result: dict = {"request_id": request.request_id}
+    if resp.response:
+        if "selected" in resp.response:
+            result["selected_values"] = resp.response["selected"]
+        if "text" in resp.response:
+            result["text"] = resp.response["text"]
+        if "other_text" in resp.response:
+            result["other_text"] = resp.response["other_text"]
+    return result
 
 
 @dataclass
@@ -109,6 +123,7 @@ class ToolExecutionHarness(BaseToolHarness):
     def _on_tool_call(self, context: ToolContext) -> HarnessDelta | None:
         toolkit = context.toolkit if context.toolkit is not None else Toolkit()
         on_tool_confirm = context.event.get("on_tool_confirm")
+        on_input = context.event.get("on_input")
         tool_call = context.event.get("tool_call")
         if not isinstance(tool_call, ToolCall):
             return None
@@ -200,6 +215,55 @@ class ToolExecutionHarness(BaseToolHarness):
                             awaiting_human_input=False,
                             human_input_request=batch_state.human_input_request,
                             human_input_tool_call_id=batch_state.human_input_tool_call_id,
+                            executed_call_ids=append_executed_call_id(batch_state, tool_call.call_id),
+                        ),
+                    },
+                )
+
+            if callable(on_input):
+                resp = on_input(InputRequest(
+                    kind="question",
+                    run_id=context.run_id,
+                    call_id=tool_call.call_id,
+                    tool_name=tool_call.name,
+                    config={
+                        "request_id": request.request_id,
+                        "title": request.title,
+                        "question": request.question,
+                        "selection_mode": request.selection_mode,
+                        "options": [opt.to_dict() for opt in request.options],
+                        "allow_other": request.allow_other,
+                        "other_label": request.other_label,
+                        "other_placeholder": request.other_placeholder,
+                        "min_selected": request.min_selected,
+                        "max_selected": request.max_selected,
+                    },
+                ))
+                tool_result = _build_human_input_result(request, resp)
+                builder = get_provider_message_builder(context.provider)
+                result_messages = copy_messages(batch_state.result_messages)
+                result_messages.append(
+                    builder.build_tool_result_message(tool_call=tool_call, tool_result=tool_result)
+                )
+                emit_loop_event(
+                    context.loop,
+                    context.callback,
+                    "tool_result",
+                    context.run_id,
+                    iteration=context.iteration,
+                    tool_name=tool_call.name,
+                    call_id=tool_call.call_id,
+                    result=copy.deepcopy(tool_result),
+                )
+                return HarnessDelta(
+                    created_by=self.created_by,
+                    state_updates={
+                        "tool_batch_state": ToolBatchState(
+                            result_messages=result_messages,
+                            should_observe=False,
+                            awaiting_human_input=False,
+                            human_input_request=None,
+                            human_input_tool_call_id=None,
                             executed_call_ids=append_executed_call_id(batch_state, tool_call.call_id),
                         ),
                     },
@@ -342,6 +406,7 @@ class ToolExecutionHarness(BaseToolHarness):
                 if isinstance(context.event.get("tool_runtime_config"), dict)
                 else {},
             ),
+            on_input=on_input,
         )
         should_observe = batch_state.should_observe or outcome.should_observe
         builder = get_provider_message_builder(context.provider)
