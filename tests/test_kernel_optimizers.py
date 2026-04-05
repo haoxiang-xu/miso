@@ -397,3 +397,109 @@ def test_sliding_window_optimizer_drops_oldest_turns_exceeding_token_budget():
     assert "A" * 400 not in str(msgs), "old large turn should be dropped"
     assert "C" * 40 in str(msgs), "recent small turn should be kept"
     assert state.transcript == original
+
+
+def test_sliding_window_optimizer_preserves_system_messages_and_counts_toward_budget():
+    loop = KernelLoop(
+        harnesses=[
+            SlidingWindowOptimizer(SlidingWindowOptimizerConfig(max_window_tokens=100)),
+        ]
+    )
+    original = [
+        {"role": "system", "content": "S" * 500},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+    ]
+    state = loop.seed_state(original)
+
+    loop.dispatch_phase(state, phase="before_model", event={"toolkit": Toolkit()})
+
+    msgs = state.latest_messages()
+    assert msgs[0]["role"] == "system"
+    assert msgs[0]["content"] == "S" * 500
+    non_system = [m for m in msgs if m.get("role") != "system"]
+    assert len(non_system) == 0, "budget exhausted by system, all non-system dropped"
+
+
+def test_sliding_window_optimizer_keeps_all_when_under_budget():
+    loop = KernelLoop(
+        harnesses=[
+            SlidingWindowOptimizer(SlidingWindowOptimizerConfig(max_window_tokens=100000)),
+        ]
+    )
+    original = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+    ]
+    state = loop.seed_state(original)
+
+    loop.dispatch_phase(state, phase="before_model", event={"toolkit": Toolkit()})
+
+    assert [m.get("role") for m in state.latest_messages()] == ["system", "user", "assistant"]
+
+
+def test_sliding_window_optimizer_uses_percentage_of_max_context():
+    loop = KernelLoop(
+        harnesses=[
+            SlidingWindowOptimizer(SlidingWindowOptimizerConfig(max_window_pct=0.5)),
+        ]
+    )
+    original = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "A" * 800},
+        {"role": "assistant", "content": "B" * 800},
+        {"role": "user", "content": "short"},
+        {"role": "assistant", "content": "short"},
+    ]
+    state = loop.seed_state(original, max_context_window_tokens=600)
+
+    loop.dispatch_phase(state, phase="before_model", event={"toolkit": Toolkit()})
+
+    msgs = state.latest_messages()
+    assert "A" * 800 not in str(msgs), "old large turn dropped"
+    assert state.optimizer_state["sliding_window"]["effective_budget_tokens"] == 300
+
+
+def test_sliding_window_optimizer_takes_min_of_pct_and_absolute():
+    loop = KernelLoop(
+        harnesses=[
+            SlidingWindowOptimizer(SlidingWindowOptimizerConfig(max_window_pct=0.9, max_window_tokens=100)),
+        ]
+    )
+    original = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+    ]
+    state = loop.seed_state(original, max_context_window_tokens=10000)
+
+    loop.dispatch_phase(state, phase="before_model", event={"toolkit": Toolkit()})
+
+    assert state.optimizer_state["sliding_window"]["effective_budget_tokens"] == 100
+
+
+def test_sliding_window_optimizer_is_noop_when_no_budget_available():
+    loop = KernelLoop(
+        harnesses=[
+            SlidingWindowOptimizer(SlidingWindowOptimizerConfig(max_window_pct=0.7, max_window_tokens=None)),
+        ]
+    )
+    original = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+    ]
+    state = loop.seed_state(original, max_context_window_tokens=0)
+
+    loop.dispatch_phase(state, phase="before_model", event={"toolkit": Toolkit()})
+
+    assert [m.get("role") for m in state.latest_messages()] == ["system", "user", "assistant"]
+
+
+def test_sliding_window_optimizer_runs_at_order_25():
+    sw = SlidingWindowOptimizer()
+    last_n = LastNOptimizer()
+    assert sw.order == 25
+    assert last_n.order == 30
+    assert sw.order < last_n.order
