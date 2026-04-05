@@ -25,7 +25,7 @@
 | 区域 | 内容 |
 |------|------|
 | `tools/` | `Tool`、`Toolkit`、装饰器、模型、注册表、catalog |
-| `toolkits/builtin/` | WorkspaceToolkit、TerminalToolkit、ExternalAPIToolkit、AskUserToolkit |
+| `toolkits/builtin/` | CodeToolkit、ExternalAPIToolkit、AskUserToolkit |
 | `memory/` | MemoryManager、MemoryConfig、策略、存储、Qdrant 适配器 |
 | `schemas/` | ResponseFormat 及相关 schema |
 | 运行时资源 | `model_capabilities.json`、`model_default_payloads.json` |

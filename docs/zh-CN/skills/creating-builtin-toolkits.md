@@ -17,8 +17,7 @@
 - `BuiltinToolkit`
 - `Toolkit`
 - `ToolkitRegistry`
-- `WorkspaceToolkit`
-- `TerminalToolkit`
+- `CodeToolkit`
 - `ExternalAPIToolkit`
 - `AskUserToolkit`
 

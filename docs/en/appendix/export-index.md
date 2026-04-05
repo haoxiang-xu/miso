@@ -103,8 +103,6 @@ Exports declared by package `__init__` files and where to read their reference.
 | `CodeToolkit` | `src/unchain/toolkits/builtin/code/code.py:30` | `../api/toolkits.md#codetoolkit` |
 | `ExternalAPIToolkit` | `src/unchain/toolkits/builtin/external_api/external_api.py:13` | `../api/toolkits.md#externalapitoolkit` |
 | `MCPToolkit` | `src/unchain/toolkits/mcp.py:62` | `../api/toolkits.md#mcptoolkit` |
-| `TerminalToolkit` | `src/unchain/toolkits/builtin/terminal/terminal.py:13` | `../api/toolkits.md#terminaltoolkit` |
-| `WorkspaceToolkit` | `src/unchain/toolkits/builtin/workspace/workspace.py:29` | `../api/toolkits.md#workspacetoolkit` |
 
 ## `src/unchain/tools/__init__.py`
 

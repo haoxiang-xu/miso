@@ -17,8 +17,7 @@ This chapter is the implementation guide for adding or maintaining builtin toolk
 - `BuiltinToolkit`
 - `Toolkit`
 - `ToolkitRegistry`
-- `WorkspaceToolkit`
-- `TerminalToolkit`
+- `CodeToolkit`
 - `ExternalAPIToolkit`
 - `AskUserToolkit`
 

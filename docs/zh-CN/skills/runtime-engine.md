@@ -87,10 +87,10 @@
 
 ```python
 from unchain.runtime import Broth
-from unchain.toolkits import WorkspaceToolkit
+from unchain.toolkits import CodeToolkit
 
 runtime = Broth(provider="openai", model="gpt-5")
-runtime.add_toolkit(WorkspaceToolkit(workspace_root="."))
+runtime.add_toolkit(CodeToolkit(workspace_root="."))
 messages, bundle = runtime.run("Inspect the repo.")
 ```
 
@@ -316,7 +316,7 @@ def main():
 
 ```
 
-Pin 由 `WorkspaceToolkit` 工具 (`pin_file_context`, `unpin_file_context`) 管理。限制：
+Pin 由 `CodeToolkit` 工具 (`pin_file_context`, `unpin_file_context`) 管理。限制：
 
 | 限制                       | 值     |
 |---------------------------|--------|

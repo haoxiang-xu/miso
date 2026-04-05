@@ -224,6 +224,47 @@ class ToolConfirmationPolicy:
         return cls()
 
 
+@dataclass(frozen=True)
+class ToolPromptSpec:
+    purpose: str = ""
+    when_to_use: tuple[str, ...] = ()
+    when_not_to_use: tuple[str, ...] = ()
+    examples: tuple[str, ...] = ()
+    advanced_tips: tuple[str, ...] = ()
+
+    @staticmethod
+    def _normalize_lines(value: Any) -> tuple[str, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, str):
+            text = value.strip()
+            return (text,) if text else ()
+        if isinstance(value, (list, tuple)):
+            normalized: list[str] = []
+            for item in value:
+                text = str(item or "").strip()
+                if text:
+                    normalized.append(text)
+            return tuple(normalized)
+        raise TypeError("tool prompt spec list fields must be strings or string lists")
+
+    @classmethod
+    def from_raw(cls, raw: "ToolPromptSpec | dict[str, Any] | None") -> "ToolPromptSpec | None":
+        if raw is None:
+            return None
+        if isinstance(raw, cls):
+            return raw
+        if isinstance(raw, dict):
+            return cls(
+                purpose=str(raw.get("purpose") or "").strip(),
+                when_to_use=cls._normalize_lines(raw.get("when_to_use")),
+                when_not_to_use=cls._normalize_lines(raw.get("when_not_to_use")),
+                examples=cls._normalize_lines(raw.get("examples")),
+                advanced_tips=cls._normalize_lines(raw.get("advanced_tips")),
+            )
+        raise TypeError("tool prompt spec must be ToolPromptSpec, dict, or None")
+
+
 @dataclass
 class NormalizedToolHistoryRecord:
     tool_name: str

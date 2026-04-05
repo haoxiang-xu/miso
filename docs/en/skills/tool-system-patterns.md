@@ -274,8 +274,7 @@ Tools from multiple toolkits are merged into one for the runtime:
 ```python
 agent = Agent(
     tools=[
-        WorkspaceToolkit(workspace_root="."),
-        TerminalToolkit(workspace_root="."),
+        CodeToolkit(workspace_root="."),
         my_custom_tool,          # A single Tool or callable
     ],
 )
@@ -310,8 +309,8 @@ The `ToolkitCatalogRuntime` lets agents activate/deactivate toolkits at runtime:
 
 ```python
 agent.enable_toolkit_catalog(
-    managed_toolkit_ids=["workspace", "terminal", "external_api"],
-    always_active_toolkit_ids=["workspace"],
+    managed_toolkit_ids=["code", "external_api"],
+    always_active_toolkit_ids=["code"],
 )
 ```
 

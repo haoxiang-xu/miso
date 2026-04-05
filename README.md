@@ -36,15 +36,14 @@ pip install -e ".[dev]"
 ```python
 from unchain import Agent
 from unchain.tools import Toolkit, tool
-from unchain.toolkits import WorkspaceToolkit, TerminalToolkit
+from unchain.toolkits import CodeToolkit
 
 agent = Agent(
     name="coder",
     provider="openai",
     model="gpt-5",
     tools=[
-        WorkspaceToolkit(workspace_root="."),
-        TerminalToolkit(workspace_root=".", terminal_strict_mode=True),
+        CodeToolkit(workspace_root="."),
     ],
 )
 
@@ -152,8 +151,7 @@ GEMINI_API_KEY=...
 
 | Toolkit | Description |
 |---------|-------------|
-| **WorkspaceToolkit** | File read/write, directory listing, text search, line editing, AST parsing, file pinning |
-| **TerminalToolkit** | Restricted shell execution with session management |
+| **CodeToolkit** | File read/write, directory listing, text search, line editing, AST parsing, shell execution |
 | **ExternalAPIToolkit** | HTTP GET/POST, git operations (read-only and destructive) |
 | **AskUserToolkit** | Structured user-question suspension flow (single/multiple choice) |
 | **MCPToolkit** | Bridge MCP (Model Context Protocol) servers as native toolkits |
@@ -193,7 +191,7 @@ agent = Agent(
     provider="openai",
     model="gpt-5",
     modules=(
-        ToolsModule(tools=(workspace_toolkit, terminal_toolkit)),
+        ToolsModule(tools=(code_toolkit,)),
         MemoryModule(memory=memory_manager),
         PoliciesModule(max_iterations=32),
     ),
@@ -237,7 +235,7 @@ Pluggable strategies for managing the context window:
 | `LastNOptimizer` | Keep last N messages |
 | `LlmSummaryOptimizer` | Summarize older messages with LLM |
 | `ToolHistoryCompactionOptimizer` | Compress verbose tool results |
-| `WorkspacePinsOptimizer` | Preserve pinned file context |
+| `PinnedContextOptimizer` | Preserve pinned file context |
 
 ## Package Layout
 
@@ -288,7 +286,7 @@ from unchain.providers import AnthropicModelIO, OpenAIModelIO, OllamaModelIO
 
 # Toolkits
 from unchain.toolkits import (
-    WorkspaceToolkit, TerminalToolkit, ExternalAPIToolkit,
+    CodeToolkit, ExternalAPIToolkit,
     AskUserToolkit, MCPToolkit,
 )
 

@@ -3,7 +3,7 @@ import json
 import pytest
 
 from unchain.memory import MemoryConfig, MemoryManager
-from unchain.toolkits import WorkspaceToolkit
+from unchain.toolkits import CodeToolkit
 from unchain.tools import tool
 
 
@@ -207,41 +207,24 @@ def test_deferred_compaction_keeps_latest_completed_turn_raw():
     assert json.loads(latest_call["arguments"]) == latest_arguments
 
 
-def test_read_files_history_result_is_compacted_with_preview():
-    tk = WorkspaceToolkit(workspace_root=".")
+def test_read_history_result_is_compacted_with_preview():
+    tk = CodeToolkit(workspace_root=".")
     manager = MemoryManager()
-    session_id = "s_read_files_tool_compact"
+    session_id = "s_read_tool_compact"
     large_content = "header\n" + ("line\n" * 800) + "footer\n"
     history = _build_openai_tool_turn(
-        tool_name="read_files",
-        call_id="call_read_files",
+        tool_name="read",
+        call_id="call_read",
         arguments={
-            "paths": ["notes.txt", "other.txt"],
-            "max_chars_per_file": 50000,
-            "max_total_chars": 80000,
-            "noise": "drop me",
+            "path": "/tmp/notes.txt",
+            "offset": 0,
+            "limit": 2000,
         },
         result={
-            "files": [
-                {
-                    "requested_path": "notes.txt",
-                    "path": "/tmp/notes.txt",
-                    "content": large_content,
-                    "total_lines": 802,
-                    "truncated": False,
-                },
-                {
-                    "requested_path": "other.txt",
-                    "path": "/tmp/other.txt",
-                    "content": large_content,
-                    "total_lines": 802,
-                    "truncated": False,
-                },
-            ],
-            "requested_paths": 2,
-            "returned_files": 2,
+            "path": "/tmp/notes.txt",
+            "content": large_content,
+            "total_lines": 802,
             "truncated": False,
-            "skipped_paths": [],
         },
     ) + [{"role": "user", "content": "u2"}, {"role": "assistant", "content": "a2"}]
     manager.commit_messages(session_id, history)
@@ -255,58 +238,37 @@ def test_read_files_history_result_is_compacted_with_preview():
         tool_resolver=tk.get,
     )
 
-    function_call = next(msg for msg in prepared if msg.get("type") == "function_call" and msg.get("call_id") == "call_read_files")
-    function_output = next(msg for msg in prepared if msg.get("type") == "function_call_output" and msg.get("call_id") == "call_read_files")
+    function_call = next(msg for msg in prepared if msg.get("type") == "function_call" and msg.get("call_id") == "call_read")
+    function_output = next(msg for msg in prepared if msg.get("type") == "function_call_output" and msg.get("call_id") == "call_read")
     compacted_args = json.loads(function_call["arguments"])
     compacted_result = json.loads(function_output["output"])
 
     assert compacted_args == {
-        "paths": ["notes.txt", "other.txt"],
-        "max_chars_per_file": 50000,
-        "max_total_chars": 80000,
+        "path": "/tmp/notes.txt",
+        "offset": 0,
+        "limit": 2000,
         "compacted": True,
     }
     assert compacted_result["compacted"] is True
-    assert compacted_result["requested_paths"] == 2
-    assert compacted_result["returned_files"] == 2
-    assert compacted_result["files"][0]["content"].startswith("header")
-    assert "footer" in compacted_result["files"][0]["content"]
+    assert compacted_result["content"].startswith("header")
+    assert "footer" in compacted_result["content"]
 
 
-def test_list_directories_history_result_is_compacted_with_preview():
-    tk = WorkspaceToolkit(workspace_root=".")
+def test_glob_history_result_is_compacted_with_preview():
+    tk = CodeToolkit(workspace_root=".")
     manager = MemoryManager()
-    session_id = "s_list_directories_tool_compact"
-    entries = [f"src/file_{index}.py" for index in range(80)]
+    session_id = "s_glob_tool_compact"
+    matches = [f"src/file_{index}.py" for index in range(80)]
     history = _build_openai_tool_turn(
-        tool_name="list_directories",
-        call_id="call_list_directories",
+        tool_name="glob",
+        call_id="call_glob",
         arguments={
-            "paths": ["src", "tests"],
-            "recursive": True,
-            "max_entries_per_directory": 200,
-            "max_total_entries": 400,
-            "noise": "drop me",
+            "pattern": "src/**/*.py",
         },
         result={
-            "directories": [
-                {
-                    "requested_path": "src",
-                    "path": "/tmp/src",
-                    "entries": entries,
-                    "truncated": False,
-                },
-                {
-                    "requested_path": "tests",
-                    "path": "/tmp/tests",
-                    "entries": entries,
-                    "truncated": False,
-                },
-            ],
-            "requested_paths": 2,
-            "returned_directories": 2,
-            "truncated": False,
-            "skipped_paths": [],
+            "pattern": "src/**/*.py",
+            "matches": matches,
+            "total": 80,
         },
     ) + [{"role": "user", "content": "u2"}, {"role": "assistant", "content": "a2"}]
     manager.commit_messages(session_id, history)
@@ -321,38 +283,30 @@ def test_list_directories_history_result_is_compacted_with_preview():
     )
 
     function_call = next(
-        msg for msg in prepared if msg.get("type") == "function_call" and msg.get("call_id") == "call_list_directories"
+        msg for msg in prepared if msg.get("type") == "function_call" and msg.get("call_id") == "call_glob"
     )
     function_output = next(
-        msg for msg in prepared if msg.get("type") == "function_call_output" and msg.get("call_id") == "call_list_directories"
+        msg for msg in prepared if msg.get("type") == "function_call_output" and msg.get("call_id") == "call_glob"
     )
     compacted_args = json.loads(function_call["arguments"])
     compacted_result = json.loads(function_output["output"])
 
-    assert compacted_args == {
-        "paths": ["src", "tests"],
-        "recursive": True,
-        "max_entries_per_directory": 200,
-        "max_total_entries": 400,
-        "compacted": True,
-    }
+    assert compacted_args == {"pattern": "src/**/*.py"}
     assert compacted_result["compacted"] is True
-    assert compacted_result["requested_paths"] == 2
-    assert compacted_result["returned_directories"] == 2
-    assert compacted_result["directories"][0]["entry_count"] == 80
-    assert compacted_result["directories"][0]["entries"][0].startswith("src/file_")
+    assert compacted_result["matches"][0].startswith("src/file_")
+    assert len(compacted_result["matches"]) == 20
 
 
-def test_write_file_history_arguments_are_compacted_by_tool_optimizer():
-    tk = WorkspaceToolkit(workspace_root=".")
+def test_write_history_arguments_are_compacted_by_tool_optimizer():
+    tk = CodeToolkit(workspace_root=".")
     manager = MemoryManager()
-    session_id = "s_write_file_tool_compact"
+    session_id = "s_write_tool_compact"
     large_content = "A" * 2400
     history = _build_openai_tool_turn(
-        tool_name="write_file",
-        call_id="call_write_file",
-        arguments={"path": "notes.txt", "append": True, "content": large_content},
-        result={"path": "/tmp/notes.txt", "bytes_written": len(large_content.encode("utf-8")), "append": True},
+        tool_name="write",
+        call_id="call_write",
+        arguments={"path": "/tmp/notes.txt", "content": large_content},
+        result={"path": "/tmp/notes.txt", "operation": "create", "bytes_written": len(large_content.encode("utf-8"))},
     ) + [{"role": "user", "content": "u2"}, {"role": "assistant", "content": "a2"}]
     manager.commit_messages(session_id, history)
 
@@ -365,11 +319,9 @@ def test_write_file_history_arguments_are_compacted_by_tool_optimizer():
         tool_resolver=tk.get,
     )
 
-    function_call = next(msg for msg in prepared if msg.get("type") == "function_call" and msg.get("call_id") == "call_write_file")
+    function_call = next(msg for msg in prepared if msg.get("type") == "function_call" and msg.get("call_id") == "call_write")
     compacted_args = json.loads(function_call["arguments"])
 
-    assert compacted_args["path"] == "notes.txt"
-    assert compacted_args["append"] is True
+    assert compacted_args["path"] == "/tmp/notes.txt"
     assert compacted_args["compacted"] is True
-    assert compacted_args["content"]["compacted"] is True
     assert compacted_args["content"]["chars"] == len(large_content)

@@ -39,10 +39,6 @@ Every production class under `src/unchain` grouped by reference page.
 - `AskUserToolkit` -> `src/unchain/toolkits/builtin/ask_user/ask_user.py:7` (subpackage, class)
 - `CodeToolkit` -> `src/unchain/toolkits/builtin/code/code.py:30` (subpackage, class)
 - `ExternalAPIToolkit` -> `src/unchain/toolkits/builtin/external_api/external_api.py:13` (subpackage, class)
-- `TerminalToolkit` -> `src/unchain/toolkits/builtin/terminal/terminal.py:13` (subpackage, class)
-- `_TerminalSession` -> `src/unchain/toolkits/builtin/terminal_runtime.py:15` (internal, dataclass)
-- `_TerminalRuntime` -> `src/unchain/toolkits/builtin/terminal_runtime.py:22` (internal, class)
-- `WorkspaceToolkit` -> `src/unchain/toolkits/builtin/workspace/workspace.py:29` (subpackage, class)
 - `MCPToolkit` -> `src/unchain/toolkits/mcp.py:62` (subpackage, class)
 
 ## [Memory API Reference](../api/memory.md)

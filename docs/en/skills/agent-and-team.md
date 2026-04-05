@@ -87,7 +87,7 @@ The original repository skill note is preserved below for continuity and extra e
 
 ```python
 from unchain import Agent
-from unchain.toolkits import WorkspaceToolkit, TerminalToolkit
+from unchain.toolkits import CodeToolkit
 from unchain.memory import MemoryConfig
 
 agent = Agent(
@@ -97,8 +97,7 @@ agent = Agent(
     model="gpt-5",                           # Model identifier
     api_key=None,                            # Uses env var if None
     tools=[                                  # Tools, Toolkits, or callables
-        WorkspaceToolkit(workspace_root="."),
-        TerminalToolkit(workspace_root=".", terminal_strict_mode=True),
+        CodeToolkit(workspace_root="."),
     ],
     short_term_memory=MemoryConfig(last_n_turns=10),
     long_term_memory=None,                   # LongTermMemoryConfig or dict
@@ -113,7 +112,7 @@ The `tools` list accepts mixed types:
 
 ```python
 tools=[
-    WorkspaceToolkit(workspace_root="."),  # Toolkit instance → all its tools
+    CodeToolkit(workspace_root="."),       # Toolkit instance → all its tools
     my_tool,                               # Tool object → single tool
     my_function,                           # Callable → auto-wrapped in Tool
 ]
@@ -167,8 +166,8 @@ Enable dynamic toolkit activation/deactivation at runtime:
 
 ```python
 agent.enable_toolkit_catalog(
-    managed_toolkit_ids=["workspace", "terminal", "external_api"],
-    always_active_toolkit_ids=["workspace"],  # Cannot be deactivated
+    managed_toolkit_ids=["code", "external_api"],
+    always_active_toolkit_ids=["code"],  # Cannot be deactivated
 )
 ```
 

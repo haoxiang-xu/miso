@@ -87,18 +87,17 @@
 
 ```python
 from unchain import Agent
-from unchain.toolkits import WorkspaceToolkit, TerminalToolkit
+from unchain.toolkits import CodeToolkit
 from unchain.memory import MemoryConfig
 
 agent = Agent(
-    name="coder",                            # Agent 身份
+    name="coder",                            # Agent ���份
     instructions="You are a code assistant.", # 系统提示
     provider="openai",                       # LLM provider
     model="gpt-5",                           # 模型标识
     api_key=None,                            # 为 None 时使用环境变量
     tools=[                                  # Tool、Toolkit 或 callable
-        WorkspaceToolkit(workspace_root="."),
-        TerminalToolkit(workspace_root=".", terminal_strict_mode=True),
+        CodeToolkit(workspace_root="."),
     ],
     short_term_memory=MemoryConfig(last_n_turns=10),
     long_term_memory=None,                   # LongTermMemoryConfig 或 dict
@@ -113,8 +112,8 @@ agent = Agent(
 
 ```python
 tools=[
-    WorkspaceToolkit(workspace_root="."),  # Toolkit 实例 → 其所有工具
-    my_tool,                               # Tool 对象 → 单个工具
+    CodeToolkit(workspace_root="."),       # Toolkit 实例 → 其所有工具
+    my_tool,                               # Tool 对象 → 单个��具
     my_function,                           # Callable → 自动包裹为 Tool
 ]
 ```
@@ -167,8 +166,8 @@ messages, bundle = agent.resume_human_input(
 
 ```python
 agent.enable_toolkit_catalog(
-    managed_toolkit_ids=["workspace", "terminal", "external_api"],
-    always_active_toolkit_ids=["workspace"],  # 不可被停用
+    managed_toolkit_ids=["code", "external_api"],
+    always_active_toolkit_ids=["code"],  # 不可被停用
 )
 ```
 

@@ -9,7 +9,7 @@ import re
 import time
 
 from unchain.agent import Agent
-from unchain.toolkits import AskUserToolkit, ExternalAPIToolkit, TerminalToolkit, WorkspaceToolkit
+from unchain.toolkits import AskUserToolkit, CodeToolkit, ExternalAPIToolkit
 from unchain.runtime.payloads import load_model_capabilities
 
 from .cases import build_eval_case, get_eval_case, list_eval_cases
@@ -94,17 +94,8 @@ def _build_candidate_tools(case: EvalCase, workspace_root: Path) -> list[Any]:
     toolkit_options = dict(case.toolkit_options or {})
 
     for toolkit_name in allowed_toolkits:
-        options = dict(toolkit_options.get(toolkit_name) or {})
-        if toolkit_name == "workspace":
-            toolkits.append(WorkspaceToolkit(workspace_root=workspace_root))
-            continue
-        if toolkit_name == "terminal":
-            toolkits.append(
-                TerminalToolkit(
-                    workspace_root=workspace_root,
-                    terminal_strict_mode=bool(options.get("terminal_strict_mode", True)),
-                )
-            )
+        if toolkit_name in ("workspace", "terminal", "code"):
+            toolkits.append(CodeToolkit(workspace_root=workspace_root))
             continue
         if toolkit_name == "external_api":
             toolkits.append(ExternalAPIToolkit(workspace_root=workspace_root))

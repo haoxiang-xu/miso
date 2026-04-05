@@ -211,7 +211,6 @@ def test_attach_memory_registers_default_stack_and_restores_history_across_runs(
         "last_n",
         "memory_short_term_recall",
         "memory_long_term_recall",
-        "workspace_pins",
         "memory_bootstrap",
         "memory_commit",
     }

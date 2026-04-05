@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 
 import pytest
 
@@ -11,13 +10,8 @@ from unchain.optimizers import (
     LlmSummaryOptimizerConfig,
     ToolHistoryCompactionOptimizer,
     ToolHistoryCompactionOptimizerConfig,
-    WorkspacePinsOptimizer,
-    WorkspacePinsOptimizerConfig,
 )
-from unchain.kernel.types import ToolCall as KernelToolCall
-from unchain.memory import InMemorySessionStore
 from unchain.tools import Toolkit
-from unchain.workspace import build_pin_record, load_workspace_pins, save_workspace_pins
 
 
 def _conversation_with_tool_turn() -> list[dict]:
@@ -292,121 +286,7 @@ def test_tool_history_compaction_optimizer_preserves_latest_completed_turn_raw()
     assert json.loads(latest_call["arguments"]) == {"path": "latest.txt", "content": "B" * 2000}
 
 
-def test_workspace_pins_optimizer_live_resolves_updated_content_and_shifted_range(tmp_path):
-    store = InMemorySessionStore()
-    session_id = "pin-live-reload"
-    file_path = tmp_path / "demo.py"
-    file_path.write_text(
-        "before\n"
-        "def run_task():\n"
-        "    value = 1\n"
-        "    return value\n"
-        "after\n",
-        encoding="utf-8",
-    )
-
-    lines = file_path.read_text(encoding="utf-8").splitlines(keepends=True)
-    pin = build_pin_record(
-        path=file_path.resolve(),
-        lines=lines,
-        start=2,
-        end=4,
-        start_with="def run_task():",
-        reason="keep function in view",
-    )
-    save_workspace_pins(store, session_id, {}, [pin])
-
-    file_path.write_text(
-        "intro\n"
-        "before\n"
-        "def run_task():\n"
-        "    value = 2\n"
-        "    return value\n"
-        "after\n",
-        encoding="utf-8",
-    )
-
-    loop = KernelLoop(
-        harnesses=[
-            WorkspacePinsOptimizer(WorkspacePinsOptimizerConfig(store=store)),
-        ]
-    )
-    state = loop.seed_state([{"role": "user", "content": "check pins"}], session_id=session_id)
-
-    loop.dispatch_phase(state, phase="before_model", event={"toolkit": Toolkit()})
-
-    latest_messages = state.latest_messages()
-    assert len(latest_messages) == 3
-    assert "status=resolved" in latest_messages[0]["content"]
-    assert "current=lines=3-5" in latest_messages[0]["content"]
-    assert "value = 2" in latest_messages[1]["content"]
-    assert "value = 1" not in latest_messages[1]["content"]
-
-    _, saved_pins = load_workspace_pins(store, session_id)
-    assert saved_pins[0]["last_resolved"] == {"start": 3, "end": 5}
-
-
-def test_workspace_pins_optimizer_marks_unresolved_without_stale_reinjection(tmp_path):
-    store = InMemorySessionStore()
-    session_id = "pin-unresolved"
-    file_path = tmp_path / "demo.py"
-    file_path.write_text(
-        "before\n"
-        "def run_task():\n"
-        "    value = 1\n"
-        "    return value\n"
-        "after\n",
-        encoding="utf-8",
-    )
-
-    lines = file_path.read_text(encoding="utf-8").splitlines(keepends=True)
-    pin = build_pin_record(
-        path=file_path.resolve(),
-        lines=lines,
-        start=2,
-        end=4,
-        start_with="def run_task():",
-    )
-    save_workspace_pins(store, session_id, {}, [pin])
-
-    file_path.write_text(
-        "before\n"
-        "def other_task():\n"
-        "    pass\n"
-        "after\n",
-        encoding="utf-8",
-    )
-
-    loop = KernelLoop(
-        harnesses=[
-            WorkspacePinsOptimizer(WorkspacePinsOptimizerConfig(store=store)),
-        ]
-    )
-    state = loop.seed_state([{"role": "user", "content": "check pins"}], session_id=session_id)
-
-    loop.dispatch_phase(state, phase="before_model", event={"toolkit": Toolkit()})
-
-    latest_messages = state.latest_messages()
-    assert "status=unresolved" in latest_messages[0]["content"]
-    assert "re-pin or unpin" in latest_messages[0]["content"]
-    assert latest_messages[1]["content"].endswith("No live pinned content injected for this request.")
-    assert "return value" not in latest_messages[1]["content"]
-
-
-def test_context_optimizer_pipeline_order_is_compaction_then_summary_then_last_n_then_pins(tmp_path):
-    store = InMemorySessionStore()
-    session_id = "pipeline-order"
-    pin_path = tmp_path / "notes.py"
-    pin_path.write_text("def pinned():\n    return 'ok'\n", encoding="utf-8")
-    pin = build_pin_record(
-        path=pin_path.resolve(),
-        lines=pin_path.read_text(encoding="utf-8").splitlines(keepends=True),
-        start=1,
-        end=2,
-        start_with="def pinned():",
-    )
-    save_workspace_pins(store, session_id, {}, [pin])
-
+def test_context_optimizer_pipeline_order_is_compaction_then_summary_then_last_n():
     history = [
         {"role": "system", "content": "You are helpful."},
         *_build_openai_tool_turn(tool_name="demo", call_id="call_old", arguments={"path": "old.txt", "content": "A" * 2200}, result={"content": "B" * 2200}),
@@ -426,13 +306,12 @@ def test_context_optimizer_pipeline_order_is_compaction_then_summary_then_last_n
         )
     )
     loop = KernelLoop(
-            model_io=model_io,
-            harnesses=[
-                WorkspacePinsOptimizer(WorkspacePinsOptimizerConfig(store=store)),
-                LastNOptimizer(LastNOptimizerConfig(last_n_turns=0)),
-                LlmSummaryOptimizer(
-                    LlmSummaryOptimizerConfig(
-                        summary_trigger_pct=0.2,
+        model_io=model_io,
+        harnesses=[
+            LastNOptimizer(LastNOptimizerConfig(last_n_turns=0)),
+            LlmSummaryOptimizer(
+                LlmSummaryOptimizerConfig(
+                    summary_trigger_pct=0.2,
                     summary_target_pct=0.1,
                     max_summary_chars=200,
                     summary_generator=lambda prev, msgs, max_chars, model: "summary text",
@@ -445,7 +324,7 @@ def test_context_optimizer_pipeline_order_is_compaction_then_summary_then_last_n
         history,
         provider="openai",
         model="gpt-5",
-        session_id=session_id,
+        session_id="pipeline-order",
         max_context_window_tokens=1200,
     )
 
@@ -461,26 +340,12 @@ def test_context_optimizer_pipeline_order_is_compaction_then_summary_then_last_n
         "optimizer.tool_history_compaction",
         "optimizer.llm_summary",
         "optimizer.last_n",
-        "optimizer.workspace_pins",
     ]
     request_messages = model_io.requests[0].messages
     assert any(message.get("role") == "system" and "[CONTEXT SUMMARY]" in str(message.get("content")) for message in request_messages)
-    assert any(message.get("role") == "system" and "[PINNED SUMMARY]" in str(message.get("content")) for message in request_messages)
 
 
-def test_context_optimizers_only_mutate_versions_not_transcript(tmp_path):
-    store = InMemorySessionStore()
-    session_id = "optimizer-transcript"
-    file_path = tmp_path / "demo.py"
-    file_path.write_text("def demo():\n    return 1\n", encoding="utf-8")
-    pin = build_pin_record(
-        path=Path(file_path).resolve(),
-        lines=file_path.read_text(encoding="utf-8").splitlines(keepends=True),
-        start=1,
-        end=2,
-        start_with="def demo():",
-    )
-    save_workspace_pins(store, session_id, {}, [pin])
+def test_context_optimizers_only_mutate_versions_not_transcript():
     original = [
         {"role": "system", "content": "You are helpful."},
         {"role": "user", "content": "A" * 1200},
@@ -497,13 +362,11 @@ def test_context_optimizers_only_mutate_versions_not_transcript(tmp_path):
                     summary_generator=lambda prev, msgs, max_chars, model: "summary text",
                 )
             ),
-            WorkspacePinsOptimizer(WorkspacePinsOptimizerConfig(store=store)),
         ]
     )
-    state = loop.seed_state(original, session_id=session_id, model="gpt-5", max_context_window_tokens=1000)
+    state = loop.seed_state(original, session_id="optimizer-transcript", model="gpt-5", max_context_window_tokens=1000)
 
     loop.dispatch_phase(state, phase="before_model", event={"toolkit": Toolkit()})
 
     assert state.transcript == original
     assert state.latest_messages() != original
-    assert not any("[PINNED SUMMARY]" in str(message.get("content")) for message in state.transcript)

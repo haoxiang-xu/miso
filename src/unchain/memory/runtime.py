@@ -314,8 +314,6 @@ class KernelMemoryRuntime:
             LlmSummaryOptimizerConfig,
             ToolHistoryCompactionOptimizer,
             ToolHistoryCompactionOptimizerConfig,
-            WorkspacePinsOptimizer,
-            WorkspacePinsOptimizerConfig,
         )
         from .bootstrap import MemoryBootstrapHarness
         from .commit import MemoryCommitHarness
@@ -347,9 +345,6 @@ class KernelMemoryRuntime:
             ),
             ShortTermRecallMemoryHarness(runtime=self),
             LongTermRecallMemoryHarness(runtime=self),
-            WorkspacePinsOptimizer(
-                WorkspacePinsOptimizerConfig(store=self.store)
-            ),
             MemoryBootstrapHarness(runtime=self),
             MemoryCommitHarness(runtime=self),
         ]

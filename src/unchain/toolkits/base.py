@@ -5,10 +5,9 @@ from pathlib import Path
 
 from ..tools.models import ToolExecutionContext
 from ..tools.toolkit import Toolkit
-from ..workspace.pins import WorkspacePinExecutionContext
 
 
-BuiltinExecutionContext = ToolExecutionContext | WorkspacePinExecutionContext
+BuiltinExecutionContext = ToolExecutionContext
 
 
 class BuiltinToolkit(Toolkit):

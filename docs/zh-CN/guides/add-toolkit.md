@@ -11,7 +11,7 @@
 
 | 文件 | 职责 |
 |------|------|
-| `src/unchain/toolkits/builtin/workspace/` | 复杂 toolkit 示例（文件操作） |
+| `src/unchain/toolkits/builtin/code/` | 复杂 toolkit 示例（代码操作） |
 | `src/unchain/toolkits/builtin/ask_user/` | 简单 toolkit 示例（单个工具） |
 | `src/unchain/tools/tool.py` | `Tool` 类 |
 | `src/unchain/tools/toolkit.py` | `Toolkit` 基类 |
@@ -20,7 +20,7 @@
 ## 步骤
 
 1. **学习现有 toolkit** 的实现模式：
-   - **复杂型：** `src/unchain/toolkits/builtin/workspace/` -- 包含文件操作的多工具 toolkit
+   - **复杂型：** `src/unchain/toolkits/builtin/code/` -- 包含代码操作的多工具 toolkit
    - **简单型：** `src/unchain/toolkits/builtin/ask_user/` -- 最小化的单工具 toolkit
 
 2. **创建 toolkit 目录：**

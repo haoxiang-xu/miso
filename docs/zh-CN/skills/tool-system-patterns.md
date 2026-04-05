@@ -274,9 +274,8 @@ result = tk.execute("tool_name", {"arg1": "value"})
 ```python
 agent = Agent(
     tools=[
-        WorkspaceToolkit(workspace_root="."),
-        TerminalToolkit(workspace_root="."),
-        my_custom_tool,          # 单个 Tool 或 callable
+        CodeToolkit(workspace_root="."),
+        my_custom_tool,          # 单��� Tool 或 callable
     ],
 )
 # Agent 将所有工具合并为一个 Toolkit 传给 Broth
@@ -310,8 +309,8 @@ entry point **名称必须匹配** plugin 的 `toolkit.toml` 中的 `toolkit.id`
 
 ```python
 agent.enable_toolkit_catalog(
-    managed_toolkit_ids=["workspace", "terminal", "external_api"],
-    always_active_toolkit_ids=["workspace"],
+    managed_toolkit_ids=["code", "external_api"],
+    always_active_toolkit_ids=["code"],
 )
 ```
 

@@ -11,7 +11,7 @@ This guide walks you through creating a new built-in toolkit for the unchain fra
 
 | File | Role |
 |------|------|
-| `src/unchain/toolkits/builtin/workspace/` | Complex toolkit example (file operations) |
+| `src/unchain/toolkits/builtin/code/` | Complex toolkit example (code operations) |
 | `src/unchain/toolkits/builtin/ask_user/` | Simple toolkit example (single tool) |
 | `src/unchain/tools/tool.py` | `Tool` class |
 | `src/unchain/tools/toolkit.py` | `Toolkit` base class |
@@ -20,7 +20,7 @@ This guide walks you through creating a new built-in toolkit for the unchain fra
 ## Steps
 
 1. **Study existing toolkits** for reference patterns:
-   - **Complex:** `src/unchain/toolkits/builtin/workspace/` -- multi-tool toolkit with file operations
+   - **Complex:** `src/unchain/toolkits/builtin/code/` -- multi-tool toolkit with code operations
    - **Simple:** `src/unchain/toolkits/builtin/ask_user/` -- minimal single-tool toolkit
 
 2. **Create the toolkit directory:**

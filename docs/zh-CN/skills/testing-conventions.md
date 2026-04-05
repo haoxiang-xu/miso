@@ -214,7 +214,7 @@ def test_workspace_tool(tmp_path):
     (tmp_path / "hello.txt").write_text("world")
     (tmp_path / "subdir").mkdir()
 
-    tk = WorkspaceToolkit(workspace_root=str(tmp_path))
+    tk = CodeToolkit(workspace_root=str(tmp_path))
     result = tk.execute("read_files", {"paths": ["hello.txt"]})
     assert result["files"][0]["content"] == "world"
 ```

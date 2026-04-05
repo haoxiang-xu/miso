@@ -7,7 +7,6 @@ from .tool_history_compaction import (
     ToolHistoryCompactionOptimizer,
     ToolHistoryCompactionOptimizerConfig,
 )
-from .workspace_pins import WorkspacePinsOptimizer, WorkspacePinsOptimizerConfig
 
 __all__ = [
     "BaseContextOptimizer",
@@ -23,6 +22,4 @@ __all__ = [
     "ToolPairSafetyOptimizer",
     "ToolHistoryCompactionOptimizer",
     "ToolHistoryCompactionOptimizerConfig",
-    "WorkspacePinsOptimizer",
-    "WorkspacePinsOptimizerConfig",
 ]
