@@ -60,6 +60,11 @@
 - `QdrantLongTermVectorAdapter` -> `src/unchain/memory/qdrant.py:311` (internal, class)
 - `JsonFileSessionStore` -> `src/unchain/memory/qdrant.py:422` (internal, class)
 
+## Optimizers
+
+- `SlidingWindowOptimizer` -> `src/unchain/optimizers/sliding_window.py` (subpackage, class) — 基于 token 的上下文窗口截断
+- `SlidingWindowOptimizerConfig` -> `src/unchain/optimizers/sliding_window.py` (subpackage, dataclass) — SlidingWindowOptimizer 配置
+
 ## [Input、Workspace 与 Schema 参考](../api/input-workspace-schemas.md)
 
 - `HumanInputOption` -> `src/unchain/input/human_input.py:61` (subpackage, dataclass)

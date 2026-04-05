@@ -94,6 +94,13 @@ Exports declared by package `__init__` files and where to read their reference.
 | `ModelDefaultPayload` | `src/unchain/schemas/models.py:57` | non-class export |
 | `ResponseFormat` | `src/unchain/schemas/response.py:7` | `../api/input-workspace-schemas.md#responseformat` |
 
+## `src/unchain/optimizers/__init__.py`
+
+| Name | Source | Reference |
+| --- | --- | --- |
+| `SlidingWindowOptimizer` | `src/unchain/optimizers/sliding_window.py` | non-class export |
+| `SlidingWindowOptimizerConfig` | `src/unchain/optimizers/sliding_window.py` | non-class export |
+
 ## `src/unchain/toolkits/__init__.py`
 
 | Name | Source | Reference |

@@ -94,6 +94,13 @@
 | `ModelDefaultPayload` | `src/unchain/schemas/models.py:57` | 非 class 导出 |
 | `ResponseFormat` | `src/unchain/schemas/response.py:7` | `../api/input-workspace-schemas.md#responseformat` |
 
+## `src/unchain/optimizers/__init__.py`
+
+| 名称 | 源码 | 参考 |
+| --- | --- | --- |
+| `SlidingWindowOptimizer` | `src/unchain/optimizers/sliding_window.py` | 非 class 导出 |
+| `SlidingWindowOptimizerConfig` | `src/unchain/optimizers/sliding_window.py` | 非 class 导出 |
+
 ## `src/unchain/toolkits/__init__.py`
 
 | 名称 | 源码 | 参考 |

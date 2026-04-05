@@ -236,6 +236,7 @@ Pluggable strategies for managing the context window:
 | `LlmSummaryOptimizer` | Summarize older messages with LLM |
 | `ToolHistoryCompactionOptimizer` | Compress verbose tool results |
 | `PinnedContextOptimizer` | Preserve pinned file context |
+| `SlidingWindowOptimizer` | Token-aware context window truncation |
 
 ## Package Layout
 
