@@ -24,7 +24,7 @@ def build_eval_case(
         task_prompt=str(task_prompt),
         workspace_mode=str(workspace_mode).strip(),
         workspace_source=str(workspace_source).strip(),
-        allowed_toolkits=tuple(allowed_toolkits or ("workspace", "terminal")),
+        allowed_toolkits=tuple(allowed_toolkits or ("core",)),
         toolkit_options={
             str(key): dict(value or {})
             for key, value in dict(toolkit_options or {}).items()

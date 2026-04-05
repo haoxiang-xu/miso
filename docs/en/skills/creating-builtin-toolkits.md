@@ -17,9 +17,9 @@ This chapter is the implementation guide for adding or maintaining builtin toolk
 - `BuiltinToolkit`
 - `Toolkit`
 - `ToolkitRegistry`
-- `CodeToolkit`
+- `CoreToolkit`
 - `ExternalAPIToolkit`
-- `AskUserToolkit`
+- `ExternalAPIToolkit`
 
 ## Execution and state flow
 
@@ -157,7 +157,7 @@ class MyToolkit(Toolkit):
         # Register tools here
 ```
 
-Use this when your toolkit has no filesystem dependency (e.g., `AskUserToolkit`).
+Use this when your toolkit has no filesystem dependency.
 
 ## Step 3: Register Tools
 

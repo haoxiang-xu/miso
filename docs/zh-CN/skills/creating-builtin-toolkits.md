@@ -17,9 +17,9 @@
 - `BuiltinToolkit`
 - `Toolkit`
 - `ToolkitRegistry`
-- `CodeToolkit`
+- `CoreToolkit`
 - `ExternalAPIToolkit`
-- `AskUserToolkit`
+- `ExternalAPIToolkit`
 
 ## 执行流与状态流
 
@@ -157,7 +157,7 @@ class MyToolkit(Toolkit):
         # 在此注册工具
 ```
 
-当 toolkit 没有文件系统依赖时使用 (如 `AskUserToolkit`)。
+当 toolkit 没有文件系统依赖时使用。
 
 ## 步骤 3: 注册工具
 

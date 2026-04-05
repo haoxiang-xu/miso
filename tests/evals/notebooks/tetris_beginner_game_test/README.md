@@ -6,10 +6,7 @@ a Tetris game for a beginner user.
 Rules for this test:
 
 - the workspace root is this folder
-- the candidate model may use:
-  - `ask_user_question`
-  - workspace tools
-  - terminal tools
+- the candidate model may use the `core` toolkit, including `ask_user_question` and the workspace/shell tools
 - if the model asks a question, the notebook saves a suspended session state
 - you answer in the notebook, then resume the same session
 

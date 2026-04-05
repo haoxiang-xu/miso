@@ -87,7 +87,7 @@ The original repository skill note is preserved below for continuity and extra e
 
 ```python
 from unchain import Agent
-from unchain.toolkits import CodeToolkit
+from unchain.toolkits import CoreToolkit
 from unchain.memory import MemoryConfig
 
 agent = Agent(
@@ -97,7 +97,7 @@ agent = Agent(
     model="gpt-5",                           # Model identifier
     api_key=None,                            # Uses env var if None
     tools=[                                  # Tools, Toolkits, or callables
-        CodeToolkit(workspace_root="."),
+        CoreToolkit(workspace_root="."),
     ],
     short_term_memory=MemoryConfig(last_n_turns=10),
     long_term_memory=None,                   # LongTermMemoryConfig or dict
@@ -112,7 +112,7 @@ The `tools` list accepts mixed types:
 
 ```python
 tools=[
-    CodeToolkit(workspace_root="."),       # Toolkit instance → all its tools
+    CoreToolkit(workspace_root="."),       # Toolkit instance → all its tools
     my_tool,                               # Tool object → single tool
     my_function,                           # Callable → auto-wrapped in Tool
 ]
@@ -156,7 +156,7 @@ messages, bundle = agent.run("Do something risky.")
 # User provides response
 messages, bundle = agent.resume_human_input(
     response=ToolConfirmationResponse(approved=True),
-    # or HumanInputResponse for ask_user
+    # or HumanInputResponse for ask_user_question
 )
 ```
 

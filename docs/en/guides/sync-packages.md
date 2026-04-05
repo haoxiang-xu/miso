@@ -25,7 +25,7 @@ The following areas have parallel implementations that may need synchronization:
 | Area | Contents |
 |------|----------|
 | `tools/` | `Tool`, `Toolkit`, decorators, models, registry, catalog |
-| `toolkits/builtin/` | CodeToolkit, ExternalAPIToolkit, AskUserToolkit |
+| `toolkits/builtin/` | CoreToolkit, ExternalAPIToolkit |
 | `memory/` | MemoryManager, MemoryConfig, strategies, stores, Qdrant adapter |
 | `schemas/` | ResponseFormat and related schemas |
 | Runtime resources | `model_capabilities.json`, `model_default_payloads.json` |

@@ -1,6 +1,6 @@
-# Code Toolkit
+# Core Toolkit
 
-`CodeToolkit` is the Claude-style builtin coding toolkit for precise file reads, guarded writes, string edits, globbing, grep-style search, public web fetch, cross-platform shell execution, and LSP-powered code intelligence.
+`CoreToolkit` is the builtin core toolkit for precise file reads, guarded writes, string edits, globbing, grep-style search, public web fetch, cross-platform shell execution, LSP-powered code intelligence, and structured user questions.
 
 ## What this README is for
 
@@ -10,8 +10,8 @@
 
 ## Full documentation
 
-- English API reference: [CodeToolkit](../../../../../docs/en/api/toolkits.md#codetoolkit)
-- 中文 API 参考: [CodeToolkit](../../../../../docs/zh-CN/api/toolkits.md#codetoolkit)
+- English API reference: [CoreToolkit](../../../../../docs/en/api/toolkits.md#coretoolkit)
+- 中文 API 参考: [CoreToolkit](../../../../../docs/zh-CN/api/toolkits.md#coretoolkit)
 - English docs index: [docs/README.en.md](../../../../../docs/README.en.md)
 - 中文文档索引: [docs/README.zh-CN.md](../../../../../docs/README.zh-CN.md)
 

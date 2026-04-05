@@ -89,7 +89,7 @@ src/unchain/
 ├── toolkits/            # Builtin + MCP toolkits
 │   ├── base.py          #   BuiltinToolkit – workspace-safe base class
 │   ├── mcp.py           #   MCPToolkit – MCP server bridge
-│   └── builtin/         #   Pre-built toolkits (workspace, terminal, ask_user, external_api)
+│   └── builtin/         #   Pre-built toolkits (core, external_api)
 ├── memory/              # Short-term and long-term memory
 │   ├── manager.py       #   MemoryManager – orchestrates stores + strategies
 │   ├── config.py        #   MemoryConfig / LongTermMemoryConfig dataclasses

@@ -6,12 +6,46 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from ..tools.decorators import tool
-from ..tools.models import _escape_control_chars_inside_json_strings, ToolParameter
+from ..tools.models import _escape_control_chars_inside_json_strings, ToolParameter, ToolPromptSpec
 from ..tools.tool import Tool
 
 ASK_USER_QUESTION_TOOL_NAME = "ask_user_question"
 HUMAN_INPUT_KIND_SELECTOR = "selector"
 HUMAN_INPUT_OTHER_VALUE = "__other__"
+ASK_USER_QUESTION_TOOL_DESCRIPTION = (
+    "Ask the user a structured selector question and suspend the run until they respond. "
+    "Use this when you need a concrete decision, clarification, or preference that would materially change "
+    "the implementation or final result. Ask for the smallest concrete answer that unblocks the work. "
+    "Do not ask meta-questions such as what to discuss first. "
+    "The question must let the user directly choose an answer, and the options must be concrete candidate answers, "
+    "not categories, dimensions, or discussion topics. "
+    "When several reasonable paths exist, ask the user instead of silently guessing."
+)
+ASK_USER_QUESTION_TOOL_PROMPT_SPEC = ToolPromptSpec(
+    purpose=(
+        "Ask the user for a concrete decision, clarification, or preference before continuing work that "
+        "depends on that choice."
+    ),
+    when_to_use=(
+        "Multiple plausible approaches or interpretations would materially change the result.",
+        "You need the user's preference on product direction, UX behavior, technical approach, scope, or tradeoffs.",
+        "A specific decision blocks implementation and should come from the user rather than a guess.",
+    ),
+    when_not_to_use=(
+        "You can discover the answer from the repo, runtime state, or earlier user messages.",
+        "You only want permission to continue, plan approval, or a meta-discussion about what to talk about next.",
+        "Your options are categories, dimensions, or brainstorming topics instead of direct candidate answers.",
+    ),
+    examples=(
+        'ask_user_question(title="Auth strategy", question="Which auth approach should I implement?", selection_mode="single", options=[{"label": "Session cookies", "value": "session", "description": "Server-managed sessions with cookies."}, {"label": "JWT", "value": "jwt", "description": "Stateless tokens for API clients."}])',
+        'ask_user_question(title="Platform support", question="Which platforms should this first version support?", selection_mode="multiple", options=[{"label": "Desktop web", "value": "desktop_web"}, {"label": "Mobile web", "value": "mobile_web"}, {"label": "Native mobile", "value": "native_mobile"}], max_selected=2)',
+    ),
+    advanced_tips=(
+        "Prefer 2-4 strong options and make each option a concrete answer the user can directly pick.",
+        "If one option is the best default, put it first and say so in the option label or description.",
+        "Use assistant text for freeform discussion only when structured choices would be a poor fit.",
+    ),
+)
 
 
 def is_human_input_tool_name(name: Any) -> bool:
@@ -327,17 +361,9 @@ def build_ask_user_question_tool() -> Tool:
 
     return tool(
         name=ASK_USER_QUESTION_TOOL_NAME,
-        description=(
-            "Ask the user to choose from a structured selector UI and suspend the run until they respond. "
-            "Strongly prefer this whenever there are multiple plausible approaches, product directions, "
-            "technical stacks, UX choices, or requirement interpretations that would materially change the outcome. "
-            "Ask for the smallest concrete decision that unblocks the work. "
-            "Do not ask meta-questions such as which aspects to discuss first. "
-            "The question must let the user directly choose an answer, and the options must be concrete candidate answers, "
-            "not categories, dimensions, or discussion topics. "
-            "When several reasonable paths exist, ask the user instead of silently guessing."
-        ),
+        description=ASK_USER_QUESTION_TOOL_DESCRIPTION,
         func=lambda **_: {"error": "ask_user_question is a reserved runtime tool and cannot be executed directly"},
+        prompt_spec=ASK_USER_QUESTION_TOOL_PROMPT_SPEC,
         parameters=[
             ToolParameter(
                 name="title",

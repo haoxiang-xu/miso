@@ -3,7 +3,7 @@ import json
 import pytest
 
 from unchain.memory import MemoryConfig, MemoryManager
-from unchain.toolkits import CodeToolkit
+from unchain.toolkits import CoreToolkit
 from unchain.tools import tool
 
 
@@ -208,7 +208,7 @@ def test_deferred_compaction_keeps_latest_completed_turn_raw():
 
 
 def test_read_history_result_is_compacted_with_preview():
-    tk = CodeToolkit(workspace_root=".")
+    tk = CoreToolkit(workspace_root=".")
     manager = MemoryManager()
     session_id = "s_read_tool_compact"
     large_content = "header\n" + ("line\n" * 800) + "footer\n"
@@ -255,7 +255,7 @@ def test_read_history_result_is_compacted_with_preview():
 
 
 def test_glob_history_result_is_compacted_with_preview():
-    tk = CodeToolkit(workspace_root=".")
+    tk = CoreToolkit(workspace_root=".")
     manager = MemoryManager()
     session_id = "s_glob_tool_compact"
     matches = [f"src/file_{index}.py" for index in range(80)]
@@ -298,7 +298,7 @@ def test_glob_history_result_is_compacted_with_preview():
 
 
 def test_write_history_arguments_are_compacted_by_tool_optimizer():
-    tk = CodeToolkit(workspace_root=".")
+    tk = CoreToolkit(workspace_root=".")
     manager = MemoryManager()
     session_id = "s_write_tool_compact"
     large_content = "A" * 2400

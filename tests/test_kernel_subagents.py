@@ -296,7 +296,12 @@ def test_subagent_handoff_strips_runtime_tool_call_from_child_context_and_final_
     result = parent.run("Need the specialist", max_iterations=2)
 
     assert result.status == "completed"
-    assert result.messages == [
+    non_system_result_messages = [
+        message
+        for message in result.messages
+        if isinstance(message, dict) and message.get("role") != "system"
+    ]
+    assert non_system_result_messages == [
         {"role": "user", "content": "Need the specialist"},
         {"role": "assistant", "content": "specialist final"},
     ]

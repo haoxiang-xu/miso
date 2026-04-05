@@ -281,10 +281,10 @@ def test_run_single_model_eval_supports_notebook_defined_case(monkeypatch, tmp_p
         task_prompt="Inspect the repo and explain the structure.",
         workspace_mode="repo_copy",
         workspace_source=".",
-        allowed_toolkits=["workspace"],
+        allowed_toolkits=["core"],
         toolkit_options={},
         rule_checks={"min_tool_calls": 0},
-        candidate_instructions="Only use workspace tools.",
+        candidate_instructions="Only use core tools.",
     )
 
     result = run_single_model_eval(
@@ -321,7 +321,7 @@ def test_run_single_model_eval_uses_central_default_judge_model(monkeypatch, tmp
         task_prompt="Inspect the repo and explain the structure.",
         workspace_mode="repo_copy",
         workspace_source=".",
-        allowed_toolkits=["workspace"],
+        allowed_toolkits=["core"],
         toolkit_options={},
         rule_checks={"min_tool_calls": 0},
     )
@@ -459,7 +459,7 @@ def test_notebook_session_start_and_resume_round_trip(monkeypatch, tmp_path):
         task_prompt="Build a tetris game and ask when uncertain.",
         workspace_mode="persistent_test_folder",
         workspace_source=str(test_dir),
-        allowed_toolkits=["ask_user", "workspace", "terminal"],
+        allowed_toolkits=["core"],
         rule_checks={"required_tool_names": ["ask_user_question"]},
         candidate_instructions="Ask before deciding.",
     )

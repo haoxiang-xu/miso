@@ -36,8 +36,7 @@
 ## [Toolkit 实现参考](../api/toolkits.md)
 
 - `BuiltinToolkit` -> `src/unchain/toolkits/base.py:14` (subpackage, class)
-- `AskUserToolkit` -> `src/unchain/toolkits/builtin/ask_user/ask_user.py:7` (subpackage, class)
-- `CodeToolkit` -> `src/unchain/toolkits/builtin/code/code.py:30` (subpackage, class)
+- `CoreToolkit` -> `src/unchain/toolkits/builtin/core/core.py:30` (subpackage, class)
 - `ExternalAPIToolkit` -> `src/unchain/toolkits/builtin/external_api/external_api.py:13` (subpackage, class)
 - `MCPToolkit` -> `src/unchain/toolkits/mcp.py:62` (subpackage, class)
 

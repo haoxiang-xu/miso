@@ -105,9 +105,8 @@
 
 | 名称 | 源码 | 参考 |
 | --- | --- | --- |
-| `AskUserToolkit` | `src/unchain/toolkits/builtin/ask_user/ask_user.py:7` | `../api/toolkits.md#askusertoolkit` |
 | `BuiltinToolkit` | `src/unchain/toolkits/base.py:14` | `../api/toolkits.md#builtintoolkit` |
-| `CodeToolkit` | `src/unchain/toolkits/builtin/code/code.py:30` | `../api/toolkits.md#codetoolkit` |
+| `CoreToolkit` | `src/unchain/toolkits/builtin/core/core.py:30` | `../api/toolkits.md#coretoolkit` |
 | `ExternalAPIToolkit` | `src/unchain/toolkits/builtin/external_api/external_api.py:13` | `../api/toolkits.md#externalapitoolkit` |
 | `MCPToolkit` | `src/unchain/toolkits/mcp.py:62` | `../api/toolkits.md#mcptoolkit` |
 

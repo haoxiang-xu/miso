@@ -87,10 +87,10 @@ The original repository skill note is preserved below for continuity and extra e
 
 ```python
 from unchain.runtime import Broth
-from unchain.toolkits import CodeToolkit
+from unchain.toolkits import CoreToolkit
 
 runtime = Broth(provider="openai", model="gpt-5")
-runtime.add_toolkit(CodeToolkit(workspace_root="."))
+runtime.add_toolkit(CoreToolkit(workspace_root="."))
 messages, bundle = runtime.run("Inspect the repo.")
 ```
 
@@ -316,7 +316,7 @@ def main():
 
 ```
 
-Pins are managed by `CodeToolkit` tools (`pin_file_context`, `unpin_file_context`). Constraints:
+Pins are managed by `CoreToolkit` tools (`pin_file_context`, `unpin_file_context`). Constraints:
 
 | Limit | Value |
 |-------|-------|

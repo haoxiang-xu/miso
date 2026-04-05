@@ -87,7 +87,7 @@
 
 ```python
 from unchain import Agent
-from unchain.toolkits import CodeToolkit
+from unchain.toolkits import CoreToolkit
 from unchain.memory import MemoryConfig
 
 agent = Agent(
@@ -97,7 +97,7 @@ agent = Agent(
     model="gpt-5",                           # 模型标识
     api_key=None,                            # 为 None 时使用环境变量
     tools=[                                  # Tool、Toolkit 或 callable
-        CodeToolkit(workspace_root="."),
+        CoreToolkit(workspace_root="."),
     ],
     short_term_memory=MemoryConfig(last_n_turns=10),
     long_term_memory=None,                   # LongTermMemoryConfig 或 dict
@@ -112,7 +112,7 @@ agent = Agent(
 
 ```python
 tools=[
-    CodeToolkit(workspace_root="."),       # Toolkit 实例 → 其所有工具
+    CoreToolkit(workspace_root="."),       # Toolkit 实例 → 其所有工具
     my_tool,                               # Tool 对象 → 单个��具
     my_function,                           # Callable → 自动包裹为 Tool
 ]
@@ -156,7 +156,7 @@ messages, bundle = agent.run("Do something risky.")
 # 用户提供响应
 messages, bundle = agent.resume_human_input(
     response=ToolConfirmationResponse(approved=True),
-    # 或 HumanInputResponse (用于 ask_user)
+    # 或 HumanInputResponse (用于 ask_user_question)
 )
 ```
 

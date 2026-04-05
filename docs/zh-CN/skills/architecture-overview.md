@@ -89,7 +89,7 @@ src/unchain/
 ├── toolkits/            # 内置 + MCP toolkit
 │   ├── base.py          #   BuiltinToolkit -- workspace 安全的基类
 │   ├── mcp.py           #   MCPToolkit -- MCP server 桥接
-│   └── builtin/         #   预构建 toolkit (workspace, terminal, ask_user, external_api)
+│   └── builtin/         #   预构建 toolkit (core, external_api)
 ├── memory/              # 短期与长期 memory
 │   ├── manager.py       #   MemoryManager -- 协调 store + strategy
 │   ├── config.py        #   MemoryConfig / LongTermMemoryConfig 数据类

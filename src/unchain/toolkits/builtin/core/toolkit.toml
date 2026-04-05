@@ -1,14 +1,14 @@
 [toolkit]
-id = "code_toolkit"
-name = "Code Toolkit"
-description = "Claude-style coding tools for guarded file reads, writes, edits, globbing, grep search, public web fetch, cross-platform shell execution, and LSP-powered code intelligence inside the workspace."
-factory = "unchain.toolkits.builtin.code:CodeToolkit"
+id = "core"
+name = "Core"
+description = "Core execution tools for guarded file reads and edits, globbing, grep search, public web fetch, cross-platform shell execution, LSP-powered code intelligence, and structured user questions."
+factory = "unchain.toolkits.builtin.core:CoreToolkit"
 version = "1.0.0"
 readme = "README.md"
 icon = "icon.svg"
 color = "#0f172a"
 backgroundcolor = "#dbeafe"
-tags = ["builtin", "code", "files", "search", "editing"]
+tags = ["builtin", "core", "files", "search", "editing", "user-input"]
 
 [display]
 category = "builtin"
@@ -18,6 +18,13 @@ hidden = false
 [compat]
 python = ">=3.9"
 legacy = ">=0"
+
+[[tools]]
+name = "ask_user_question"
+title = "Ask User Question"
+description = "Ask the user a structured selector question and suspend the run until they respond."
+observe = false
+requires_confirmation = false
 
 [[tools]]
 name = "read"

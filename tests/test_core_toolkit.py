@@ -8,13 +8,24 @@ from pathlib import Path
 
 from unchain.kernel.types import ToolCall
 from unchain.tools import ToolExecutionContext, Toolkit, execute_confirmable_tool_call
-from unchain.toolkits import CodeToolkit
-from unchain.toolkits.builtin.code.lsp_runtime import LSPServerSpec
-from unchain.toolkits.builtin.code import web_fetch as web_fetch_module
-from unchain.toolkits.builtin.code.shell_runtime import ShellRuntime
+from unchain.input import ASK_USER_QUESTION_TOOL_NAME
+from unchain.toolkits import CoreToolkit
+from unchain.toolkits.builtin.core.lsp_runtime import LSPServerSpec
+from unchain.toolkits.builtin.core import web_fetch as web_fetch_module
+from unchain.toolkits.builtin.core.shell_runtime import ShellRuntime
 
 
-EXPECTED_CODE_TOOLS = {"read", "write", "edit", "glob", "grep", "web_fetch", "shell", "lsp"}
+EXPECTED_CORE_TOOLS = {
+    ASK_USER_QUESTION_TOOL_NAME,
+    "read",
+    "write",
+    "edit",
+    "glob",
+    "grep",
+    "web_fetch",
+    "shell",
+    "lsp",
+}
 
 
 def _write_fake_lsp_server(root: Path) -> Path:
@@ -281,11 +292,12 @@ def _merge_toolkit(source: Toolkit) -> Toolkit:
     return merged
 
 
-def test_code_toolkit_registers_expected_tools_and_confirmation_contract():
+def test_core_toolkit_registers_expected_tools_and_confirmation_contract():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = CodeToolkit(workspace_root=tmp)
+        toolkit = CoreToolkit(workspace_root=tmp)
 
-        assert set(toolkit.tools.keys()) == EXPECTED_CODE_TOOLS
+        assert set(toolkit.tools.keys()) == EXPECTED_CORE_TOOLS
+        assert toolkit.tools[ASK_USER_QUESTION_TOOL_NAME].requires_confirmation is False
         assert toolkit.tools["read"].requires_confirmation is False
         assert toolkit.tools["glob"].requires_confirmation is False
         assert toolkit.tools["grep"].requires_confirmation is False
@@ -298,7 +310,7 @@ def test_code_toolkit_registers_expected_tools_and_confirmation_contract():
 
 def test_code_toolkit_requires_full_read_before_mutating_existing_files():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = CodeToolkit(workspace_root=tmp)
+        toolkit = CoreToolkit(workspace_root=tmp)
         target = Path(tmp, "demo.txt").resolve()
         target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
 
@@ -324,7 +336,7 @@ def test_code_toolkit_requires_full_read_before_mutating_existing_files():
 
 def test_code_toolkit_write_can_create_new_file_without_prior_read():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = CodeToolkit(workspace_root=tmp)
+        toolkit = CoreToolkit(workspace_root=tmp)
         target = Path(tmp, "notes.txt").resolve()
 
         result = toolkit.execute("write", {"path": str(target), "content": "hello\nworld\n"})
@@ -335,7 +347,7 @@ def test_code_toolkit_write_can_create_new_file_without_prior_read():
 
 def test_code_toolkit_rejects_stale_snapshot_and_skips_binary_reads():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = CodeToolkit(workspace_root=tmp)
+        toolkit = CoreToolkit(workspace_root=tmp)
         text_file = Path(tmp, "stale.txt").resolve()
         text_file.write_text("one\ntwo\n", encoding="utf-8")
 
@@ -356,7 +368,7 @@ def test_code_toolkit_rejects_stale_snapshot_and_skips_binary_reads():
 
 def test_code_toolkit_glob_and_grep_return_sorted_and_paginated_results():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = CodeToolkit(workspace_root=tmp)
+        toolkit = CoreToolkit(workspace_root=tmp)
         src_dir = Path(tmp, "src")
         src_dir.mkdir()
         first = (src_dir / "a.py").resolve()
@@ -413,7 +425,7 @@ def test_code_toolkit_glob_and_grep_return_sorted_and_paginated_results():
 
 def test_execute_confirmable_tool_call_pushes_code_toolkit_execution_context_by_session():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = CodeToolkit(workspace_root=tmp)
+        toolkit = CoreToolkit(workspace_root=tmp)
         merged = _merge_toolkit(toolkit)
         target = Path(tmp, "demo.txt").resolve()
         target.write_text("alpha\nbeta\n", encoding="utf-8")
@@ -485,7 +497,7 @@ def test_execute_confirmable_tool_call_pushes_code_toolkit_execution_context_by_
 
 def test_code_toolkit_web_fetch_raw_uses_cache_and_paginates(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = CodeToolkit(workspace_root=tmp)
+        toolkit = CoreToolkit(workspace_root=tmp)
         monkeypatch.setattr(web_fetch_module, "validate_public_url", lambda url: (url, None))
 
         calls = {"count": 0}
@@ -537,7 +549,7 @@ def test_code_toolkit_web_fetch_raw_uses_cache_and_paginates(monkeypatch):
 
 def test_code_toolkit_web_fetch_extract_uses_runtime_config(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = CodeToolkit(workspace_root=tmp)
+        toolkit = CoreToolkit(workspace_root=tmp)
         merged = _merge_toolkit(toolkit)
         monkeypatch.setattr(web_fetch_module, "validate_public_url", lambda url: (url, None))
 
@@ -576,7 +588,7 @@ def test_code_toolkit_web_fetch_extract_uses_runtime_config(monkeypatch):
             seen["config"] = dict(extract_model_config)
             return "summary output"
 
-        monkeypatch.setattr("unchain.toolkits.builtin.code.code.run_extract_model", fake_extract)
+        monkeypatch.setattr("unchain.toolkits.builtin.core.core.run_extract_model", fake_extract)
 
         outcome = execute_confirmable_tool_call(
             toolkit=merged,
@@ -624,7 +636,7 @@ def test_code_toolkit_web_fetch_extract_uses_runtime_config(monkeypatch):
 
 def test_code_toolkit_web_fetch_rejects_private_urls_and_requires_extract_config(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = CodeToolkit(workspace_root=tmp)
+        toolkit = CoreToolkit(workspace_root=tmp)
 
         denied = toolkit.execute("web_fetch", {"url": "http://localhost:3000", "mode": "raw"})
         assert denied["ok"] is False
@@ -670,7 +682,7 @@ def test_code_toolkit_web_fetch_rejects_private_urls_and_requires_extract_config
 
 def test_code_toolkit_shell_persists_cwd_between_runs():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = CodeToolkit(workspace_root=tmp)
+        toolkit = CoreToolkit(workspace_root=tmp)
         subdir = Path(tmp, "subdir").resolve()
         subdir.mkdir()
 
@@ -694,7 +706,7 @@ def test_code_toolkit_shell_persists_cwd_between_runs():
 
 def test_code_toolkit_shell_confirmation_policy_and_background_lifecycle():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = CodeToolkit(workspace_root=tmp)
+        toolkit = CoreToolkit(workspace_root=tmp)
         merged = _merge_toolkit(toolkit)
         confirm_requests = []
 
@@ -827,7 +839,7 @@ def test_code_toolkit_shell_confirmation_policy_and_background_lifecycle():
 
 def test_code_toolkit_shell_background_poll_returns_incremental_output():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = CodeToolkit(workspace_root=tmp)
+        toolkit = CoreToolkit(workspace_root=tmp)
         command = (
             "Write-Output alpha; Start-Sleep -Milliseconds 300; Write-Output beta"
             if sys.platform.startswith("win")
@@ -873,7 +885,7 @@ def test_code_toolkit_lsp_python_operations_use_fake_server(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp).resolve()
         script = _write_fake_lsp_server(root)
-        toolkit = CodeToolkit(workspace_root=root)
+        toolkit = CoreToolkit(workspace_root=root)
         target = root / "main.py"
         target.write_text("class Demo:\n    pass\n", encoding="utf-8")
         (root / "ignored.py").write_text("ignored\n", encoding="utf-8")
@@ -933,7 +945,7 @@ def test_code_toolkit_lsp_typescript_symbols_reuse_session_and_shutdown(monkeypa
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp).resolve()
         script = _write_fake_lsp_server(root)
-        toolkit = CodeToolkit(workspace_root=root)
+        toolkit = CoreToolkit(workspace_root=root)
         target = root / "main.ts"
         target.write_text("export class Demo {}\n", encoding="utf-8")
         (root / "util.ts").write_text("export function helper() {}\n", encoding="utf-8")
@@ -981,7 +993,7 @@ def test_code_toolkit_lsp_typescript_symbols_reuse_session_and_shutdown(monkeypa
 def test_code_toolkit_lsp_validates_paths_and_missing_servers(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp).resolve()
-        toolkit = CodeToolkit(workspace_root=root)
+        toolkit = CoreToolkit(workspace_root=root)
         target = root / "main.py"
         target.write_text("print('hi')\n", encoding="utf-8")
         unsupported = root / "main.rb"
@@ -1013,7 +1025,7 @@ def test_code_toolkit_lsp_validates_paths_and_missing_servers(monkeypatch):
 
 def test_code_toolkit_lsp_compacts_large_results():
     with tempfile.TemporaryDirectory() as tmp:
-        toolkit = CodeToolkit(workspace_root=tmp)
+        toolkit = CoreToolkit(workspace_root=tmp)
         optimizer = toolkit.tools["lsp"].history_result_optimizer
         assert optimizer is not None
 

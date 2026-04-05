@@ -36,14 +36,14 @@ pip install -e ".[dev]"
 ```python
 from unchain import Agent
 from unchain.tools import Toolkit, tool
-from unchain.toolkits import CodeToolkit
+from unchain.toolkits import CoreToolkit
 
 agent = Agent(
     name="coder",
     provider="openai",
     model="gpt-5",
     tools=[
-        CodeToolkit(workspace_root="."),
+        CoreToolkit(workspace_root="."),
     ],
 )
 
@@ -151,9 +151,8 @@ GEMINI_API_KEY=...
 
 | Toolkit | Description |
 |---------|-------------|
-| **CodeToolkit** | File read/write, directory listing, text search, line editing, AST parsing, shell execution |
+| **CoreToolkit** | File read/write, directory listing, text search, line editing, shell execution, LSP, web fetch, structured user questions |
 | **ExternalAPIToolkit** | HTTP GET/POST, git operations (read-only and destructive) |
-| **AskUserToolkit** | Structured user-question suspension flow (single/multiple choice) |
 | **MCPToolkit** | Bridge MCP (Model Context Protocol) servers as native toolkits |
 
 Toolkits are also discoverable from local directories and entry-point plugins.
@@ -185,13 +184,16 @@ Agents are composed through pluggable modules:
 
 ```python
 from unchain.agent import Agent, ToolsModule, MemoryModule, PoliciesModule
+from unchain.toolkits import CoreToolkit
+
+core_toolkit = CoreToolkit(workspace_root=".")
 
 agent = Agent(
     name="assistant",
     provider="openai",
     model="gpt-5",
     modules=(
-        ToolsModule(tools=(code_toolkit,)),
+        ToolsModule(tools=(core_toolkit,)),
         MemoryModule(memory=memory_manager),
         PoliciesModule(max_iterations=32),
     ),
@@ -287,8 +289,8 @@ from unchain.providers import AnthropicModelIO, OpenAIModelIO, OllamaModelIO
 
 # Toolkits
 from unchain.toolkits import (
-    CodeToolkit, ExternalAPIToolkit,
-    AskUserToolkit, MCPToolkit,
+    CoreToolkit, ExternalAPIToolkit,
+    MCPToolkit,
 )
 
 # Memory

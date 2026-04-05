@@ -4,7 +4,7 @@ Builtin and MCP toolkit implementations, including workspace-safe base helpers.
 
 | Metric | Value |
 | --- | --- |
-| Classes | 5 |
+| Classes | 4 |
 | Dataclasses | 0 |
 | Protocols | 0 |
 | Internal-only types | 0 |
@@ -14,8 +14,7 @@ Builtin and MCP toolkit implementations, including workspace-safe base helpers.
 | Class | Source | Exposure | Kind |
 | --- | --- | --- | --- |
 | `BuiltinToolkit` | `src/unchain/toolkits/base.py:10` | subpackage | class |
-| `AskUserToolkit` | `src/unchain/toolkits/builtin/ask_user/ask_user.py:7` | subpackage | class |
-| `CodeToolkit` | `src/unchain/toolkits/builtin/code/code.py:30` | subpackage | class |
+| `CoreToolkit` | `src/unchain/toolkits/builtin/core/core.py:30` | subpackage | class |
 | `ExternalAPIToolkit` | `src/unchain/toolkits/builtin/external_api/external_api.py:12` | subpackage | class |
 | `MCPToolkit` | `src/unchain/toolkits/mcp.py:62` | subpackage | class |
 
@@ -76,8 +75,7 @@ Public method `pop_execution_context` exposed by `BuiltinToolkit`.
 
 ### Collaboration and related types
 
-- `AskUserToolkit`
-- `CodeToolkit`
+- `CoreToolkit`
 - `ExternalAPIToolkit`
 
 ### Minimal usage example
@@ -85,61 +83,6 @@ Public method `pop_execution_context` exposed by `BuiltinToolkit`.
 ```python
 obj = BuiltinToolkit(...)
 obj.push_execution_context(...)
-```
-
-### `src/unchain/toolkits/builtin/ask_user/ask_user.py`
-
-Reserved human-input toolkit that surfaces the ask-user runtime tool.
-
-## AskUserToolkit
-
-Implementation class used by reserved human-input toolkit that surfaces the ask-user runtime tool.
-
-| Item | Details |
-| --- | --- |
-| Source | `src/unchain/toolkits/builtin/ask_user/ask_user.py:7` |
-| Module role | Reserved human-input toolkit that surfaces the ask-user runtime tool. |
-| Inheritance | `Toolkit` |
-| Exposure | Exported from its subpackage `__init__`. |
-| Kind | Class; public-facing or package-visible. |
-
-### Constructor surface
-
-The constructor is the primary place where this class defines required inputs and validation.
-
-- `__init__(self)`
-
-### Public methods
-
-#### `__init__(self)`
-
-Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
-
-- Category: Constructor
-- Declared at: `src/unchain/toolkits/builtin/ask_user/ask_user.py:10`
-- Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
-- Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
-
-#### `ask_user_question(self, **kwargs)`
-
-Reserved runtime placeholder for structured user input requests.
-
-- Category: Method
-- Declared at: `src/unchain/toolkits/builtin/ask_user/ask_user.py:20`
-- Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
-- Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
-
-### Collaboration and related types
-
-- `BuiltinToolkit`
-- `CodeToolkit`
-- `ExternalAPIToolkit`
-
-### Minimal usage example
-
-```python
-obj = AskUserToolkit(...)
-obj.ask_user_question(...)
 ```
 
 ### `src/unchain/toolkits/builtin/external_api/external_api.py`
@@ -205,8 +148,7 @@ Send a POST request to an external API endpoint.
 ### Collaboration and related types
 
 - `BuiltinToolkit`
-- `AskUserToolkit`
-- `CodeToolkit`
+- `CoreToolkit`
 
 ### Minimal usage example
 
@@ -288,8 +230,7 @@ Execute a tool on the MCP server.
 ### Collaboration and related types
 
 - `BuiltinToolkit`
-- `AskUserToolkit`
-- `CodeToolkit`
+- `CoreToolkit`
 - `ExternalAPIToolkit`
 
 ### Minimal usage example

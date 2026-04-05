@@ -4,7 +4,7 @@
 
 | 指标 | 值 |
 | --- | --- |
-| 类数量 | 5 |
+| 类数量 | 4 |
 | Dataclass | 0 |
 | 协议 | 0 |
 | 仅内部类型 | 0 |
@@ -14,8 +14,7 @@
 | 类 | 源码 | 导出 | 类型 |
 | --- | --- | --- | --- |
 | `BuiltinToolkit` | `src/unchain/toolkits/base.py:10` | subpackage | class |
-| `AskUserToolkit` | `src/unchain/toolkits/builtin/ask_user/ask_user.py:7` | subpackage | class |
-| `CodeToolkit` | `src/unchain/toolkits/builtin/code/code.py:30` | subpackage | class |
+| `CoreToolkit` | `src/unchain/toolkits/builtin/core/core.py:30` | subpackage | class |
 | `ExternalAPIToolkit` | `src/unchain/toolkits/builtin/external_api/external_api.py:12` | subpackage | class |
 | `MCPToolkit` | `src/unchain/toolkits/mcp.py:62` | subpackage | class |
 
@@ -76,8 +75,7 @@
 
 ### 协作关系与关联类型
 
-- `AskUserToolkit`
-- `CodeToolkit`
+- `CoreToolkit`
 - `ExternalAPIToolkit`
 
 ### 最小调用示例
@@ -85,61 +83,6 @@
 ```python
 obj = BuiltinToolkit(...)
 obj.push_execution_context(...)
-```
-
-### `src/unchain/toolkits/builtin/ask_user/ask_user.py`
-
-承载 ask-user 保留工具的内置 toolkit。
-
-## AskUserToolkit
-
-用于承载 ask-user 保留工具的内置 toolkit的实现类。
-
-| 项目 | 细节 |
-| --- | --- |
-| 源码 | `src/unchain/toolkits/builtin/ask_user/ask_user.py:7` |
-| 模块职责 | 承载 ask-user 保留工具的内置 toolkit。 |
-| 继承/协议 | `Toolkit` |
-| 导出状态 | 通过所属子包 `__init__` 导出。 |
-| 对象类型 | 类；公开或包内可见。 |
-
-### 构造表面
-
-该类主要通过构造函数定义必需输入和校验逻辑。
-
-- `__init__(self)`
-
-### 公共方法
-
-#### `__init__(self)`
-
-初始化实例，并在类有约束时校验或强制转换构造参数。
-
-- 类型：构造函数
-- 定义位置：`src/unchain/toolkits/builtin/ask_user/ask_user.py:10`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-
-#### `ask_user_question(self, **kwargs)`
-
-Reserved runtime placeholder for structured user input requests.
-
-- 类型：方法
-- 定义位置：`src/unchain/toolkits/builtin/ask_user/ask_user.py:20`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-
-### 协作关系与关联类型
-
-- `BuiltinToolkit`
-- `CodeToolkit`
-- `ExternalAPIToolkit`
-
-### 最小调用示例
-
-```python
-obj = AskUserToolkit(...)
-obj.ask_user_question(...)
 ```
 
 ### `src/unchain/toolkits/builtin/external_api/external_api.py`
@@ -205,8 +148,7 @@ Send a POST request to an external API endpoint.
 ### 协作关系与关联类型
 
 - `BuiltinToolkit`
-- `AskUserToolkit`
-- `CodeToolkit`
+- `CoreToolkit`
 
 ### 最小调用示例
 
@@ -290,8 +232,7 @@ Execute a tool on the MCP server.
 ### 协作关系与关联类型
 
 - `BuiltinToolkit`
-- `AskUserToolkit`
-- `CodeToolkit`
+- `CoreToolkit`
 - `ExternalAPIToolkit`
 
 ### 最小调用示例

@@ -113,27 +113,26 @@ def test_builtin_registry_lists_expected_toolkits_and_tools():
     registry = ToolkitRegistry()
     toolkit_ids = {item["id"] for item in registry.list_toolkits(include_tools=False)}
 
-    assert toolkit_ids == {"external_api", "ask_user", "code_toolkit"}
-    assert registry.require("code_toolkit").to_summary()["tool_count"] == 8
+    assert toolkit_ids == {"core", "external_api"}
+    assert registry.require("core").to_summary()["tool_count"] == 9
     assert registry.require("external_api").to_summary()["tool_count"] == 9
-    assert registry.require("ask_user").to_summary()["tool_count"] == 1
 
 
-def test_ask_user_toolkit_description_encourages_user_clarification():
+def test_core_toolkit_description_encourages_user_clarification():
     registry = ToolkitRegistry()
 
-    summary = registry.require("ask_user").to_summary()
+    summary = registry.require("core").to_summary()
 
-    assert "Strongly prefer asking the user" in summary["description"]
-    assert "multiple plausible approaches" in summary["description"]
+    assert "structured user questions" in summary["description"]
+    assert "LSP-powered code intelligence" in summary["description"]
 
 
 def test_get_toolkit_metadata_returns_full_markdown_and_inherited_tool_icon():
-    toolkit_metadata = get_toolkit_metadata("code_toolkit")
-    tool_metadata = get_toolkit_metadata("code_toolkit", "read")
+    toolkit_metadata = get_toolkit_metadata("core")
+    tool_metadata = get_toolkit_metadata("core", "read")
 
-    assert toolkit_metadata["readme_markdown"].startswith("# Code Toolkit")
-    assert tool_metadata["toolkit"]["readme_markdown"].startswith("# Code Toolkit")
+    assert toolkit_metadata["readme_markdown"].startswith("# Core Toolkit")
+    assert tool_metadata["toolkit"]["readme_markdown"].startswith("# Core Toolkit")
     assert tool_metadata["tool"]["icon_path"] == tool_metadata["toolkit"]["icon_path"]
     assert tool_metadata["tool"]["icon"] == tool_metadata["toolkit"]["icon"]
 
@@ -142,8 +141,8 @@ def test_list_toolkits_payload_is_json_serializable():
     payload = list_toolkits()
     encoded = json.dumps(payload)
 
-    assert "code_toolkit" in encoded
-    assert "ask_user" in encoded
+    assert "core" in encoded
+    assert '"id": "ask_user"' not in encoded
 
 
 def test_local_root_requires_a_manifest(tmp_path):

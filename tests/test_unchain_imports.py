@@ -32,7 +32,9 @@ def test_unchain_common_subpackages_are_available():
     assert hasattr(subagents, "SubagentPolicy")
     assert hasattr(tools, "Toolkit")
     assert hasattr(tools, "ToolPromptHarness")
-    assert hasattr(toolkits, "CodeToolkit")
+    assert hasattr(toolkits, "CoreToolkit")
+    assert not hasattr(toolkits, "CodeToolkit")
+    assert not hasattr(toolkits, "AskUserToolkit")
     assert hasattr(runtime, "load_model_capabilities")
     assert "/src/unchain/kernel/" in kernel.__file__
     assert "/src/unchain/agent/" in agent.__file__

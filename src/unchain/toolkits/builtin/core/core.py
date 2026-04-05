@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ....input.human_input import build_ask_user_question_tool
 from ...base import BuiltinToolkit
 from ....tools.models import ToolConfirmationPolicy, ToolExecutionContext, ToolHistoryOptimizationContext
 from .lsp_runtime import LSPRuntime, LSPRuntimeError
@@ -27,8 +28,8 @@ class _ReadSnapshot:
     fully_read: bool
 
 
-class CodeToolkit(BuiltinToolkit):
-    """Claude-style coding toolkit with guarded reads, writes, edits, glob, and grep."""
+class CoreToolkit(BuiltinToolkit):
+    """Core builtin toolkit for coding, shell, web fetch, LSP, and structured user questions."""
 
     _SKIP_DIR_NAMES: set[str] = {
         ".git",
@@ -76,6 +77,7 @@ class CodeToolkit(BuiltinToolkit):
         self._register_tools()
 
     def _register_tools(self) -> None:
+        self.register(build_ask_user_question_tool())
         self.register(
             self.read,
             description="Read a UTF-8 text file by absolute path with line-numbered output and optional line slicing.",
@@ -1137,4 +1139,4 @@ class CodeToolkit(BuiltinToolkit):
         return compacted
 
 
-__all__ = ["CodeToolkit"]
+__all__ = ["CoreToolkit"]

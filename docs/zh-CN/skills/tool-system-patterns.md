@@ -274,7 +274,7 @@ result = tk.execute("tool_name", {"arg1": "value"})
 ```python
 agent = Agent(
     tools=[
-        CodeToolkit(workspace_root="."),
+        CoreToolkit(workspace_root="."),
         my_custom_tool,          # 单��� Tool 或 callable
     ],
 )

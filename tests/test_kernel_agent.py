@@ -7,7 +7,7 @@ from unchain.kernel import BaseRuntimeHarness, HarnessDelta, ModelTurnResult, To
 from unchain.agent import Agent, MemoryModule, OptimizersModule, PoliciesModule, ToolsModule
 from unchain.memory import MemoryManager
 from unchain.tools import Toolkit
-from unchain.toolkits import CodeToolkit
+from unchain.toolkits import CoreToolkit
 from unchain.toolkits.base import BuiltinToolkit
 
 
@@ -320,7 +320,7 @@ def test_kernel_agent_rejects_duplicate_tool_names_across_toolkits():
         Path(tmp, "demo.txt").write_text("hello\n", encoding="utf-8")
         agent = Agent(
             name="conflict-agent",
-            modules=(ToolsModule(tools=(CodeToolkit(workspace_root=tmp), ConflictingToolkit())),),
+            modules=(ToolsModule(tools=(CoreToolkit(workspace_root=tmp), ConflictingToolkit())),),
             model_io_factory=lambda spec, ctx: None,
         )
 

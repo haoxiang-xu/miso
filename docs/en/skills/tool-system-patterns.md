@@ -274,7 +274,7 @@ Tools from multiple toolkits are merged into one for the runtime:
 ```python
 agent = Agent(
     tools=[
-        CodeToolkit(workspace_root="."),
+        CoreToolkit(workspace_root="."),
         my_custom_tool,          # A single Tool or callable
     ],
 )
