@@ -281,6 +281,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         max_iterations: int,
         child_run_id: str = "",
         callback: Any = None,
+        on_input: Any = None,
         on_tool_confirm: Any = None,
         on_human_input: Any = None,
         on_max_iterations: Any = None,
@@ -301,6 +302,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             memory_namespace=memory_namespace,
             max_iterations=max_iterations,
             callback=child_callback,
+            on_input=on_input,
             on_tool_confirm=on_tool_confirm,
             on_human_input=on_human_input,
             on_max_iterations=on_max_iterations,
@@ -375,6 +377,47 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             **extra,
         )
 
+    def _emit_branch_event(
+        self,
+        context,
+        event_type: str,
+        *,
+        child_run_id: str,
+        mode: str,
+        label: str,
+        call_id: str | None = None,
+        task: str | None = None,
+        batch_id: str | None = None,
+        status: str | None = None,
+        bundle: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        """Emit branch_fork or branch_merge event."""
+        payload: dict[str, Any] = {
+            "child_run_id": child_run_id,
+            "mode": mode,
+            "label": label,
+        }
+        if call_id is not None:
+            payload["call_id"] = call_id
+        if task is not None:
+            payload["task"] = task
+        if batch_id is not None:
+            payload["batch_id"] = batch_id
+        if status is not None:
+            payload["status"] = status
+        if bundle is not None:
+            payload["bundle"] = bundle
+        payload.update(extra)
+        emit_loop_event(
+            context.loop,
+            context.callback,
+            event_type,
+            context.run_id,
+            iteration=context.iteration,
+            **payload,
+        )
+
     def _delegate(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:
         args = _parse_arguments(tool_call.arguments)
         target = str(args.get("target") or "").strip()
@@ -403,8 +446,16 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         memory_namespace = f"{context.memory_namespace or context.session_id or context.run_id}:{child_id}"
         parent_id = state.active_agent_id or self.parent_agent.name
         child_run_id = f"{session_id}:{child_id}:{uuid.uuid4()}"
+        # Legacy events (kept for backwards compat — removed in Task 12)
         self._emit_subagent_event(context, "subagent_spawned", subagent_id=child_id, parent_id=parent_id, mode="delegate", template=template_name, lineage=lineage, child_run_id=child_run_id)
         self._emit_subagent_event(context, "subagent_started", subagent_id=child_id, parent_id=parent_id, mode="delegate", template=template_name, lineage=lineage, child_run_id=child_run_id)
+        # New branch_fork — emitted BEFORE child.run() starts
+        self._emit_branch_event(
+            context, "branch_fork",
+            child_run_id=child_run_id, mode="delegate",
+            label=child_id, call_id=tool_call.call_id,
+            task=task,
+        )
         result = self._run_child(
             agent=child,
             mode="delegate",
@@ -417,9 +468,17 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             max_iterations=int(context.event.get("max_iterations") or 6),
             child_run_id=child_run_id,
             callback=context.callback,
+            on_input=context.event.get("on_input"),
             on_tool_confirm=context.event.get("on_tool_confirm"),
             on_human_input=context.event.get("on_human_input"),
             on_max_iterations=context.event.get("on_max_iterations"),
+        )
+        # New branch_merge — emitted AFTER child.run() completes
+        merge_status = "completed" if result.status == "completed" else "failed"
+        self._emit_branch_event(
+            context, "branch_merge",
+            child_run_id=child_run_id, mode="delegate",
+            label=child_id, status=merge_status,
         )
         template_payload = self._render_result(result=result, output_mode=output_mode, template_name=template_name)
         update = {
@@ -490,9 +549,17 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         memory_namespace = f"{context.memory_namespace or context.session_id or context.run_id}:{child_id}"
         parent_id = state.active_agent_id or self.parent_agent.name
         child_run_id = f"{session_id}:{child_id}:{uuid.uuid4()}"
+        # Legacy events (kept for backwards compat — removed in Task 12)
         self._emit_subagent_event(context, "subagent_spawned", subagent_id=child_id, parent_id=parent_id, mode="handoff", template=template_name, lineage=lineage, child_run_id=child_run_id)
         self._emit_subagent_event(context, "subagent_handoff", subagent_id=child_id, parent_id=parent_id, mode="handoff", template=template_name, lineage=lineage, reason=reason, child_run_id=child_run_id)
         self._emit_subagent_event(context, "subagent_started", subagent_id=child_id, parent_id=parent_id, mode="handoff", template=template_name, lineage=lineage, child_run_id=child_run_id)
+        # New branch_fork — emitted BEFORE child.run() starts
+        self._emit_branch_event(
+            context, "branch_fork",
+            child_run_id=child_run_id, mode="handoff",
+            label=child_id, call_id=tool_call.call_id,
+            task=reason or "Continue handling the conversation.",
+        )
         sanitized_messages = _sanitize_handoff_messages(
             context.latest_messages(),
             tool_call=tool_call,
@@ -513,9 +580,17 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             max_iterations=int(context.event.get("max_iterations") or 6),
             child_run_id=child_run_id,
             callback=context.callback,
+            on_input=context.event.get("on_input"),
             on_tool_confirm=context.event.get("on_tool_confirm"),
             on_human_input=context.event.get("on_human_input"),
             on_max_iterations=context.event.get("on_max_iterations"),
+        )
+        # New branch_merge — emitted AFTER child.run() completes
+        merge_status = "completed" if result.status == "completed" else "failed"
+        self._emit_branch_event(
+            context, "branch_merge",
+            child_run_id=child_run_id, mode="handoff",
+            label=child_id, status=merge_status,
         )
         if result.clarification_request is not None:
             blocked_state = next_state.merged(
@@ -689,6 +764,21 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 }
             )
 
+        # Emit branch_fork SYNCHRONOUSLY on the main thread for each runnable
+        # worker BEFORE submitting to the ThreadPoolExecutor.
+        for prepared in prepared_items:
+            if prepared.get("type") != "run":
+                continue
+            self._emit_branch_event(
+                context, "branch_fork",
+                child_run_id=str(prepared["child_run_id"]),
+                mode="worker",
+                label=str(prepared["child_id"]),
+                call_id=tool_call.call_id,
+                task=str(prepared.get("task") or ""),
+                batch_id=batch_id,
+            )
+
         def _run_item(index: int, item: dict[str, Any]) -> SubagentResult:
             if item.get("type") == "prebuilt":
                 return copy.deepcopy(item["result"])
@@ -698,6 +788,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             lineage = list(item["lineage"])
             template_name = item.get("template_name")
             output_mode = str(item.get("output_mode") or "summary")
+            # Legacy events (kept for backwards compat — removed in Task 12)
             self._emit_subagent_event(context, "subagent_spawned", subagent_id=child_id, parent_id=parent_id, mode="worker", template=template_name, lineage=lineage, batch_id=batch_id, child_run_id=child_run_id)
             self._emit_subagent_event(context, "subagent_started", subagent_id=child_id, parent_id=parent_id, mode="worker", template=template_name, lineage=lineage, batch_id=batch_id, child_run_id=child_run_id)
             result = self._run_child(
@@ -712,12 +803,14 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 input_messages=task,
                 max_iterations=int(context.event.get("max_iterations") or 6),
                 callback=context.callback,
+                on_input=context.event.get("on_input"),
                 on_tool_confirm=context.event.get("on_tool_confirm"),
                 on_human_input=context.event.get("on_human_input"),
                 on_max_iterations=context.event.get("on_max_iterations"),
             )
             rendered = self._render_result(result=result, output_mode=output_mode, template_name=template_name)
             result = SubagentResult(**rendered)
+            # Legacy event (kept for backwards compat — removed in Task 12)
             event_type = "subagent_completed" if not result.error else "subagent_failed"
             self._emit_subagent_event(
                 context,
@@ -730,6 +823,14 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 batch_id=batch_id,
                 child_run_id=child_run_id,
                 status=result.status,
+            )
+            # New branch_merge — emitted AFTER worker completes
+            merge_status = "completed" if result.status == "completed" else "failed"
+            self._emit_branch_event(
+                context, "branch_merge",
+                child_run_id=child_run_id, mode="worker",
+                label=child_id, status=merge_status,
+                batch_id=batch_id,
             )
             if result.clarification_request is not None:
                 self._emit_subagent_event(
