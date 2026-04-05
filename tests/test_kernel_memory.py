@@ -209,6 +209,7 @@ def test_attach_memory_registers_default_stack_and_restores_history_across_runs(
         "tool_history_compaction",
         "llm_summary",
         "last_n",
+        "sliding_window",
         "memory_short_term_recall",
         "memory_long_term_recall",
         "memory_bootstrap",

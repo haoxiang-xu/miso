@@ -179,6 +179,8 @@ class MemoryConfig:
     deferred_tool_compaction_preview_chars: int = 160
     deferred_tool_compaction_include_tools: list[str] | None = None
     deferred_tool_compaction_hash_payloads: bool = True
+    sliding_window_pct: float = 0.7
+    sliding_window_max_tokens: int | None = None
 
 
 def _default_user_data_dir() -> Path:

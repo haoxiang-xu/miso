@@ -312,6 +312,8 @@ class KernelMemoryRuntime:
             LastNOptimizerConfig,
             LlmSummaryOptimizer,
             LlmSummaryOptimizerConfig,
+            SlidingWindowOptimizer,
+            SlidingWindowOptimizerConfig,
             ToolHistoryCompactionOptimizer,
             ToolHistoryCompactionOptimizerConfig,
         )
@@ -342,6 +344,12 @@ class KernelMemoryRuntime:
             ),
             LastNOptimizer(
                 LastNOptimizerConfig(last_n_turns=int(config.last_n_turns))
+            ),
+            SlidingWindowOptimizer(
+                SlidingWindowOptimizerConfig(
+                    max_window_pct=float(config.sliding_window_pct),
+                    max_window_tokens=config.sliding_window_max_tokens,
+                )
             ),
             ShortTermRecallMemoryHarness(runtime=self),
             LongTermRecallMemoryHarness(runtime=self),
