@@ -6,6 +6,7 @@ from typing import Any, Callable
 from .modules.memory import MemoryModule
 from ..kernel.types import KernelRunResult
 from ..tools import Tool
+from ..types.input import InputRequest, InputResponse
 from .builder import AgentBuilder, AgentCallContext
 from .model_io import ModelIOFactoryRegistry
 from .spec import AgentSpec, AgentState
@@ -159,6 +160,7 @@ class Agent:
         on_tool_confirm: Callable[..., Any] | None = None,
         on_human_input: Callable[..., Any] | None = None,
         on_max_iterations: Callable[..., Any] | None = None,
+        on_input: Callable[[InputRequest], InputResponse] | None = None,
         session_id: str | None = None,
         memory_namespace: str | None = None,
         run_id: str | None = None,
@@ -178,6 +180,7 @@ class Agent:
                 on_tool_confirm=on_tool_confirm,
                 on_human_input=on_human_input,
                 on_max_iterations=on_max_iterations,
+                on_input=on_input,
                 session_id=session_id,
                 memory_namespace=memory_namespace,
                 run_id=run_id,
@@ -201,6 +204,7 @@ class Agent:
         on_tool_confirm: Callable[..., Any] | None = None,
         on_human_input: Callable[..., Any] | None = None,
         on_max_iterations: Callable[..., Any] | None = None,
+        on_input: Callable[[InputRequest], InputResponse] | None = None,
         session_id: str | None = None,
         memory_namespace: str | None = None,
         run_id: str | None = None,
@@ -219,6 +223,7 @@ class Agent:
                 on_tool_confirm=on_tool_confirm,
                 on_human_input=on_human_input,
                 on_max_iterations=on_max_iterations,
+                on_input=on_input,
                 session_id=session_id,
                 memory_namespace=memory_namespace,
                 run_id=run_id,
