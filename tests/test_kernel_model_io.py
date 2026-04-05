@@ -89,6 +89,7 @@ def test_anthropic_model_io_builds_request_and_parses_text():
             ],
             callback=events.append,
             run_id="anthropic-run",
+            verbose=True,
         )
     )
 
@@ -179,6 +180,7 @@ def test_anthropic_model_io_raises_clear_error_when_chat_messages_are_empty():
                 messages=[{"role": "system", "content": "be helpful"}],
                 callback=events.append,
                 run_id="anthropic-empty",
+                verbose=True,
             )
         )
         assert False, "expected AnthropicModelIO to reject empty chat messages"
@@ -247,6 +249,7 @@ def test_ollama_model_io_builds_request_and_parses_text():
             messages=[{"role": "user", "content": "hi"}],
             callback=events.append,
             run_id="ollama-run",
+            verbose=True,
         )
     )
 

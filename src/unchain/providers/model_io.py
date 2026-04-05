@@ -327,14 +327,15 @@ class OpenAIModelIO(_NativeModelIOBase):
             text_config["format"] = resolved_text_format
             request_kwargs["text"] = text_config
 
-        self._emit_request_messages(
-            callback=request.callback,
-            run_id=request.run_id,
-            iteration=request.iteration,
-            messages=normalized_messages,
-            previous_response_id=request.previous_response_id,
-            tool_names=self._tool_names_for_trace(tools_json),
-        )
+        if request.verbose:
+            self._emit_request_messages(
+                callback=request.callback,
+                run_id=request.run_id,
+                iteration=request.iteration,
+                messages=normalized_messages,
+                previous_response_id=request.previous_response_id,
+                tool_names=self._tool_names_for_trace(tools_json),
+            )
 
         try:
             return self._fetch_turn_streaming(openai_client, request, request_kwargs)
@@ -342,14 +343,6 @@ class OpenAIModelIO(_NativeModelIOBase):
             if request_kwargs.get("previous_response_id") and self._is_previous_response_error(exc):
                 request_kwargs.pop("previous_response_id", None)
                 request_kwargs["input"] = normalized_messages
-                if request.callback:
-                    self._emit(
-                        request.callback,
-                        "previous_response_id_fallback",
-                        request.run_id,
-                        iteration=request.iteration,
-                        provider="openai",
-                    )
                 return self._fetch_turn_streaming(openai_client, request, request_kwargs)
             raise
 
@@ -384,7 +377,6 @@ class OpenAIModelIO(_NativeModelIOBase):
                                 iteration=request.iteration,
                                 provider="openai",
                                 delta=delta,
-                                accumulated_text="".join(collected_chunks),
                             )
                     continue
                 if chunk_type == "response.error":
@@ -611,14 +603,15 @@ class AnthropicModelIO(_NativeModelIOBase):
                 if isinstance(_block, dict):
                     _block["cache_control"] = {"type": "ephemeral"}
 
-        self._emit_request_messages(
-            callback=request.callback,
-            run_id=request.run_id,
-            iteration=request.iteration,
-            messages=chat_messages,
-            tool_names=self._tool_names_for_trace(tools_json),
-            system=system_prompt if system_prompt else None,
-        )
+        if request.verbose:
+            self._emit_request_messages(
+                callback=request.callback,
+                run_id=request.run_id,
+                iteration=request.iteration,
+                messages=chat_messages,
+                tool_names=self._tool_names_for_trace(tools_json),
+                system=system_prompt if system_prompt else None,
+            )
 
         if not chat_messages:
             raise ValueError(
@@ -687,7 +680,6 @@ class AnthropicModelIO(_NativeModelIOBase):
                                     iteration=request.iteration,
                                     provider=self.provider,
                                     delta=text,
-                                    accumulated_text="".join(collected_chunks),
                                 )
                         continue
                     if delta_type == "input_json_delta":
@@ -828,13 +820,14 @@ class OllamaModelIO(_NativeModelIOBase):
         if request.response_format is not None:
             request_body["format"] = request.response_format.to_ollama()
 
-        self._emit_request_messages(
-            callback=request.callback,
-            run_id=request.run_id,
-            iteration=request.iteration,
-            messages=request_body.get("messages", []),
-            tool_names=self._tool_names_for_trace(tools_json),
-        )
+        if request.verbose:
+            self._emit_request_messages(
+                callback=request.callback,
+                run_id=request.run_id,
+                iteration=request.iteration,
+                messages=request_body.get("messages", []),
+                tool_names=self._tool_names_for_trace(tools_json),
+            )
 
         collected_chunks: list[str] = []
         reasoning_chunks: list[str] = []
@@ -887,7 +880,6 @@ class OllamaModelIO(_NativeModelIOBase):
                             iteration=request.iteration,
                             provider=self.provider,
                             delta=content_delta,
-                            accumulated_text="".join(collected_chunks),
                         )
 
                 raw_tool_calls = message.get("tool_calls") or []

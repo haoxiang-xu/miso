@@ -231,14 +231,6 @@ class KernelLoop:
             state.memory_prepare_info = {}
             state.component_bucket("memory")["prepare_info"] = {}
         self.dispatch_phase(state, phase="before_model", event=phase_event)
-        if self._memory_runtime is not None and state.memory_prepare_info:
-            self.emit_event(
-                callback,
-                "memory_prepare",
-                run_id,
-                iteration=current_iteration,
-                **copy.deepcopy(state.memory_prepare_info),
-            )
         turn = self.fetch_model_turn(
             state,
             payload=payload,
@@ -284,14 +276,7 @@ class KernelLoop:
                 state.memory_commit_info = {}
                 state.component_bucket("memory")["commit_info"] = {}
             self.dispatch_phase(state, phase="before_commit", event=after_model_event)
-            if self._memory_runtime is not None and state.memory_commit_info:
-                self.emit_event(
-                    callback,
-                    "memory_commit",
-                    run_id,
-                    iteration=current_iteration,
-                    **copy.deepcopy(state.memory_commit_info),
-                )
+            pass  # memory_commit event removed — harness logic retained above
 
         state.iteration = current_iteration + 1
         return turn
@@ -658,41 +643,32 @@ class KernelLoop:
         effective_max = int(max_iterations)
         while True:
             if int(state.iteration) >= effective_max:
-                if callable(on_max_iterations):
-                    self.emit_event(
-                        callback,
-                        "run_max_iterations",
-                        run_id,
-                        iteration=int(state.iteration),
-                        bundle=self._build_legacy_bundle(state, status="max_iterations"),
-                    )
+                should_continue = False
+                if on_input:
+                    from ..types.input import InputRequest
+                    resp = on_input(InputRequest(
+                        kind="continue",
+                        run_id=run_id,
+                        call_id=None,
+                        tool_name=None,
+                        config={"reason": "max_iterations_reached", "iterations_used": int(state.iteration)},
+                    ))
+                    should_continue = resp.decision == "continued"
+                elif callable(on_max_iterations):
                     mi_response = on_max_iterations({
                         "iteration": int(state.iteration),
                         "max_iterations": effective_max,
                         "consumed_tokens": int(state.token_state.consumed_tokens),
                     })
                     if isinstance(mi_response, dict) and mi_response.get("approved"):
-                        effective_max += max(1, int(mi_response.get("extra_iterations", effective_max)))
-                    else:
-                        state.run_status = "max_iterations"
-                        return self._build_result(state, status="max_iterations")
+                        should_continue = True
+
+                if should_continue:
+                    effective_max += max(1, effective_max)
                 else:
                     state.run_status = "max_iterations"
-                    self.emit_event(
-                        callback,
-                        "run_max_iterations",
-                        run_id,
-                        iteration=int(state.iteration),
-                        bundle=self._build_legacy_bundle(state, status="max_iterations"),
-                    )
                     return self._build_result(state, status="max_iterations")
 
-            self.emit_event(
-                callback,
-                "iteration_started",
-                run_id,
-                iteration=int(state.iteration),
-            )
             turn = self.step_once(
                 state,
                 payload=payload,
@@ -709,30 +685,9 @@ class KernelLoop:
                 tool_runtime_plugins=tool_runtime_plugins,
                 tool_runtime_config=tool_runtime_config,
             )
-            self.emit_event(
-                callback,
-                "response_received",
-                run_id,
-                iteration=max(0, int(state.iteration) - 1),
-                response_id=turn.response_id,
-                has_tool_calls=bool(turn.tool_calls),
-                status=state.run_status,
-                bundle=self._build_legacy_bundle(
-                    state,
-                    status="running" if turn.tool_calls else "completed",
-                ),
-            )
             if state.run_status == "awaiting_human_input":
                 return self._build_result(state, status="awaiting_human_input")
             if state.run_status == "completed":
-                final_text = self._last_assistant_text(state.transcript)
-                self.emit_event(
-                    callback,
-                    "final_message",
-                    run_id,
-                    iteration=max(0, int(state.iteration) - 1),
-                    content=final_text,
-                )
                 self.emit_event(
                     callback,
                     "run_completed",
@@ -743,22 +698,7 @@ class KernelLoop:
                 )
                 return self._build_result(state, status="completed")
             if turn.tool_calls:
-                self.emit_event(
-                    callback,
-                    "iteration_completed",
-                    run_id,
-                    iteration=max(0, int(state.iteration) - 1),
-                    has_tool_calls=True,
-                )
                 continue
-            final_text = self._last_assistant_text(state.transcript)
-            self.emit_event(
-                callback,
-                "final_message",
-                run_id,
-                iteration=max(0, int(state.iteration) - 1),
-                content=final_text,
-            )
             self.emit_event(
                 callback,
                 "run_completed",

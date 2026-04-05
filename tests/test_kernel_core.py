@@ -129,6 +129,7 @@ def test_openai_model_io_builds_request_and_parses_text(monkeypatch):
         toolkit=Toolkit(),
         callback=events.append,
         run_id="kernel-openai",
+        verbose=True,
     )
 
     assert isinstance(turn, ModelTurnResult)
