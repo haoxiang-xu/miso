@@ -154,6 +154,7 @@ def test_subagent_delegate_template_returns_structured_result_and_parent_keeps_c
     assert spawned["root_run_id"] == "root-run"
     assert spawned["mode"] == "delegate"
     assert completed["template"] == "researcher"
+    assert completed["child_run_id"] == spawned["child_run_id"]
 
 
 def test_subagent_delegate_dynamic_child_respects_policy():

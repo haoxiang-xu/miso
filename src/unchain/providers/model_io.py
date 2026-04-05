@@ -620,6 +620,13 @@ class AnthropicModelIO(_NativeModelIOBase):
             system=system_prompt if system_prompt else None,
         )
 
+        if not chat_messages:
+            raise ValueError(
+                "Anthropic request has no chat messages after preprocessing. "
+                "This usually means context optimization or memory/history "
+                "selection dropped the active turn before provider call."
+            )
+
         collected_chunks: list[str] = []
         assistant_messages: list[dict[str, Any]] = []
         tool_calls: list[ToolCall] = []

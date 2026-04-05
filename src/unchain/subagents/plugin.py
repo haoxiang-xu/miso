@@ -446,6 +446,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 mode="delegate",
                 template=template_name,
                 lineage=lineage,
+                child_run_id=child_run_id,
                 request_id=result.clarification_request.get("request_id"),
             )
         self._emit_subagent_event(
@@ -456,6 +457,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             mode="delegate",
             template=template_name,
             lineage=lineage,
+            child_run_id=child_run_id,
             status=result.status,
         )
         return ToolRuntimeOutcome(
@@ -536,6 +538,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 mode="handoff",
                 template=template_name,
                 lineage=lineage,
+                child_run_id=child_run_id,
                 request_id=result.clarification_request.get("request_id"),
             )
             return ToolRuntimeOutcome(
@@ -568,6 +571,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             mode="handoff",
             template=template_name,
             lineage=lineage,
+            child_run_id=child_run_id,
             status=result.status,
         )
         return ToolRuntimeOutcome(
@@ -715,7 +719,18 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             rendered = self._render_result(result=result, output_mode=output_mode, template_name=template_name)
             result = SubagentResult(**rendered)
             event_type = "subagent_completed" if not result.error else "subagent_failed"
-            self._emit_subagent_event(context, event_type, subagent_id=child_id, parent_id=parent_id, mode="worker", template=template_name, lineage=lineage, batch_id=batch_id, status=result.status)
+            self._emit_subagent_event(
+                context,
+                event_type,
+                subagent_id=child_id,
+                parent_id=parent_id,
+                mode="worker",
+                template=template_name,
+                lineage=lineage,
+                batch_id=batch_id,
+                child_run_id=child_run_id,
+                status=result.status,
+            )
             if result.clarification_request is not None:
                 self._emit_subagent_event(
                     context,
@@ -726,6 +741,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                     template=template_name,
                     lineage=lineage,
                     batch_id=batch_id,
+                    child_run_id=child_run_id,
                     request_id=result.clarification_request.get("request_id"),
                 )
             return result

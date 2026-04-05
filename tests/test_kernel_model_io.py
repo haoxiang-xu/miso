@@ -164,6 +164,34 @@ def test_anthropic_model_io_parses_tool_use_and_emits_token_delta():
     assert token_event["delta"] == "thinking"
 
 
+def test_anthropic_model_io_raises_clear_error_when_chat_messages_are_empty():
+    captured_kwargs = {}
+    events = []
+    client_factory = lambda api_key, **kwargs: _FakeAnthropicClient(
+        events=[],
+        captured_kwargs=captured_kwargs,
+    )
+    io = AnthropicModelIO(model="claude-3-7-sonnet", api_key="test-key", client_factory=client_factory)
+
+    try:
+        io.fetch_turn(
+            ModelTurnRequest(
+                messages=[{"role": "system", "content": "be helpful"}],
+                callback=events.append,
+                run_id="anthropic-empty",
+            )
+        )
+        assert False, "expected AnthropicModelIO to reject empty chat messages"
+    except ValueError as exc:
+        assert "no chat messages after preprocessing" in str(exc)
+
+    request_event = next(event for event in events if event["type"] == "request_messages")
+    assert request_event["provider"] == "anthropic"
+    assert request_event["messages"] == []
+    assert request_event["system"] == "be helpful"
+    assert captured_kwargs == {}
+
+
 def test_anthropic_model_io_maps_sonnet_4_alias_to_provider_model():
     captured_kwargs = {}
     client_factory = lambda api_key, **kwargs: _FakeAnthropicClient(

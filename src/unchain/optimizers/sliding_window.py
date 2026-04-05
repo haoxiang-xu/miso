@@ -53,6 +53,7 @@ class SlidingWindowOptimizer(BaseContextOptimizer):
 
         turns = split_turns(non_system)
         total_turn_count = len(turns)
+        forced_keep_latest_turn = False
 
         if remaining_budget <= 0:
             kept_turns: list[list[dict]] = []
@@ -66,6 +67,13 @@ class SlidingWindowOptimizer(BaseContextOptimizer):
                 kept_turns.insert(0, turn)
                 tokens_used += turn_tokens
 
+        # Never let optimization erase all non-system context when there are
+        # still turns available. Anthropic requires at least one chat message,
+        # and preserving the latest full turn keeps tool/result pairs intact.
+        if total_turn_count > 0 and not kept_turns:
+            kept_turns = [turns[-1]]
+            forced_keep_latest_turn = True
+
         kept_turn_count = len(kept_turns)
         dropped_turn_count = total_turn_count - kept_turn_count
         tokens_used_final = estimate_tokens(_flatten_turns(kept_turns))
@@ -77,6 +85,7 @@ class SlidingWindowOptimizer(BaseContextOptimizer):
         bucket["total_turn_count"] = total_turn_count
         bucket["dropped_turn_count"] = dropped_turn_count
         bucket["tokens_used"] = tokens_used_final
+        bucket["forced_keep_latest_turn"] = forced_keep_latest_turn
 
         trace = {
             "kept_turn_count": kept_turn_count,
@@ -84,6 +93,7 @@ class SlidingWindowOptimizer(BaseContextOptimizer):
             "dropped_turn_count": dropped_turn_count,
             "budget_tokens": budget,
             "used_tokens": tokens_used_final,
+            "forced_keep_latest_turn": forced_keep_latest_turn,
         }
 
         updated = replace_non_system_span(messages, _flatten_turns(kept_turns))

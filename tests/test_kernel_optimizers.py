@@ -418,7 +418,29 @@ def test_sliding_window_optimizer_preserves_system_messages_and_counts_toward_bu
     assert msgs[0]["role"] == "system"
     assert msgs[0]["content"] == "S" * 500
     non_system = [m for m in msgs if m.get("role") != "system"]
-    assert len(non_system) == 0, "budget exhausted by system, all non-system dropped"
+    assert [m.get("role") for m in non_system] == ["user", "assistant"]
+    assert state.optimizer_state["sliding_window"]["forced_keep_latest_turn"] is True
+
+
+def test_sliding_window_optimizer_keeps_latest_turn_when_budget_would_drop_everything():
+    loop = KernelLoop(
+        harnesses=[
+            SlidingWindowOptimizer(SlidingWindowOptimizerConfig(max_window_tokens=200)),
+        ]
+    )
+    original = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "A" * 400},
+        {"role": "assistant", "content": "B" * 400},
+    ]
+    state = loop.seed_state(original)
+
+    loop.dispatch_phase(state, phase="before_model", event={"toolkit": Toolkit()})
+
+    msgs = state.latest_messages()
+    assert [m.get("role") for m in msgs] == ["system", "user", "assistant"]
+    assert state.optimizer_state["sliding_window"]["kept_turn_count"] == 1
+    assert state.optimizer_state["sliding_window"]["forced_keep_latest_turn"] is True
 
 
 def test_sliding_window_optimizer_keeps_all_when_under_budget():
