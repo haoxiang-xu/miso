@@ -30,6 +30,10 @@ class ToolContext:
         return self.harness_context.event_payload()
 
     @property
+    def raw_event(self) -> dict[str, Any]:
+        return self.harness_context.event
+
+    @property
     def latest_version_id(self) -> str | None:
         return self.harness_context.latest_version_id
 
@@ -51,16 +55,16 @@ class ToolContext:
 
     @property
     def toolkit(self) -> Toolkit | None:
-        toolkit = self.event.get("toolkit")
+        toolkit = self.raw_event.get("toolkit")
         return toolkit if isinstance(toolkit, Toolkit) else None
 
     @property
     def loop(self) -> Any:
-        return self.event.get("loop")
+        return self.raw_event.get("loop")
 
     @property
     def tool_runtime_plugins(self) -> list[ToolRuntimePlugin]:
-        plugins = self.event.get("tool_runtime_plugins")
+        plugins = self.raw_event.get("tool_runtime_plugins")
         if not isinstance(plugins, list):
             return []
         from .runtime import ToolRuntimePlugin
@@ -69,11 +73,11 @@ class ToolContext:
 
     @property
     def callback(self) -> Any:
-        return self.event.get("callback")
+        return self.raw_event.get("callback")
 
     @property
     def run_id(self) -> str:
-        return str(self.event.get("run_id") or "kernel")
+        return str(self.raw_event.get("run_id") or "kernel")
 
     @property
     def iteration(self) -> int:

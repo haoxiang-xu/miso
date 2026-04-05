@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from .models import HistoryPayloadOptimizer, ToolConfirmationPolicy, ToolExecutionContext, ToolParameter
+from .models import HistoryPayloadOptimizer, ToolConfirmationPolicy, ToolExecutionContext, ToolParameter, ToolPromptSpec
 from .tool import Tool
 
 
@@ -24,6 +24,7 @@ class Toolkit:
             Callable[[dict[str, Any], ToolExecutionContext | None], ToolConfirmationPolicy | bool | dict[str, Any] | None]
             | None
         ) = None,
+        prompt_spec: ToolPromptSpec | dict[str, Any] | None = None,
         name: str | None = None,
         description: str | None = None,
         parameters: list[ToolParameter | dict[str, Any]] | None = None,
@@ -45,6 +46,8 @@ class Toolkit:
                 tool_obj.render_component = render_component
             if confirmation_resolver is not None:
                 tool_obj.confirmation_resolver = confirmation_resolver
+            if prompt_spec is not None:
+                tool_obj.prompt_spec = ToolPromptSpec.from_raw(prompt_spec)
             if history_arguments_optimizer is not None:
                 tool_obj.history_arguments_optimizer = history_arguments_optimizer
             if history_result_optimizer is not None:
@@ -62,6 +65,7 @@ class Toolkit:
                 requires_confirmation=bool(requires_confirmation),
                 render_component=render_component,
                 confirmation_resolver=confirmation_resolver,
+                prompt_spec=prompt_spec,
                 history_arguments_optimizer=history_arguments_optimizer,
                 history_result_optimizer=history_result_optimizer,
             )
@@ -88,6 +92,7 @@ class Toolkit:
             Callable[[dict[str, Any], ToolExecutionContext | None], ToolConfirmationPolicy | bool | dict[str, Any] | None]
             | None
         ) = None,
+        prompt_spec: ToolPromptSpec | dict[str, Any] | None = None,
         parameters: list[ToolParameter | dict[str, Any]] | None = None,
         history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
         history_result_optimizer: HistoryPayloadOptimizer | None = None,
@@ -100,6 +105,7 @@ class Toolkit:
                 name=name,
                 description=description,
                 confirmation_resolver=confirmation_resolver,
+                prompt_spec=prompt_spec,
                 parameters=parameters,
                 history_arguments_optimizer=history_arguments_optimizer,
                 history_result_optimizer=history_result_optimizer,
@@ -113,6 +119,7 @@ class Toolkit:
                 name=name,
                 description=description,
                 confirmation_resolver=confirmation_resolver,
+                prompt_spec=prompt_spec,
                 parameters=parameters,
                 history_arguments_optimizer=history_arguments_optimizer,
                 history_result_optimizer=history_result_optimizer,

@@ -3,6 +3,7 @@ from .memory import MemoryModule
 from .optimizers import OptimizersModule
 from .policies import PoliciesModule
 from .subagents import SubagentModule
+from .tool_discovery import ToolDiscoveryModule
 from .tools import ToolsModule
 
 __all__ = [
@@ -13,6 +14,7 @@ __all__ = [
     "OptimizersModule",
     "PoliciesModule",
     "SubagentModule",
+    "ToolDiscoveryModule",
     "ToolsModule",
 ]
 

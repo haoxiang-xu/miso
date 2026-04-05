@@ -9,6 +9,7 @@ from .models import (
     ToolConfirmationPolicy,
     ToolExecutionContext,
     ToolParameter,
+    ToolPromptSpec,
     _annotation_to_json_schema,
     _escape_control_chars_inside_json_strings,
     _parse_docstring,
@@ -29,6 +30,7 @@ class Tool:
             Callable[[dict[str, Any], ToolExecutionContext | None], ToolConfirmationPolicy | bool | dict[str, Any] | None]
             | None
         ) = None,
+        prompt_spec: ToolPromptSpec | dict[str, Any] | None = None,
         history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
         history_result_optimizer: HistoryPayloadOptimizer | None = None,
     ):
@@ -43,6 +45,7 @@ class Tool:
         self.requires_confirmation = requires_confirmation
         self.render_component = render_component
         self.confirmation_resolver = confirmation_resolver
+        self.prompt_spec = ToolPromptSpec.from_raw(prompt_spec)
         self.history_arguments_optimizer = history_arguments_optimizer
         self.history_result_optimizer = history_result_optimizer
         self.parameters = self._construct_parameters(parameters)
@@ -69,6 +72,7 @@ class Tool:
                 requires_confirmation=self.requires_confirmation,
                 render_component=self.render_component,
                 confirmation_resolver=self.confirmation_resolver,
+                prompt_spec=self.prompt_spec,
                 history_arguments_optimizer=self.history_arguments_optimizer,
                 history_result_optimizer=self.history_result_optimizer,
             )
@@ -93,6 +97,7 @@ class Tool:
             Callable[[dict[str, Any], ToolExecutionContext | None], ToolConfirmationPolicy | bool | dict[str, Any] | None]
             | None
         ) = None,
+        prompt_spec: ToolPromptSpec | dict[str, Any] | None = None,
         history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
         history_result_optimizer: HistoryPayloadOptimizer | None = None,
     ) -> "Tool":
@@ -106,6 +111,7 @@ class Tool:
             requires_confirmation=requires_confirmation,
             render_component=render_component,
             confirmation_resolver=confirmation_resolver,
+            prompt_spec=prompt_spec,
             history_arguments_optimizer=history_arguments_optimizer,
             history_result_optimizer=history_result_optimizer,
         )

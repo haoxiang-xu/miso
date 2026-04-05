@@ -19,6 +19,15 @@ class _QueueModelIO:
         return self.results.pop(0)
 
 
+def _contains_tools_block(messages):
+    return any(
+        message.get("role") == "system"
+        and isinstance(message.get("content"), str)
+        and "<tools>" in message["content"]
+        for message in messages
+    )
+
+
 def test_kernel_run_executes_openai_tool_and_continues_with_previous_response_chain():
     model_io = _QueueModelIO([
         ModelTurnResult(
@@ -64,7 +73,7 @@ def test_kernel_run_executes_openai_tool_and_continues_with_previous_response_ch
     assert tool_message["call_id"] == "call_1"
     assert json.loads(tool_message["output"]) == {"value": 2}
     assert model_io.requests[1].previous_response_id == "resp_1"
-    assert model_io.requests[1].messages == [tool_message]
+    assert tool_message in model_io.requests[1].messages
 
 
 def test_kernel_run_confirmation_denied_and_modified_arguments():
@@ -485,13 +494,11 @@ def test_kernel_resume_human_input_openai_uses_function_call_output_and_previous
     assert resumed.status == "completed"
     request = resumed_model_io.requests[0]
     assert request.previous_response_id == "resp_ask"
-    assert request.messages == [
-        {
-            "type": "function_call_output",
-            "call_id": "call_user",
-            "output": json.dumps({"submitted": True, "selected_values": ["react"], "other_text": None}, ensure_ascii=False),
-        }
-    ]
+    assert {
+        "type": "function_call_output",
+        "call_id": "call_user",
+        "output": json.dumps({"submitted": True, "selected_values": ["react"], "other_text": None}, ensure_ascii=False),
+    } in request.messages
     assert any(message.get("type") == "function_call_output" and message.get("call_id") == "call_user" for message in resumed.messages)
 
 
@@ -590,7 +597,8 @@ def test_kernel_run_executes_anthropic_tool_and_continues_with_full_transcript()
     )
     assert json.loads(tool_message["content"][0]["content"]) == {"value": 2}
     second_request_messages = model_io.requests[1].messages
-    assert second_request_messages[0] == {"role": "user", "content": "start"}
+    assert any(message.get("role") == "user" and message.get("content") == "start" for message in second_request_messages)
+    assert _contains_tools_block(second_request_messages)
     assert any(
         message.get("role") == "assistant"
         and isinstance(message.get("content"), list)
@@ -733,7 +741,8 @@ def test_kernel_run_executes_ollama_tool_and_continues_with_full_transcript():
     tool_message = next(message for message in result.messages if message.get("role") == "tool")
     assert json.loads(tool_message["content"]) == {"value": 2}
     second_request_messages = model_io.requests[1].messages
-    assert second_request_messages[0] == {"role": "user", "content": "start"}
+    assert any(message.get("role") == "user" and message.get("content") == "start" for message in second_request_messages)
+    assert _contains_tools_block(second_request_messages)
     assert any(message.get("role") == "assistant" and "tool_calls" in message for message in second_request_messages)
     assert any(message.get("role") == "tool" for message in second_request_messages)
 

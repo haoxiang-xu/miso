@@ -12,6 +12,7 @@ from ..tools import (
     OBSERVATION_RECENT_MESSAGES,
     OBSERVATION_SYSTEM_PROMPT,
     ToolExecutionHarness,
+    ToolPromptHarness,
 )
 from ..tools.toolkit import Toolkit
 from .delta import HarnessDelta
@@ -298,6 +299,8 @@ class KernelLoop:
 
     def _ensure_runtime_harnesses(self) -> None:
         existing_names = {harness.name for harness in self._harnesses}
+        if "tool_prompt" not in existing_names:
+            self.register_harness(ToolPromptHarness())
         if "tool_execution" not in existing_names:
             self.register_harness(ToolExecutionHarness())
         if "human_input_resume" not in existing_names:

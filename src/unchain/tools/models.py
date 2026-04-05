@@ -336,12 +336,14 @@ class ToolConfirmationResponse:
 
 __all__ = [
     "HistoryPayloadOptimizer",
+    "ToolConfirmationPolicy",
     "ToolExecutionContext",
     "NormalizedToolHistoryRecord",
     "ToolConfirmationRequest",
     "ToolConfirmationResponse",
     "ToolHistoryOptimizationContext",
     "ToolParameter",
+    "ToolPromptSpec",
     "_annotation_to_json_schema",
     "_escape_control_chars_inside_json_strings",
     "_parse_docstring",

@@ -1,6 +1,6 @@
 import json
 
-from unchain.tools import Tool, Toolkit
+from unchain.tools import Tool, Toolkit, ToolPromptSpec, render_tool_prompt_block
 
 
 def test_tool_parameter_inference_and_execute():
@@ -175,3 +175,42 @@ def test_tool_provider_specific_schema_serialization():
             "parameters": openai_schema["parameters"],
         },
     }
+
+
+def test_tool_prompt_spec_renders_rich_guidance_without_affecting_schema():
+    def fetch(url: str):
+        return {"url": url}
+
+    tool_obj = Tool.from_callable(
+        fetch,
+        name="web_fetch",
+        description="Fetch a web page.",
+        prompt_spec=ToolPromptSpec(
+            purpose="Inspect public web pages and extract useful information.",
+            when_to_use=("You need content from an HTTP or HTTPS page.",),
+            when_not_to_use=("A local file or existing tool output already has the needed data.",),
+            examples=('web_fetch(url="https://example.com")',),
+            advanced_tips=("Prefer narrower URLs when only one page matters.",),
+        ),
+    )
+    toolkit_obj = Toolkit()
+    toolkit_obj.register(tool_obj)
+
+    rendered = render_tool_prompt_block(toolkit_obj)
+
+    assert "<tools>" in rendered
+    assert "web_fetch: Inspect public web pages and extract useful information." in rendered
+    assert 'web_fetch(url="https://example.com")' in rendered
+    assert tool_obj.to_provider_json("openai")["description"] == "Fetch a web page."
+
+
+def test_tool_prompt_block_falls_back_to_short_description():
+    def grep(pattern: str):
+        return {"pattern": pattern}
+
+    toolkit_obj = Toolkit()
+    toolkit_obj.register(grep, name="grep", description="Search file content.")
+
+    rendered = render_tool_prompt_block(toolkit_obj)
+
+    assert "- grep: Search file content." in rendered
