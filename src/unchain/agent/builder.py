@@ -32,9 +32,6 @@ class AgentCallContext:
     max_iterations: int | None = None
     max_context_window_tokens: int | None = None
     previous_response_id: str | None = None
-    on_tool_confirm: Callable[..., Any] | None = None
-    on_human_input: Callable[..., Any] | None = None
-    on_max_iterations: Callable[..., Any] | None = None
     on_input: Callable[[InputRequest], InputResponse] | None = None
     session_id: str | None = None
     memory_namespace: str | None = None
@@ -53,9 +50,6 @@ class PreparedAgent:
     default_response_format: ResponseFormat | None = None
     default_max_iterations: int | None = None
     default_max_context_window_tokens: int | None = None
-    default_on_tool_confirm: Callable[..., Any] | None = None
-    default_on_human_input: Callable[..., Any] | None = None
-    default_on_max_iterations: Callable[..., Any] | None = None
     default_on_input: Callable[[InputRequest], InputResponse] | None = None
     run_hooks: list[RunHook] = field(default_factory=list)
     tool_runtime_plugins: list[Any] = field(default_factory=list)
@@ -81,15 +75,6 @@ class PreparedAgent:
     def _resolved_response_format(self) -> ResponseFormat | None:
         return self.call_context.response_format or self.default_response_format
 
-    def _resolved_on_tool_confirm(self) -> Callable[..., Any] | None:
-        return self.call_context.on_tool_confirm or self.default_on_tool_confirm
-
-    def _resolved_on_human_input(self) -> Callable[..., Any] | None:
-        return self.call_context.on_human_input or self.default_on_human_input
-
-    def _resolved_on_max_iterations(self) -> Callable[..., Any] | None:
-        return self.call_context.on_max_iterations or self.default_on_max_iterations
-
     def _resolved_on_input(self) -> Callable[[InputRequest], InputResponse] | None:
         return self.call_context.on_input or self.default_on_input
 
@@ -110,9 +95,6 @@ class PreparedAgent:
             verbose=self.call_context.verbose,
             max_iterations=self._resolved_max_iterations(),
             previous_response_id=self.call_context.previous_response_id,
-            on_tool_confirm=self._resolved_on_tool_confirm(),
-            on_human_input=self._resolved_on_human_input(),
-            on_max_iterations=self._resolved_on_max_iterations(),
             on_input=self._resolved_on_input(),
             session_id=self.call_context.session_id,
             memory_namespace=self.call_context.memory_namespace,
@@ -139,9 +121,6 @@ class PreparedAgent:
             response_format=self._resolved_response_format(),
             callback=self.call_context.callback,
             verbose=self.call_context.verbose,
-            on_tool_confirm=self._resolved_on_tool_confirm(),
-            on_human_input=self._resolved_on_human_input(),
-            on_max_iterations=self._resolved_on_max_iterations(),
             on_input=self._resolved_on_input(),
             session_id=self.call_context.session_id,
             memory_namespace=self.call_context.memory_namespace,
@@ -167,9 +146,6 @@ class AgentBuilder:
     default_response_format: ResponseFormat | None = None
     default_max_iterations: int | None = None
     default_max_context_window_tokens: int | None = None
-    default_on_tool_confirm: Callable[..., Any] | None = None
-    default_on_human_input: Callable[..., Any] | None = None
-    default_on_max_iterations: Callable[..., Any] | None = None
     default_on_input: Callable[[InputRequest], InputResponse] | None = None
     run_hooks: list[RunHook] = field(default_factory=list)
     tool_runtime_plugins: list[Any] = field(default_factory=list)
@@ -241,15 +217,6 @@ class AgentBuilder:
     def set_max_context_window_tokens_default(self, max_context_window_tokens: int) -> None:
         self.default_max_context_window_tokens = int(max_context_window_tokens)
 
-    def set_on_tool_confirm_default(self, on_tool_confirm: Callable[..., Any]) -> None:
-        self.default_on_tool_confirm = on_tool_confirm
-
-    def set_on_human_input_default(self, on_human_input: Callable[..., Any]) -> None:
-        self.default_on_human_input = on_human_input
-
-    def set_on_max_iterations_default(self, on_max_iterations: Callable[..., Any]) -> None:
-        self.default_on_max_iterations = on_max_iterations
-
     def set_on_input_default(self, on_input: Callable[[InputRequest], InputResponse]) -> None:
         self.default_on_input = on_input
 
@@ -298,9 +265,6 @@ class AgentBuilder:
             default_response_format=self.default_response_format,
             default_max_iterations=self.default_max_iterations,
             default_max_context_window_tokens=self.default_max_context_window_tokens,
-            default_on_tool_confirm=self.default_on_tool_confirm,
-            default_on_human_input=self.default_on_human_input,
-            default_on_max_iterations=self.default_on_max_iterations,
             default_on_input=self.default_on_input,
             run_hooks=list(self.run_hooks),
             tool_runtime_plugins=list(self.tool_runtime_plugins),

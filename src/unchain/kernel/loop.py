@@ -193,8 +193,6 @@ class KernelLoop:
         emit_stream: bool = False,
         response_format: Any = None,
         openai_text_format: dict[str, Any] | None = None,
-        on_tool_confirm: Any = None,
-        on_human_input: Any = None,
         max_iterations: int = 0,
         on_input: Any = None,
         tool_runtime_plugins: list[Any] | None = None,
@@ -217,8 +215,6 @@ class KernelLoop:
             "emit_stream": emit_stream,
             "response_format": response_format,
             "openai_text_format": openai_text_format,
-            "on_tool_confirm": on_tool_confirm,
-            "on_human_input": on_human_input,
             "max_iterations": max_iterations,
             "on_input": on_input,
             "supports_tools": True,
@@ -594,9 +590,6 @@ class KernelLoop:
         callback: Any = None,
         verbose: bool = False,
         max_iterations: int = 6,
-        on_tool_confirm: Any = None,
-        on_human_input: Any = None,
-        on_max_iterations: Any = None,
         on_input: Any = None,
         toolkit: Toolkit | None = None,
         run_id: str | None = None,
@@ -654,14 +647,6 @@ class KernelLoop:
                         config={"reason": "max_iterations_reached", "iterations_used": int(state.iteration)},
                     ))
                     should_continue = resp.decision == "continued"
-                elif callable(on_max_iterations):
-                    mi_response = on_max_iterations({
-                        "iteration": int(state.iteration),
-                        "max_iterations": effective_max,
-                        "consumed_tokens": int(state.token_state.consumed_tokens),
-                    })
-                    if isinstance(mi_response, dict) and mi_response.get("approved"):
-                        should_continue = True
 
                 if should_continue:
                     effective_max += max(1, effective_max)
@@ -678,8 +663,6 @@ class KernelLoop:
                 run_id=run_id,
                 emit_stream=True,
                 response_format=response_format,
-                on_tool_confirm=on_tool_confirm,
-                on_human_input=on_human_input,
                 max_iterations=effective_max,
                 on_input=on_input,
                 tool_runtime_plugins=tool_runtime_plugins,
@@ -719,9 +702,6 @@ class KernelLoop:
         verbose: bool = False,
         max_iterations: int = 6,
         previous_response_id: str | None = None,
-        on_tool_confirm: Any = None,
-        on_human_input: Any = None,
-        on_max_iterations: Any = None,
         on_input: Any = None,
         session_id: str | None = None,
         memory_namespace: str | None = None,
@@ -763,9 +743,6 @@ class KernelLoop:
             callback=callback,
             verbose=verbose,
             max_iterations=max_iterations,
-            on_tool_confirm=on_tool_confirm,
-            on_human_input=on_human_input,
-            on_max_iterations=on_max_iterations,
             on_input=on_input,
             toolkit=toolkit,
             run_id=resolved_run_id,
@@ -783,9 +760,6 @@ class KernelLoop:
         response_format: ResponseFormat | None = None,
         callback: Any = None,
         verbose: bool = False,
-        on_tool_confirm: Any = None,
-        on_human_input: Any = None,
-        on_max_iterations: Any = None,
         on_input: Any = None,
         session_id: str | None = None,
         memory_namespace: str | None = None,
@@ -870,9 +844,6 @@ class KernelLoop:
             callback=callback,
             verbose=verbose,
             max_iterations=int(continuation.get("max_iterations") or 6),
-            on_tool_confirm=on_tool_confirm,
-            on_human_input=on_human_input,
-            on_max_iterations=on_max_iterations,
             on_input=on_input,
             toolkit=toolkit,
             run_id=resolved_run_id,

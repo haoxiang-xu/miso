@@ -8,6 +8,7 @@ from pathlib import Path
 
 from unchain.kernel.types import ToolCall
 from unchain.tools import ToolExecutionContext, Toolkit, execute_confirmable_tool_call
+from unchain.types.input import InputResponse
 from unchain.input import ASK_USER_QUESTION_TOOL_NAME
 from unchain.toolkits import CoreToolkit
 from unchain.toolkits.builtin.core.lsp_runtime import LSPServerSpec
@@ -433,7 +434,6 @@ def test_execute_confirmable_tool_call_pushes_code_toolkit_execution_context_by_
         read_outcome = execute_confirmable_tool_call(
             toolkit=merged,
             tool_call=ToolCall(call_id="call_read", name="read", arguments={"path": str(target)}),
-            on_tool_confirm=None,
             loop=None,
             callback=None,
             run_id="run-1",
@@ -456,7 +456,6 @@ def test_execute_confirmable_tool_call_pushes_code_toolkit_execution_context_by_
                 name="write",
                 arguments={"path": str(target), "content": "from other session\n"},
             ),
-            on_tool_confirm=None,
             loop=None,
             callback=None,
             run_id="run-2",
@@ -478,7 +477,6 @@ def test_execute_confirmable_tool_call_pushes_code_toolkit_execution_context_by_
                 name="write",
                 arguments={"path": str(target), "content": "from same session\n"},
             ),
-            on_tool_confirm=None,
             loop=None,
             callback=None,
             run_id="run-3",
@@ -601,7 +599,6 @@ def test_code_toolkit_web_fetch_extract_uses_runtime_config(monkeypatch):
                     "prompt": "Summarize the docs changes",
                 },
             ),
-            on_tool_confirm=None,
             loop=None,
             callback=None,
             run_id="run-fetch",
@@ -718,7 +715,7 @@ def test_code_toolkit_shell_confirmation_policy_and_background_lifecycle():
                 name="shell",
                 arguments={"action": "run", "command": low_risk_command},
             ),
-            on_tool_confirm=lambda req: confirm_requests.append(req) or {"approved": True},
+            on_input=lambda req: (confirm_requests.append(req) if req.kind == "approval" else None) or InputResponse(decision="approved"),
             loop=None,
             callback=None,
             run_id="run-shell-low",
@@ -744,7 +741,7 @@ def test_code_toolkit_shell_confirmation_policy_and_background_lifecycle():
                 name="shell",
                 arguments={"action": "run", "command": high_risk_command},
             ),
-            on_tool_confirm=lambda req: confirm_requests.append(req) or {"approved": True},
+            on_input=lambda req: (confirm_requests.append(req) if req.kind == "approval" else None) or InputResponse(decision="approved"),
             loop=None,
             callback=None,
             run_id="run-shell-high",
@@ -773,7 +770,7 @@ def test_code_toolkit_shell_confirmation_policy_and_background_lifecycle():
                     "yield_time_ms": 0,
                 },
             ),
-            on_tool_confirm=lambda req: confirm_requests.append(req) or {"approved": True},
+            on_input=lambda req: (confirm_requests.append(req) if req.kind == "approval" else None) or InputResponse(decision="approved"),
             loop=None,
             callback=None,
             run_id="run-shell-bg",
@@ -797,7 +794,7 @@ def test_code_toolkit_shell_confirmation_policy_and_background_lifecycle():
                 name="shell",
                 arguments={"action": "poll", "task_id": task_id},
             ),
-            on_tool_confirm=lambda req: confirm_requests.append(req) or {"approved": True},
+            on_input=lambda req: (confirm_requests.append(req) if req.kind == "approval" else None) or InputResponse(decision="approved"),
             loop=None,
             callback=None,
             run_id="run-shell-poll",
@@ -820,7 +817,7 @@ def test_code_toolkit_shell_confirmation_policy_and_background_lifecycle():
                 name="shell",
                 arguments={"action": "kill", "task_id": task_id},
             ),
-            on_tool_confirm=lambda req: confirm_requests.append(req) or {"approved": True},
+            on_input=lambda req: (confirm_requests.append(req) if req.kind == "approval" else None) or InputResponse(decision="approved"),
             loop=None,
             callback=None,
             run_id="run-shell-kill",

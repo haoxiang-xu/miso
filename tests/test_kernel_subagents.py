@@ -149,12 +149,11 @@ def test_subagent_delegate_template_returns_structured_result_and_parent_keeps_c
     events = []
     result = parent.run("handle it", max_iterations=2, run_id="root-run", callback=events.append)
     assert result.status == "completed"
-    spawned = next(event for event in events if event["type"] == "subagent_spawned")
-    completed = next(event for event in events if event["type"] == "subagent_completed")
-    assert spawned["root_run_id"] == "root-run"
-    assert spawned["mode"] == "delegate"
-    assert completed["template"] == "researcher"
-    assert completed["child_run_id"] == spawned["child_run_id"]
+    fork = next(event for event in events if event["type"] == "branch_fork")
+    merge = next(event for event in events if event["type"] == "branch_merge")
+    assert fork["run_id"] == "root-run"
+    assert fork["mode"] == "delegate"
+    assert merge["child_run_id"] == fork["child_run_id"]
 
 
 def test_subagent_delegate_dynamic_child_respects_policy():
@@ -245,7 +244,7 @@ def test_subagent_handoff_completes_root_run_and_uses_scoped_persistent_memory()
     assert result.status == "completed"
     assert result.messages[-1]["content"] == "specialist final"
     assert len(parent_io.requests) == 1
-    assert any(event["type"] == "subagent_handoff" for event in events)
+    assert any(event["type"] == "branch_fork" and event["mode"] == "handoff" for event in events)
     assert seen_child_context["session_id"] == "root-session:manager.specialist.1"
     assert seen_child_context["memory_namespace"] == "root-ns:manager.specialist.1"
     assert "MemoryModule" in seen_child_context["module_names"]
@@ -395,8 +394,8 @@ def test_subagent_worker_batch_runs_in_parallel_and_preserves_input_order():
     assert result.status == "completed"
     assert result.messages[-1]["content"] == "joined"
     assert tracker["max_active"] > 1
-    assert any(event["type"] == "subagent_batch_started" for event in events)
-    assert any(event["type"] == "subagent_batch_joined" for event in events)
+    assert any(event["type"] == "branch_fork" and event["mode"] == "worker" for event in events)
+    assert any(event["type"] == "branch_merge" and event["mode"] == "worker" for event in events)
 
 
 def test_subagent_worker_batch_rejects_non_parallel_safe_template():
@@ -503,7 +502,7 @@ def test_subagent_child_clarification_is_escalated_without_suspending_root_run()
     assert result.status == "completed"
     assert result.human_input_request is None
     assert result.messages[-1]["content"] == "parent handled clarification"
-    assert any(event["type"] == "subagent_clarification_requested" for event in events)
+    assert any(event["type"] == "branch_merge" for event in events)
     assert all(event["type"] != "human_input_requested" for event in events)
 
 

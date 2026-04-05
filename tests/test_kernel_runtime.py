@@ -5,6 +5,7 @@ from unchain.kernel import KernelLoop, ModelTurnResult
 from unchain.kernel.types import ToolCall as KernelToolCall
 from unchain.tools.observation import inject_observation
 from unchain.tools import Toolkit, tool
+from unchain.types.input import InputResponse
 
 
 class _QueueModelIO:
@@ -137,7 +138,7 @@ def test_kernel_run_confirmation_denied_and_modified_arguments():
         provider="openai",
         model="gpt-4.1",
         toolkit=denied_toolkit,
-        on_tool_confirm=lambda req: {"approved": False, "reason": "nope"},
+        on_input=lambda req: InputResponse(decision="denied", response={"reason": "nope"}),
     )
     denied_output = next(message for message in denied_result.messages if message.get("type") == "function_call_output")
     assert json.loads(denied_output["output"]) == {
@@ -154,7 +155,7 @@ def test_kernel_run_confirmation_denied_and_modified_arguments():
         provider="openai",
         model="gpt-4.1",
         toolkit=modified_toolkit,
-        on_tool_confirm=lambda req: {"approved": True, "modified_arguments": {"path": "final.txt"}},
+        on_input=lambda req: InputResponse(decision="approved", response={"modified_arguments": {"path": "final.txt"}}),
     )
     modified_output = next(message for message in modified_result.messages if message.get("type") == "function_call_output")
     assert json.loads(modified_output["output"]) == {"path": "final.txt"}
@@ -214,7 +215,7 @@ def test_kernel_run_dynamic_confirmation_resolver_skips_low_risk_but_prompts_hig
         provider="openai",
         model="gpt-4.1",
         toolkit=safe_toolkit,
-        on_tool_confirm=lambda req: confirm_requests.append(req) or {"approved": True},
+        on_input=lambda req: (confirm_requests.append(req) if req.kind == "approval" else None) or InputResponse(decision="approved"),
     )
     assert safe_result.status == "completed"
     assert confirm_requests == []
@@ -226,7 +227,7 @@ def test_kernel_run_dynamic_confirmation_resolver_skips_low_risk_but_prompts_hig
         provider="openai",
         model="gpt-4.1",
         toolkit=dangerous_toolkit,
-        on_tool_confirm=lambda req: confirm_requests.append(req) or {"approved": True},
+        on_input=lambda req: (confirm_requests.append(req) if req.kind == "approval" else None) or InputResponse(decision="approved"),
     )
     assert dangerous_result.status == "completed"
     assert len(confirm_requests) == 1

@@ -8,13 +8,10 @@ from typing import Any
 from ..toolkits.base import BuiltinToolkit
 from .models import (
     ToolConfirmationPolicy,
-    ToolConfirmationRequest,
-    ToolConfirmationResponse,
     ToolExecutionContext,
 )
 from .toolkit import Toolkit
 from ..kernel.types import ToolCall
-from .common import emit_loop_event
 
 
 @dataclass(frozen=True)
@@ -57,7 +54,6 @@ def execute_confirmable_tool_call(
     *,
     toolkit: Toolkit,
     tool_call: ToolCall,
-    on_tool_confirm: Any,
     loop: Any,
     callback: Any,
     run_id: str,
@@ -121,52 +117,6 @@ def execute_confirmable_tool_call(
             denied = True
             deny_reason = (resp.response.get("reason") if resp.response else None) or "denied"
             # No tool_denied event — adapter handles input.resolved
-
-    elif tool_obj is not None and requires_confirmation and callable(on_tool_confirm):
-        tool_render = getattr(tool_obj, "render_component", None)
-        if isinstance(tool_render, dict) and tool_render:
-            effective_render = dict(tool_render)
-        else:
-            effective_render = {"version": 1, "type": "confirmation", "config": {}}
-        policy_render = confirmation_policy.render_component if confirmation_policy is not None else None
-        if isinstance(policy_render, dict) and policy_render:
-            effective_render = dict(policy_render)
-        confirmation_request = ToolConfirmationRequest(
-            tool_name=tool_call.name,
-            call_id=tool_call.call_id,
-            arguments=tool_call.arguments if isinstance(tool_call.arguments, dict) else {},
-            description=(
-                confirmation_policy.description
-                if confirmation_policy is not None and confirmation_policy.description
-                else tool_obj.description
-            ),
-            render_component=effective_render,
-        )
-        response = ToolConfirmationResponse.from_raw(on_tool_confirm(confirmation_request))
-        if not response.approved:
-            denied = True
-            deny_reason = response.reason
-            emit_loop_event(
-                loop,
-                callback,
-                "tool_denied",
-                run_id,
-                iteration=iteration,
-                tool_name=tool_call.name,
-                call_id=tool_call.call_id,
-                reason=deny_reason,
-            )
-        elif response.modified_arguments is not None:
-            effective_arguments = copy.deepcopy(response.modified_arguments)
-            emit_loop_event(
-                loop,
-                callback,
-                "tool_confirmed",
-                run_id,
-                iteration=iteration,
-                tool_name=tool_call.name,
-                call_id=tool_call.call_id,
-            )
 
     if denied:
         tool_result = {
