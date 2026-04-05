@@ -8,6 +8,8 @@ from unchain.optimizers import (
     LastNOptimizerConfig,
     LlmSummaryOptimizer,
     LlmSummaryOptimizerConfig,
+    SlidingWindowOptimizer,
+    SlidingWindowOptimizerConfig,
     ToolHistoryCompactionOptimizer,
     ToolHistoryCompactionOptimizerConfig,
 )
@@ -370,3 +372,28 @@ def test_context_optimizers_only_mutate_versions_not_transcript():
 
     assert state.transcript == original
     assert state.latest_messages() != original
+
+
+def test_sliding_window_optimizer_drops_oldest_turns_exceeding_token_budget():
+    loop = KernelLoop(
+        harnesses=[
+            SlidingWindowOptimizer(SlidingWindowOptimizerConfig(max_window_tokens=200)),
+        ]
+    )
+    original = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "A" * 400},
+        {"role": "assistant", "content": "B" * 400},
+        {"role": "user", "content": "C" * 40},
+        {"role": "assistant", "content": "D" * 40},
+    ]
+    state = loop.seed_state(original)
+
+    loop.dispatch_phase(state, phase="before_model", event={"toolkit": Toolkit()})
+
+    msgs = state.latest_messages()
+    roles = [m.get("role") for m in msgs]
+    assert roles[0] == "system"
+    assert "A" * 400 not in str(msgs), "old large turn should be dropped"
+    assert "C" * 40 in str(msgs), "recent small turn should be kept"
+    assert state.transcript == original
