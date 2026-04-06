@@ -410,6 +410,7 @@ class OpenAIModelIO(_NativeModelIOBase):
                 if chunk_type == "response.completed":
                     completed_response = getattr(chunk, "response", None)
 
+        cached_input_tokens = 0
         if completed_response is None:
             if output_items_from_events:
                 outputs = [
@@ -431,7 +432,7 @@ class OpenAIModelIO(_NativeModelIOBase):
         else:
             outputs = getattr(completed_response, "output", None) or []
             response_id = getattr(completed_response, "id", None)
-            usage = self._extract_openai_token_usage(getattr(completed_response, "usage", None))
+            usage, cached_input_tokens = self._extract_openai_token_usage(getattr(completed_response, "usage", None))
 
         assistant_messages: list[dict[str, Any]] = []
         tool_calls: list[ToolCall] = []
@@ -481,6 +482,7 @@ class OpenAIModelIO(_NativeModelIOBase):
             consumed_tokens=usage.consumed_tokens,
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
+            cache_read_input_tokens=cached_input_tokens,
         )
 
     def _normalize_input_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -516,18 +518,24 @@ class OpenAIModelIO(_NativeModelIOBase):
                     text_parts.append(text if isinstance(text, str) else str(text))
         return "".join(text_parts)
 
-    def _extract_openai_token_usage(self, usage: Any) -> TokenUsage:
+    def _extract_openai_token_usage(self, usage: Any) -> tuple[TokenUsage, int]:
+        """Return (TokenUsage, cached_input_tokens) from an OpenAI usage object."""
         usage_dict = self._as_dict(usage)
         input_tokens = self._coerce_token_count(usage_dict.get("input_tokens"))
         output_tokens = self._coerce_token_count(usage_dict.get("output_tokens"))
         total_tokens = self._coerce_token_count(usage_dict.get("total_tokens"))
         if total_tokens == 0:
             total_tokens = input_tokens + output_tokens
+        # OpenAI reports cached tokens inside input_tokens_details.
+        details = usage_dict.get("input_tokens_details")
+        if not isinstance(details, dict):
+            details = self._as_dict(details)
+        cached = self._coerce_token_count(details.get("cached_tokens") if isinstance(details, dict) else None)
         return TokenUsage(
             consumed_tokens=total_tokens,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-        )
+        ), cached
 
 class AnthropicModelIO(_NativeModelIOBase):
     """Native Anthropic Messages API adapter for the new kernel."""
@@ -766,9 +774,19 @@ class AnthropicModelIO(_NativeModelIOBase):
         elif full_text:
             assistant_messages.append({"role": "assistant", "content": full_text})
 
+        # Coerce input/output to ints via _normalize_token_usage (consumed_tokens
+        # from it is intentionally ignored — see total_consumed below).
         token_usage = self._normalize_token_usage(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+        )
+        # Anthropic's input_tokens excludes cached tokens, so we add
+        # cache_read + cache_creation to get the true total processed.
+        total_consumed = (
+            input_tokens
+            + cache_read_input_tokens
+            + cache_creation_input_tokens
+            + output_tokens
         )
         return ModelTurnResult(
             assistant_messages=assistant_messages,
@@ -776,7 +794,7 @@ class AnthropicModelIO(_NativeModelIOBase):
             final_text="".join(final_text_parts).strip(),
             response_id=None,
             reasoning_items=reasoning_items or None,
-            consumed_tokens=token_usage.consumed_tokens,
+            consumed_tokens=total_consumed,
             input_tokens=token_usage.input_tokens,
             output_tokens=token_usage.output_tokens,
             cache_read_input_tokens=cache_read_input_tokens,
