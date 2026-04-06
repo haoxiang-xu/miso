@@ -121,6 +121,7 @@
     "provider": "anthropic",
     "provider_model": "claude-sonnet-4-20250514",
     "max_context_window_tokens": 200000,
+    "max_output_tokens": 16384,
     "supports_tools": true,
     "supports_response_format": false,
     "supports_previous_response_id": false,
@@ -135,6 +136,7 @@
   "claude-sonnet-4-6": {
     "provider": "anthropic",
     "max_context_window_tokens": 200000,
+    "max_output_tokens": 16384,
     "supports_tools": true,
     "supports_response_format": false,
     "supports_previous_response_id": false,
@@ -149,6 +151,7 @@
   "claude-opus-4-6": {
     "provider": "anthropic",
     "max_context_window_tokens": 200000,
+    "max_output_tokens": 16384,
     "supports_tools": true,
     "supports_response_format": false,
     "supports_previous_response_id": false,

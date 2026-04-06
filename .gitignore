@@ -43,3 +43,4 @@ pip-wheel-metadata/
 
 # OS files
 .DS_Store
+.gitnexus

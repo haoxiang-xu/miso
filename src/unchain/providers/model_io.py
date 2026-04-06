@@ -586,7 +586,8 @@ class AnthropicModelIO(_NativeModelIOBase):
         if tools_json and self._model_capability("supports_tools", True):
             anthropic_tools = copy.deepcopy(tools_json)
 
-        max_tokens = request_payload.pop("max_tokens", 4096)
+        _default_max = self._model_capability("max_output_tokens", 4096)
+        max_tokens = request_payload.pop("max_tokens", _default_max)
         request_kwargs: dict[str, Any] = {
             "model": self._provider_request_model(),
             "messages": chat_messages,

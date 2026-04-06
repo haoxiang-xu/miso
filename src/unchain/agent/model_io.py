@@ -43,7 +43,6 @@ class ModelIOFactoryRegistry:
         return AnthropicModelIO(
             model=model,
             api_key=resolved_api_key or "",
-            default_payloads={model: {"max_tokens": 4096}},
         )
 
     def _create_ollama(self, *, model: str, api_key: str | None) -> ModelIO:
