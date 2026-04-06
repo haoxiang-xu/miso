@@ -24,7 +24,7 @@ def build_eval_case(
         task_prompt=str(task_prompt),
         workspace_mode=str(workspace_mode).strip(),
         workspace_source=str(workspace_source).strip(),
-        allowed_toolkits=tuple(allowed_toolkits or ("workspace", "terminal")),
+        allowed_toolkits=tuple(allowed_toolkits or ("core",)),
         toolkit_options={
             str(key): dict(value or {})
             for key, value in dict(toolkit_options or {}).items()
@@ -80,11 +80,9 @@ def list_eval_cases(repo_root: str | Path) -> list[EvalCase]:
                 "min_file_reference_count": 4,
                 "forbidden_tool_names": [
                     "write_file",
-                    "create_file",
-                    "delete_file",
-                    "move_file",
-                    "copy_file",
-                    "search_and_replace",
+                    "insert_lines",
+                    "replace_lines",
+                    "delete_lines",
                 ],
                 "forbidden_result_substrings": ["blocked by strict mode"],
             },
@@ -123,11 +121,9 @@ def list_eval_cases(repo_root: str | Path) -> list[EvalCase]:
                 "min_file_reference_count": 2,
                 "forbidden_tool_names": [
                     "write_file",
-                    "create_file",
-                    "delete_file",
-                    "move_file",
-                    "copy_file",
-                    "search_and_replace",
+                    "insert_lines",
+                    "replace_lines",
+                    "delete_lines",
                 ],
             },
         ),
@@ -163,11 +159,9 @@ def list_eval_cases(repo_root: str | Path) -> list[EvalCase]:
                 "min_file_reference_count": 3,
                 "forbidden_tool_names": [
                     "write_file",
-                    "create_file",
-                    "delete_file",
-                    "move_file",
-                    "copy_file",
-                    "search_and_replace",
+                    "insert_lines",
+                    "replace_lines",
+                    "delete_lines",
                 ],
             },
         ),

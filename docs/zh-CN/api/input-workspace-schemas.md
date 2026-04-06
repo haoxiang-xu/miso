@@ -13,15 +13,15 @@
 
 | 类 | 源码 | 导出 | 类型 |
 | --- | --- | --- | --- |
-| `HumanInputOption` | `src/miso/input/human_input.py:61` | subpackage | dataclass |
-| `HumanInputRequest` | `src/miso/input/human_input.py:89` | subpackage | dataclass |
-| `HumanInputResponse` | `src/miso/input/human_input.py:225` | subpackage | dataclass |
-| `ResponseFormat` | `src/miso/schemas/response.py:7` | subpackage | class |
-| `WorkspacePinExecutionContext` | `src/miso/workspace/pins.py:35` | subpackage | dataclass |
-| `ParsedSyntaxTree` | `src/miso/workspace/syntax.py:215` | internal | dataclass |
-| `DeclarationCandidate` | `src/miso/workspace/syntax.py:228` | internal | dataclass |
+| `HumanInputOption` | `src/unchain/input/human_input.py:61` | subpackage | dataclass |
+| `HumanInputRequest` | `src/unchain/input/human_input.py:89` | subpackage | dataclass |
+| `HumanInputResponse` | `src/unchain/input/human_input.py:225` | subpackage | dataclass |
+| `ResponseFormat` | `src/unchain/schemas/response.py:7` | subpackage | class |
+| `WorkspacePinExecutionContext` | `src/unchain/workspace/pins.py:35` | subpackage | dataclass |
+| `ParsedSyntaxTree` | `src/unchain/workspace/syntax.py:215` | internal | dataclass |
+| `DeclarationCandidate` | `src/unchain/workspace/syntax.py:228` | internal | dataclass |
 
-### `src/miso/input/human_input.py`
+### `src/unchain/input/human_input.py`
 
 ask-user 流程使用的结构化问题/响应模型。
 
@@ -31,7 +31,7 @@ ask-user 流程使用的结构化问题/响应模型。
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/input/human_input.py:61` |
+| 源码 | `src/unchain/input/human_input.py:61` |
 | 模块职责 | ask-user 流程使用的结构化问题/响应模型。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -52,7 +52,7 @@ ask-user 流程使用的结构化问题/响应模型。
 `HumanInputOption` 对外暴露的方法 `from_raw`。
 
 - 类型：方法
-- 定义位置：`src/miso/input/human_input.py:67`
+- 定义位置：`src/unchain/input/human_input.py:67`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -61,7 +61,7 @@ ask-user 流程使用的结构化问题/响应模型。
 `HumanInputOption` 对外暴露的方法 `to_dict`。
 
 - 类型：方法
-- 定义位置：`src/miso/input/human_input.py:80`
+- 定义位置：`src/unchain/input/human_input.py:80`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -82,7 +82,7 @@ HumanInputOption(label=..., value=..., description=...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/input/human_input.py:89` |
+| 源码 | `src/unchain/input/human_input.py:89` |
 | 模块职责 | ask-user 流程使用的结构化问题/响应模型。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -111,7 +111,7 @@ HumanInputOption(label=..., value=..., description=...)
 `HumanInputRequest` 对外暴露的方法 `from_tool_arguments`。
 
 - 类型：方法
-- 定义位置：`src/miso/input/human_input.py:103`
+- 定义位置：`src/unchain/input/human_input.py:103`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -120,7 +120,7 @@ HumanInputOption(label=..., value=..., description=...)
 `HumanInputRequest` 对外暴露的方法 `from_dict`。
 
 - 类型：方法
-- 定义位置：`src/miso/input/human_input.py:180`
+- 定义位置：`src/unchain/input/human_input.py:180`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -129,7 +129,7 @@ HumanInputOption(label=..., value=..., description=...)
 `HumanInputRequest` 对外暴露的方法 `to_dict`。
 
 - 类型：方法
-- 定义位置：`src/miso/input/human_input.py:202`
+- 定义位置：`src/unchain/input/human_input.py:202`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -138,7 +138,7 @@ HumanInputOption(label=..., value=..., description=...)
 `HumanInputRequest` 对外暴露的方法 `allowed_values`。
 
 - 类型：方法
-- 定义位置：`src/miso/input/human_input.py:217`
+- 定义位置：`src/unchain/input/human_input.py:217`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -159,7 +159,7 @@ HumanInputRequest(request_id=..., kind=..., title=..., question=...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/input/human_input.py:225` |
+| 源码 | `src/unchain/input/human_input.py:225` |
 | 模块职责 | ask-user 流程使用的结构化问题/响应模型。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -180,7 +180,7 @@ HumanInputRequest(request_id=..., kind=..., title=..., question=...)
 `HumanInputResponse` 对外暴露的方法 `from_raw`。
 
 - 类型：方法
-- 定义位置：`src/miso/input/human_input.py:231`
+- 定义位置：`src/unchain/input/human_input.py:231`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -189,7 +189,7 @@ HumanInputRequest(request_id=..., kind=..., title=..., question=...)
 `HumanInputResponse` 对外暴露的方法 `to_dict`。
 
 - 类型：方法
-- 定义位置：`src/miso/input/human_input.py:295`
+- 定义位置：`src/unchain/input/human_input.py:295`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -198,7 +198,7 @@ HumanInputRequest(request_id=..., kind=..., title=..., question=...)
 `HumanInputResponse` 对外暴露的方法 `to_tool_result`。
 
 - 类型：方法
-- 定义位置：`src/miso/input/human_input.py:302`
+- 定义位置：`src/unchain/input/human_input.py:302`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -213,7 +213,7 @@ HumanInputRequest(request_id=..., kind=..., title=..., question=...)
 HumanInputResponse(request_id=..., selected_values=..., other_text=...)
 ```
 
-### `src/miso/schemas/response.py`
+### `src/unchain/schemas/response.py`
 
 结构化输出 schema 包装器，负责 provider 投影与解析。
 
@@ -223,7 +223,7 @@ HumanInputResponse(request_id=..., selected_values=..., other_text=...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/schemas/response.py:7` |
+| 源码 | `src/unchain/schemas/response.py:7` |
 | 模块职责 | 结构化输出 schema 包装器，负责 provider 投影与解析。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -242,7 +242,7 @@ HumanInputResponse(request_id=..., selected_values=..., other_text=...)
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/schemas/response.py:10`
+- 定义位置：`src/unchain/schemas/response.py:10`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -251,7 +251,7 @@ HumanInputResponse(request_id=..., selected_values=..., other_text=...)
 `ResponseFormat` 对外暴露的方法 `to_openai`。
 
 - 类型：方法
-- 定义位置：`src/miso/schemas/response.py:27`
+- 定义位置：`src/unchain/schemas/response.py:27`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -260,7 +260,7 @@ HumanInputResponse(request_id=..., selected_values=..., other_text=...)
 `ResponseFormat` 对外暴露的方法 `to_ollama`。
 
 - 类型：方法
-- 定义位置：`src/miso/schemas/response.py:34`
+- 定义位置：`src/unchain/schemas/response.py:34`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -269,7 +269,7 @@ HumanInputResponse(request_id=..., selected_values=..., other_text=...)
 Return a system-prompt suffix that instructs Claude to output JSON.
 
 - 类型：方法
-- 定义位置：`src/miso/schemas/response.py:38`
+- 定义位置：`src/unchain/schemas/response.py:38`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -278,7 +278,7 @@ Return a system-prompt suffix that instructs Claude to output JSON.
 Return Gemini-compatible structured output config.
 
 - 类型：方法
-- 定义位置：`src/miso/schemas/response.py:46`
+- 定义位置：`src/unchain/schemas/response.py:46`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 - 补充：Returns a dict with ``response_mime_type`` and ``response_schema``
@@ -289,7 +289,7 @@ suitable for passing into Gemini's ``generation_config``.
 `ResponseFormat` 对外暴露的方法 `parse`。
 
 - 类型：方法
-- 定义位置：`src/miso/schemas/response.py:57`
+- 定义位置：`src/unchain/schemas/response.py:57`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -308,7 +308,7 @@ obj = ResponseFormat(...)
 obj.to_openai(...)
 ```
 
-### `src/miso/workspace/pins.py`
+### `src/unchain/workspace/pins.py`
 
 pinned file context 使用的执行上下文与重定位辅助逻辑。
 
@@ -318,7 +318,7 @@ pinned file context 使用的执行上下文与重定位辅助逻辑。
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/workspace/pins.py:35` |
+| 源码 | `src/unchain/workspace/pins.py:35` |
 | 模块职责 | pinned file context 使用的执行上下文与重定位辅助逻辑。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -349,7 +349,7 @@ pinned file context 使用的执行上下文与重定位辅助逻辑。
 WorkspacePinExecutionContext(session_id=..., session_store=...)
 ```
 
-### `src/miso/workspace/syntax.py`
+### `src/unchain/workspace/syntax.py`
 
 workspace toolkit 共用的语法树解析输出对象。
 
@@ -359,7 +359,7 @@ workspace toolkit 共用的语法树解析输出对象。
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/workspace/syntax.py:215` |
+| 源码 | `src/unchain/workspace/syntax.py:215` |
 | 模块职责 | workspace toolkit 共用的语法树解析输出对象。 |
 | 继承/协议 | `-` |
 | 导出状态 | 未导出，应视为实现细节。 |
@@ -399,7 +399,7 @@ ParsedSyntaxTree(language=..., source_bytes=..., tree=..., parser=...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/workspace/syntax.py:228` |
+| 源码 | `src/unchain/workspace/syntax.py:228` |
 | 模块职责 | workspace toolkit 共用的语法树解析输出对象。 |
 | 继承/协议 | `-` |
 | 导出状态 | 未导出，应视为实现细节。 |

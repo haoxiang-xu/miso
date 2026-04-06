@@ -13,24 +13,24 @@
 
 | 类 | 源码 | 导出 | 类型 |
 | --- | --- | --- | --- |
-| `SessionStore` | `src/miso/memory/manager.py:21` | subpackage | protocol |
-| `VectorStoreAdapter` | `src/miso/memory/manager.py:30` | subpackage | protocol |
-| `LongTermProfileStore` | `src/miso/memory/manager.py:52` | subpackage | protocol |
-| `LongTermVectorAdapter` | `src/miso/memory/manager.py:61` | subpackage | protocol |
-| `ContextStrategy` | `src/miso/memory/manager.py:84` | subpackage | protocol |
-| `InMemorySessionStore` | `src/miso/memory/manager.py:104` | subpackage | class |
-| `JsonFileLongTermProfileStore` | `src/miso/memory/manager.py:117` | subpackage | class |
-| `LongTermMemoryConfig` | `src/miso/memory/manager.py:144` | subpackage | dataclass |
-| `MemoryConfig` | `src/miso/memory/manager.py:167` | subpackage | dataclass |
-| `LastNTurnsStrategy` | `src/miso/memory/manager.py:1642` | subpackage | class |
-| `SummaryTokenStrategy` | `src/miso/memory/manager.py:1675` | subpackage | class |
-| `HybridContextStrategy` | `src/miso/memory/manager.py:1779` | subpackage | class |
-| `MemoryManager` | `src/miso/memory/manager.py:1866` | subpackage | class |
-| `QdrantVectorAdapter` | `src/miso/memory/qdrant.py:198` | internal | class |
-| `QdrantLongTermVectorAdapter` | `src/miso/memory/qdrant.py:305` | internal | class |
-| `JsonFileSessionStore` | `src/miso/memory/qdrant.py:410` | internal | class |
+| `SessionStore` | `src/unchain/memory/manager.py:21` | subpackage | protocol |
+| `VectorStoreAdapter` | `src/unchain/memory/manager.py:30` | subpackage | protocol |
+| `LongTermProfileStore` | `src/unchain/memory/manager.py:52` | subpackage | protocol |
+| `LongTermVectorAdapter` | `src/unchain/memory/manager.py:61` | subpackage | protocol |
+| `ContextStrategy` | `src/unchain/memory/manager.py:84` | subpackage | protocol |
+| `InMemorySessionStore` | `src/unchain/memory/manager.py:104` | subpackage | class |
+| `JsonFileLongTermProfileStore` | `src/unchain/memory/manager.py:117` | subpackage | class |
+| `LongTermMemoryConfig` | `src/unchain/memory/manager.py:144` | subpackage | dataclass |
+| `MemoryConfig` | `src/unchain/memory/manager.py:167` | subpackage | dataclass |
+| `LastNTurnsStrategy` | `src/unchain/memory/manager.py:1642` | subpackage | class |
+| `SummaryTokenStrategy` | `src/unchain/memory/manager.py:1675` | subpackage | class |
+| `HybridContextStrategy` | `src/unchain/memory/manager.py:1779` | subpackage | class |
+| `MemoryManager` | `src/unchain/memory/manager.py:1866` | subpackage | class |
+| `QdrantVectorAdapter` | `src/unchain/memory/qdrant.py:198` | internal | class |
+| `QdrantLongTermVectorAdapter` | `src/unchain/memory/qdrant.py:305` | internal | class |
+| `JsonFileSessionStore` | `src/unchain/memory/qdrant.py:410` | internal | class |
 
-### `src/miso/memory/manager.py`
+### `src/unchain/memory/manager.py`
 
 定义 memory 协议、配置、策略，并提供顶层 MemoryManager 协调层。
 
@@ -40,7 +40,7 @@
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/memory/manager.py:21` |
+| 源码 | `src/unchain/memory/manager.py:21` |
 | 模块职责 | 定义 memory 协议、配置、策略，并提供顶层 MemoryManager 协调层。 |
 | 继承/协议 | `Protocol` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -53,7 +53,7 @@
 `SessionStore` 对外暴露的方法 `load`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:22`
+- 定义位置：`src/unchain/memory/manager.py:22`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -62,7 +62,7 @@
 `SessionStore` 对外暴露的方法 `save`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:25`
+- 定义位置：`src/unchain/memory/manager.py:25`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -87,7 +87,7 @@ class Demo(...):
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/memory/manager.py:30` |
+| 源码 | `src/unchain/memory/manager.py:30` |
 | 模块职责 | 定义 memory 协议、配置、策略，并提供顶层 MemoryManager 协调层。 |
 | 继承/协议 | `Protocol` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -100,7 +100,7 @@ class Demo(...):
 `VectorStoreAdapter` 对外暴露的方法 `add_texts`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:31`
+- 定义位置：`src/unchain/memory/manager.py:31`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -109,7 +109,7 @@ class Demo(...):
 `VectorStoreAdapter` 对外暴露的方法 `similarity_search`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:40`
+- 定义位置：`src/unchain/memory/manager.py:40`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -134,7 +134,7 @@ class Demo(...):
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/memory/manager.py:52` |
+| 源码 | `src/unchain/memory/manager.py:52` |
 | 模块职责 | 定义 memory 协议、配置、策略，并提供顶层 MemoryManager 协调层。 |
 | 继承/协议 | `Protocol` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -147,7 +147,7 @@ class Demo(...):
 `LongTermProfileStore` 对外暴露的方法 `load`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:53`
+- 定义位置：`src/unchain/memory/manager.py:53`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -156,7 +156,7 @@ class Demo(...):
 `LongTermProfileStore` 对外暴露的方法 `save`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:56`
+- 定义位置：`src/unchain/memory/manager.py:56`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -181,7 +181,7 @@ class Demo(...):
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/memory/manager.py:61` |
+| 源码 | `src/unchain/memory/manager.py:61` |
 | 模块职责 | 定义 memory 协议、配置、策略，并提供顶层 MemoryManager 协调层。 |
 | 继承/协议 | `Protocol` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -194,7 +194,7 @@ class Demo(...):
 `LongTermVectorAdapter` 对外暴露的方法 `add_texts`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:62`
+- 定义位置：`src/unchain/memory/manager.py:62`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -203,7 +203,7 @@ class Demo(...):
 `LongTermVectorAdapter` 对外暴露的方法 `similarity_search`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:71`
+- 定义位置：`src/unchain/memory/manager.py:71`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -228,7 +228,7 @@ class Demo(...):
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/memory/manager.py:84` |
+| 源码 | `src/unchain/memory/manager.py:84` |
 | 模块职责 | 定义 memory 协议、配置、策略，并提供顶层 MemoryManager 协调层。 |
 | 继承/协议 | `Protocol` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -241,7 +241,7 @@ class Demo(...):
 `ContextStrategy` 对外暴露的方法 `prepare`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:85`
+- 定义位置：`src/unchain/memory/manager.py:85`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -250,7 +250,7 @@ class Demo(...):
 `ContextStrategy` 对外暴露的方法 `commit`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:95`
+- 定义位置：`src/unchain/memory/manager.py:95`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -275,7 +275,7 @@ class Demo(...):
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/memory/manager.py:104` |
+| 源码 | `src/unchain/memory/manager.py:104` |
 | 模块职责 | 定义 memory 协议、配置、策略，并提供顶层 MemoryManager 协调层。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -294,7 +294,7 @@ class Demo(...):
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/memory/manager.py:107`
+- 定义位置：`src/unchain/memory/manager.py:107`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -303,7 +303,7 @@ class Demo(...):
 `InMemorySessionStore` 对外暴露的方法 `load`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:110`
+- 定义位置：`src/unchain/memory/manager.py:110`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -312,7 +312,7 @@ class Demo(...):
 `InMemorySessionStore` 对外暴露的方法 `save`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:113`
+- 定义位置：`src/unchain/memory/manager.py:113`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -337,7 +337,7 @@ obj.load(...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/memory/manager.py:117` |
+| 源码 | `src/unchain/memory/manager.py:117` |
 | 模块职责 | 定义 memory 协议、配置、策略，并提供顶层 MemoryManager 协调层。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -356,7 +356,7 @@ obj.load(...)
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/memory/manager.py:120`
+- 定义位置：`src/unchain/memory/manager.py:120`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -365,7 +365,7 @@ obj.load(...)
 `JsonFileLongTermProfileStore` 对外暴露的方法 `load`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:128`
+- 定义位置：`src/unchain/memory/manager.py:128`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -374,7 +374,7 @@ obj.load(...)
 `JsonFileLongTermProfileStore` 对外暴露的方法 `save`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:138`
+- 定义位置：`src/unchain/memory/manager.py:138`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -399,7 +399,7 @@ obj.load(...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/memory/manager.py:144` |
+| 源码 | `src/unchain/memory/manager.py:144` |
 | 模块职责 | 定义 memory 协议、配置、策略，并提供顶层 MemoryManager 协调层。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -453,7 +453,7 @@ LongTermMemoryConfig(profile_store=..., vector_adapter=..., extractor=..., vecto
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/memory/manager.py:167` |
+| 源码 | `src/unchain/memory/manager.py:167` |
 | 模块职责 | 定义 memory 协议、配置、策略，并提供顶层 MemoryManager 协调层。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -502,7 +502,7 @@ MemoryConfig(last_n_turns=..., summary_trigger_pct=..., summary_target_pct=..., 
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/memory/manager.py:1642` |
+| 源码 | `src/unchain/memory/manager.py:1642` |
 | 模块职责 | 定义 memory 协议、配置、策略，并提供顶层 MemoryManager 协调层。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -521,7 +521,7 @@ MemoryConfig(last_n_turns=..., summary_trigger_pct=..., summary_target_pct=..., 
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/memory/manager.py:1643`
+- 定义位置：`src/unchain/memory/manager.py:1643`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -530,7 +530,7 @@ MemoryConfig(last_n_turns=..., summary_trigger_pct=..., summary_target_pct=..., 
 `LastNTurnsStrategy` 对外暴露的方法 `prepare`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:1646`
+- 定义位置：`src/unchain/memory/manager.py:1646`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -539,7 +539,7 @@ MemoryConfig(last_n_turns=..., summary_trigger_pct=..., summary_target_pct=..., 
 `LastNTurnsStrategy` 对外暴露的方法 `commit`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:1666`
+- 定义位置：`src/unchain/memory/manager.py:1666`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -564,7 +564,7 @@ obj.prepare(...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/memory/manager.py:1675` |
+| 源码 | `src/unchain/memory/manager.py:1675` |
 | 模块职责 | 定义 memory 协议、配置、策略，并提供顶层 MemoryManager 协调层。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -583,7 +583,7 @@ obj.prepare(...)
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/memory/manager.py:1676`
+- 定义位置：`src/unchain/memory/manager.py:1676`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -592,7 +592,7 @@ obj.prepare(...)
 `SummaryTokenStrategy` 对外暴露的方法 `prepare`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:1687`
+- 定义位置：`src/unchain/memory/manager.py:1687`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -601,7 +601,7 @@ obj.prepare(...)
 `SummaryTokenStrategy` 对外暴露的方法 `commit`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:1770`
+- 定义位置：`src/unchain/memory/manager.py:1770`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -626,7 +626,7 @@ obj.prepare(...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/memory/manager.py:1779` |
+| 源码 | `src/unchain/memory/manager.py:1779` |
 | 模块职责 | 定义 memory 协议、配置、策略，并提供顶层 MemoryManager 协调层。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -645,7 +645,7 @@ obj.prepare(...)
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/memory/manager.py:1780`
+- 定义位置：`src/unchain/memory/manager.py:1780`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -654,7 +654,7 @@ obj.prepare(...)
 `HybridContextStrategy` 对外暴露的方法 `prepare`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:1795`
+- 定义位置：`src/unchain/memory/manager.py:1795`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -663,7 +663,7 @@ obj.prepare(...)
 `HybridContextStrategy` 对外暴露的方法 `commit`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:1856`
+- 定义位置：`src/unchain/memory/manager.py:1856`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -688,7 +688,7 @@ obj.prepare(...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/memory/manager.py:1866` |
+| 源码 | `src/unchain/memory/manager.py:1866` |
 | 模块职责 | 定义 memory 协议、配置、策略，并提供顶层 MemoryManager 协调层。 |
 | 继承/协议 | `-` |
 | 导出状态 | 通过所属子包 `__init__` 导出。 |
@@ -712,7 +712,7 @@ obj.prepare(...)
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/memory/manager.py:1867`
+- 定义位置：`src/unchain/memory/manager.py:1867`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -721,7 +721,7 @@ obj.prepare(...)
 `MemoryManager` 对外暴露的方法 `ensure_long_term_components`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:1897`
+- 定义位置：`src/unchain/memory/manager.py:1897`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -730,7 +730,7 @@ obj.prepare(...)
 `MemoryManager` 对外暴露的方法 `estimate_tokens`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:1919`
+- 定义位置：`src/unchain/memory/manager.py:1919`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -739,7 +739,7 @@ obj.prepare(...)
 `MemoryManager` 对外暴露的方法 `prepare_messages`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:2070`
+- 定义位置：`src/unchain/memory/manager.py:2070`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -748,7 +748,7 @@ obj.prepare(...)
 `MemoryManager` 对外暴露的方法 `commit_messages`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/manager.py:2269`
+- 定义位置：`src/unchain/memory/manager.py:2269`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -774,7 +774,7 @@ obj = MemoryManager(...)
 obj.ensure_long_term_components(...)
 ```
 
-### `src/miso/memory/qdrant.py`
+### `src/unchain/memory/qdrant.py`
 
 Qdrant 向量适配器，以及 JSON 会话存储实现。
 
@@ -784,7 +784,7 @@ Qdrant 向量适配器，以及 JSON 会话存储实现。
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/memory/qdrant.py:198` |
+| 源码 | `src/unchain/memory/qdrant.py:198` |
 | 模块职责 | Qdrant 向量适配器，以及 JSON 会话存储实现。 |
 | 继承/协议 | `-` |
 | 导出状态 | 未导出，应视为实现细节。 |
@@ -803,7 +803,7 @@ Qdrant 向量适配器，以及 JSON 会话存储实现。
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/memory/qdrant.py:205`
+- 定义位置：`src/unchain/memory/qdrant.py:205`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -812,7 +812,7 @@ Qdrant 向量适配器，以及 JSON 会话存储实现。
 `QdrantVectorAdapter` 对外暴露的方法 `add_texts`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/qdrant.py:236`
+- 定义位置：`src/unchain/memory/qdrant.py:236`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -821,7 +821,7 @@ Qdrant 向量适配器，以及 JSON 会话存储实现。
 `QdrantVectorAdapter` 对外暴露的方法 `similarity_search`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/qdrant.py:256`
+- 定义位置：`src/unchain/memory/qdrant.py:256`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -843,7 +843,7 @@ obj.add_texts(...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/memory/qdrant.py:305` |
+| 源码 | `src/unchain/memory/qdrant.py:305` |
 | 模块职责 | Qdrant 向量适配器，以及 JSON 会话存储实现。 |
 | 继承/协议 | `-` |
 | 导出状态 | 未导出，应视为实现细节。 |
@@ -862,7 +862,7 @@ obj.add_texts(...)
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/memory/qdrant.py:312`
+- 定义位置：`src/unchain/memory/qdrant.py:312`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -871,7 +871,7 @@ obj.add_texts(...)
 `QdrantLongTermVectorAdapter` 对外暴露的方法 `add_texts`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/qdrant.py:343`
+- 定义位置：`src/unchain/memory/qdrant.py:343`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -880,7 +880,7 @@ obj.add_texts(...)
 `QdrantLongTermVectorAdapter` 对外暴露的方法 `similarity_search`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/qdrant.py:363`
+- 定义位置：`src/unchain/memory/qdrant.py:363`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -902,7 +902,7 @@ obj.add_texts(...)
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/miso/memory/qdrant.py:410` |
+| 源码 | `src/unchain/memory/qdrant.py:410` |
 | 模块职责 | Qdrant 向量适配器，以及 JSON 会话存储实现。 |
 | 继承/协议 | `-` |
 | 导出状态 | 未导出，应视为实现细节。 |
@@ -921,7 +921,7 @@ obj.add_texts(...)
 初始化实例，并在类有约束时校验或强制转换构造参数。
 
 - 类型：构造函数
-- 定义位置：`src/miso/memory/qdrant.py:421`
+- 定义位置：`src/unchain/memory/qdrant.py:421`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -930,7 +930,7 @@ obj.add_texts(...)
 `JsonFileSessionStore` 对外暴露的方法 `load`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/qdrant.py:429`
+- 定义位置：`src/unchain/memory/qdrant.py:429`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
@@ -939,7 +939,7 @@ obj.add_texts(...)
 `JsonFileSessionStore` 对外暴露的方法 `save`。
 
 - 类型：方法
-- 定义位置：`src/miso/memory/qdrant.py:438`
+- 定义位置：`src/unchain/memory/qdrant.py:438`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 

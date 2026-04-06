@@ -1,319 +1,366 @@
 # Agents API Reference
 
-Single-agent orchestration, team coordination, and the internal subagent runtime scaffolding used to expose nested execution safely.
+Modular agent composition via the `Agent` class, `AgentBuilder` pipeline, immutable `AgentSpec`/`AgentState`, and pluggable `AgentModule` system (tools, memory, policies, optimizers, subagents).
 
 | Metric | Value |
 | --- | --- |
-| Classes | 5 |
-| Dataclasses | 3 |
-| Protocols | 0 |
-| Internal-only types | 3 |
+| Classes | 3 |
+| Dataclasses | 5 |
+| Protocols | 1 |
+| Agent Modules | 5 |
 
 ## Coverage map
 
 | Class | Source | Exposure | Kind |
 | --- | --- | --- | --- |
-| `_SubagentConfig` | `src/miso/agents/agent.py:74` | internal | dataclass |
-| `_SubagentCounters` | `src/miso/agents/agent.py:83` | internal | dataclass |
-| `_SubagentRuntime` | `src/miso/agents/agent.py:89` | internal | dataclass |
-| `Agent` | `src/miso/agents/agent.py:114` | top-level | class |
-| `Team` | `src/miso/agents/team.py:11` | top-level | class |
+| `AgentSpec` | `src/unchain/agent/spec.py` | subpackage | dataclass (frozen) |
+| `AgentState` | `src/unchain/agent/spec.py` | subpackage | dataclass |
+| `Agent` | `src/unchain/agent/agent.py` | top-level | class |
+| `AgentCallContext` | `src/unchain/agent/builder.py` | subpackage | dataclass |
+| `PreparedAgent` | `src/unchain/agent/builder.py` | subpackage | dataclass |
+| `AgentBuilder` | `src/unchain/agent/builder.py` | subpackage | dataclass |
+| `AgentModule` | `src/unchain/agent/modules/base.py` | subpackage | protocol |
+| `BaseAgentModule` | `src/unchain/agent/modules/base.py` | subpackage | dataclass (frozen) |
+| `ToolsModule` | `src/unchain/agent/modules/tools.py` | subpackage | dataclass (frozen) |
+| `MemoryModule` | `src/unchain/agent/modules/memory.py` | subpackage | dataclass (frozen) |
+| `PoliciesModule` | `src/unchain/agent/modules/policies.py` | subpackage | dataclass (frozen) |
+| `OptimizersModule` | `src/unchain/agent/modules/optimizers.py` | subpackage | dataclass (frozen) |
+| `SubagentModule` | `src/unchain/agent/modules/subagents.py` | subpackage | dataclass (frozen) |
 
-### `src/miso/agents/agent.py`
+### `src/unchain/agent/spec.py`
 
-High-level single-agent orchestration with memory, toolkit merging, suspension/resume handling, and optional subagent spawning.
+Immutable agent specification and mutable agent state.
 
-## _SubagentConfig
+## AgentSpec
 
-Dataclass payload used by high-level single-agent orchestration with memory, toolkit merging, suspension/resume handling, and optional subagent spawning.
+Frozen dataclass holding the immutable configuration for an agent instance.
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/agents/agent.py:74` |
-| Module role | High-level single-agent orchestration with memory, toolkit merging, suspension/resume handling, and optional subagent spawning. |
+| Source | `src/unchain/agent/spec.py` |
 | Inheritance | `-` |
-| Exposure | Not exported; treat as implementation detail. |
-| Kind | Dataclass; internal implementation. |
-
-### Internal implementation note
-
-Owned by `Agent` as the stored subagent configuration.
+| Exposure | Exported from `unchain.agent`. |
+| Kind | Dataclass (frozen). |
 
 ### Fields
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `tool_name` | `str` | Required at construction time. |
-| `description` | `str | None` | Required at construction time. |
-| `max_depth` | `int` | Required at construction time. |
-| `max_children_per_agent` | `int` | Required at construction time. |
-| `max_total_subagents` | `int` | Required at construction time. |
+| `name` | `str` | Required at construction time. |
+| `instructions` | `str` | Default: `""`. |
+| `provider` | `str` | Default: `"openai"`. |
+| `model` | `str` | Default: `"gpt-5"`. |
+| `api_key` | `str \| None` | Default: `None`. |
+| `modules` | `tuple[Any, ...]` | Default: `()`. |
+| `allowed_tools` | `tuple[str, ...] \| None` | Default: `None`. |
 
-### Public methods
+## AgentState
 
-This type does not expose public methods beyond dataclass/protocol structure.
-
-### Collaboration and related types
-
-- `_SubagentCounters`
-- `_SubagentRuntime`
-- `Agent`
-
-### Minimal usage example
-
-```python
-_SubagentConfig(tool_name=..., description=..., max_depth=..., max_children_per_agent=...)
-```
-
-## _SubagentCounters
-
-Dataclass payload used by high-level single-agent orchestration with memory, toolkit merging, suspension/resume handling, and optional subagent spawning.
+Mutable dataclass for per-agent runtime state.
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/agents/agent.py:83` |
-| Module role | High-level single-agent orchestration with memory, toolkit merging, suspension/resume handling, and optional subagent spawning. |
+| Source | `src/unchain/agent/spec.py` |
 | Inheritance | `-` |
-| Exposure | Not exported; treat as implementation detail. |
-| Kind | Dataclass; internal implementation. |
-
-### Internal implementation note
-
-Owned by `Agent` subagent runtime bookkeeping.
+| Exposure | Exported from `unchain.agent`. |
+| Kind | Dataclass. |
 
 ### Fields
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `total_created` | `int` | Default: `0`. |
-| `direct_children` | `dict[tuple[str, ...], int]` | Default: `field(default_factory=dict)`. |
+| `module_state` | `dict[str, Any]` | Default: `field(default_factory=dict)`. |
 
-### Public methods
+### `src/unchain/agent/agent.py`
 
-This type does not expose public methods beyond dataclass/protocol structure.
-
-### Collaboration and related types
-
-- `_SubagentConfig`
-- `_SubagentRuntime`
-- `Agent`
-
-### Minimal usage example
-
-```python
-_SubagentCounters(total_created=..., direct_children=...)
-```
-
-## _SubagentRuntime
-
-Dataclass payload used by high-level single-agent orchestration with memory, toolkit merging, suspension/resume handling, and optional subagent spawning.
-
-| Item | Details |
-| --- | --- |
-| Source | `src/miso/agents/agent.py:89` |
-| Module role | High-level single-agent orchestration with memory, toolkit merging, suspension/resume handling, and optional subagent spawning. |
-| Inheritance | `-` |
-| Exposure | Not exported; treat as implementation detail. |
-| Kind | Dataclass; internal implementation. |
-
-### Internal implementation note
-
-Created inside `Agent` subagent execution paths and passed through nested runs.
-
-### Fields
-
-| Field | Type | Notes |
-| --- | --- | --- |
-| `config` | `_SubagentConfig` | Required at construction time. |
-| `current_depth` | `int` | Required at construction time. |
-| `lineage` | `tuple[str, ...]` | Required at construction time. |
-| `counters` | `_SubagentCounters` | Required at construction time. |
-| `current_session_id` | `str` | Required at construction time. |
-| `current_memory_namespace` | `str` | Required at construction time. |
-| `payload` | `dict[str, Any] | None` | Required at construction time. |
-| `callback` | `Callable[[dict[str, Any]], None] | None` | Required at construction time. |
-| `max_iterations` | `int | None` | Required at construction time. |
-| `verbose` | `bool` | Required at construction time. |
-| `on_tool_confirm` | `Callable | None` | Required at construction time. |
-| `on_continuation_request` | `Callable | None` | Required at construction time. |
-
-### Public methods
-
-This type does not expose public methods beyond dataclass/protocol structure.
-
-### Collaboration and related types
-
-- `_SubagentConfig`
-- `_SubagentCounters`
-- `Agent`
-
-### Minimal usage example
-
-```python
-_SubagentRuntime(config=..., current_depth=..., lineage=..., counters=...)
-```
+Top-level `Agent` facade: owns configuration, normalizes messages, prepares the kernel loop via `AgentBuilder`, and exposes `run`/`resume_human_input`/`clone`/`fork_for_subagent`/`as_tool` entry points.
 
 ## Agent
 
-High-level single-agent facade that owns configuration, normalizes tools, creates fresh runtimes, and exposes run/resume/step/as-tool entry points.
+User-facing agent class that composes modules, builds a `PreparedAgent`, and delegates execution to the `KernelLoop`.
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/agents/agent.py:114` |
-| Module role | High-level single-agent orchestration with memory, toolkit merging, suspension/resume handling, and optional subagent spawning. |
+| Source | `src/unchain/agent/agent.py` |
 | Inheritance | `-` |
-| Exposure | Top-level export via `miso`. |
-| Kind | Class; public-facing or package-visible. |
+| Exposure | Top-level export via `unchain`. |
+| Kind | Class; public-facing. |
 
 ### Constructor surface
 
-The constructor is the primary place where this class defines required inputs and validation.
+- `__init__(self, *, name: str, instructions: str='', provider: str='openai', model: str='gpt-5', api_key: str | None=None, modules: tuple[Any, ...]=(), allowed_tools: tuple[str, ...] | None=None, model_io_factory: Callable[..., Any] | None=None)`
 
-- `__init__(self, *, name: str, instructions: str='', provider: str='openai', model: str='gpt-5', api_key: str | None=None, tools: list[Tool | Toolkit | Callable[..., Any]] | None=None, short_term_memory: MemoryManager | MemoryConfig | dict[str, Any] | None=None, long_term_memory: LongTermMemoryConfig | dict[str, Any] | None=None, defaults: dict[str, Any] | None=None, broth_options: dict[str, Any] | None=None, toolkit_catalog_config: ToolkitCatalogConfig | dict[str, Any] | None=None)`
+### Properties
+
+- `@property name` -> `str`
+- `@property instructions` -> `str`
+- `@property provider` -> `str`
+- `@property model` -> `str`
+- `@property allowed_tools` -> `tuple[str, ...] | None`
 
 ### Public methods
 
-#### `__init__(self, *, name: str, instructions: str='', provider: str='openai', model: str='gpt-5', api_key: str | None=None, tools: list[Tool | Toolkit | Callable[..., Any]] | None=None, short_term_memory: MemoryManager | MemoryConfig | dict[str, Any] | None=None, long_term_memory: LongTermMemoryConfig | dict[str, Any] | None=None, defaults: dict[str, Any] | None=None, broth_options: dict[str, Any] | None=None, toolkit_catalog_config: ToolkitCatalogConfig | dict[str, Any] | None=None)`
+#### `__init__(self, *, name: str, instructions: str='', provider: str='openai', model: str='gpt-5', api_key: str | None=None, modules: tuple[Any, ...]=(), allowed_tools: tuple[str, ...] | None=None, model_io_factory: Callable[..., Any] | None=None)`
 
-Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
+Initializes the agent, creates an `AgentSpec`, `AgentState`, and `ModelIOFactoryRegistry`.
 
 - Category: Constructor
-- Declared at: `src/miso/agents/agent.py:115`
-- Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
-- Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
+- Errors: raises `ValueError` if `name` is empty or not a string.
 
-#### `enable_subagents(self, *, tool_name: str='spawn_subagent', description: str | None=None, max_depth: int=6, max_children_per_agent: int=10, max_total_subagents: int=100)`
+#### `run(self, messages: str | list[dict[str, Any]], *, payload: dict[str, Any] | None=None, response_format: Any=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, max_iterations: int | None=None, max_context_window_tokens: int | None=None, previous_response_id: str | None=None, on_tool_confirm: Callable[..., Any] | None=None, on_human_input: Callable[..., Any] | None=None, on_max_iterations: Callable[..., Any] | None=None, session_id: str | None=None, memory_namespace: str | None=None, run_id: str | None=None, tool_runtime_config: dict[str, Any] | None=None) -> KernelRunResult`
 
-Public method `enable_subagents` exposed by `Agent`.
+Main entry point. Normalizes messages, prepares a `PreparedAgent` via `AgentBuilder`, and runs the kernel loop.
 
 - Category: Method
-- Declared at: `src/miso/agents/agent.py:185`
-- Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
-- Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
+- Returns: `KernelRunResult`
 
-#### `enable_toolkit_catalog(self, *, managed_toolkit_ids: tuple[str, ...] | list[str] | None, always_active_toolkit_ids: tuple[str, ...] | list[str] | None=None, registry: dict[str, Any] | None=None, readme_max_chars: int=8000)`
+#### `resume_human_input(self, *, conversation: list[dict[str, Any]], continuation: dict[str, Any], response: dict[str, Any] | Any, payload: dict[str, Any] | None=None, response_format: Any=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, on_tool_confirm: Callable[..., Any] | None=None, on_human_input: Callable[..., Any] | None=None, on_max_iterations: Callable[..., Any] | None=None, session_id: str | None=None, memory_namespace: str | None=None, run_id: str | None=None, tool_runtime_config: dict[str, Any] | None=None) -> KernelRunResult`
 
-Public method `enable_toolkit_catalog` exposed by `Agent`.
+Resumes a suspended run after human input has been collected.
 
 - Category: Method
-- Declared at: `src/miso/agents/agent.py:213`
-- Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
-- Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
+- Returns: `KernelRunResult`
 
-#### `run(self, messages: str | list[dict[str, Any]] | None, *, payload: dict[str, Any] | None=None, response_format: ResponseFormat | None=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, max_iterations: int | None=None, previous_response_id: str | None=None, on_tool_confirm: Callable | None=None, on_continuation_request: Callable | None=None, session_id: str | None=None, memory_namespace: str | None=None)`
+#### `clone(self, *, name: str | None=None, instructions: str | None=None, modules: tuple[Any, ...] | None=None, model: str | None=None, allowed_tools: tuple[str, ...] | None=None) -> Agent`
 
-Public method `run` exposed by `Agent`.
+Creates a new `Agent` with selectively overridden fields.
 
 - Category: Method
-- Declared at: `src/miso/agents/agent.py:613`
-- Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
-- Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
+- Returns: new `Agent` instance.
 
-#### `resume_human_input(self, *, conversation: list[dict[str, Any]], continuation: dict[str, Any], response: dict[str, Any] | Any, payload: dict[str, Any] | None=None, response_format: ResponseFormat | None=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, on_tool_confirm: Callable | None=None, on_continuation_request: Callable | None=None, session_id: str | None=None, memory_namespace: str | None=None)`
+#### `fork_for_subagent(self, *, subagent_name: str, mode: str, parent_name: str, lineage: list[str], task: str, instructions: str, expected_output: str, memory_policy: str, model: str | None=None, allowed_tools: tuple[str, ...] | None=None) -> Agent`
 
-Public method `resume_human_input` exposed by `Agent`.
+Creates a child agent for subagent execution. Overlays delegation instructions and optionally strips the `MemoryModule` when `memory_policy` is `"ephemeral"`.
 
 - Category: Method
-- Declared at: `src/miso/agents/agent.py:695`
-- Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
-- Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
+- Returns: new `Agent` instance.
 
-#### `step(self, *, inbox: list[dict[str, Any]], channels: dict[str, list[str]], owner: str, team_transcript: list[dict[str, Any]] | None=None, mode: str='channel_collab', payload: dict[str, Any] | None=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, max_iterations: int | None=None, session_id: str | None=None, memory_namespace: str | None=None)`
+#### `as_tool(self, *, name: str | None=None, description: str | None=None, max_iterations: int | None=None) -> Tool`
 
-Public method `step` exposed by `Agent`.
+Wraps this agent as a callable `Tool` that delegates to `self.run()`.
 
 - Category: Method
-- Declared at: `src/miso/agents/agent.py:776`
-- Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
-- Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
-
-#### `as_tool(self, *, name: str | None=None, description: str | None=None)`
-
-Public method `as_tool` exposed by `Agent`.
-
-- Category: Method
-- Declared at: `src/miso/agents/agent.py:928`
-- Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
-- Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
+- Returns: `Tool`
 
 ### Lifecycle and runtime role
 
-- Construction validates identity, copies config dictionaries, and coerces memory configuration into a `MemoryManager` when needed.
-- `run()` builds a merged toolkit, creates a fresh `Broth`, forwards runtime options, and captures toolkit-catalog continuation state if the run pauses.
-- `resume_human_input()` restores suspended catalog state back into a fresh runtime instance before continuing the same conversation.
-- `step()` is the team-facing wrapper that asks the model to publish/handoff/finalize against a structured step schema.
-
-### Collaboration and related types
-
-- `_SubagentConfig`
-- `_SubagentCounters`
-- `_SubagentRuntime`
+- Construction validates identity, builds an `AgentSpec` and `AgentState`.
+- `run()` normalizes messages, creates an `AgentCallContext`, calls `_prepare()` which invokes each module's `configure()` on an `AgentBuilder`, then calls `builder.build()` to get a `PreparedAgent`, and finally calls `prepared.run()`.
+- Modules compose behaviour: `ToolsModule` registers tools, `MemoryModule` attaches memory, `PoliciesModule` sets defaults, `OptimizersModule` adds harnesses, `SubagentModule` adds delegation tools.
 
 ### Minimal usage example
 
 ```python
-obj = Agent(...)
-obj.enable_subagents(...)
+from unchain import Agent
+from unchain.agent import ToolsModule, MemoryModule
+
+agent = Agent(
+    name="assistant",
+    instructions="You are a helpful assistant.",
+    modules=(
+        ToolsModule(tools=(my_tool,)),
+        MemoryModule(memory=my_memory_config),
+    ),
+)
+result = agent.run("Hello!")
 ```
 
-### `src/miso/agents/team.py`
+### `src/unchain/agent/builder.py`
 
-Multi-agent coordination via channel delivery, scoring, handoff handling, and owner-controlled completion.
+Agent preparation pipeline: `AgentCallContext` captures call-site options, `AgentBuilder` accumulates module contributions, and `PreparedAgent` holds the final assembled kernel loop.
 
-## Team
+## AgentCallContext
 
-Coordinator that routes envelopes across named channels, scores pending work, and lets an owner agent finalize a multi-agent run.
+Dataclass capturing the per-call options passed to `Agent.run()` or `Agent.resume_human_input()`.
 
 | Item | Details |
 | --- | --- |
-| Source | `src/miso/agents/team.py:11` |
-| Module role | Multi-agent coordination via channel delivery, scoring, handoff handling, and owner-controlled completion. |
+| Source | `src/unchain/agent/builder.py` |
 | Inheritance | `-` |
-| Exposure | Top-level export via `miso`. |
-| Kind | Class; public-facing or package-visible. |
+| Exposure | Exported from `unchain.agent`. |
+| Kind | Dataclass. |
 
-### Constructor surface
+### Fields
 
-The constructor is the primary place where this class defines required inputs and validation.
+| Field | Type | Notes |
+| --- | --- | --- |
+| `mode` | `str` | `"run"` or `"resume_human_input"`. |
+| `input_messages` | `list[dict[str, Any]] \| None` | Default: `None`. |
+| `conversation` | `list[dict[str, Any]] \| None` | Default: `None`. |
+| `continuation` | `dict[str, Any] \| None` | Default: `None`. |
+| `response` | `dict[str, Any] \| Any` | Default: `None`. |
+| `payload` | `dict[str, Any] \| None` | Default: `None`. |
+| `response_format` | `ResponseFormat \| None` | Default: `None`. |
+| `callback` | `Callable[[dict[str, Any]], None] \| None` | Default: `None`. |
+| `verbose` | `bool` | Default: `False`. |
+| `max_iterations` | `int \| None` | Default: `None`. |
+| `max_context_window_tokens` | `int \| None` | Default: `None`. |
+| `previous_response_id` | `str \| None` | Default: `None`. |
+| `on_tool_confirm` | `Callable[..., Any] \| None` | Default: `None`. |
+| `on_human_input` | `Callable[..., Any] \| None` | Default: `None`. |
+| `on_max_iterations` | `Callable[..., Any] \| None` | Default: `None`. |
+| `session_id` | `str \| None` | Default: `None`. |
+| `memory_namespace` | `str \| None` | Default: `None`. |
+| `run_id` | `str \| None` | Default: `None`. |
+| `tool_runtime_config` | `dict[str, Any] \| None` | Default: `None`. |
 
-- `__init__(self, *, agents: list[Agent], owner: str, channels: dict[str, list[str]], mode: str='channel_collab', visible_transcript: bool=True, completion_policy: str='owner_finalize', max_steps: int=24)`
+## AgentBuilder
+
+Mutable builder that modules call into to register tools, harnesses, memory, defaults, and hooks.
+
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/agent/builder.py` |
+| Inheritance | `-` |
+| Exposure | Exported from `unchain.agent`. |
+| Kind | Dataclass. |
 
 ### Public methods
 
-#### `__init__(self, *, agents: list[Agent], owner: str, channels: dict[str, list[str]], mode: str='channel_collab', visible_transcript: bool=True, completion_policy: str='owner_finalize', max_steps: int=24)`
+| Method | Description |
+| --- | --- |
+| `add_tool(entry)` | Register a `Tool`, `Toolkit`, or callable. |
+| `add_harness(harness)` | Attach a runtime harness. |
+| `attach_memory_runtime(memory_runtime)` | Attach a `KernelMemoryRuntime`. |
+| `set_model_io(model_io)` | Override the `ModelIO` instance. |
+| `set_model_io_factory(factory)` | Set a factory for deferred `ModelIO` creation. |
+| `add_run_hook(hook)` | Append a post-run hook. |
+| `add_tool_runtime_plugin(plugin)` | Append a tool runtime plugin. |
+| `set_payload_defaults(payload)` | Merge default payload. |
+| `set_response_format_default(response_format)` | Set default response format. |
+| `set_max_iterations_default(max_iterations)` | Set default max iterations. |
+| `set_max_context_window_tokens_default(tokens)` | Set default context window limit. |
+| `set_on_tool_confirm_default(on_tool_confirm)` | Set default tool confirm callback. |
+| `set_on_human_input_default(on_human_input)` | Set default human input callback. |
+| `set_on_max_iterations_default(on_max_iterations)` | Set default max-iterations callback. |
+| `build()` | Finalize and return a `PreparedAgent`. |
 
-Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
+## PreparedAgent
 
-- Category: Constructor
-- Declared at: `src/miso/agents/team.py:12`
-- Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
-- Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
+Assembled agent ready for execution. Holds the `KernelLoop`, merged `Toolkit`, and resolved defaults.
 
-#### `run(self, messages: str | list[dict[str, Any]], *, entry_channel: str | None=None, payload: dict[str, Any] | None=None, callback: Callable[[dict[str, Any]], None] | None=None, session_id: str | None=None, memory_namespace: str | None=None, max_steps: int | None=None)`
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/agent/builder.py` |
+| Inheritance | `-` |
+| Exposure | Exported from `unchain.agent`. |
+| Kind | Dataclass. |
 
-Public method `run` exposed by `Team`.
+### Public methods
 
-- Category: Method
-- Declared at: `src/miso/agents/team.py:139`
-- Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
-- Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
+| Method | Returns | Description |
+| --- | --- | --- |
+| `run()` | `KernelRunResult` | Execute the kernel loop. |
+| `resume_human_input()` | `KernelRunResult` | Resume from human input suspension. |
 
-### Lifecycle and runtime role
+### `src/unchain/agent/modules/`
 
-- Construction normalizes agent names, validates channel subscribers, and fixes step-limit defaults.
-- `run()` converts the initial user request into a channel envelope, keeps per-agent pending inboxes, and repeatedly schedules the highest-scoring agent.
-- Each agent receives a namespaced session and memory namespace, publishes messages back into channels, may hand off explicitly, and only the owner may finalize.
+Pluggable modules that configure the `AgentBuilder` during preparation.
 
-### Collaboration and related types
+## AgentModule (Protocol)
 
-- `_SubagentConfig`
-- `_SubagentCounters`
-- `_SubagentRuntime`
-- `Agent`
+Protocol that all agent modules must satisfy.
 
-### Minimal usage example
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/agent/modules/base.py` |
+| Kind | Protocol. |
 
-```python
-obj = Team(...)
-obj.run(...)
-```
+### Required interface
+
+| Attribute/Method | Type | Description |
+| --- | --- | --- |
+| `name` | `str` | Module identifier. |
+| `configure(builder)` | `-> None` | Called during agent preparation. |
+
+## ToolsModule
+
+Registers tools, toolkits, and callables into the builder.
+
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/agent/modules/tools.py` |
+| Inheritance | `BaseAgentModule` |
+| Kind | Dataclass (frozen). |
+
+### Fields
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `tools` | `tuple[Any, ...]` | Default: `()`. |
+| `name` | `str` | Default: `"tools"`. |
+
+## MemoryModule
+
+Attaches memory to the builder. Accepts `KernelMemoryRuntime`, `MemoryManager`, `MemoryConfig`, or a raw dict.
+
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/agent/modules/memory.py` |
+| Inheritance | `BaseAgentModule` |
+| Kind | Dataclass (frozen). |
+
+### Fields
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `memory` | `KernelMemoryRuntime \| MemoryManager \| MemoryConfig \| dict[str, Any] \| None` | Default: `None`. |
+| `store` | `SessionStore \| None` | Default: `None`. |
+| `name` | `str` | Default: `"memory"`. |
+
+## PoliciesModule
+
+Sets default payload, response format, max iterations, context window tokens, and tool confirmation callback.
+
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/agent/modules/policies.py` |
+| Inheritance | `BaseAgentModule` |
+| Kind | Dataclass (frozen). |
+
+### Fields
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `payload` | `dict[str, Any]` | Default: `{}`. |
+| `response_format` | `ResponseFormat \| None` | Default: `None`. |
+| `max_iterations` | `int \| None` | Default: `None`. |
+| `max_context_window_tokens` | `int \| None` | Default: `None`. |
+| `on_tool_confirm` | `Callable[..., Any] \| None` | Default: `None`. |
+| `name` | `str` | Default: `"policies"`. |
+
+## OptimizersModule
+
+Attaches runtime harnesses (e.g., context-window optimizers) to the builder.
+
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/agent/modules/optimizers.py` |
+| Inheritance | `BaseAgentModule` |
+| Kind | Dataclass (frozen). |
+
+### Fields
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `harnesses` | `tuple[object, ...]` | Default: `()`. |
+| `name` | `str` | Default: `"optimizers"`. |
+
+## SubagentModule
+
+Registers delegation, handoff, and worker-batch tools plus the `SubagentToolPlugin`.
+
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/agent/modules/subagents.py` |
+| Inheritance | `BaseAgentModule` |
+| Kind | Dataclass (frozen). |
+
+### Fields
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `templates` | `tuple[SubagentTemplate, ...]` | Default: `()`. |
+| `policy` | `SubagentPolicy` | Default: `SubagentPolicy()`. |
+| `executor` | `SubagentExecutor \| None` | Default: `None`. |
+| `name` | `str` | Default: `"subagents"`. |

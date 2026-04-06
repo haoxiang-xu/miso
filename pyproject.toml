@@ -3,9 +3,9 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "miso"
+name = "unchain"
 version = "0.2.0"
-description = "A lightweight Python agent builder for tool-using runtimes."
+description = "Unchain Harness: a lightweight Python agent builder for tool-using runtimes."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -33,7 +33,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-miso = [
+unchain = [
     "runtime/resources/*.json",
     "toolkits/builtin/*/toolkit.toml",
     "toolkits/builtin/*/README.md",

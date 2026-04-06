@@ -4,7 +4,7 @@ Canonical English skill chapter for the `creating-builtin-toolkits` topic.
 
 ## Role and boundaries
 
-This chapter is the implementation guide for adding or maintaining builtin toolkits that ship with miso.
+This chapter is the implementation guide for adding or maintaining builtin toolkits that ship with unchain.
 
 ## Dependency view
 
@@ -17,10 +17,9 @@ This chapter is the implementation guide for adding or maintaining builtin toolk
 - `BuiltinToolkit`
 - `Toolkit`
 - `ToolkitRegistry`
-- `WorkspaceToolkit`
-- `TerminalToolkit`
+- `CoreToolkit`
 - `ExternalAPIToolkit`
-- `AskUserToolkit`
+- `ExternalAPIToolkit`
 
 ## Execution and state flow
 
@@ -54,9 +53,9 @@ This chapter is the implementation guide for adding or maintaining builtin toolk
 
 ## Source entry points
 
-- `src/miso/toolkits/base.py`
-- `src/miso/toolkits/builtin/`
-- `src/miso/tools/registry.py`
+- `src/unchain/toolkits/base.py`
+- `src/unchain/toolkits/builtin/`
+- `src/unchain/tools/registry.py`
 
 ## Detailed legacy reference
 
@@ -66,10 +65,10 @@ The original repository skill note is preserved below for continuity and extra e
 
 ## Directory Structure
 
-Every builtin toolkit lives under `src/miso/toolkits/builtin/<toolkit_id>/`:
+Every builtin toolkit lives under `src/unchain/toolkits/builtin/<toolkit_id>/`:
 
 ```text
-src/miso/toolkits/builtin/
+src/unchain/toolkits/builtin/
 └── my_toolkit/
     ├── __init__.py       # Re-exports the toolkit class
     ├── my_toolkit.py     # Toolkit implementation
@@ -87,7 +86,7 @@ The manifest declares metadata and enumerates every tool the toolkit exposes.
 id = "my_toolkit"                              # REQUIRED — unique ID across all sources
 name = "My Toolkit"                            # REQUIRED — display name
 description = "What this toolkit does."        # REQUIRED
-factory = "miso.toolkits.builtin.my_toolkit:MyToolkit"  # REQUIRED — no-arg callable → Toolkit
+factory = "unchain.toolkits.builtin.my_toolkit:MyToolkit"  # REQUIRED — no-arg callable → Toolkit
 version = "1.0.0"                              # optional
 readme = "README.md"                           # REQUIRED — relative to this file
 icon = "folder"                                # builtin icon name OR path to .svg/.png
@@ -102,7 +101,7 @@ hidden = false                                 # optional
 
 [compat]
 python = ">=3.9"                               # optional
-miso = ">=0"                                   # optional
+unchain = ">=0"                                   # optional
 
 [[tools]]
 name = "do_something"                          # REQUIRED — must match Python method name exactly
@@ -133,7 +132,7 @@ description = "Explain this one too."
 ### `BuiltinToolkit` — For toolkits that touch the filesystem
 
 ```python
-from miso.toolkits import BuiltinToolkit
+from unchain.toolkits import BuiltinToolkit
 
 class MyToolkit(BuiltinToolkit):
     def __init__(self, *, workspace_root: str | Path | None = None):
@@ -150,7 +149,7 @@ Provides:
 ### `Toolkit` — For toolkits that don't need a workspace
 
 ```python
-from miso.tools import Toolkit
+from unchain.tools import Toolkit
 
 class MyToolkit(Toolkit):
     def __init__(self):
@@ -158,7 +157,7 @@ class MyToolkit(Toolkit):
         # Register tools here
 ```
 
-Use this when your toolkit has no filesystem dependency (e.g., `AskUserToolkit`).
+Use this when your toolkit has no filesystem dependency.
 
 ## Step 3: Register Tools
 
@@ -183,7 +182,7 @@ Use when you need history optimizers or need to override auto-inferred metadata:
 ```python
 def _register_tools(self) -> None:
     self.register(
-        self.read_file,
+        self.read_files,
         history_arguments_optimizer=self._compact_read_args,
         history_result_optimizer=self._compact_read_result,
     )
@@ -280,7 +279,7 @@ from .my_toolkit import MyToolkit  # Add this line
 from .builtin import MyToolkit  # Add this line
 ```
 
-This ensures `from miso.toolkits import MyToolkit` works.
+This ensures `from unchain.toolkits import MyToolkit` works.
 
 ## Step 6: Write the README
 
@@ -294,7 +293,7 @@ Keep it brief — the toolkit.toml holds the machine-readable metadata.
 ## Usage
 
 \```python
-from miso.toolkits import MyToolkit
+from unchain.toolkits import MyToolkit
 
 tk = MyToolkit(workspace_root=".")
 \```
@@ -366,7 +365,7 @@ History optimizers must reduce payload size. If your tool returns large content 
 
 ```python
 self.register(
-    self.read_file,
+    self.read_files,
     history_result_optimizer=self._compact_result,
 )
 

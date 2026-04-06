@@ -29,7 +29,7 @@ class EvalCase:
     task_prompt: str
     workspace_mode: str
     workspace_source: str
-    allowed_toolkits: tuple[str, ...] = ("workspace", "terminal")
+    allowed_toolkits: tuple[str, ...] = ("core",)
     toolkit_options: dict[str, dict[str, Any]] = field(default_factory=dict)
     rule_checks: dict[str, Any] = field(default_factory=dict)
     rubric_weights: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_RUBRIC_WEIGHTS))

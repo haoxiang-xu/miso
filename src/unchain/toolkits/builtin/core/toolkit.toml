@@ -1,0 +1,83 @@
+[toolkit]
+id = "core"
+name = "Core"
+description = "Core execution tools for guarded file reads and edits, globbing, grep search, public web fetch, cross-platform shell execution, LSP-powered code intelligence, and structured user questions."
+factory = "unchain.toolkits.builtin.core:CoreToolkit"
+version = "1.0.0"
+readme = "README.md"
+icon = "icon.svg"
+color = "#0f172a"
+backgroundcolor = "#dbeafe"
+tags = ["builtin", "core", "files", "search", "editing", "user-input"]
+
+[display]
+category = "builtin"
+order = 15
+hidden = false
+
+[compat]
+python = ">=3.9"
+legacy = ">=0"
+
+[[tools]]
+name = "ask_user_question"
+title = "Ask User Question"
+description = "Ask the user a structured selector question and suspend the run until they respond."
+observe = false
+requires_confirmation = false
+
+[[tools]]
+name = "read"
+title = "Read"
+description = "Read a UTF-8 text file by absolute path with line-numbered output and optional line slicing."
+observe = false
+requires_confirmation = false
+
+[[tools]]
+name = "write"
+title = "Write"
+description = "Create or fully overwrite a UTF-8 text file by absolute path, requiring a prior full read for existing files."
+observe = false
+requires_confirmation = true
+
+[[tools]]
+name = "edit"
+title = "Edit"
+description = "Replace one unique string match, or all matches when requested, in an existing UTF-8 text file by absolute path."
+observe = false
+requires_confirmation = true
+
+[[tools]]
+name = "glob"
+title = "Glob"
+description = "List files matching a glob pattern inside the workspace, sorted by most recently modified first."
+observe = false
+requires_confirmation = false
+
+[[tools]]
+name = "grep"
+title = "Grep"
+description = "Search UTF-8 text files inside the workspace with regex, optional glob filters, and paginated result modes."
+observe = false
+requires_confirmation = false
+
+[[tools]]
+name = "web_fetch"
+title = "Web Fetch"
+description = "Fetch a public web page over HTTP(S), return raw page content or run a runtime-configured extraction model."
+observe = false
+requires_confirmation = true
+
+[[tools]]
+name = "shell"
+title = "Shell"
+description = "Run a shell command, poll a background task, or kill a background task inside the workspace."
+observe = false
+requires_confirmation = true
+
+[[tools]]
+name = "lsp"
+title = "LSP"
+description = "Query a language server for definitions, references, hover text, and symbols for Python or TS/JS files."
+observe = false
+requires_confirmation = false

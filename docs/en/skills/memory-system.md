@@ -55,8 +55,8 @@ This chapter documents how short-term context selection, long-term profile extra
 
 ## Source entry points
 
-- `src/miso/memory/manager.py`
-- `src/miso/memory/qdrant.py`
+- `src/unchain/memory/manager.py`
+- `src/unchain/memory/qdrant.py`
 
 ## Detailed legacy reference
 
@@ -97,7 +97,7 @@ Each tier is independently optional. You can use just Tier 1-2 (basic conversati
 ### `MemoryConfig` — Short-term memory
 
 ```python
-from miso.memory import MemoryConfig
+from unchain.memory import MemoryConfig
 
 config = MemoryConfig(
     last_n_turns=8,                     # Always include the last N turns
@@ -114,7 +114,7 @@ config = MemoryConfig(
 ### `LongTermMemoryConfig` — Persistent knowledge
 
 ```python
-from miso.memory import LongTermMemoryConfig
+from unchain.memory import LongTermMemoryConfig
 
 lt_config = LongTermMemoryConfig(
     profile_store=my_profile_store,     # LongTermProfileStore implementation
@@ -127,7 +127,7 @@ lt_config = LongTermMemoryConfig(
 ### Passing to Agent
 
 ```python
-from miso import Agent
+from unchain import Agent
 
 agent = Agent(
     name="coder",
@@ -210,10 +210,10 @@ After each run, large tool arguments and results from **previous turns** (not th
 
 ```python
 # Before compaction (in conversation history):
-{"tool_call": "read_file", "arguments": {"path": "main.py"}, "result": {"content": "... 50,000 chars ..."}}
+{"tool_call": "read_files", "arguments": {"paths": ["main.py"]}, "result": {"files": [{"content": "... 50,000 chars ..."}]}}
 
 # After compaction:
-{"tool_call": "read_file", "arguments": {"path": "main.py"}, "result": "[compacted: 50000 chars]"}
+{"tool_call": "read_files", "arguments": {"paths": ["main.py"]}, "result": "[compacted: 50000 chars]"}
 ```
 
 ### Configuration
@@ -245,7 +245,7 @@ self.register(
 Ephemeral — conversation is lost when the process exits.
 
 ```python
-from miso.memory import InMemorySessionStore
+from unchain.memory import InMemorySessionStore
 
 store = InMemorySessionStore()
 ```
@@ -255,7 +255,7 @@ store = InMemorySessionStore()
 Implement the interface for persistence:
 
 ```python
-from miso.memory import SessionStore
+from unchain.memory import SessionStore
 
 class MySessionStore(SessionStore):
     def load(self, session_id: str) -> list[dict]:
@@ -276,7 +276,7 @@ class MySessionStore(SessionStore):
 ### `VectorStoreAdapter` (short-term similarity search)
 
 ```python
-from miso.memory import VectorStoreAdapter
+from unchain.memory import VectorStoreAdapter
 
 class MyVectorAdapter(VectorStoreAdapter):
     def add(self, texts: list[str], metadatas: list[dict], namespace: str) -> None:
@@ -290,12 +290,12 @@ class MyVectorAdapter(VectorStoreAdapter):
 
 ### `LongTermVectorAdapter` (cross-session knowledge)
 
-Same interface shape, but operates on long-term profile entries. The Qdrant adapter (`miso.memory.qdrant`) is the reference implementation.
+Same interface shape, but operates on long-term profile entries. The Qdrant adapter (`unchain.memory.qdrant`) is the reference implementation.
 
 ## Long-Term Profile Store
 
 ```python
-from miso.memory import LongTermProfileStore
+from unchain.memory import LongTermProfileStore
 
 class MyProfileStore(LongTermProfileStore):
     def load(self, namespace: str) -> dict:

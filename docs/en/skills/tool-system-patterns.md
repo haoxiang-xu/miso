@@ -55,10 +55,10 @@ This chapter covers the framework tool abstraction from raw callable inference t
 
 ## Source entry points
 
-- `src/miso/tools/tool.py`
-- `src/miso/tools/toolkit.py`
-- `src/miso/tools/registry.py`
-- `src/miso/tools/catalog.py`
+- `src/unchain/tools/tool.py`
+- `src/unchain/tools/toolkit.py`
+- `src/unchain/tools/registry.py`
+- `src/unchain/tools/catalog.py`
 
 ## Detailed legacy reference
 
@@ -78,7 +78,7 @@ ToolParameter Manual parameter definition (rarely needed — auto-inference hand
 ## Tool Class Anatomy
 
 ```python
-from miso.tools import Tool
+from unchain.tools import Tool
 
 t = Tool(
     name="greet",
@@ -114,11 +114,11 @@ Parameters are **auto-inferred** from the function signature and docstring. Manu
 ### Inference Sources
 
 ```python
-def read_file(self, path: str, max_chars: int = 20000) -> dict[str, Any]:
-    """Read a UTF-8 text file from the workspace.
+def read_files(self, paths: list[str], max_chars_per_file: int = 20000) -> dict[str, Any]:
+    """Read UTF-8 text files from the workspace.
 
-    :param path: File path relative to workspace root.
-    :param max_chars: Maximum characters to return.
+    :param paths: File paths relative to workspace root.
+    :param max_chars_per_file: Maximum characters to return per file.
     """
 ```
 
@@ -126,10 +126,10 @@ What gets extracted:
 
 | Source               | Extracted                                                           |
 | -------------------- | ------------------------------------------------------------------- |
-| Function name        | → `tool.name` = `"read_file"`                                       |
-| Docstring first line | → `tool.description` = `"Read a UTF-8 text file..."`                |
-| Type hints           | → parameter types (`string`, `integer`)                             |
-| Default values       | → parameter `required` flag (`path` required, `max_chars` optional) |
+| Function name        | → `tool.name` = `"read_files"`                                             |
+| Docstring first line | → `tool.description` = `"Read UTF-8 text files..."`                        |
+| Type hints           | → parameter types (`array`, `integer`)                                     |
+| Default values       | → parameter `required` flag (`paths` required, `max_chars_per_file` optional) |
 | `:param ...:` lines  | → parameter descriptions                                            |
 | `self` parameter     | → **skipped** automatically                                         |
 
@@ -159,7 +159,7 @@ Both produce the same parameter schema.
 ### Bare usage (most common)
 
 ```python
-from miso.tools import tool
+from unchain.tools import tool
 
 @tool
 def greet(name: str) -> dict:
@@ -222,14 +222,14 @@ Use for: destructive operations (file deletion, database writes, irreversible ac
 ```
 
 ```python
-from miso.tools import ToolConfirmationRequest, ToolConfirmationResponse
+from unchain.tools import ToolConfirmationRequest, ToolConfirmationResponse
 
 # Request (built by framework)
 req = ToolConfirmationRequest(
-    tool_name="delete_file",
+    tool_name="write_file",
     call_id="call_abc123",
-    arguments={"path": "important.py"},
-    description="Delete important.py",
+    arguments={"path": "important.py", "content": "updated text"},
+    description="Write important.py",
 )
 
 # Response (from UI)
@@ -243,7 +243,7 @@ resp = ToolConfirmationResponse(approved=True)
 ### Adding tools to a Toolkit
 
 ```python
-from miso.tools import Toolkit
+from unchain.tools import Toolkit
 
 tk = Toolkit()
 
@@ -274,8 +274,7 @@ Tools from multiple toolkits are merged into one for the runtime:
 ```python
 agent = Agent(
     tools=[
-        WorkspaceToolkit(workspace_root="."),
-        TerminalToolkit(workspace_root="."),
+        CoreToolkit(workspace_root="."),
         my_custom_tool,          # A single Tool or callable
     ],
 )
@@ -290,15 +289,15 @@ The `ToolkitRegistry` discovers toolkits from three sources:
 
 | Source      | Location                                        | When                                    |
 | ----------- | ----------------------------------------------- | --------------------------------------- |
-| **Builtin** | `src/miso/toolkits/builtin/*/toolkit.toml`      | Always (unless `include_builtin=False`) |
+| **Builtin** | `src/unchain/toolkits/builtin/*/toolkit.toml`      | Always (unless `include_builtin=False`) |
 | **Local**   | Directories in `ToolRegistryConfig.local_roots` | When configured                         |
-| **Plugins** | `entry_points(group="miso.toolkits")`           | When installed packages declare them    |
+| **Plugins** | `entry_points(group="unchain.toolkits")`           | When installed packages declare them    |
 
 ### Plugin entry point convention
 
 ```toml
 # In the plugin's pyproject.toml
-[project.entry-points."miso.toolkits"]
+[project.entry-points."unchain.toolkits"]
 my_plugin = "my_package.toolkit:MyToolkit"
 ```
 
@@ -310,8 +309,8 @@ The `ToolkitCatalogRuntime` lets agents activate/deactivate toolkits at runtime:
 
 ```python
 agent.enable_toolkit_catalog(
-    managed_toolkit_ids=["workspace", "terminal", "external_api"],
-    always_active_toolkit_ids=["workspace"],
+    managed_toolkit_ids=["code", "external_api"],
+    always_active_toolkit_ids=["code"],
 )
 ```
 
@@ -333,7 +332,7 @@ For tools that produce large outputs (file reads, API responses), register optim
 
 ```python
 self.register(
-    self.read_file,
+    self.read_files,
     history_arguments_optimizer=self._compact_args,
     history_result_optimizer=self._compact_result,
 )

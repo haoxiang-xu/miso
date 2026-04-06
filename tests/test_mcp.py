@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from miso.toolkits import MCPToolkit
-from miso.tools import Toolkit
+from unchain.toolkits import MCPToolkit
+from unchain.tools import Toolkit
 
 
 # ── helpers: fake MCP objects ──────────────────────────────────────────────
@@ -250,7 +250,7 @@ class TestMcpConnectDisconnect:
         mock_session = MagicMock()
         mock_session.call_tool = fake_call_tool
 
-        from miso.tools import Tool
+        from unchain.tools import Tool
         m.tools["my_tool"] = Tool(name="my_tool", func=lambda: {}, parameters=[])
 
         loop, t, stop = self._start_loop_thread()
@@ -282,7 +282,7 @@ class TestMcpConnectDisconnect:
         mock_session = MagicMock()
         mock_session.call_tool = fake_call_tool
 
-        from miso.tools import Tool
+        from unchain.tools import Tool
         m.tools["ping"] = Tool(name="ping", func=lambda: {}, parameters=[])
 
         loop, t, stop = self._start_loop_thread()
@@ -318,13 +318,13 @@ class TestMcpWithAgent:
     """Test that mcp integrates with broth's multi-toolkit system."""
 
     def test_agent_can_add_mcp_Toolkit(self):
-        from miso.runtime import Broth
+        # Broth removed
 
         a = Broth()
         m = MCPToolkit(command="echo")
 
         # Register a fake tool manually (simulating what connect() does)
-        from miso.tools import Tool
+        from unchain.tools import Tool
         m.tools["mcp_tool"] = Tool(
             name="mcp_tool",
             func=lambda x="": {"echoed": x},
@@ -340,12 +340,12 @@ class TestMcpWithAgent:
         assert "mcp_tool" in tool_names
 
     def test_agent_find_tool_in_mcp_Toolkit(self):
-        from miso.runtime import Broth
+        # Broth removed
 
         a = Broth()
         m = MCPToolkit(command="echo")
 
-        from miso.tools import Tool
+        from unchain.tools import Tool
         m.tools["remote_tool"] = Tool(
             name="remote_tool",
             func=lambda: {"ok": True},

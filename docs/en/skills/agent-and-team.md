@@ -52,8 +52,8 @@ This chapter documents the high-level orchestration surface: how a single agent 
 
 ## Source entry points
 
-- `src/miso/agents/agent.py`
-- `src/miso/agents/team.py`
+- `src/unchain/agents/agent.py`
+- `src/unchain/agents/team.py`
 
 ## Agent In Practice
 
@@ -86,9 +86,9 @@ The original repository skill note is preserved below for continuity and extra e
 ### Construction
 
 ```python
-from miso import Agent
-from miso.toolkits import WorkspaceToolkit, TerminalToolkit
-from miso.memory import MemoryConfig
+from unchain import Agent
+from unchain.toolkits import CoreToolkit
+from unchain.memory import MemoryConfig
 
 agent = Agent(
     name="coder",                            # Agent identity
@@ -97,8 +97,7 @@ agent = Agent(
     model="gpt-5",                           # Model identifier
     api_key=None,                            # Uses env var if None
     tools=[                                  # Tools, Toolkits, or callables
-        WorkspaceToolkit(workspace_root="."),
-        TerminalToolkit(workspace_root=".", terminal_strict_mode=True),
+        CoreToolkit(workspace_root="."),
     ],
     short_term_memory=MemoryConfig(last_n_turns=10),
     long_term_memory=None,                   # LongTermMemoryConfig or dict
@@ -113,7 +112,7 @@ The `tools` list accepts mixed types:
 
 ```python
 tools=[
-    WorkspaceToolkit(workspace_root="."),  # Toolkit instance → all its tools
+    CoreToolkit(workspace_root="."),       # Toolkit instance → all its tools
     my_tool,                               # Tool object → single tool
     my_function,                           # Callable → auto-wrapped in Tool
 ]
@@ -157,7 +156,7 @@ messages, bundle = agent.run("Do something risky.")
 # User provides response
 messages, bundle = agent.resume_human_input(
     response=ToolConfirmationResponse(approved=True),
-    # or HumanInputResponse for ask_user
+    # or HumanInputResponse for ask_user_question
 )
 ```
 
@@ -167,8 +166,8 @@ Enable dynamic toolkit activation/deactivation at runtime:
 
 ```python
 agent.enable_toolkit_catalog(
-    managed_toolkit_ids=["workspace", "terminal", "external_api"],
-    always_active_toolkit_ids=["workspace"],  # Cannot be deactivated
+    managed_toolkit_ids=["code", "external_api"],
+    always_active_toolkit_ids=["code"],  # Cannot be deactivated
 )
 ```
 
@@ -212,7 +211,7 @@ agent.enable_subagents(
 ### Construction
 
 ```python
-from miso import Agent, Team
+from unchain import Agent, Team
 
 analyst = Agent(name="analyst", provider="openai", model="gpt-5", instructions="...")
 coder = Agent(name="coder", provider="openai", model="gpt-5", instructions="...")
