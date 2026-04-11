@@ -22,6 +22,282 @@ def _deepcopy_messages(messages: list[dict[str, Any]] | None) -> list[dict[str, 
     return [copy.deepcopy(message) for message in (messages or []) if isinstance(message, dict)]
 
 
+def _parse_base64_data_url(value: Any, *, default_media_type: str) -> tuple[str, str] | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw_value = value.strip()
+    if not raw_value.startswith("data:"):
+        return default_media_type, raw_value
+
+    header, separator, data = raw_value.partition(",")
+    if not separator or ";base64" not in header:
+        return None
+    media_type = header.removeprefix("data:").split(";", 1)[0] or default_media_type
+    return media_type, data
+
+
+def _anthropic_file_source(file_id: Any) -> dict[str, Any] | None:
+    if isinstance(file_id, str) and file_id.strip():
+        return {"type": "file", "file_id": file_id.strip()}
+    return None
+
+
+def _anthropic_url_source(url: Any) -> dict[str, Any] | None:
+    if isinstance(url, str) and url.strip():
+        return {"type": "url", "url": url.strip()}
+    return None
+
+
+def _anthropic_base64_source(
+    data: Any,
+    *,
+    media_type: Any,
+    default_media_type: str,
+) -> dict[str, Any] | None:
+    if not isinstance(data, str) or not data:
+        return None
+    resolved_media_type = (
+        media_type if isinstance(media_type, str) and media_type.strip() else default_media_type
+    )
+    return {"type": "base64", "media_type": resolved_media_type, "data": data}
+
+
+def _anthropic_source_from_canonical(
+    source: Any,
+    *,
+    default_media_type: str,
+) -> dict[str, Any] | None:
+    if not isinstance(source, dict):
+        return None
+
+    source_type = source.get("type")
+    if source_type == "base64":
+        return _anthropic_base64_source(
+            source.get("data"),
+            media_type=source.get("media_type"),
+            default_media_type=default_media_type,
+        )
+    if source_type == "url":
+        return _anthropic_url_source(source.get("url"))
+    if source_type in ("file", "file_id"):
+        return _anthropic_file_source(source.get("file_id"))
+    return None
+
+
+def _anthropic_source_from_input_image(block: dict[str, Any]) -> dict[str, Any] | None:
+    image_url = block.get("image_url")
+    if isinstance(image_url, dict):
+        image_url = image_url.get("url")
+
+    parsed_data_url = _parse_base64_data_url(image_url, default_media_type="image/png")
+    if parsed_data_url is not None:
+        media_type, data = parsed_data_url
+        if isinstance(image_url, str) and image_url.strip().startswith("data:"):
+            return _anthropic_base64_source(
+                data,
+                media_type=media_type,
+                default_media_type="image/png",
+            )
+        return _anthropic_url_source(image_url)
+
+    return _anthropic_file_source(block.get("file_id"))
+
+
+def _anthropic_source_from_input_file(block: dict[str, Any]) -> dict[str, Any] | None:
+    source = _anthropic_file_source(block.get("file_id"))
+    if source is not None:
+        return source
+
+    source = _anthropic_url_source(block.get("file_url"))
+    if source is not None:
+        return source
+
+    parsed_file_data = _parse_base64_data_url(
+        block.get("file_data"),
+        default_media_type="application/pdf",
+    )
+    if parsed_file_data is not None:
+        media_type, data = parsed_file_data
+        return _anthropic_base64_source(
+            data,
+            media_type=media_type,
+            default_media_type="application/pdf",
+        )
+
+    return _anthropic_source_from_canonical(
+        block.get("source"),
+        default_media_type="application/pdf",
+    )
+
+
+def _translate_content_blocks_for_anthropic(messages: list[dict[str, Any]]) -> None:
+    """Convert unchain canonical content blocks into Anthropic-native format, in place.
+
+    Accept both unchain canonical blocks and OpenAI Responses-style input
+    blocks so callers can reuse message payloads across providers.
+    """
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+
+        new_content: list[dict[str, Any]] = []
+        for block in content:
+            if not isinstance(block, dict):
+                new_content.append(block)
+                continue
+
+            btype = block.get("type")
+            if btype == "input_text":
+                new_content.append({
+                    "type": "text",
+                    "text": block.get("text", "") or "",
+                })
+                continue
+
+            if btype == "input_image":
+                source = _anthropic_source_from_input_image(block)
+                if source is None:
+                    new_content.append(block)
+                else:
+                    new_content.append({"type": "image", "source": source})
+                continue
+
+            if btype == "image":
+                source = _anthropic_source_from_canonical(
+                    block.get("source"),
+                    default_media_type="image/png",
+                )
+                if source is None:
+                    new_content.append(block)
+                else:
+                    next_block = copy.deepcopy(block)
+                    next_block["type"] = "image"
+                    next_block["source"] = source
+                    new_content.append(next_block)
+                continue
+
+            if btype == "input_file":
+                source = _anthropic_source_from_input_file(block)
+                if source is None:
+                    new_content.append(block)
+                else:
+                    new_content.append({"type": "document", "source": source})
+                continue
+
+            if btype in ("pdf", "document"):
+                source = _anthropic_source_from_canonical(
+                    block.get("source"),
+                    default_media_type="application/pdf",
+                )
+                if source is None:
+                    if btype == "pdf":
+                        next_block = copy.deepcopy(block)
+                        next_block["type"] = "document"
+                        new_content.append(next_block)
+                    else:
+                        new_content.append(block)
+                else:
+                    next_block = copy.deepcopy(block)
+                    next_block["type"] = "document"
+                    next_block["source"] = source
+                    new_content.append(next_block)
+                continue
+
+            new_content.append(block)
+
+        message["content"] = new_content
+
+
+def _translate_content_blocks_for_openai(messages: list[dict[str, Any]]) -> None:
+    """Convert unchain canonical content blocks into OpenAI Responses API format, in place.
+
+    Only user/system/developer messages are rewritten — assistant messages have
+    their own output format managed elsewhere. Attachment blocks (``image`` /
+    ``pdf``) are always translated. Plain ``{"type": "text", "text": ...}``
+    blocks are also upgraded to ``input_text`` when they appear alongside an
+    attachment, because Responses API rejects mixing ``text`` and
+    ``input_image`` in the same message. Text-only messages are left alone so
+    existing text chats keep working unchanged.
+    """
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role not in ("user", "system", "developer"):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+
+        has_attachment = any(
+            isinstance(block, dict) and block.get("type") in ("image", "pdf")
+            for block in content
+        )
+        if not has_attachment:
+            continue
+
+        new_content: list[dict[str, Any]] = []
+        for block in content:
+            if not isinstance(block, dict):
+                new_content.append(block)
+                continue
+            btype = block.get("type")
+
+            if btype == "text":
+                new_content.append({
+                    "type": "input_text",
+                    "text": block.get("text", "") or "",
+                })
+                continue
+
+            if btype == "image":
+                source = block.get("source") if isinstance(block.get("source"), dict) else {}
+                source_type = source.get("type")
+                if source_type == "base64":
+                    media_type = source.get("media_type") or "image/png"
+                    data = source.get("data") or ""
+                    new_content.append({
+                        "type": "input_image",
+                        "image_url": f"data:{media_type};base64,{data}",
+                    })
+                elif source_type == "url":
+                    url = source.get("url") or ""
+                    new_content.append({"type": "input_image", "image_url": url})
+                else:
+                    new_content.append(block)
+                continue
+
+            if btype == "pdf":
+                source = block.get("source") if isinstance(block.get("source"), dict) else {}
+                source_type = source.get("type")
+                if source_type == "base64":
+                    media_type = source.get("media_type") or "application/pdf"
+                    data = source.get("data") or ""
+                    filename = source.get("filename") or "document.pdf"
+                    new_content.append({
+                        "type": "input_file",
+                        "filename": filename,
+                        "file_data": f"data:{media_type};base64,{data}",
+                    })
+                elif source_type == "file_id":
+                    file_id = source.get("file_id") or ""
+                    new_content.append({"type": "input_file", "file_id": file_id})
+                elif source_type == "url":
+                    # Responses API accepts remote files via file_url
+                    url = source.get("url") or ""
+                    new_content.append({"type": "input_file", "file_url": url})
+                else:
+                    new_content.append(block)
+                continue
+
+            new_content.append(block)
+
+        message["content"] = new_content
+
+
 @dataclass(frozen=True)
 class ModelTurnRequest:
     messages: list[dict[str, Any]]
@@ -502,6 +778,7 @@ class OpenAIModelIO(_NativeModelIOBase):
                 })
                 continue
             normalized.append(copy.deepcopy(message))
+        _translate_content_blocks_for_openai(normalized)
         return normalized
 
     def _extract_openai_message_text(self, item: dict[str, Any]) -> str:
@@ -584,6 +861,8 @@ class AnthropicModelIO(_NativeModelIOBase):
                     system_parts.append(str(content))
                 continue
             chat_messages.append(copy.deepcopy(message))
+
+        _translate_content_blocks_for_anthropic(chat_messages)
 
         if request.response_format is not None:
             system_parts.append(request.response_format.to_anthropic())
