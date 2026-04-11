@@ -75,21 +75,25 @@ def from_file(path: str | Path) -> dict:
     data = base64.b64encode(path.read_bytes()).decode("ascii")
     block_type = "pdf" if mime == "application/pdf" else "image"
 
+    source = {
+        "type": "base64",
+        "media_type": mime,
+        "data": data,
+    }
+    if block_type == "pdf":
+        source["filename"] = path.name
+
     return {
         "type": block_type,
-        "source": {
-            "type": "base64",
-            "media_type": mime,
-            "data": data,
-        },
+        "source": source,
     }
 
 
 def from_url(url: str, media_type: str | None = None) -> dict:
-    """Build a canonical unchain image block from a public URL.
+    """Build a canonical unchain image or PDF block from a public URL.
 
     Args:
-        url:        Publicly accessible image URL.
+        url:        Publicly accessible image or PDF URL.
         media_type: Optional MIME type override (e.g. ``"image/png"``).
                     Inferred from the URL extension when omitted.
 
@@ -105,9 +109,10 @@ def from_url(url: str, media_type: str | None = None) -> dict:
     if media_type is None:
         suffix = Path(url.split("?")[0]).suffix.lower()
         media_type = _MIME_BY_SUFFIX.get(suffix, "image/jpeg")
+    block_type = "pdf" if media_type == "application/pdf" else "image"
 
     return {
-        "type": "image",
+        "type": block_type,
         "source": {
             "type": "url",
             "url": url,

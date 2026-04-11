@@ -1,6 +1,8 @@
+import base64
 import json
 from types import SimpleNamespace
 
+from unchain.input import media
 from unchain.kernel import ModelTurnRequest
 from unchain.providers import AnthropicModelIO, OllamaModelIO
 from unchain.tools import get_provider_message_builder
@@ -32,8 +34,31 @@ class _FakeAnthropicMessages:
 
 
 class _FakeAnthropicClient:
-    def __init__(self, *, events, captured_kwargs):
+    def __init__(self, *, events, captured_kwargs, **kwargs):
         self.messages = _FakeAnthropicMessages(events=events, captured_kwargs=captured_kwargs)
+
+
+def _anthropic_text_client_factory(captured_kwargs, *, text="ok"):
+    def client_factory(api_key, **kwargs):
+        return _FakeAnthropicClient(
+            events=[
+                SimpleNamespace(
+                    type="message_start",
+                    message=SimpleNamespace(usage={"input_tokens": 1, "output_tokens": 0}),
+                ),
+                SimpleNamespace(
+                    type="content_block_delta",
+                    delta=SimpleNamespace(type="text_delta", text=text),
+                ),
+                SimpleNamespace(
+                    type="message_delta",
+                    usage={"input_tokens": 1, "output_tokens": 1},
+                ),
+            ],
+            captured_kwargs=captured_kwargs,
+        )
+
+    return client_factory
 
 
 class _FakeOllamaResponse:
@@ -219,6 +244,141 @@ def test_anthropic_model_io_maps_sonnet_4_alias_to_provider_model():
 
     assert turn.final_text == "ok"
     assert captured_kwargs["model"] == "claude-sonnet-4-20250514"
+
+
+def test_anthropic_model_io_translates_canonical_media_blocks(tmp_path):
+    png_bytes = b"png-bytes"
+    pdf_bytes = b"%PDF-1.4\npdf-bytes\n"
+    png_path = tmp_path / "x.png"
+    pdf_path = tmp_path / "x.pdf"
+    png_path.write_bytes(png_bytes)
+    pdf_path.write_bytes(pdf_bytes)
+
+    captured_kwargs = {}
+    io = AnthropicModelIO(
+        model="claude-3-7-sonnet",
+        api_key="test-key",
+        client_factory=_anthropic_text_client_factory(captured_kwargs),
+    )
+
+    turn = io.fetch_turn(
+        ModelTurnRequest(
+            messages=[{
+                "role": "user",
+                "content": [
+                    media.from_file(png_path),
+                    media.from_file(pdf_path),
+                    {"type": "pdf", "source": {"type": "file_id", "file_id": "file_pdf"}},
+                    {"type": "text", "text": "read these"},
+                ],
+            }]
+        )
+    )
+
+    assert turn.final_text == "ok"
+    assert captured_kwargs["messages"] == [{
+        "role": "user",
+        "content": [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": base64.b64encode(png_bytes).decode("ascii"),
+                },
+            },
+            {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": base64.b64encode(pdf_bytes).decode("ascii"),
+                },
+            },
+            {
+                "type": "document",
+                "source": {"type": "file", "file_id": "file_pdf"},
+            },
+            {"type": "text", "text": "read these", "cache_control": {"type": "ephemeral"}},
+        ],
+    }]
+
+
+def test_anthropic_model_io_translates_openai_native_image_blocks():
+    captured_kwargs = {}
+    io = AnthropicModelIO(
+        model="claude-3-7-sonnet",
+        api_key="test-key",
+        client_factory=_anthropic_text_client_factory(captured_kwargs),
+    )
+
+    io.fetch_turn(
+        ModelTurnRequest(
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "input_image", "image_url": "data:image/png;base64,aW1n"},
+                    {"type": "input_image", "image_url": "https://example.com/image.png"},
+                    {"type": "input_text", "text": "describe"},
+                ],
+            }]
+        )
+    )
+
+    assert captured_kwargs["messages"][0]["content"] == [
+        {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": "aW1n"},
+        },
+        {
+            "type": "image",
+            "source": {"type": "url", "url": "https://example.com/image.png"},
+        },
+        {"type": "text", "text": "describe", "cache_control": {"type": "ephemeral"}},
+    ]
+
+
+def test_anthropic_model_io_translates_openai_native_file_blocks():
+    captured_kwargs = {}
+    io = AnthropicModelIO(
+        model="claude-3-7-sonnet",
+        api_key="test-key",
+        client_factory=_anthropic_text_client_factory(captured_kwargs),
+    )
+
+    io.fetch_turn(
+        ModelTurnRequest(
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_file",
+                        "filename": "report.pdf",
+                        "file_data": "data:application/pdf;base64,JVBERg==",
+                    },
+                    {"type": "input_file", "file_url": "https://example.com/report.pdf"},
+                    {"type": "input_file", "file_id": "file_123"},
+                    {"type": "input_text", "text": "summarize"},
+                ],
+            }]
+        )
+    )
+
+    assert captured_kwargs["messages"][0]["content"] == [
+        {
+            "type": "document",
+            "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERg=="},
+        },
+        {
+            "type": "document",
+            "source": {"type": "url", "url": "https://example.com/report.pdf"},
+        },
+        {
+            "type": "document",
+            "source": {"type": "file", "file_id": "file_123"},
+        },
+        {"type": "text", "text": "summarize", "cache_control": {"type": "ephemeral"}},
+    ]
 
 
 def test_ollama_model_io_builds_request_and_parses_text():
