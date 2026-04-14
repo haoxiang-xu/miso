@@ -110,6 +110,7 @@ class CoreToolkit(BuiltinToolkit):
             self.write,
             description="Create or fully overwrite a UTF-8 text file by absolute path. Existing files must be fully read first.",
             requires_confirmation=True,
+            confirmation_resolver=self._resolve_write_confirmation,
             history_arguments_optimizer=self._compact_write_args,
             history_result_optimizer=self._compact_mutation_result,
         )
@@ -117,6 +118,7 @@ class CoreToolkit(BuiltinToolkit):
             self.edit,
             description="Replace one unique string match, or all matches when requested, in an existing UTF-8 text file by absolute path.",
             requires_confirmation=True,
+            confirmation_resolver=self._resolve_edit_confirmation,
             history_arguments_optimizer=self._compact_edit_args,
             history_result_optimizer=self._compact_mutation_result,
         )
@@ -941,6 +943,142 @@ class CoreToolkit(BuiltinToolkit):
         if self._shell_runtime.is_low_risk_command(command, shell_family):
             return ToolConfirmationPolicy(requires_confirmation=False)
         return ToolConfirmationPolicy(requires_confirmation=True)
+
+    def _resolve_write_confirmation(
+        self,
+        arguments: dict[str, Any],
+        execution_context: ToolExecutionContext | None,
+    ) -> ToolConfirmationPolicy:
+        """Build a code_diff confirmation policy for the `write` tool.
+
+        Falls back to a plain confirmation policy when the target is
+        binary, oversized, unreadable, or the path cannot be resolved.
+        """
+        from ....tools._diff_helpers import build_code_diff_payload
+
+        path_arg = arguments.get("path")
+        new_content = arguments.get("content", "")
+        if not isinstance(path_arg, str) or not path_arg or not isinstance(new_content, str):
+            return ToolConfirmationPolicy(requires_confirmation=True)
+
+        target, err = self._resolve_absolute_path(path_arg)
+        if target is None or err is not None:
+            return ToolConfirmationPolicy(requires_confirmation=True)
+
+        existed = target.exists() and target.is_file()
+        if existed:
+            old_raw, load_error = self._read_text_file(target)
+            if old_raw is None or load_error is not None:
+                return ToolConfirmationPolicy(requires_confirmation=True)
+        else:
+            old_raw = ""
+
+        operation = "edit" if existed else "create"
+        file_payload = build_code_diff_payload(
+            str(target), old_raw, new_content, operation
+        )
+        if file_payload is None:
+            return ToolConfirmationPolicy(requires_confirmation=True)
+
+        title = f"{'Edit' if existed else 'Create'} {target}"
+        interact_config = {
+            "title": title,
+            "operation": operation,
+            "path": str(target),
+            "unified_diff": file_payload["unified_diff"],
+            "truncated": file_payload["truncated"],
+            "total_lines": file_payload["total_lines"],
+            "displayed_lines": file_payload["displayed_lines"],
+            "fallback_description": self._describe_code_diff(file_payload, str(target)),
+        }
+        return ToolConfirmationPolicy(
+            requires_confirmation=True,
+            description=title,
+            interact_type="code_diff",
+            interact_config=interact_config,
+        )
+
+    def _resolve_edit_confirmation(
+        self,
+        arguments: dict[str, Any],
+        execution_context: ToolExecutionContext | None,
+    ) -> ToolConfirmationPolicy:
+        """Build a code_diff confirmation policy for the `edit` tool.
+
+        Simulates the string-replace in memory to produce a diff without
+        mutating disk. Falls back to a plain confirmation policy when the
+        target is missing, binary, or the old_string is not found.
+        """
+        from ....tools._diff_helpers import build_code_diff_payload
+
+        path_arg = arguments.get("path")
+        old_string = arguments.get("old_string")
+        new_string = arguments.get("new_string", "")
+        replace_all = bool(arguments.get("replace_all", False))
+
+        if (
+            not isinstance(path_arg, str) or not path_arg
+            or not isinstance(old_string, str)
+            or not isinstance(new_string, str)
+        ):
+            return ToolConfirmationPolicy(requires_confirmation=True)
+
+        target, err = self._resolve_absolute_path(path_arg)
+        if target is None or err is not None:
+            return ToolConfirmationPolicy(requires_confirmation=True)
+        if not (target.exists() and target.is_file()):
+            return ToolConfirmationPolicy(requires_confirmation=True)
+
+        old_raw, load_error = self._read_text_file(target)
+        if old_raw is None or load_error is not None:
+            return ToolConfirmationPolicy(requires_confirmation=True)
+
+        match_count = old_raw.count(old_string)
+        if match_count == 0:
+            return ToolConfirmationPolicy(requires_confirmation=True)
+        if match_count > 1 and not replace_all:
+            return ToolConfirmationPolicy(requires_confirmation=True)
+
+        replacement_count = match_count if replace_all else 1
+        new_raw = old_raw.replace(old_string, new_string, replacement_count)
+
+        file_payload = build_code_diff_payload(
+            str(target), old_raw, new_raw, "edit"
+        )
+        if file_payload is None:
+            return ToolConfirmationPolicy(requires_confirmation=True)
+
+        title = f"Edit {target}"
+        interact_config = {
+            "title": title,
+            "operation": "edit",
+            "path": str(target),
+            "unified_diff": file_payload["unified_diff"],
+            "truncated": file_payload["truncated"],
+            "total_lines": file_payload["total_lines"],
+            "displayed_lines": file_payload["displayed_lines"],
+            "fallback_description": self._describe_code_diff(file_payload, str(target)),
+        }
+        return ToolConfirmationPolicy(
+            requires_confirmation=True,
+            description=title,
+            interact_type="code_diff",
+            interact_config=interact_config,
+        )
+
+    @staticmethod
+    def _describe_code_diff(file_payload: dict, path: str) -> str:
+        diff = file_payload.get("unified_diff", "") or ""
+        plus = sum(
+            1 for line in diff.split("\n")
+            if line.startswith("+") and not line.startswith("+++")
+        )
+        minus = sum(
+            1 for line in diff.split("\n")
+            if line.startswith("-") and not line.startswith("---")
+        )
+        op = file_payload.get("sub_operation", "edit")
+        return f"{op} {path} (+{plus} -{minus})"
 
     def shutdown(self) -> None:
         self._lsp_runtime.shutdown()
