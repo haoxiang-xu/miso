@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import copy
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 from ..memory import KernelMemoryRuntime
 from ..kernel.loop import KernelLoop
@@ -259,9 +262,16 @@ class AgentBuilder:
         configured_names = list(self.toolkit.tools.keys())
         missing = [name for name in dict.fromkeys(allowed_names) if name not in self.toolkit.tools]
         if missing:
-            raise ValueError(
-                f"agent {self.spec.name!r} allowed_tools contains unknown tool names: {', '.join(missing)}"
+            if self.spec.missing_tool_policy == "raise":
+                raise ValueError(
+                    f"agent {self.spec.name!r} allowed_tools contains unknown tool names: {', '.join(missing)}"
+                )
+            logger.warning(
+                "agent %r allowed_tools contains unknown tool names (skipped): %s",
+                self.spec.name,
+                ", ".join(missing),
             )
+            allowed_names = [name for name in allowed_names if name not in missing]
         allowed_name_set = set(allowed_names)
         self.toolkit.tools = {
             name: self.toolkit.tools[name]

@@ -22,6 +22,7 @@ class Agent:
         api_key: str | None = None,
         modules: tuple[Any, ...] = (),
         allowed_tools: tuple[str, ...] | None = None,
+        missing_tool_policy: str = "raise",
         model_io_factory: Callable[..., Any] | None = None,
     ) -> None:
         if not isinstance(name, str) or not name.strip():
@@ -34,6 +35,7 @@ class Agent:
             api_key=api_key,
             modules=tuple(modules or ()),
             allowed_tools=tuple(allowed_tools) if allowed_tools is not None else None,
+            missing_tool_policy=missing_tool_policy,
         )
         self.state = AgentState()
         self._model_io_registry = ModelIOFactoryRegistry()
@@ -96,6 +98,7 @@ class Agent:
         modules: tuple[Any, ...] | None = None,
         model: str | None = None,
         allowed_tools: tuple[str, ...] | None = None,
+        missing_tool_policy: str | None = None,
     ) -> "Agent":
         return Agent(
             name=name or self.name,
@@ -105,6 +108,9 @@ class Agent:
             api_key=self.spec.api_key,
             modules=tuple(self.spec.modules if modules is None else modules),
             allowed_tools=self.spec.allowed_tools if allowed_tools is None else tuple(allowed_tools),
+            missing_tool_policy=(
+                self.spec.missing_tool_policy if missing_tool_policy is None else missing_tool_policy
+            ),
             model_io_factory=self._model_io_factory,
         )
 
@@ -121,6 +127,7 @@ class Agent:
         memory_policy: str,
         model: str | None = None,
         allowed_tools: tuple[str, ...] | None = None,
+        missing_tool_policy: str | None = None,
     ) -> "Agent":
         overlay = (
             f'You are subagent "{subagent_name}" created by parent "{parent_name}".\n'
@@ -143,6 +150,7 @@ class Agent:
             modules=tuple(modules),
             model=model,
             allowed_tools=allowed_tools,
+            missing_tool_policy=missing_tool_policy,
         )
 
     def run(
