@@ -4,45 +4,52 @@ Canonical English skill chapter for the `architecture-overview` topic.
 
 ## Role and boundaries
 
-This chapter explains how the package is layered, which modules are foundational, and how execution/data move from user code into the runtime loop and back out.
+This chapter explains how the package is layered, which modules are foundational, and how execution and data move from user code into the kernel loop and back out.
 
 ## Dependency view
 
 - `unchain.tools` stays foundational and dependency-light.
-- `unchain.runtime` depends on tools, memory, workspace, input, and schema layers.
-- `unchain.agents` orchestrates `Broth`, memory, and toolkits without inverting dependencies.
+- `unchain.toolkits` depends on `tools` and the input/workspace primitives.
+- `unchain.kernel` defines the execution loop, runtime harness protocol, and shared types; it depends on `tools` (for the `Toolkit` it hands to providers) but not on memory or providers directly.
+- `unchain.providers` implements `ModelIO` against vendor SDKs; the kernel only sees the protocol.
+- `unchain.memory`, `unchain.optimizers`, `unchain.subagents`, `unchain.retry` are independent harness/runtime layers that plug into the kernel through the harness protocol.
+- `unchain.agent` is the orchestration layer: it composes modules, builds a `PreparedAgent`, and delegates to `KernelLoop`.
 
 ## Core objects
 
-- `Agent` and `Team` as orchestration entry points.
-- `Broth` as the tool-calling engine.
-- `Tool`, `Toolkit`, `ToolkitRegistry`, and `ToolkitCatalogRuntime` as the tool layer.
-- `MemoryManager` and related stores/strategies as context infrastructure.
+- `Agent` as the public orchestration entry point.
+- `AgentBuilder` and `PreparedAgent` for the build → run pipeline.
+- `KernelLoop` as the execution engine.
+- `RuntimeHarness` (and `RuntimePhase`) as the extension surface.
+- `ModelIO` as the provider boundary.
+- `Tool`, `Toolkit`, `ToolkitRegistry`, `ToolkitCatalogRuntime`, `ToolDiscoveryRuntime` as the tool layer.
+- `MemoryManager` and `KernelMemoryRuntime` as the memory layer.
 
 ## Execution and state flow
 
-- User code constructs `Agent` or `Broth`.
-- The runtime normalizes tools, prepares memory, injects pinned context, and calls a provider.
-- Tool calls are executed or suspended for confirmation/human input.
-- Conversation state, artifacts, and memory writes are committed before the run completes or pauses.
+- User code constructs `Agent(name=..., modules=(...))`.
+- `Agent.run()` builds an `AgentCallContext`, asks each module to `configure(builder)` on a fresh `AgentBuilder`, calls `builder.build()` to get a `PreparedAgent`, then calls `prepared.run()`.
+- `PreparedAgent.run()` enters `KernelLoop.run()`, which dispatches harness phases, fetches one model turn via `ModelIO.fetch_turn()`, executes tools, and commits memory until the loop completes or suspends.
+- Suspension yields a `KernelRunResult` with a continuation payload that `Agent.resume_human_input()` re-enters on the next call.
 
 ## Configuration surface
 
-- Provider/model/API key selection.
-- Memory configuration and long-term adapters.
-- Toolkit catalog and managed toolkit IDs.
+- Provider/model/api key (on `Agent`).
+- Modules: `ToolsModule`, `MemoryModule`, `PoliciesModule`, `OptimizersModule`, `SubagentModule`, `ToolDiscoveryModule`.
+- Per-call overrides on `Agent.run()` (`max_iterations`, `payload`, `callback`, `on_tool_confirm`, ...).
 
 ## Extension points
 
-- Add providers in `runtime/providers/`.
-- Add builtins or plugins through toolkit manifests.
+- Implement `ModelIO` to add providers (under `providers/`).
+- Implement `RuntimeHarness` to add per-phase behavior (memory commit, optimization, retry, subagents).
+- Add builtin or plugin toolkits through `toolkit.toml` manifests.
 - Swap memory stores/adapters without changing the orchestration API.
 
 ## Common gotchas
 
-- The top-level API is intentionally small; most reference detail lives in subpackages.
-- A fresh `Broth` instance is created per `Agent.run()` invocation.
-- Catalog activation is runtime state, not import-time registration.
+- The top-level public API is intentionally tiny: only `Agent`. Everything else lives in subpackages.
+- A fresh `KernelLoop` is built per `Agent.run()`; module state lives in `AgentState`, not on the loop.
+- `Broth` is **not** the engine anymore — it survives only as `LegacyBrothModelIO`, a `ModelIO` adapter for older code paths.
 
 ## Related class references
 
@@ -54,59 +61,72 @@ This chapter explains how the package is layered, which modules are foundational
 ## Source entry points
 
 - `src/unchain/__init__.py`
-- `src/unchain/agents/`
-- `src/unchain/runtime/`
+- `src/unchain/agent/`
+- `src/unchain/kernel/`
 - `src/unchain/tools/`
-
-## Detailed legacy reference
-
-The original repository skill note is preserved below for continuity and extra examples. The canonical copy now lives in this docs tree.
-
-> Module map, dependency graph, and data flow for the unchain agent framework.
+- `src/unchain/toolkits/`
 
 ## Package Layout
 
 ```text
 src/unchain/
-├── __init__.py          # Public API: Agent, Team
-├── agents/              # High-level Agent and Team
-│   ├── agent.py         #   Agent – single agent orchestration
-│   └── team.py          #   Team – multi-agent channel coordination
-├── runtime/             # Low-level Broth engine + providers
-│   ├── engine.py        #   Broth – tool-calling loop, memory, callbacks
-│   ├── payloads.py      #   Provider defaults + model capability registry
-│   ├── files.py         #   OpenAI file upload helpers
-│   ├── providers/       #   Lazy-loaded provider SDKs (openai, anthropic, gemini, ollama)
-│   └── resources/       #   JSON configs for model defaults and capabilities
-├── tools/               # Tool primitives and discovery
-│   ├── tool.py          #   Tool – wrapped callable with metadata
-│   ├── toolkit.py       #   Toolkit – dict container of Tools
+├── __init__.py          # Public API: Agent (lazy)
+├── agent/               # Orchestration layer
+│   ├── agent.py         #   Agent — user-facing class
+│   ├── builder.py       #   AgentCallContext, AgentBuilder, PreparedAgent
+│   ├── spec.py          #   AgentSpec (frozen), AgentState
+│   ├── model_io.py      #   ModelIOFactoryRegistry
+│   └── modules/         #   ToolsModule, MemoryModule, PoliciesModule,
+│                        #   OptimizersModule, SubagentModule, ToolDiscoveryModule
+├── kernel/              # Execution engine
+│   ├── loop.py          #   KernelLoop — main step-once loop
+│   ├── harness.py       #   RuntimeHarness protocol + RuntimePhase + HarnessContext
+│   ├── state.py         #   RunState — mutable per-run state
+│   ├── types.py         #   ToolCall, TokenUsage, ModelTurnResult, KernelRunResult
+│   └── model_io.py      #   LegacyBrothModelIO (compat shim)
+├── providers/           # ModelIO implementations
+│   ├── model_io.py      #   ModelIO protocol + ModelTurnRequest
+│   ├── openai.py        #   OpenAIModelIO
+│   ├── anthropic.py     #   AnthropicModelIO
+│   └── ollama.py        #   OllamaModelIO
+├── tools/               # Tool primitives + discovery
+│   ├── tool.py          #   Tool — wrapped callable with metadata
+│   ├── toolkit.py       #   Toolkit — dict container of Tools
 │   ├── decorators.py    #   @tool decorator
 │   ├── models.py        #   ToolParameter, confirmation types, history optimizers
-│   ├── registry.py      #   ToolkitRegistry – discovers toolkits from 3 sources
-│   ├── catalog.py       #   ToolkitCatalogRuntime – dynamic activation/deactivation
-│   └── confirmation.py  #   ToolConfirmationRequest / Response
+│   ├── registry.py      #   ToolkitRegistry — discovers toolkits from 3 sources
+│   ├── catalog.py       #   ToolkitCatalogRuntime — toolkit-level lazy activation
+│   ├── discovery.py     #   ToolDiscoveryRuntime — per-tool deferred load
+│   ├── execution.py     #   ToolExecutionHarness — runs tools, handles confirm/observe
+│   └── prompting.py     #   ToolPromptHarness — prompt-side tool spec rendering
 ├── toolkits/            # Builtin + MCP toolkits
-│   ├── base.py          #   BuiltinToolkit – workspace-safe base class
-│   ├── mcp.py           #   MCPToolkit – MCP server bridge
-│   └── builtin/         #   Pre-built toolkits (core, external_api)
-├── memory/              # Short-term and long-term memory
-│   ├── manager.py       #   MemoryManager – orchestrates stores + strategies
-│   ├── config.py        #   MemoryConfig / LongTermMemoryConfig dataclasses
-│   ├── strategies.py    #   Context window strategies (LastNTurns, Summary, Hybrid)
-│   ├── stores.py        #   SessionStore, VectorStoreAdapter interfaces
+│   ├── base.py          #   BuiltinToolkit — workspace-safe base
+│   ├── mcp.py           #   MCPToolkit — MCP server bridge
+│   └── builtin/         #   CoreToolkit, ExternalAPIToolkit
+├── memory/              # Two-tier memory
+│   ├── manager.py       #   MemoryManager — orchestrates stores + strategies
+│   ├── runtime.py       #   KernelMemoryRuntime — kernel-side facade
+│   ├── short_term.py    #   Short-term context strategies
 │   ├── long_term.py     #   LongTermExtractor, profile stores
-│   ├── qdrant.py        #   Qdrant vector DB adapter
+│   ├── qdrant.py        #   Qdrant vector adapter
 │   └── tool_history.py  #   Tool call history compaction
-├── input/               # Human interaction
-│   ├── human_input.py   #   HumanInputRequest / Response, structured selectors
-│   └── media.py         #   Media upload utilities
-├── workspace/           # Session-scoped pins
-│   └── pins.py          #   Anchor-resilient file pin system
-├── schemas/             # Structured output
-│   └── response.py      #   ResponseFormat for JSON schema output
-└── _internal/           # Private helpers
-    └── agent_shared.py  #   as_text(), normalize_mentions()
+├── optimizers/          # Context window / token compaction harnesses
+│   └── ...              #   LastN, LlmSummary, SlidingWindow, ToolHistoryCompaction, ToolPairSafety
+├── subagents/           # Sub-agent execution and delegation tools
+│   ├── executor.py      #   SubagentExecutor
+│   ├── runtime_tools.py #   build_delegate_to_subagent_tool, ...
+│   └── plugin.py        #   SubagentToolPlugin
+├── retry/               # Provider-agnostic retry layer
+│   ├── classifier.py    #   is_retryable
+│   ├── backoff.py       #   compute_delay_ms
+│   ├── executor.py      #   execute_with_retry
+│   └── wrapper.py       #   fetch_turn_with_retry
+├── runtime/             # Legacy Broth runtime (compat)
+│   └── ...              #   Used only by LegacyBrothModelIO; new code uses providers/ directly
+├── input/               # Human input + media
+├── character/           # Agent persona / instruction helpers
+├── schemas/             # ResponseFormat for structured output
+└── types/               # Shared type aliases
 ```
 
 ## Import Hierarchy
@@ -114,16 +134,18 @@ src/unchain/
 The dependency direction flows **downward** — upper layers import from lower layers, never the reverse.
 
 ```text
-Layer 0  (public API)      unchain              → exports Agent, Team
-Layer 1  (orchestration)   unchain.agents       → imports runtime, tools, toolkits, memory
-Layer 2  (engine)          unchain.runtime      → imports tools, memory, workspace, input, schemas
-Layer 3  (tool system)     unchain.tools        → imports nothing from unchain (self-contained)
-Layer 3  (toolkit impls)   unchain.toolkits     → imports tools, workspace
-Layer 3  (memory)          unchain.memory       → imports runtime (for summarisation calls), tools
-Layer 4  (primitives)      unchain.input, unchain.workspace, unchain.schemas, unchain._internal
+Layer 0  (public API)         unchain                → exports Agent
+Layer 1  (orchestration)      unchain.agent          → imports kernel, tools, toolkits, memory, optimizers, subagents
+Layer 2  (engine)             unchain.kernel         → imports tools (for Toolkit), defines harness/state/types
+Layer 2' (provider adapters)  unchain.providers      → imports tools, kernel.types
+Layer 3  (tool system)        unchain.tools          → no internal unchain deps (foundation)
+Layer 3  (toolkit impls)      unchain.toolkits       → imports tools, input, workspace primitives
+Layer 3  (memory)             unchain.memory         → imports tools (for tool_history), kernel (for harness)
+Layer 3  (optimizers/...)     unchain.optimizers / .subagents / .retry → import kernel (for harness), tools
+Layer 4  (primitives)         unchain.input, .character, .schemas, .types
 ```
 
-**Rule**: `unchain.tools` is the foundation — it has **zero internal dependencies**. Everything else builds on top of it.
+**Rule**: `unchain.tools` is the foundation — it has zero internal dependencies. The kernel depends only on it. Everything else either implements a kernel protocol (harness, ModelIO) or composes modules at the agent layer.
 
 ## Data Flow: Request → Response
 
@@ -131,77 +153,94 @@ Layer 4  (primitives)      unchain.input, unchain.workspace, unchain.schemas, un
 User code
   │
   ▼
-Agent.run(messages, session_id, ...)
-  │  1. Builds a merged Toolkit from all registered tools
-  │  2. Creates a fresh Broth runtime engine
-  │  3. Attaches MemoryManager (if configured)
-  │  4. Calls broth.run(messages, toolkit, ...)
+Agent.run(messages, payload, ..., on_tool_confirm, ...)
+  │  1. Normalize messages (str → list[dict]).
+  │  2. Build AgentCallContext capturing per-call options.
+  │  3. _prepare(): each module configures a fresh AgentBuilder.
+  │  4. builder.build() → PreparedAgent (KernelLoop + merged Toolkit + harnesses).
+  │  5. prepared.run() → KernelLoop.run().
   │
   ▼
-Broth.run()  ─── main execution loop ───
+KernelLoop.run(messages, ...)
   │
-  │  for each iteration (up to max_iterations):
-  │    ┌─────────────────────────────────────────┐
-  │    │ 1. memory.prepare_messages()            │
-  │    │    • injects workspace pin context      │
-  │    │    • applies context window strategy     │
-  │    │                                          │
-  │    │ 2. _fetch_once(messages, tools, ...)    │
-  │    │    • dispatches to provider SDK          │
-  │    │    • receives assistant message + calls  │
-  │    │                                          │
-  │    │ 3. for each tool_call:                  │
-  │    │    • confirmation gate (if required)     │
-  │    │    • toolkit.execute(name, args)         │
-  │    │    • observation injection (if observe)  │
-  │    │                                          │
-  │    │ 4. memory.commit_messages()             │
-  │    │    • stores conversation turn            │
-  │    │    • extracts long-term facts            │
-  │    │                                          │
-  │    │ 5. check: no more tool_calls? → break   │
-  │    └─────────────────────────────────────────┘
+  │  while not terminal:
+  │    step_once():
+  │      ┌─ dispatch_phase("bootstrap")            ─ harness setup
+  │      ├─ dispatch_phase("before_model")         ─ optimizers / context prep
+  │      ├─ ModelIO.fetch_turn(ModelTurnRequest)   ─ provider call
+  │      ├─ dispatch_phase("after_model")          ─ post-model hooks
+  │      ├─ dispatch_phase("on_tool_call")         ─ confirmation gate
+  │      ├─ ToolExecutionHarness runs tool calls
+  │      ├─ dispatch_phase("after_tool_batch")     ─ observation injection
+  │      ├─ dispatch_phase("before_commit")        ─ memory commit hook
+  │      └─ memory.commit_messages()
+  │
+  │    on suspension:
+  │      dispatch_phase("on_suspend")              ─ checkpoint state
+  │      return KernelRunResult(status="awaiting_human_input", continuation=...)
   │
   ▼
-Returns (messages, bundle)
-  │  bundle contains: consumed_tokens, artifacts, stop_reason, ...
+KernelRunResult
+  │  fields: messages, status, continuation, human_input_request,
+  │          consumed_tokens, input_tokens, output_tokens, ...
   │
   ▼
-Back to Agent.run() → returns to user code
+User code reads the result; if suspended, calls Agent.resume_human_input().
 ```
+
+## RuntimePhase reference
+
+The kernel dispatches harness work across eight ordered phases:
+
+| Phase | When | Typical use |
+| --- | --- | --- |
+| `bootstrap` | Before the first iteration. | Initialize per-run resources, attach state to `RunState`. |
+| `before_model` | Before each `ModelIO.fetch_turn()`. | Context window pruning, tool history compaction, retry setup. |
+| `after_model` | After each model turn returns. | Token accounting, response inspection, custom logging. |
+| `on_tool_call` | Before tool execution. | Confirmation gating, argument rewriting, permission checks. |
+| `after_tool_batch` | After all tool calls in a turn complete. | Observation turn injection, tool result post-processing. |
+| `before_commit` | Before memory commit at end of iteration. | Memory write hooks, summarization triggers. |
+| `on_suspend` | When the loop yields control to the caller. | Checkpoint catalog/discovery state, save resume tokens. |
+| `on_resume` | When `resume_human_input()` re-enters the loop. | Restore state from continuation payload. |
 
 ## Component Relationships
 
-| Component               | Depends On                                                   | Depended On By                   |
-| ----------------------- | ------------------------------------------------------------ | -------------------------------- |
-| `Tool` / `Toolkit`      | — (self-contained)                                           | Everything                       |
-| `BuiltinToolkit`        | `Toolkit`, `workspace.pins`                                  | Builtin toolkit implementations  |
-| `ToolkitRegistry`       | `Toolkit`, filesystem                                        | `Agent`, `ToolkitCatalogRuntime` |
-| `ToolkitCatalogRuntime` | `ToolkitRegistry`, `Toolkit`                                 | `Agent`, `Broth`                 |
-| `MemoryManager`         | `SessionStore`, context strategies, `Broth` (for summaries)  | `Broth`                          |
-| `Broth`                 | `Toolkit`, `MemoryManager`, providers, `ResponseFormat`      | `Agent`                          |
-| `Agent`                 | `Broth`, `Toolkit`, `MemoryManager`, `ToolkitCatalogRuntime` | `Team`, user code                |
-| `Team`                  | `Agent`                                                      | User code                        |
+| Component                  | Depends On                                     | Depended On By                  |
+| -------------------------- | ---------------------------------------------- | ------------------------------- |
+| `Tool` / `Toolkit`         | — (self-contained)                             | Almost everything               |
+| `BuiltinToolkit`           | `Toolkit`, workspace primitives                | Builtin toolkit implementations |
+| `ToolkitRegistry`          | `Toolkit`, filesystem                          | Catalog/Discovery runtimes      |
+| `ToolkitCatalogRuntime`    | `ToolkitRegistry`, `Toolkit`                   | Agent (via `ToolsModule`)       |
+| `ToolDiscoveryRuntime`     | `ToolkitRegistry`, `Toolkit`                   | Agent (via `ToolDiscoveryModule`) |
+| `MemoryManager`            | session/vector stores, context strategies      | `KernelMemoryRuntime`           |
+| `KernelMemoryRuntime`      | `MemoryManager`, harness protocol              | KernelLoop (via `MemoryModule`) |
+| `ModelIO` (protocol)       | provider SDKs (lazy)                           | `KernelLoop`                    |
+| `KernelLoop`               | `ModelIO`, harnesses, `Toolkit`                | `PreparedAgent`                 |
+| `PreparedAgent`            | `KernelLoop`, `Toolkit`, defaults              | `Agent`                         |
+| `AgentBuilder`             | modules, `KernelLoop`                          | `PreparedAgent`                 |
+| `Agent`                    | modules, `AgentBuilder`                        | User code                       |
 
 ## Key Design Principles
 
-1. **Minimal public surface** — Only `Agent` and `Team` are top-level exports. Everything else is imported from subpackages.
+1. **Minimal public surface** — Only `Agent` is a top-level export. Everything else is imported from subpackages.
 
-2. **Fresh engine per run** — `Agent.run()` creates a new `Broth` instance each time. No leftover state between runs (memory is externalized).
+2. **Fresh kernel per run** — `Agent.run()` builds a new `KernelLoop` each time. No leftover state between runs unless you keep a `MemoryModule`.
 
-3. **Tools are data** — A `Tool` is just metadata + a callable. Parameter schemas are auto-inferred from Python type hints and docstrings.
+3. **Modular agent assembly** — Agents are composed by passing `modules=(ToolsModule(...), MemoryModule(...), ...)`. Each module gets one shot at the `AgentBuilder` during `_prepare()`.
 
-4. **Three toolkit discovery sources** — Builtin (shipped with unchain), local (user directories), plugins (entry points). All use the same `toolkit.toml` manifest.
+4. **Tools are data** — A `Tool` is metadata + a callable. Parameter schemas are auto-inferred from Python type hints and docstrings.
 
-5. **Memory is optional and layered** — Short-term context strategies and long-term vector-backed profiles are independently configurable.
+5. **Three toolkit discovery sources** — Builtin (shipped with unchain), local (user directories), plugins (entry points). All use the same `toolkit.toml` manifest.
 
-6. **Provider-agnostic core** — The `Broth` engine speaks a canonical message format. Provider-specific projections happen at the boundary.
+6. **Memory is optional and layered** — Short-term context strategies and long-term vector-backed profiles are independently configurable, both through `MemoryModule`.
+
+7. **Provider-agnostic core** — `KernelLoop` only knows the `ModelIO` protocol. Provider-specific projection happens inside each `ModelIO` implementation.
 
 ## Related Skills
 
 - [creating-builtin-toolkits.md](creating-builtin-toolkits.md) — How to add a new builtin toolkit
 - [tool-system-patterns.md](tool-system-patterns.md) — Tool definition and registration patterns
 - [memory-system.md](memory-system.md) — Memory tiers and configuration
-- [runtime-engine.md](runtime-engine.md) — Broth execution loop details
-- [agent-and-team.md](agent-and-team.md) — Agent/Team high-level API
+- [runtime-engine.md](runtime-engine.md) — KernelLoop execution details
+- [agent-and-team.md](agent-and-team.md) — Agent and subagent orchestration
 - [testing-conventions.md](testing-conventions.md) — Test patterns and eval framework

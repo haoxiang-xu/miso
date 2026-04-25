@@ -128,26 +128,24 @@ lt_config = LongTermMemoryConfig(
 
 ```python
 from unchain import Agent
+from unchain.agent import MemoryModule
 
 agent = Agent(
     name="coder",
     provider="openai",
     model="gpt-5",
-    short_term_memory=MemoryConfig(last_n_turns=10),
-    long_term_memory=LongTermMemoryConfig(
-        profile_store=JsonFileLongTermProfileStore(path="./memory"),
+    modules=(
+        MemoryModule(memory=MemoryConfig(
+            last_n_turns=10,
+            long_term=LongTermMemoryConfig(
+                profile_store=JsonFileLongTermProfileStore(path="./memory"),
+            ),
+        )),
     ),
 )
 ```
 
-也可以用 dict (自动转换):
-
-```python
-agent = Agent(
-    short_term_memory={"last_n_turns": 10},
-    long_term_memory={"profile_store": my_store},
-)
-```
+`MemoryModule` 接受 `KernelMemoryRuntime`、`MemoryManager`、`MemoryConfig` 或 dict（自动 coerce）。传 config 让记忆行为保持声明式；传 `KernelMemoryRuntime` 可以让多个 agent 复用同一个 runtime。
 
 ## 上下文策略
 
@@ -174,7 +172,7 @@ config = MemoryConfig(
 )
 ```
 
-摘要通过调用 LLM 本身 (经由 Broth) 配合摘要 prompt 生成。
+摘要通过用摘要 prompt 在 agent 自己的模型上重新进入 kernel 来生成。
 
 ### `HybridContextStrategy`
 
@@ -311,11 +309,14 @@ class MyProfileStore(LongTermProfileStore):
 
 ## 运行期间的 Memory 流程
 
+`MemoryModule` 在 kernel 上挂两个 harness：一个在每次模型 turn 前 recall 记忆，一个在每次迭代后 commit 记忆。流程长这样：
+
 ```text
-Agent.run(messages, session_id, memory_namespace)
+Agent.run(messages, session_id=..., memory_namespace=...)
   │
   ▼
-MemoryManager.prepare_messages(session_id)
+KernelLoop.run() — bootstrap + before_model 阶段：
+  MemoryManager.prepare_messages(session_id)
   │  1. 从 SessionStore 加载原始轮次
   │  2. 应用上下文策略 (LastN + Summary)
   │  3. 注入 workspace pin context
@@ -324,18 +325,19 @@ MemoryManager.prepare_messages(session_id)
   │  6. 返回上下文窗口大小的消息列表
   │
   ▼
-Broth.run() -- 使用准备好的消息执行 LLM 循环
+ModelIO.fetch_turn(...) — 用准备好的消息调 provider
   │
   ▼
-MemoryManager.commit_messages(session_id, full_conversation)
+KernelLoop.run() — before_commit 阶段：
+  MemoryManager.commit_messages(session_id, full_conversation)
   │  1. 将所有轮次保存到 SessionStore
   │  2. 应用工具历史压缩
-  │  3. 提取长期事实/事件 (异步，经由 LLM)
+  │  3. 提取长期事实/事件 (经由 LLM)
   │  4. 持久化到 LongTermProfileStore
   │  5. 在 LongTermVectorAdapter 中建索引
   │
   ▼
-完成
+KernelRunResult 返回给调用方
 ```
 
 ## 常见陷阱
@@ -355,5 +357,5 @@ MemoryManager.commit_messages(session_id, full_conversation)
 ## 相关 Skills
 
 - [architecture-overview.md](architecture-overview.md) -- memory 在系统中的位置
-- [runtime-engine.md](runtime-engine.md) -- Broth 如何与 MemoryManager 集成
-- [agent-and-team.md](agent-and-team.md) -- Team/子代理的 memory namespace 约定
+- [runtime-engine.md](runtime-engine.md) -- memory harness 怎么挂进 `KernelLoop`
+- [agent-and-team.md](agent-and-team.md) -- 子代理的 memory namespace 约定

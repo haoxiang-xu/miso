@@ -10,7 +10,8 @@
 
 - `Tool` 与 `Toolkit` 是本地执行原语。
 - `ToolkitRegistry` 读取 manifest 并把元数据与运行时对象做一致性校验。
-- `ToolkitCatalogRuntime` 在发现结果之上叠加运行时激活/停用能力。
+- `ToolkitCatalogRuntime` 在发现结果之上叠加 toolkit 级别的运行时激活/停用能力。
+- `ToolDiscoveryRuntime` 在同一套 registry 之上叠加每个工具粒度的 deferred discovery（tool_search/tool_load）。
 
 ## 核心对象
 
@@ -19,6 +20,7 @@
 - `ToolParameter`
 - `ToolkitRegistry`
 - `ToolkitCatalogRuntime`
+- `ToolDiscoveryRuntime` / `ToolDiscoveryConfig` / `DeferredToolRecord`
 - `ToolConfirmationRequest`
 - `ToolConfirmationResponse`
 
@@ -27,7 +29,8 @@
 - 把 callable 包装成 `Tool`。
 - 把它注册进 `Toolkit`。
 - 通过 manifest 从 builtin/local/plugin 三种来源发现 toolkit。
-- 按需允许模型在运行时通过 catalog 激活/停用 toolkit。
+- 按需允许模型在运行时通过 catalog 激活/停用整个 toolkit。
+- 按需通过 discovery runtime 把单个工具的 schema 藏在 `tool_search`/`tool_load` 后面。
 
 ## 配置面
 
@@ -85,8 +88,8 @@ t = Tool(
     description="Say hello.",
     func=lambda name: {"message": f"Hello, {name}!"},
     parameters=[ToolParameter(name="name", description="Who to greet", type_="string", required=True)],
-    observe=False,               # 若为 True，Broth 在执行后注入 observation turn
-    requires_confirmation=False, # 若为 True，Broth 在执行前暂停等待用户批准
+    observe=False,               # 若为 True，kernel 在执行后注入 observation turn
+    requires_confirmation=False, # 若为 True，kernel 在执行前暂停等待用户批准
 )
 
 result = t.execute({"name": "Alice"})
@@ -198,13 +201,13 @@ def greet(name: str) -> dict:
 
 ### `observe=True`
 
-工具执行后，Broth 会额外发起一次 **LLM 调用**，将工具结果作为上下文注入。LLM 有机会"观察"结果并在用户看到中间结果前决定下一步。
+工具执行后，kernel 会再跑一次 **observation turn**，把工具结果作为上下文注入。模型有机会"观察"结果并在用户看到中间结果前决定下一步。这部分逻辑在 `ToolExecutionHarness` 的 `after_tool_batch` 阶段。
 
 适用于：输出需要解读的工具 (代码分析、搜索结果)。
 
 ### `requires_confirmation=True`
 
-执行前，Broth **暂停** 并向 UI 发射 `ToolConfirmationRequest`。只有在 `ToolConfirmationResponse` 到达后才恢复执行。
+执行前，kernel **暂停** 并发出 `ToolConfirmationRequest`。只有在 `ToolConfirmationResponse` 通过 `Agent.resume_human_input()` 到达后才恢复执行。
 
 适用于：破坏性操作 (文件删除、数据库写入、不可逆操作)。
 
@@ -212,11 +215,11 @@ def greet(name: str) -> dict:
 
 ```text
 1. LLM 请求调用 requires_confirmation=True 的工具
-2. Broth 构建 ToolConfirmationRequest(tool_name, call_id, arguments)
-3. 框架通过 callback 将请求发送到 UI
+2. ToolExecutionHarness 构建 ToolConfirmationRequest(tool_name, call_id, arguments)
+3. KernelLoop 返回 status="awaiting_human_input" 的 KernelRunResult
 4. UI 向用户显示确认对话框
 5. 用户批准/拒绝 (可选修改参数)
-6. ToolConfirmationResponse(approved, modified_arguments, reason) 发回
+6. ToolConfirmationResponse(approved, modified_arguments, reason) 交给 Agent.resume_human_input()
 7. 若批准 → 工具执行 (若有修改则使用修改后的参数)
    若拒绝 → 跳过工具，向 LLM 发送错误消息
 ```
@@ -269,19 +272,28 @@ result = tk.execute("tool_name", {"arg1": "value"})
 
 ### 合并 toolkit
 
-来自多个 toolkit 的工具会合并为一个供 runtime 使用：
+工具和 toolkit 通过 `ToolsModule` 传给 agent：
 
 ```python
+from unchain import Agent
+from unchain.agent import ToolsModule
+from unchain.toolkits import CoreToolkit
+
 agent = Agent(
-    tools=[
-        CoreToolkit(workspace_root="."),
-        my_custom_tool,          # 单��� Tool 或 callable
-    ],
+    name="coder",
+    instructions="...",
+    modules=(
+        ToolsModule(tools=(
+            CoreToolkit(workspace_root="."),
+            my_custom_tool,          # 单个 Tool 或 callable
+        )),
+    ),
 )
-# Agent 将所有工具合并为一个 Toolkit 传给 Broth
+# AgentBuilder 把每个 toolkit 和独立工具合并成一个 Toolkit
+# kernel 每轮把它交给 ModelIO。
 ```
 
-**冲突检测**: 如果两个 toolkit 注册了同名工具，catalog 系统会拒绝同时激活。在单个 toolkit 内，后注册的会覆盖先注册的。
+**冲突检测**: 如果两个 toolkit 注册了同名工具，catalog 系统会拒绝同时激活；`tool_load` 也会拒绝加载与活跃工具同名的 deferred 工具。在单个 toolkit 内，后注册的会覆盖先注册的。
 
 ## Toolkit 发现 (三种来源)
 
@@ -303,18 +315,40 @@ my_plugin = "my_package.toolkit:MyToolkit"
 
 entry point **名称必须匹配** plugin 的 `toolkit.toml` 中的 `toolkit.id`。
 
-## 动态 Catalog (运行时激活)
+## Tool 暴露的三种模式
 
-`ToolkitCatalogRuntime` 允许 agent 在运行时激活/停用 toolkit：
+框架支持三种把工具暴露给模型的方式。按 toolkit 数量和 schema 预算选一种。
+
+| 模式 | 模型一开始能看到什么 | 启用方式 |
+| --- | --- | --- |
+| **Eager（默认）** | 每个注册工具的完整 schema | 仅 `ToolsModule(tools=(...))` |
+| **Catalog（toolkit 级别懒加载）** | 仅 `always_active` toolkit + 5 个 catalog meta-tool | 把 `ToolkitCatalogRuntime` 放进 `ToolsModule(tools=(catalog_runtime, ...))` |
+| **Discovery（tool 级别懒加载）** | 仅 3 个 meta-tool：`tool_search`、`tool_load`、`tool_list_loaded` | `ToolDiscoveryModule(config=ToolDiscoveryConfig(...))` |
+
+少量 toolkit 时 eager 最快。toolkit 数量多但每个都不大时用 catalog。Discovery 是最贴近 Claude Code `ToolSearch` 的模式，适合上百个工具但分布稀疏的场景。
+
+### Catalog 模式（`ToolkitCatalogRuntime`）
+
+`ToolkitCatalogRuntime` 让模型在运行时激活/停用**整个 toolkit**：
 
 ```python
-agent.enable_toolkit_catalog(
-    managed_toolkit_ids=["code", "external_api"],
-    always_active_toolkit_ids=["code"],
+from unchain.tools import ToolkitCatalogRuntime, ToolkitCatalogConfig
+
+catalog = ToolkitCatalogRuntime(
+    config=ToolkitCatalogConfig(
+        managed_toolkit_ids=("code", "external_api"),
+        always_active_toolkit_ids=("code",),
+    ),
+    eager_toolkits=[],
+)
+
+agent = Agent(
+    name="coder",
+    modules=(ToolsModule(tools=(catalog,)),),
 )
 ```
 
-这会向 agent 注入 5 个 catalog 管理工具：
+会注入 5 个 catalog 管理工具：
 
 | Catalog 工具          | 用途                                         |
 | --------------------- | -------------------------------------------- |
@@ -324,7 +358,43 @@ agent.enable_toolkit_catalog(
 | `toolkit_deactivate`  | 停用 (always-active 除外)                    |
 | `toolkit_list_active` | 列出当前活跃的 toolkit ID                    |
 
-**State token**: catalog 状态通过 `build_continuation_state()` / `extract_toolkit_catalog_token()` 跨运行暂停保存，恢复时不丢失激活状态。
+**State token**: catalog 状态通过 `build_continuation_state()` 跨 kernel 暂停保存，恢复时不丢失激活状态。
+
+### Discovery 模式（`ToolDiscoveryRuntime`）
+
+`ToolDiscoveryRuntime` 让**单个工具的 schema** 在模型显式 load 之前不出现在 wire 上。模型一开始只看到三个 meta-tool：
+
+```python
+from unchain import Agent
+from unchain.agent import ToolDiscoveryModule
+from unchain.tools import ToolDiscoveryConfig
+
+agent = Agent(
+    name="explorer",
+    instructions="缺能力时先调用 tool_search，不要假设没有。",
+    modules=(
+        ToolDiscoveryModule(
+            config=ToolDiscoveryConfig(managed_toolkit_ids=("code", "external_api")),
+        ),
+    ),
+)
+```
+
+注入的三个 meta-tool：
+
+| Discovery 工具      | 用途                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------ |
+| `tool_search`       | 按 handle / name / title / tags 排名搜索 deferred 工具，返回 `toolkit_id:tool_name` 的稳定 handle。 |
+| `tool_load`         | 把一个或多个 handle 实化进活跃 toolkit（kernel 下一轮就能看到）。                              |
+| `tool_list_loaded`  | 列出本次 run 已经 load 进来的 handle。                                                      |
+
+只有第一次 `tool_load` 命中某个 toolkit 的工具时，runtime 才会**实例化**这个 toolkit，从来没用到的 toolkit 不会付出 LSP/shell/MCP 启动成本。
+
+### Catalog 与 Discovery 怎么选
+
+- **toolkit 多、每个大** → catalog。模型整体打开一个 toolkit，再调它里面的任意工具。
+- **工具多、用得稀** → discovery。模型一次只钓一个工具，从来不激活同 toolkit 里的兄弟。
+- 两者都可以与 eager toolkit 组合，让模型始终能看到必备工具。
 
 ## History Payload 优化
 
@@ -364,4 +434,4 @@ optimizer 接收原始 dict 并必须返回一个 (可能更小的) dict。它 *
 
 - [creating-builtin-toolkits.md](creating-builtin-toolkits.md) -- 端到端 toolkit 创建指南
 - [architecture-overview.md](architecture-overview.md) -- 工具系统在整体中的位置
-- [runtime-engine.md](runtime-engine.md) -- Broth 如何执行工具调用
+- [runtime-engine.md](runtime-engine.md) -- `KernelLoop` 如何执行工具调用

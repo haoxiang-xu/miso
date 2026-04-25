@@ -1,48 +1,49 @@
-# Agent and Team
+# Agent and Subagents
 
 Canonical English skill chapter for the `agent-and-team` topic.
 
+> **Status note**: The standalone `Team` class described in earlier versions of this doc is no longer part of the public API. Multi-agent coordination is now expressed via **subagents** (delegate / handoff / worker batch tools) under the `unchain.subagents` package, configured through `SubagentModule`.
+
 ## Role and boundaries
 
-This chapter documents the high-level orchestration surface: how a single agent is configured and run, how teams coordinate, and how subagents extend the same execution model.
+This chapter documents the high-level orchestration surface: how a single `Agent` is configured and run, and how subagents extend the same execution model for multi-agent work.
 
 ## Dependency view
 
-- `Agent` owns tool normalization, memory coercion, and `Broth` construction.
-- `Team` delegates each step to named `Agent` instances and only manages shared routing/scoring state.
-- `ResponseFormat`, toolkit catalog state, and memory namespaces flow through the same run/resume surface.
+- `Agent` owns identity, instructions, and module composition; it builds a `PreparedAgent` per call via `AgentBuilder`.
+- `PreparedAgent` wraps the assembled `KernelLoop`, merged `Toolkit`, and resolved per-call defaults.
+- Subagent tools (`delegate_to_subagent`, `handoff_to_subagent`, `spawn_worker_batch`) are registered through `SubagentModule` and dispatched by `SubagentExecutor`.
 
 ## Core objects
 
 - `Agent`
-- `Team`
-- `_SubagentConfig`
-- `_SubagentCounters`
-- `_SubagentRuntime`
+- `AgentBuilder` / `PreparedAgent` / `AgentCallContext`
+- `AgentSpec` / `AgentState`
+- Module types: `ToolsModule`, `MemoryModule`, `PoliciesModule`, `OptimizersModule`, `SubagentModule`, `ToolDiscoveryModule`
+- `SubagentExecutor`, `SubagentPolicy`, `SubagentTemplate` (under `unchain.subagents`)
 
 ## Execution and state flow
 
-- `Agent.run()` merges tools, creates a fresh runtime, and executes until completion or suspension.
-- `Agent.resume_human_input()` restores suspended catalog/runtime state and continues the same conversation.
-- `Team.run()` publishes an initial task envelope, scores pending work, and lets agents publish/handoff/finalize until quiescent or complete.
+- `Agent.run()` normalizes messages, builds an `AgentCallContext`, lets every module configure a fresh `AgentBuilder`, and asks the builder for a `PreparedAgent`.
+- `PreparedAgent.run()` drives `KernelLoop.run()` to completion or suspension and returns a `KernelRunResult`.
+- `Agent.resume_human_input()` re-enters the same loop with a continuation payload after a confirmation or human-input pause.
+- `Agent.fork_for_subagent()` creates a child `Agent` with overlaid delegation instructions, optionally stripping memory for ephemeral sub-runs.
+- `Agent.as_tool()` wraps the agent as a `Tool` so it can be embedded inside another agent's toolset.
 
 ## Configuration surface
 
-- Agent identity/instructions/provider/model.
-- Short-term and long-term memory configuration.
-- Subagent limits, toolkit catalog settings, and per-run overrides such as `max_iterations`.
-
-## Extension points
-
-- Expose an agent as a tool via `Agent.as_tool()`.
-- Enable nested delegation via `enable_subagents()`.
-- Use custom callbacks to stream events from both solo and team runs.
+- Agent identity: `name`, `instructions`, `provider`, `model`, `api_key`.
+- Module composition: `modules=(...)`.
+- Allow-list filter: `allowed_tools=(...)` to restrict the merged toolkit.
+- Per-call overrides on `Agent.run()`: `max_iterations`, `payload`, `callback`, `on_tool_confirm`, `on_human_input`, `on_max_iterations`, `session_id`, `memory_namespace`, `tool_runtime_config`.
 
 ## Common gotchas
 
-- `Team` enforces unique agent names and a valid owner.
-- Subagent depth/child counters prevent runaway recursion.
-- Suspension state must be resumed with the continuation payload from the previous run.
+- `Agent.run()` returns a single `KernelRunResult` (frozen dataclass), not a tuple of `(messages, bundle)`.
+- The old `Agent(tools=[...], short_term_memory=..., long_term_memory=..., broth_options=...)` constructor signature is gone — pass everything through `modules=(...)`.
+- `Team`, `enable_toolkit_catalog`, and `enable_subagents` no longer exist as runtime methods; use modules instead.
+- Subagent depth/child counters (configured through `SubagentPolicy`) prevent runaway recursion; `SubagentExecutor` enforces them.
+- Suspension state must be resumed with the `continuation` field returned in the previous `KernelRunResult`.
 
 ## Related class references
 
@@ -52,276 +53,187 @@ This chapter documents the high-level orchestration surface: how a single agent 
 
 ## Source entry points
 
-- `src/unchain/agents/agent.py`
-- `src/unchain/agents/team.py`
+- `src/unchain/agent/agent.py`
+- `src/unchain/agent/builder.py`
+- `src/unchain/agent/modules/`
+- `src/unchain/subagents/`
 
 ## Agent In Practice
 
-`Agent` is the high-level interface exposed to callers. It owns the agent's identity, default instructions, tool list, memory configuration, and per-run defaults, but it does not execute the provider loop itself. Instead, each `run()` builds a fresh `Broth` instance to perform the actual execution.
+`Agent` is the high-level interface exposed to callers. It owns identity, default instructions, and the module set, but it does not execute the model loop itself. Each `run()` builds a fresh `PreparedAgent` (with a fresh `KernelLoop`) to perform the actual execution.
 
-In other words, `Agent` is the configuration envelope and public entry surface, while `Broth` is the single-run executor. `Agent` defines what the agent is and what defaults it carries. `Broth` defines how one concrete request is executed.
+In other words, `Agent` is the configuration envelope and public entry surface, while `KernelLoop` is the single-run executor. `Agent` defines what the agent is and what defaults it carries; `KernelLoop` defines how one concrete request executes.
 
-## Current Execution Flow
-
-1. `Agent.run()` normalizes a string or message list into a conversation and prepends the agent's `instructions` plus any extra system messages.
-2. It merges default payload, response-format, and per-run overrides, then resolves whether subagent runtime context should be active for this run.
-3. `_build_engine()` creates a fresh `Broth` and attaches provider settings, api key, memory manager, toolkit catalog config, and the merged toolset built from the agent's tools.
-4. The assembled messages and runtime options are forwarded into `engine.run()`. If execution suspends for human input, `Agent.resume_human_input()` creates a new runtime, restores continuation state, and continues the same conversation.
-5. When toolkit catalog is enabled, `Agent` also captures and restores catalog state tokens around suspension so the resumed runtime sees the same active and managed toolkits.
-
-## Design Notes
-
-This split keeps `Agent` as the stable user-facing API while concentrating provider adapters, tool loops, suspension logic, and token accounting inside `Broth`. The practical benefits are a fresh runtime per run, explicit continuation and memory state flow, and a simpler mental model for callers who only need to understand `Agent.run()` and `Agent.resume_human_input()`.
-
-## Detailed legacy reference
-
-The original repository skill note is preserved below for continuity and extra examples. The canonical copy now lives in this docs tree.
-
-> High-level `Agent` API, `Team` multi-agent coordination, subagent enablement, namespace isolation, and callback integration.
-
-## Agent
-
-`Agent` is the primary high-level interface. It owns tools, memory configuration, and runtime options, and creates a fresh `Broth` engine for each `run()`.
-
-### Construction
+## Construction
 
 ```python
 from unchain import Agent
+from unchain.agent import ToolsModule, MemoryModule, PoliciesModule
 from unchain.toolkits import CoreToolkit
 from unchain.memory import MemoryConfig
 
 agent = Agent(
-    name="coder",                            # Agent identity
-    instructions="You are a code assistant.", # System prompt
-    provider="openai",                       # LLM provider
-    model="gpt-5",                           # Model identifier
-    api_key=None,                            # Uses env var if None
-    tools=[                                  # Tools, Toolkits, or callables
-        CoreToolkit(workspace_root="."),
-    ],
-    short_term_memory=MemoryConfig(last_n_turns=10),
-    long_term_memory=None,                   # LongTermMemoryConfig or dict
-    defaults={"on_tool_confirm": my_handler},
-    broth_options={"max_iterations": 8},
+    name="coder",
+    instructions="You are a code assistant.",
+    provider="openai",
+    model="gpt-5",
+    api_key=None,
+    modules=(
+        ToolsModule(tools=(CoreToolkit(workspace_root="."),)),
+        MemoryModule(memory=MemoryConfig(last_n_turns=10)),
+        PoliciesModule(max_iterations=8, on_tool_confirm=my_handler),
+    ),
 )
 ```
 
-### `tools` Parameter Flexibility
+The `tools` field of `ToolsModule` accepts a mix of `Toolkit`, `Tool`, or callables — they all get merged into one `Toolkit` during `AgentBuilder.build()`.
 
-The `tools` list accepts mixed types:
-
-```python
-tools=[
-    CoreToolkit(workspace_root="."),       # Toolkit instance → all its tools
-    my_tool,                               # Tool object → single tool
-    my_function,                           # Callable → auto-wrapped in Tool
-]
-```
-
-All are merged into a single `Toolkit` before being passed to `Broth`.
-
-### Running
+## Running
 
 ```python
-messages, bundle = agent.run(
-    messages="Inspect the repo.",            # str or list[dict]
+result = agent.run(
+    "Inspect the repo.",
+    payload={},                              # Pass-through dict for context
+    callback=None,                           # Event callback function
+    max_iterations=None,                     # Overrides the policies default
     session_id=None,                         # UUID auto-generated if None
     memory_namespace=None,                   # Defaults to session_id
-    max_iterations=None,                     # Override broth_options
-    payload=None,                            # Pass-through dict for context
-    callback=None,                           # Event callback function
+    on_tool_confirm=None,                    # Override per call
 )
 ```
 
-**Return value:**
+Return value is a `KernelRunResult` (frozen dataclass) with these fields among others:
+
+| Field | Notes |
+| --- | --- |
+| `messages` | Full conversation (system + user + assistant + tool messages). |
+| `status` | Run outcome (`"completed"`, `"awaiting_human_input"`, ...). |
+| `continuation` | Continuation payload to pass back into `resume_human_input()` if suspended. |
+| `human_input_request` | Populated when status indicates a pending human input. |
+| `consumed_tokens` / `input_tokens` / `output_tokens` | Token accounting for the whole run. |
+| `last_turn_tokens` / `last_turn_input_tokens` / `last_turn_output_tokens` | Token accounting for the last turn only. |
+| `iteration` | How many iterations the loop ran. |
+
+## Resuming After Suspension
+
+When the kernel suspends (confirmation or `ask_user_question`):
 
 ```python
-messages  # list[dict] — full conversation (system + user + assistant + tool messages)
-bundle    # dict — metadata:
-          #   consumed_tokens: int
-          #   stop_reason: str ("complete" | "max_iterations" | "human_input" | ...)
-          #   artifacts: list
-          #   toolkit_catalog_token: str | None
-```
-
-### Resuming After Suspension
-
-When Broth suspends (confirmation, human input):
-
-```python
-# First run suspends
-messages, bundle = agent.run("Do something risky.")
-# bundle["stop_reason"] == "human_input"
+first = agent.run("Do something risky.")
+# first.status == "awaiting_human_input"
 
 # User provides response
-messages, bundle = agent.resume_human_input(
-    response=ToolConfirmationResponse(approved=True),
-    # or HumanInputResponse for ask_user_question
+final = agent.resume_human_input(
+    conversation=first.messages,
+    continuation=first.continuation,
+    response={"approved": True},  # or a HumanInputResponse for ask_user_question
 )
 ```
 
-## Toolkit Catalog
+## Tool Exposure (Module-driven)
 
-Enable dynamic toolkit activation/deactivation at runtime:
+Toolkit catalog and per-tool deferred discovery are wired through modules, not runtime methods. See [tool-system-patterns.md](tool-system-patterns.md) for the full rundown; in short:
 
 ```python
-agent.enable_toolkit_catalog(
-    managed_toolkit_ids=["code", "external_api"],
-    always_active_toolkit_ids=["code"],  # Cannot be deactivated
+# Catalog mode (toolkit-level lazy)
+from unchain.tools import ToolkitCatalogRuntime, ToolkitCatalogConfig
+catalog = ToolkitCatalogRuntime(
+    config=ToolkitCatalogConfig(
+        managed_toolkit_ids=("code", "external_api"),
+        always_active_toolkit_ids=("code",),
+    ),
+    eager_toolkits=[],
+)
+agent = Agent(name="...", modules=(ToolsModule(tools=(catalog,)),))
+
+# Discovery mode (tool-level deferred)
+from unchain.agent import ToolDiscoveryModule
+from unchain.tools import ToolDiscoveryConfig
+agent = Agent(
+    name="...",
+    modules=(ToolDiscoveryModule(
+        config=ToolDiscoveryConfig(managed_toolkit_ids=("code", "external_api")),
+    ),),
 )
 ```
-
-This injects 5 catalog management tools. The LLM can activate/deactivate toolkits as needed during a run. Always-active toolkits cannot be deactivated.
-
-**State preservation**: Catalog state survives across `run()` suspensions via state tokens stored in `bundle["toolkit_catalog_token"]`.
 
 ## Subagents
 
-Enable the agent to spawn child agents dynamically:
+Subagents are dynamically-spawned child agents controlled by tools the LLM calls. Configure them via `SubagentModule`:
 
 ```python
-agent.enable_subagents(
-    tool_name="spawn_subagent",   # Tool name exposed to LLM
-    max_depth=6,                   # Max nesting depth
-    max_total_agents=20,           # Max total spawned agents
-    child_tools=[...],             # Tools available to children (defaults to parent's)
+from unchain.agent import SubagentModule
+from unchain.subagents import SubagentPolicy, SubagentTemplate
+
+agent = Agent(
+    name="planner",
+    instructions="...",
+    modules=(
+        SubagentModule(
+            templates=(
+                SubagentTemplate(
+                    name="researcher",
+                    instructions="Research the question and return a summary.",
+                    model="gpt-5",
+                ),
+            ),
+            policy=SubagentPolicy(max_depth=6, max_total_agents=20),
+        ),
+    ),
 )
 ```
 
-### How it works
+The module registers three tools by default:
 
-1. LLM calls `spawn_subagent(name, role, task)`
-2. Framework creates a child `Agent` with:
-   - Inherited tools and memory config
-   - System prompt overlaid with role and depth context
-   - Isolated memory namespace: `{parent_namespace}:{child_name}`
-3. Child runs to completion
-4. Result returned to parent as a tool result
+| Tool | Behaviour |
+| --- | --- |
+| `delegate_to_subagent` | Spawns a named child agent for a task; result returned as a tool message. |
+| `handoff_to_subagent` | Hands off the conversation to a different agent (control transfer). |
+| `spawn_worker_batch` | Fans out N worker agents in parallel, returns results as a batch. |
+
+### How a delegate run works
+
+1. LLM calls `delegate_to_subagent(name=..., task=...)`.
+2. `SubagentExecutor` looks up the matching `SubagentTemplate`, calls `parent.fork_for_subagent(...)` to build the child.
+3. Child runs to completion (depth/child counters enforced by `SubagentPolicy`).
+4. Result returned to the parent as the tool result for that call.
 
 ### Constraints
 
-- Depth tracking prevents infinite recursion
-- Total agent count prevents resource exhaustion
-- Each child gets its own `session_id` and `memory_namespace`
+- `SubagentPolicy.max_depth` prevents infinite recursion.
+- `SubagentPolicy.max_total_agents` bounds resource use across the whole tree.
+- Each child gets its own `session_id` and `memory_namespace`. Memory policy (`"shared"`, `"ephemeral"`, etc.) decides whether the child retains memory at all.
 
-## Team
+## Agent as a Tool
 
-`Team` coordinates multiple agents via channel-based async messaging.
-
-### Construction
+Wrap an agent as a `Tool` to plug it into another agent's toolkit:
 
 ```python
-from unchain import Agent, Team
-
-analyst = Agent(name="analyst", provider="openai", model="gpt-5", instructions="...")
-coder = Agent(name="coder", provider="openai", model="gpt-5", instructions="...")
-
-team = Team(
-    agents=[analyst, coder],
-    channels={
-        "main": {"subscribers": ["analyst", "coder"]},
-        "code_review": {"subscribers": ["coder"]},
-    },
-    owner="analyst",              # The agent that can finalize the team run
-    max_steps=20,                 # Max total agent turns across all agents
+researcher_tool = researcher_agent.as_tool(
+    name="research",
+    description="Investigate a question and return a summary.",
+)
+planner = Agent(
+    name="planner",
+    modules=(ToolsModule(tools=(researcher_tool,)),),
 )
 ```
 
-### Execution
-
-```python
-result = team.run(
-    messages="Build a web scraper.",
-    session_id=None,
-    callback=None,
-)
-```
-
-**Return value** (different from `Agent.run()`):
-
-```python
-result = {
-    "transcript": [...],       # Ordered list of all agent messages
-    "events": [...],           # Event log (scheduled, handoff, idle, finalized)
-    "stop_reason": str,        # "quiescent" | "finalized" | "max_steps"
-    "agent_bundles": {...},    # Per-agent bundle dicts
-}
-```
-
-### Agent Selection Scoring
-
-When multiple agents could act next, Team uses a scoring system:
-
-| Signal       | Points   | Description                               |
-| ------------ | -------- | ----------------------------------------- |
-| Handoff      | 3        | Agent A explicitly handed off to Agent B  |
-| Mention      | 2        | Agent A mentioned @AgentB in its message  |
-| User input   | 1        | Initial user message delivered to channel |
-| Owner bonus  | +0.5     | Tie-breaking bias toward the owner agent  |
-| Alphabetical | tiebreak | Final tiebreak by name                    |
-
-The highest-scoring agent acts next.
-
-### Channel-Based Communication
-
-```text
-User: "Build a web scraper."
-  ↓ published to "main" channel
-
-analyst (subscribed to "main") → scores highest → runs
-  ↓ publishes response to "main"
-  ↓ publishes handoff to "coder" via "main"
-
-coder (subscribed to "main") → scores 3 (handoff) → runs
-  ↓ publishes code to "main"
-  ↓ mentions @analyst
-
-analyst (subscribed to "main") → scores 2 (mention) → runs
-  ↓ publishes "Looks good" + finalizes
-
-Team stops (stop_reason="finalized")
-```
-
-### Handoffs
-
-An agent can explicitly transfer control:
-
-```text
-Agent response: "Handing off to @coder for implementation."
-```
-
-The framework detects the handoff pattern and gives coder a 3-point score.
-
-### Finalization
-
-Only the **owner** can finalize (end the team run). Non-owner agents that try to finalize are given an error and the team continues.
-
-```text
-analyst (owner): "All tasks complete. [FINALIZE]"
-→ Team stops with stop_reason="finalized"
-```
-
-### Stop Conditions
-
-| Condition       | `stop_reason` | Description                     |
-| --------------- | ------------- | ------------------------------- |
-| Owner finalizes | `"finalized"` | Owner agent signals completion  |
-| No agent scored | `"quiescent"` | All agents idle, no work left   |
-| Step limit hit  | `"max_steps"` | `max_steps` total turns reached |
+`as_tool()` produces a `Tool` whose `execute()` calls the wrapped agent's `run()` with the provided arguments.
 
 ## Memory Namespace Isolation
 
-| Context    | Pattern                           | Example                |
-| ---------- | --------------------------------- | ---------------------- |
-| Solo agent | `session_id`                      | `abc-123`              |
-| Team agent | `{session_id}:{agent_name}`       | `abc-123:coder`        |
-| Subagent   | `{parent_namespace}:{child_name}` | `abc-123:coder:helper` |
+| Context     | Default `memory_namespace`            | Example                |
+| ----------- | -------------------------------------- | ---------------------- |
+| Solo agent  | `session_id`                           | `abc-123`              |
+| Subagent    | `{parent_namespace}:{subagent_name}`   | `abc-123:researcher`   |
+| Nested sub. | `{root}:{parent}:{child}` (recursive)  | `abc-123:planner:scout`|
 
 This ensures each agent's long-term memory is isolated while still allowing shared session stores.
 
 ## Callback Integration
 
-Both `Agent.run()` and `Team.run()` accept callbacks:
+`Agent.run()` accepts a `callback` that receives every event emitted by the kernel and harnesses (see `runtime-engine.md` for the event catalog):
 
 ```python
 def my_callback(event: dict) -> None:
@@ -330,39 +242,25 @@ def my_callback(event: dict) -> None:
             print(f"[{event.get('agent', 'system')}] {event['data']}")
         case "tool_result":
             print(f"  Tool: {event['tool_name']} → {event['result']}")
-        case "handoff":
-            print(f"  Handoff: {event['from']} → {event['to']}")
 ```
-
-Team adds these extra event types:
-
-| Event Type       | When                       |
-| ---------------- | -------------------------- |
-| `scheduled`      | Agent selected to act next |
-| `handoff`        | Agent hands off to another |
-| `idle`           | Agent has nothing to do    |
-| `finalized`      | Owner ends the team run    |
-| `step_completed` | One agent turn finished    |
 
 ## Common Gotchas
 
-1. **`Agent.run()` returns `(messages, bundle)`; `Team.run()` returns a dict** — These are different shapes. Don't destructure team results as a tuple.
+1. **`Agent.run()` returns `KernelRunResult`, not `(messages, bundle)`** — Use `.messages`, `.status`, `.continuation`, etc. on the dataclass.
 
-2. **Fresh Broth per run** — Agent state (tools, memory config) persists, but the runtime engine is recreated. No conversation state leaks between runs unless memory is configured.
+2. **Fresh kernel per run** — Module configuration (tools, memory) persists in `AgentSpec`, but the `KernelLoop` is rebuilt every time. State only crosses runs through `MemoryModule`.
 
-3. **Owner is required for finalization** — If no `owner` is set on Team, no agent can finalize, and the team runs until `max_steps` or quiescence.
+3. **Old constructor kwargs are gone** — `tools=`, `short_term_memory=`, `long_term_memory=`, `broth_options=` no longer exist. Use modules.
 
 4. **Subagent namespace accumulates** — A subagent of a subagent gets namespace `root:parent:child`. Deep nesting creates long namespace strings.
 
-5. **`max_steps` is total turns, not per-agent** — A team with 3 agents and `max_steps=20` allows ~6-7 turns per agent on average.
+5. **Catalog/discovery state must be passed across suspensions** — Both runtimes checkpoint via the harness `on_suspend` phase, but you still have to pass `continuation` back into `resume_human_input()`.
 
-6. **Catalog state must be passed across suspensions** — If the agent has a toolkit catalog and the run suspends, the `toolkit_catalog_token` from the bundle must be preserved for resumption.
-
-7. **Team agents share nothing by default** — Each agent has its own tools, memory, and instructions. Communication happens only through channels.
+6. **`Team` is no longer the right primitive** — If you need multi-agent flow, model it as a planner agent that uses `delegate_to_subagent` / `spawn_worker_batch` over `SubagentTemplate`s.
 
 ## Related Skills
 
 - [architecture-overview.md](architecture-overview.md) — System-level component relationships
-- [runtime-engine.md](runtime-engine.md) — How Broth executes under Agent
-- [memory-system.md](memory-system.md) — Memory namespace conventions
-- [tool-system-patterns.md](tool-system-patterns.md) — Tool registration for agents
+- [runtime-engine.md](runtime-engine.md) — How `KernelLoop` runs under `Agent`
+- [memory-system.md](memory-system.md) — Memory namespace conventions for subagents
+- [tool-system-patterns.md](tool-system-patterns.md) — Tool registration and exposure modes

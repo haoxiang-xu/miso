@@ -1,11 +1,11 @@
 # Tool System API Reference
 
-Tool primitives, toolkit containers, catalog runtime, and discovery/descriptor types that define the framework tool layer.
+Tool primitives, toolkit containers, catalog runtime, deferred-discovery runtime, and descriptor types that define the framework tool layer.
 
 | Metric | Value |
 | --- | --- |
-| Classes | 14 |
-| Dataclasses | 10 |
+| Classes | 16 |
+| Dataclasses | 12 |
 | Protocols | 0 |
 | Internal-only types | 0 |
 
@@ -15,6 +15,9 @@ Tool primitives, toolkit containers, catalog runtime, and discovery/descriptor t
 | --- | --- | --- | --- |
 | `ToolkitCatalogConfig` | `src/unchain/tools/catalog.py:34` | subpackage | dataclass |
 | `ToolkitCatalogRuntime` | `src/unchain/tools/catalog.py:76` | subpackage | class |
+| `ToolDiscoveryConfig` | `src/unchain/tools/discovery.py:21` | subpackage | dataclass (frozen) |
+| `DeferredToolRecord` | `src/unchain/tools/discovery.py:49` | subpackage | dataclass (frozen) |
+| `ToolDiscoveryRuntime` | `src/unchain/tools/discovery.py:85` | subpackage | class |
 | `ToolParameter` | `src/unchain/tools/models.py:155` | subpackage | dataclass |
 | `ToolHistoryOptimizationContext` | `src/unchain/tools/models.py:178` | subpackage | dataclass |
 | `NormalizedToolHistoryRecord` | `src/unchain/tools/models.py:191` | subpackage | dataclass |
@@ -217,6 +220,124 @@ Public method `to_summary` exposed by `ToolkitCatalogRuntime`.
 ```python
 obj = ToolkitCatalogRuntime(...)
 obj.visible_toolkits(...)
+```
+
+### `src/unchain/tools/discovery.py`
+
+Deferred tool discovery layer. Exposes three meta-tools (`tool_search`, `tool_load`, `tool_list_loaded`) so the model can find and pull in managed-toolkit tools on demand instead of paying schema cost up front.
+
+## ToolDiscoveryConfig
+
+Frozen dataclass declaring which managed toolkits participate in deferred discovery.
+
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/tools/discovery.py:21` |
+| Module role | Deferred tool discovery configuration. |
+| Inheritance | `-` |
+| Exposure | Exported from `unchain.tools`. |
+| Kind | Dataclass (frozen). |
+
+### Fields
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `managed_toolkit_ids` | `tuple[str, ...]` | Required; rejected if empty. |
+| `registry` | `ToolRegistryConfig` | Required; coerced from dict if needed. |
+
+### Public methods
+
+- `__init__(*, managed_toolkit_ids, registry=None)` — normalizes IDs, validates non-empty.
+- `coerce(value)` — accepts an existing `ToolDiscoveryConfig`, a dict, or `None`.
+
+## DeferredToolRecord
+
+Frozen record describing one deferred tool: its handle, owning toolkit, and searchable metadata. Returned by `tool_search`; consumed by `tool_load`.
+
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/tools/discovery.py:49` |
+| Inheritance | `-` |
+| Exposure | Exported from `unchain.tools`. |
+| Kind | Dataclass (frozen). |
+
+### Fields
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `handle` | `str` | Stable identifier in `toolkit_id:tool_name` form. |
+| `toolkit_id` | `str` | Owning toolkit ID. |
+| `toolkit_name` | `str` | Display name of the toolkit. |
+| `tool_name` | `str` | Tool function name within the toolkit. |
+| `title` | `str` | Display title from the manifest. |
+| `description` | `str` | Manifest description. |
+| `tags` | `tuple[str, ...]` | Toolkit tags, used for ranking. |
+
+### Public methods
+
+- `search_blob()` — concatenated lowercase blob used by the ranker.
+- `to_summary()` — dict payload returned to the model in `tool_search` results.
+
+## ToolDiscoveryRuntime
+
+Runtime that holds the deferred-tool index, exposes the three meta-tools, and merges loaded tools into the active runtime toolkit.
+
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/tools/discovery.py:85` |
+| Module role | Deferred tool discovery runtime. |
+| Inheritance | `-` |
+| Exposure | Exported from `unchain.tools`. |
+| Kind | Class. |
+
+### Constructor surface
+
+- `__init__(self, *, config: ToolDiscoveryConfig, runtime_toolkit: Toolkit)`
+
+Initialization scans every managed toolkit's manifest, builds a `DeferredToolRecord` per non-hidden tool, and caches `ToolkitDescriptor`s without instantiating them. Tools are only instantiated on first `tool_load`.
+
+### Public methods
+
+| Method | Returns | Description |
+| --- | --- | --- |
+| `build_tools()` | `tuple[Tool, Tool, Tool]` | Returns the three meta-tools (`tool_search`, `tool_load`, `tool_list_loaded`) ready to register on a `Toolkit`. |
+| `tool_search(query, max_results=5)` | `dict` | Ranked search over deferred tools. Returns `{matches, query, total_matches, total_deferred_tools}`. Direct handle hit short-circuits ranking. |
+| `tool_load(handles)` | `dict` | Materializes one or more deferred tools into `runtime_toolkit`. Returns `{loaded, already_loaded, failed}`. Refuses to load on tool-name conflict with active tools. |
+| `tool_list_loaded()` | `dict` | Lists deferred tools that have been loaded so far. |
+| `shutdown()` | `None` | Tears down every cached toolkit instance. |
+
+### Search ranking
+
+`tool_search` scores each remaining record by term hits across handle, tool name, title, toolkit id/name, and tags (handle/tool-name exact match weighs 20, substring 10/8/6, toolkit fields 4, tags blob 2). Results sort by descending score then alphabetical handle.
+
+### Lifecycle and runtime role
+
+- Construction validates managed toolkit IDs against the registry; missing IDs raise `ValueError`.
+- The model consumes `build_tools()` output through `ToolDiscoveryModule` (see Agents API). Loaded tools land in the same `Toolkit` the kernel reads from at the next turn.
+- `shutdown()` should be called when the run completes so cached toolkits can release resources (LSP, shell, MCP sessions, etc.).
+
+### Collaboration and related types
+
+- `Tool`, `Toolkit`
+- `ToolkitRegistry`, `ToolkitDescriptor`
+- `ToolDiscoveryModule` (see `unchain.agent`)
+
+### Minimal usage example
+
+```python
+from unchain import Agent
+from unchain.agent import ToolDiscoveryModule
+from unchain.tools import ToolDiscoveryConfig
+
+agent = Agent(
+    name="explorer",
+    instructions="Use tool_search before assuming a capability is missing.",
+    modules=(
+        ToolDiscoveryModule(
+            config=ToolDiscoveryConfig(managed_toolkit_ids=("code", "external_api")),
+        ),
+    ),
+)
 ```
 
 ### `src/unchain/tools/models.py`

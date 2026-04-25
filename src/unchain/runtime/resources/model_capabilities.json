@@ -146,7 +146,7 @@
       "image": ["url", "base64"],
       "pdf": ["url", "base64"]
     },
-    "allowed_payload_keys": ["max_tokens", "temperature", "top_k"]
+    "allowed_payload_keys": ["max_tokens", "top_k"]
   },
   "claude-opus-4-6": {
     "provider": "anthropic",
@@ -161,7 +161,7 @@
       "image": ["url", "base64"],
       "pdf": ["url", "base64"]
     },
-    "allowed_payload_keys": ["max_tokens", "temperature", "top_k"]
+    "allowed_payload_keys": ["max_tokens", "top_k"]
   },
   "claude-opus-4-7": {
     "provider": "anthropic",
@@ -176,7 +176,7 @@
       "image": ["url", "base64"],
       "pdf": ["url", "base64"]
     },
-    "allowed_payload_keys": ["max_tokens", "temperature", "top_k"]
+    "allowed_payload_keys": ["max_tokens", "top_k"]
   },
   "claude-haiku-3.5": {
     "provider": "anthropic",
@@ -204,7 +204,7 @@
     "input_source_types": {
       "image": ["url", "base64"]
     },
-    "allowed_payload_keys": ["max_tokens", "temperature", "top_k", "top_p"]
+    "allowed_payload_keys": ["max_tokens", "top_k", "top_p"]
   },
   "gpt-5.2-codex": {
     "provider": "openai",

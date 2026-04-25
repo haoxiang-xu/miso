@@ -10,7 +10,8 @@ This chapter covers the framework tool abstraction from raw callable inference t
 
 - `Tool` and `Toolkit` are the local execution primitives.
 - `ToolkitRegistry` reads manifests and validates metadata against runtime objects.
-- `ToolkitCatalogRuntime` layers runtime activation/deactivation on top of discovered descriptors.
+- `ToolkitCatalogRuntime` layers runtime toolkit-level activation/deactivation on top of discovered descriptors.
+- `ToolDiscoveryRuntime` layers per-tool deferred discovery (tool_search/tool_load) on top of the same registry.
 
 ## Core objects
 
@@ -19,6 +20,7 @@ This chapter covers the framework tool abstraction from raw callable inference t
 - `ToolParameter`
 - `ToolkitRegistry`
 - `ToolkitCatalogRuntime`
+- `ToolDiscoveryRuntime` / `ToolDiscoveryConfig` / `DeferredToolRecord`
 - `ToolConfirmationRequest`
 - `ToolConfirmationResponse`
 
@@ -27,7 +29,8 @@ This chapter covers the framework tool abstraction from raw callable inference t
 - Wrap a callable into a `Tool`.
 - Register it into a `Toolkit`.
 - Discover toolkits from builtin/local/plugin sources through manifests.
-- Optionally allow the model to activate/deactivate toolkits at runtime through the catalog.
+- Optionally allow the model to activate/deactivate whole toolkits at runtime through the catalog.
+- Optionally hide individual tool schemas behind `tool_search`/`tool_load` via the discovery runtime.
 
 ## Configuration surface
 
@@ -85,8 +88,8 @@ t = Tool(
     description="Say hello.",
     func=lambda name: {"message": f"Hello, {name}!"},
     parameters=[ToolParameter(name="name", description="Who to greet", type_="string", required=True)],
-    observe=False,               # If True, Broth injects an observation turn after execution
-    requires_confirmation=False, # If True, Broth suspends for user approval before execution
+    observe=False,               # If True, the kernel injects an observation turn after execution
+    requires_confirmation=False, # If True, the kernel suspends for user approval before execution
 )
 
 result = t.execute({"name": "Alice"})
@@ -198,13 +201,13 @@ def greet(name: str) -> dict:
 
 ### `observe=True`
 
-After the tool executes, Broth makes an **extra LLM call** with the tool result injected as context. The LLM gets to "observe" the outcome and decide next steps before the user sees intermediate results.
+After the tool executes, the kernel runs an **extra observation turn** with the tool result injected as context. The model gets to "observe" the outcome and decide next steps before the user sees intermediate results. Implemented inside `ToolExecutionHarness` on the `after_tool_batch` phase.
 
 Use for: tools whose output needs interpretation (code analysis, search results).
 
 ### `requires_confirmation=True`
 
-Before execution, Broth **suspends** and emits a `ToolConfirmationRequest` to the UI. Execution resumes only after a `ToolConfirmationResponse` arrives.
+Before execution, the kernel **suspends** and emits a `ToolConfirmationRequest`. Execution resumes only after a `ToolConfirmationResponse` arrives via `Agent.resume_human_input()`.
 
 Use for: destructive operations (file deletion, database writes, irreversible actions).
 
@@ -212,11 +215,11 @@ Use for: destructive operations (file deletion, database writes, irreversible ac
 
 ```text
 1. LLM requests tool call with requires_confirmation=True
-2. Broth builds ToolConfirmationRequest(tool_name, call_id, arguments)
-3. Framework sends request to UI via callback
+2. ToolExecutionHarness builds ToolConfirmationRequest(tool_name, call_id, arguments)
+3. KernelLoop returns a KernelRunResult with status="awaiting_human_input"
 4. UI shows confirmation dialog to user
 5. User approves/rejects (optionally modifies arguments)
-6. ToolConfirmationResponse(approved, modified_arguments, reason) sent back
+6. ToolConfirmationResponse(approved, modified_arguments, reason) handed to Agent.resume_human_input()
 7. If approved → tool executes (with modified args if any)
    If rejected → tool skipped, error message sent to LLM
 ```
@@ -269,19 +272,28 @@ result = tk.execute("tool_name", {"arg1": "value"})
 
 ### Merging toolkits
 
-Tools from multiple toolkits are merged into one for the runtime:
+Tools and toolkits are passed to the agent through `ToolsModule`:
 
 ```python
+from unchain import Agent
+from unchain.agent import ToolsModule
+from unchain.toolkits import CoreToolkit
+
 agent = Agent(
-    tools=[
-        CoreToolkit(workspace_root="."),
-        my_custom_tool,          # A single Tool or callable
-    ],
+    name="coder",
+    instructions="...",
+    modules=(
+        ToolsModule(tools=(
+            CoreToolkit(workspace_root="."),
+            my_custom_tool,          # A single Tool or callable
+        )),
+    ),
 )
-# Agent merges all into a single Toolkit for Broth
+# AgentBuilder merges every toolkit + standalone tool into one Toolkit
+# that the kernel hands to ModelIO each turn.
 ```
 
-**Conflict detection**: If two toolkits register tools with the same name, the catalog system will reject simultaneous activation. Within a single toolkit, later registrations overwrite earlier ones.
+**Conflict detection**: If two toolkits register tools with the same name, the catalog system rejects simultaneous activation, and `tool_load` rejects loading a deferred tool whose name conflicts with an active one. Within a single toolkit, later registrations overwrite earlier ones.
 
 ## Toolkit Discovery (3 Sources)
 
@@ -303,18 +315,40 @@ my_plugin = "my_package.toolkit:MyToolkit"
 
 The entry point **name must match** the `toolkit.id` in the plugin's `toolkit.toml`.
 
-## Dynamic Catalog (Runtime Activation)
+## Tool Exposure: Three Modes
 
-The `ToolkitCatalogRuntime` lets agents activate/deactivate toolkits at runtime:
+The framework supports three ways to expose tools to the model. Pick the one that matches your toolkit count and schema budget.
+
+| Mode | What the model sees up front | Enable with |
+| --- | --- | --- |
+| **Eager (default)** | Every registered tool's full schema | `ToolsModule(tools=(...))` only |
+| **Catalog (toolkit-level lazy)** | Only `always_active` toolkits + 5 catalog meta-tools | Pass a `ToolkitCatalogRuntime` into `ToolsModule(tools=(catalog_runtime, ...))` |
+| **Discovery (tool-level lazy)** | Only 3 meta-tools: `tool_search`, `tool_load`, `tool_list_loaded` | `ToolDiscoveryModule(config=ToolDiscoveryConfig(...))` |
+
+Eager is fastest when you have a couple of toolkits. Catalog is good when you have many toolkits but each one is small. Discovery is the closest analogue to Claude Code's `ToolSearch` and is the right choice when you have dozens of tools that share a long tail.
+
+### Catalog mode (`ToolkitCatalogRuntime`)
+
+`ToolkitCatalogRuntime` lets the model activate/deactivate **whole toolkits** at runtime:
 
 ```python
-agent.enable_toolkit_catalog(
-    managed_toolkit_ids=["code", "external_api"],
-    always_active_toolkit_ids=["code"],
+from unchain.tools import ToolkitCatalogRuntime, ToolkitCatalogConfig
+
+catalog = ToolkitCatalogRuntime(
+    config=ToolkitCatalogConfig(
+        managed_toolkit_ids=("code", "external_api"),
+        always_active_toolkit_ids=("code",),
+    ),
+    eager_toolkits=[],
+)
+
+agent = Agent(
+    name="coder",
+    modules=(ToolsModule(tools=(catalog,)),),
 )
 ```
 
-This injects 5 catalog management tools into the agent:
+This injects 5 catalog management tools:
 
 | Catalog Tool          | Purpose                                      |
 | --------------------- | -------------------------------------------- |
@@ -324,7 +358,43 @@ This injects 5 catalog management tools into the agent:
 | `toolkit_deactivate`  | Deactivate (except always-active)            |
 | `toolkit_list_active` | List currently active toolkit IDs            |
 
-**State tokens**: Catalog state is preserved across run suspensions via `build_continuation_state()` / `extract_toolkit_catalog_token()`, allowing resumption without losing activation state.
+**State tokens**: Catalog state is preserved across kernel suspensions via `build_continuation_state()`, allowing resumption without losing activation state.
+
+### Discovery mode (`ToolDiscoveryRuntime`)
+
+`ToolDiscoveryRuntime` keeps **per-tool schemas** off the wire until the model explicitly loads them. The model only sees three meta-tools up front:
+
+```python
+from unchain import Agent
+from unchain.agent import ToolDiscoveryModule
+from unchain.tools import ToolDiscoveryConfig
+
+agent = Agent(
+    name="explorer",
+    instructions="Use tool_search before assuming a capability is missing.",
+    modules=(
+        ToolDiscoveryModule(
+            config=ToolDiscoveryConfig(managed_toolkit_ids=("code", "external_api")),
+        ),
+    ),
+)
+```
+
+The three injected meta-tools:
+
+| Discovery Tool      | Purpose                                                                                       |
+| ------------------- | --------------------------------------------------------------------------------------------- |
+| `tool_search`       | Ranked search over deferred tools by handle / name / title / tags. Returns stable `toolkit_id:tool_name` handles. |
+| `tool_load`         | Materializes one or more handles into the active toolkit (the kernel sees them next turn).   |
+| `tool_list_loaded`  | Lists handles already loaded in this run.                                                    |
+
+The runtime only **instantiates** a toolkit on the first `tool_load` for one of its tools, so unused toolkits never pay LSP/shell/MCP startup cost.
+
+### Picking between catalog and discovery
+
+- **Many toolkits, each large** → catalog. The model toggles a whole toolkit on, then uses any of its tools.
+- **Many tools, sparse usage** → discovery. The model fishes one tool at a time without ever activating its peers.
+- Both can be combined with eager toolkits for tools the model should always see.
 
 ## History Payload Optimization
 
@@ -364,4 +434,4 @@ The optimizer receives the original dict and must return a (possibly smaller) di
 
 - [creating-builtin-toolkits.md](creating-builtin-toolkits.md) — End-to-end toolkit creation guide
 - [architecture-overview.md](architecture-overview.md) — Where the tool system fits
-- [runtime-engine.md](runtime-engine.md) — How Broth executes tool calls
+- [runtime-engine.md](runtime-engine.md) — How `KernelLoop` executes tool calls

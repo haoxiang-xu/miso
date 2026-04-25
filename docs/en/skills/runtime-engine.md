@@ -4,190 +4,112 @@ Canonical English skill chapter for the `runtime-engine` topic.
 
 ## Role and boundaries
 
-This chapter explains the `Broth` runtime, canonical provider-turn types, callback events, workspace pin injection, and suspension/resume semantics.
+This chapter explains the `KernelLoop` engine, the `RuntimeHarness` extension protocol, the `ModelIO` provider boundary, the canonical run-result types, and suspension/resume semantics.
 
 ## Dependency view
 
-- `Broth` coordinates provider adapters, memory, toolkits, human-input flow, and structured output.
-- `ToolCall`, `ProviderTurnResult`, `TokenUsage`, and `ToolExecutionOutcome` are the canonical runtime payload types.
-- Toolkit catalog state is preserved by the runtime across suspensions.
+- `KernelLoop` coordinates harness phases, model turns, tool execution, and run-result assembly.
+- `ModelIO` is the protocol that providers (OpenAI, Anthropic, Ollama, Gemini) satisfy. The kernel never imports a vendor SDK directly.
+- `RuntimeHarness` is the per-phase extension surface. Memory, optimizers, retry, subagents, tool execution, and tool prompting are all implemented as harnesses.
+- `RunState` is the mutable per-run scratch space; `KernelRunResult` is the immutable return.
 
 ## Core objects
 
-- `Broth`
-- `ToolCall`
-- `ProviderTurnResult`
-- `TokenUsage`
-- `ToolExecutionOutcome`
+- `KernelLoop`
+- `RuntimeHarness` / `RuntimePhase` / `HarnessContext`
+- `ModelIO` / `ModelTurnRequest`
+- `ToolCall` / `ModelTurnResult` / `TokenUsage` / `KernelRunResult`
+- `LegacyBrothModelIO` (compat)
 
 ## Execution and state flow
 
-- Prepare canonical messages and inject pinned context.
-- Fetch one provider turn and normalize tool requests.
-- Execute tools, handle confirmation or human input, and optionally run observation turns.
-- Commit memory at terminal states and return messages plus a bundle containing `status`, token counts, and optional human-input or continuation state.
+- Construct a `KernelLoop(model_io=...)`.
+- Register one or more harnesses with `register_harness(...)`.
+- Optionally `attach_memory(KernelMemoryRuntime)` to wire memory commits.
+- Call `run(messages, ...)`; the loop iterates `step_once()` until completion or suspension.
+- On suspension, the loop returns a `KernelRunResult` with `status="awaiting_human_input"` and a `continuation` payload; pass both back into `resume_human_input()` to continue.
 
 ## Configuration surface
 
-- Provider/model/api key.
-- Default payload and capability resource files.
-- Context window override, response format, callbacks, continuation hooks.
-
-## Extension points
-
-- Add provider dispatch functions under `runtime/providers/`.
-- Extend structured-output handling via `ResponseFormat`.
-- Attach or remove toolkits dynamically on a runtime instance.
+- Provider/model selection happens at `ModelIO` construction.
+- Per-run options come through the kernel's `run()` arguments (max iterations, response format, callbacks, payload defaults).
+- Harness composition is done at `AgentBuilder` time when running through `Agent`; standalone kernel users register harnesses by hand.
 
 ## Common gotchas
 
-- Observation turns count toward iteration budget.
-- Callbacks are synchronous.
-- Provider SDK imports are lazy and fail at call time if missing.
+- Observation turns count toward the iteration budget.
+- Callbacks run synchronously inside the loop; offload long work.
+- Provider SDK imports are lazy; missing SDK fails when `fetch_turn()` runs, not at import.
+- `Broth` is **not** a runtime anymore — it survives only as `LegacyBrothModelIO`, an adapter so old code paths can plug into the new kernel.
 
 ## Related class references
 
 - [Runtime API](../api/runtime.md)
 - [Toolkits API](../api/toolkits.md)
-- [Input/Workspace/Schema API](../api/input-workspace-schemas.md)
+- [Tool System API](../api/tools.md)
 
 ## Source entry points
 
-- `src/unchain/runtime/engine.py`
-- `src/unchain/runtime/payloads.py`
-- `src/unchain/runtime/providers/`
+- `src/unchain/kernel/loop.py`
+- `src/unchain/kernel/harness.py`
+- `src/unchain/kernel/state.py`
+- `src/unchain/kernel/types.py`
+- `src/unchain/providers/model_io.py`
 
-## Broth In Practice
+## KernelLoop In Practice
 
-`Broth` is the low-level execution runtime. It does not own agent identity, default instructions, or durable configuration. Its job is narrower and more operational: take a prepared request, run provider turns, execute tools, handle suspension and resumption, and return a normalized conversation plus bundle.
+`KernelLoop` is the low-level execution runtime. It does not own agent identity, default instructions, or modules. Its job is operational: take a normalized request, run model turns, execute tools, dispatch harness phases, handle suspension and resumption, and return a `KernelRunResult`.
 
-This boundary is intentional. `Agent` answers the question "what is this agent configured to be?", while `Broth` answers the question "how does this specific run execute?". That separation is why `Agent.run()` creates a fresh `Broth` each time instead of reusing a long-lived runtime instance.
+This boundary is intentional. `Agent` answers "what is this agent configured to be?", while `KernelLoop` answers "how does this specific run execute?" — which is why `Agent.run()` builds a fresh `KernelLoop` each time instead of reusing one.
+
+```python
+from unchain.kernel import KernelLoop
+from unchain.providers import OpenAIModelIO
+
+loop = KernelLoop(model_io=OpenAIModelIO(model="gpt-5"))
+loop.register_harness(my_harness)
+result = loop.run(messages=[{"role": "user", "content": "Hello"}])
+```
+
+For day-to-day use, prefer `Agent.run()`. Direct `KernelLoop` use is only needed for embedded scenarios that don't want the agent layer.
 
 ## Current Execution Flow
 
-1. `run()` canonicalizes incoming messages, validates modality support against model capabilities, and projects canonical messages into the provider-specific shape expected by OpenAI, Anthropic, Gemini, or Ollama.
-2. If both `memory_manager` and `session_id` are present, the runtime performs a memory prepare pass before the loop begins, injecting summarized history, retrieved long-term context, and any context-window trimming result into the request.
-3. `_run_loop()` resolves visible toolkits for the current iteration, issues one provider turn, and normalizes the provider response into a `ProviderTurnResult` so the loop can stay provider-agnostic.
-4. If the model emitted tool calls, the runtime executes tools, applies confirmation gates, or returns early with `awaiting_human_input` when human input is required. Tools marked with `observe=True` trigger an additional observation turn that briefly reviews the latest tool result.
-5. When a turn no longer produces tool calls, the runtime applies any structured-output parsing, builds the bundle, commits memory, and returns the final conversation.
+1. `run()` normalizes incoming messages, validates modality support against model capabilities, and builds a `RunState` for this iteration.
+2. The loop dispatches harnesses across the eight phases (see `architecture-overview.md` for the full list) before and after each model turn.
+3. `ModelIO.fetch_turn(request)` returns a `ModelTurnResult` containing assistant messages, tool calls, and token counts.
+4. If the model emitted tool calls, `ToolExecutionHarness` runs them. Confirmation-gated tools cause the loop to return early with `status="awaiting_human_input"`.
+5. Tools marked with `observe=True` trigger an additional observation turn during `after_tool_batch`.
+6. When a turn no longer produces tool calls, the loop applies any structured-output parsing, commits memory, and returns a `KernelRunResult`.
 
 ## Design Notes
 
-The current implementation treats memory as a boundary capability around `run()`, not as the center of the per-iteration state machine. This keeps the runtime usable without memory, avoids extra summary and extraction cost on every loop iteration, and prevents half-finished suspended states from being committed before a run is truly complete.
-
-## Detailed legacy reference
-
-The original repository skill note is preserved below for continuity and extra examples. The canonical copy now lives in this docs tree.
-
-> The `Broth` execution loop, provider abstraction, observation injection, confirmation suspension, callback events, and structured output.
-
-## Broth — The Core Runtime
-
-`Broth` is the low-level engine that orchestrates LLM calls, tool execution, memory integration, and event emission. `Agent` creates a fresh `Broth` for every `run()` call.
-
-```python
-from unchain.runtime import Broth
-from unchain.toolkits import CoreToolkit
-
-runtime = Broth(provider="openai", model="gpt-5")
-runtime.add_toolkit(CoreToolkit(workspace_root="."))
-messages, bundle = runtime.run("Inspect the repo.")
-```
-
-### Key Constructor Parameters
-
-| Parameter        | Type          | Default  | Purpose                                                        |
-| ---------------- | ------------- | -------- | -------------------------------------------------------------- |
-| `provider`       | `str`         | required | `"openai"`, `"anthropic"`, `"gemini"`, `"ollama"`              |
-| `model`          | `str`         | required | Model identifier (e.g., `"gpt-5"`, `"claude-opus-4-20250918"`) |
-| `api_key`        | `str \| None` | `None`   | Uses env var if not provided                                   |
-| `base_url`       | `str \| None` | `None`   | Custom endpoint (for Ollama, proxies)                          |
-| `max_iterations` | `int`         | `6`      | Max tool-calling loop iterations                               |
-| `system_prompt`  | `str`         | `""`     | System message prepended to conversation                       |
-
-### Return Value
-
-```python
-messages, bundle = runtime.run(...)
-
-# messages: list[dict] — full conversation including tool calls/results
-# bundle: dict — metadata
-#   bundle["consumed_tokens"]       — total token usage
-#   bundle["stop_reason"]           — why the loop ended
-#   bundle["artifacts"]             — collected artifacts (if any)
-#   bundle["toolkit_catalog_token"] — catalog state (if catalog enabled)
-```
-
-## Execution Loop (Step by Step)
-
-```text
-Broth.run(messages, toolkit, response_format, max_iterations, ...)
-│
-│  for iteration in 1..max_iterations:
-│
-│  ┌─ Step 1: PREPARE CONTEXT ──────────────────────────────┐
-│  │ • memory.prepare_messages(session_id)                   │
-│  │ • Injects workspace pin context as system messages       │
-│  │ • Applies context window strategy (trim/summarize)       │
-│  └─────────────────────────────────────────────────────────┘
-│
-│  ┌─ Step 2: LLM CALL ─────────────────────────────────────┐
-│  │ • _fetch_once(messages, tools, response_format)          │
-│  │ • Dispatches to provider SDK (OpenAI/Anthropic/etc.)     │
-│  │ • Returns ProviderTurnResult:                            │
-│  │   { assistant_message, tool_calls[], token_usage }       │
-│  │ • Emits: token_delta, message_published events           │
-│  └─────────────────────────────────────────────────────────┘
-│
-│  ┌─ Step 3: TOOL EXECUTION ───────────────────────────────┐
-│  │ for each tool_call in result.tool_calls:                 │
-│  │                                                          │
-│  │   if requires_confirmation:                              │
-│  │     → build ToolConfirmationRequest                      │
-│  │     → emit event, SUSPEND for user response              │
-│  │     → if rejected: skip tool, send error to LLM          │
-│  │     → if approved: continue (maybe with modified args)   │
-│  │                                                          │
-│  │   result = toolkit.execute(tool_name, arguments)         │
-│  │   → emit: tool_result event                              │
-│  │                                                          │
-│  │   if observe=True:                                       │
-│  │     → _observation_turn(messages + tool_result)          │
-│  │     → extra LLM call to "observe" the outcome            │
-│  │     → observation appended to messages                   │
-│  └─────────────────────────────────────────────────────────┘
-│
-│  ┌─ Step 4: MEMORY COMMIT ────────────────────────────────┐
-│  │ • memory.commit_messages(session_id, full_conversation)  │
-│  │ • Stores turns, compacts history, extracts long-term     │
-│  └─────────────────────────────────────────────────────────┘
-│
-│  ┌─ Step 5: LOOP CHECK ──────────────────────────────────┐
-│  │ • No tool_calls in this turn? → BREAK (done)            │
-│  │ • Max iterations reached? → BREAK (with warning)         │
-│  │ • Human input requested? → SUSPEND                       │
-│  └─────────────────────────────────────────────────────────┘
-│
-▼
-Returns (messages, bundle)
-```
+- Memory is integrated as a harness pair (bootstrap/before-model recall + before-commit write). Runs without memory simply omit the `MemoryModule`.
+- Retry is a wrapper around `ModelIO.fetch_turn()` (see `unchain.retry`) and never retries content that has already been streamed downstream.
+- Provider-specific projection (canonical messages → SDK shape) lives entirely inside each `ModelIO` implementation, so the kernel stays vendor-agnostic.
 
 ## Provider Abstraction
 
-Broth speaks a **canonical message format** internally. Provider-specific SDKs are loaded lazily.
+Providers implement `ModelIO`:
 
-### Supported Providers
+```python
+class ModelIO(Protocol):
+    provider: str
+    def fetch_turn(self, request: ModelTurnRequest) -> ModelTurnResult: ...
+```
 
-| Provider    | SDK                   | Notes                                  |
-| ----------- | --------------------- | -------------------------------------- |
-| `openai`    | `openai`              | Default, most tested                   |
-| `anthropic` | `anthropic`           | Claude models                          |
-| `gemini`    | `google-generativeai` | Gemini models                          |
-| `ollama`    | `openai` (compatible) | Local models via OpenAI-compatible API |
+### Built-in implementations
+
+| Provider    | Class                | SDK                   | Notes                                  |
+| ----------- | -------------------- | --------------------- | -------------------------------------- |
+| `openai`    | `OpenAIModelIO`      | `openai`              | Default, most tested                   |
+| `anthropic` | `AnthropicModelIO`   | `anthropic`           | Claude models                          |
+| `ollama`    | `OllamaModelIO`      | `openai`-compatible   | Local models                           |
+| `gemini`    | (via providers/)     | `google-generativeai` | Lazy-loaded                            |
 
 ### Model Capabilities
 
-Model capabilities are declared in JSON resource files under `src/unchain/runtime/resources/`. These declare what features each model supports:
+Model capabilities are declared in JSON resource files under `src/unchain/runtime/resources/`. They declare what features each model supports:
 
 ```json
 {
@@ -201,34 +123,27 @@ Model capabilities are declared in JSON resource files under `src/unchain/runtim
 }
 ```
 
-Loaded at runtime via `load_model_capabilities()`.
-
-### Default Payloads
-
-Provider-specific defaults (temperature, top_p, etc.) are also in resource JSON files. Loaded via `load_default_payloads()`.
-
 ### Adding a New Provider
 
-1. Create `src/unchain/runtime/providers/my_provider.py`
-2. Implement the provider dispatch function matching the existing pattern
-3. Add model capabilities to resources JSON
-4. Add default payloads to resources JSON
-5. Register the provider name in `engine.py` dispatch logic
+1. Create `src/unchain/providers/my_provider.py`.
+2. Implement a `ModelIO` subclass with `fetch_turn()`.
+3. Add capabilities and default payloads under `src/unchain/runtime/resources/`.
+4. Either pass an instance directly to `Agent(model_io_factory=...)` or register a factory in `ModelIOFactoryRegistry`.
 
-The provider module is **lazy-loaded** — it's only imported when `provider="my_provider"` is used.
+The provider module is **lazy-loaded** — its SDK is only imported when the model IO is actually constructed.
 
 ## Callback Events
 
-Broth emits events throughout execution via a callback function. This powers UI streaming, logging, and observability.
+Harnesses and the loop emit events through the `callback` passed into `Agent.run()` / `KernelLoop.run()`. This powers UI streaming, logging, and observability.
 
 ```python
 def my_callback(event: dict) -> None:
     print(f"[{event['type']}] {event.get('data', '')}")
 
-messages, bundle = runtime.run("task", callback=my_callback)
+result = agent.run("task", callback=my_callback)
 ```
 
-### Event Types
+### Common Event Types
 
 | Event Type                  | When                        | Payload                             |
 | --------------------------- | --------------------------- | ----------------------------------- |
@@ -238,8 +153,8 @@ messages, bundle = runtime.run("task", callback=my_callback)
 | `tool_call_started`         | Before tool execution       | `tool_name`, `call_id`, `arguments` |
 | `tool_result`               | After tool execution        | `tool_name`, `call_id`, `result`    |
 | `tool_confirmation_request` | Tool needs approval         | `ToolConfirmationRequest`           |
-| `observation_started`       | Before observation LLM call | `tool_name`                         |
-| `observation_complete`      | After observation LLM call  | Observation message                 |
+| `observation_started`       | Before observation turn     | `tool_name`                         |
+| `observation_complete`      | After observation turn      | Observation message                 |
 | `memory_commit`             | After memory committed      | `session_id`                        |
 | `run_completed`             | Run ends normally           | `stop_reason`, `iterations`         |
 | `run_error`                 | Run ends with error         | `error`                             |
@@ -250,37 +165,36 @@ messages, bundle = runtime.run("task", callback=my_callback)
 | `summary_generated`         | After summarization         | Summary text                        |
 | `long_term_extracted`       | After fact extraction       | Profile updates                     |
 
-**Note**: Not all events are emitted in every run. Events depend on configuration (memory, tools, confirmation).
+**Note**: Not every event fires in every run. Events depend on which modules and harnesses are configured.
 
 ## Confirmation Suspension & Resumption
 
 When a tool with `requires_confirmation=True` is called:
 
 ```text
-Broth.run()
+KernelLoop.run()
   ├── LLM requests tool call
-  ├── Tool has requires_confirmation
-  ├── ToolConfirmationRequest emitted via callback
-  ├── run() PAUSES — returns partial state
+  ├── on_tool_call phase: ToolExecutionHarness builds ToolConfirmationRequest
+  ├── on_suspend phase fires; loop returns KernelRunResult(status="awaiting_human_input", continuation=...)
   │
   │   ← External: UI shows confirmation dialog
   │   ← External: User approves/rejects
   │
-  ├── Agent.resume_human_input(response)
-  │   └── Resumes Broth with the response
-  ├── If approved: tool executes
+  ├── Agent.resume_human_input(continuation=..., response=...)
+  │   └── Re-enters the loop on on_resume phase with the response in hand
+  ├── If approved: tool executes (with modified args if any)
   ├── If rejected: error sent to LLM, loop continues
   └── run() continues or returns final result
 ```
 
-The **toolkit catalog state** is preserved across this suspension via state tokens.
+The toolkit catalog and discovery state survive this round trip via the harness `on_suspend` / `on_resume` checkpointing.
 
 ## Structured Output (Response Format)
 
 Force the LLM to return JSON matching a schema:
 
 ```python
-from unchain.runtime import Broth
+from unchain import Agent
 from unchain.schemas import ResponseFormat
 
 fmt = ResponseFormat(
@@ -296,54 +210,31 @@ fmt = ResponseFormat(
     },
 )
 
-runtime = Broth(provider="openai", model="gpt-5")
-messages, bundle = runtime.run("Analyze this code.", response_format=fmt)
-# Last message content is guaranteed to be valid JSON matching the schema
+result = agent.run("Analyze this code.", response_format=fmt)
+# result.messages[-1] content is guaranteed to be valid JSON matching the schema
 ```
 
 **Note**: Not all models support structured output. Check `model_capabilities["supports_structured_output"]`.
 
-## Workspace Pin Injection
-
-Before each LLM call, Broth checks if there are **pinned files** in the session store. If so, it injects their contents as system messages:
-
-````text
-[system] Pinned file context: src/main.py (lines 10-50)
-```python
-def main():
-    ...
-````
-
-```
-
-Pins are managed by `CoreToolkit` tools (`pin_file_context`, `unpin_file_context`). Constraints:
-
-| Limit | Value |
-|-------|-------|
-| Max pins per session | 8 |
-| Max total pinned chars | 16,000 |
-| Max single full-file pin | 12,000 chars |
-
-Pins are **resilient to edits** — they use text anchors and fingerprints to relocate content after file modifications.
-
 ## Common Gotchas
 
-1. **Fresh Broth per run** — `Agent.run()` creates a new `Broth` each time. Don't try to reuse or reconfigure a `Broth` instance between runs.
+1. **Fresh kernel per run** — `Agent.run()` builds a new `KernelLoop` each call. Don't try to reuse a single loop across runs unless you're embedding the kernel without `Agent`.
 
-2. **`max_iterations` includes observation turns** — If you have tools with `observe=True`, each observation consumes an iteration. Set `max_iterations` higher if using many observable tools.
+2. **`max_iterations` includes observation turns** — Tools with `observe=True` consume an iteration each time they fire. Bump `max_iterations` if you depend on many observable tools.
 
-3. **Provider SDK is lazy-loaded** — The first call to a provider triggers an import. Missing SDK (`pip install openai`) fails at call time, not at import time.
+3. **Provider SDK is lazy-loaded** — The first call to a provider triggers an import. Missing SDK (`pip install openai`) fails at `fetch_turn()`, not at import time.
 
-4. **Callback is synchronous** — Event callbacks block the execution loop. Keep callbacks fast or offload work to a queue.
+4. **Callback is synchronous** — Event callbacks block the loop. Keep them fast or queue work elsewhere.
 
-5. **Structured output + tools** — Some providers don't support `response_format` and tool calling simultaneously. The engine handles this by splitting the final turn.
+5. **Structured output + tools** — Some providers don't support `response_format` and tool calling simultaneously. The relevant `ModelIO` implementation handles this by splitting the final turn.
 
-6. **Token counting is approximate** — Token usage reported in `bundle["consumed_tokens"]` depends on provider accuracy. Use it for budgeting, not billing.
+6. **Token counting is approximate** — Token usage in `KernelRunResult` depends on provider accuracy. Use it for budgeting, not billing.
+
+7. **`Broth` is gone from the runtime path** — If you grep for it, you'll find `LegacyBrothModelIO` in `kernel/model_io.py` and an old `runtime/` package. Both exist for migration only; new work should target `ModelIO` directly.
 
 ## Related Skills
 
 - [architecture-overview.md](architecture-overview.md) — System-level view
 - [tool-system-patterns.md](tool-system-patterns.md) — Tool execution details
-- [memory-system.md](memory-system.md) — How MemoryManager integrates with Broth
-- [agent-and-team.md](agent-and-team.md) — How Agent creates and configures Broth
-```
+- [memory-system.md](memory-system.md) — How memory harnesses plug into the loop
+- [agent-and-team.md](agent-and-team.md) — How Agent builds the kernel

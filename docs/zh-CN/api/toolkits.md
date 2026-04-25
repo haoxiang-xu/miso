@@ -85,6 +85,77 @@ obj = BuiltinToolkit(...)
 obj.push_execution_context(...)
 ```
 
+### `src/unchain/toolkits/builtin/core/core.py`
+
+内置核心 toolkit，提供工作区代码读写、shell、网页抓取、LSP 查询和结构化用户问询能力。
+
+## CoreToolkit
+
+工作区作用域 toolkit，注册大多数编码 agent 默认需要的 9 个工具。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/toolkits/builtin/core/core.py:30` |
+| 模块职责 | 编码、shell、web fetch、LSP 与结构化用户问询的核心内置 toolkit。 |
+| 继承/协议 | `BuiltinToolkit` |
+| 导出状态 | 通过所属子包 `__init__` 导出。 |
+| 对象类型 | 类；公开。 |
+
+### 构造表面
+
+- `__init__(self, *, workspace_root: str | Path | None=None, workspace_roots: list[str | Path] | None=None)`
+
+`workspace_root` 是单根的便捷写法；`workspace_roots` 接收多根列表。两者必须至少有一个能解析为可用目录，否则抛 `ValueError`。
+
+### 注册的工具
+
+9 个工具在 `__init__` 阶段全部 eagerly 注册，并对照 `toolkit.toml` 校验。
+
+| 工具 | 签名 | 需要确认 | 说明 |
+| --- | --- | --- | --- |
+| `read` | `read(path: str, offset: int = 0, limit: int | None = None)` | 否 | 按绝对路径读取 UTF-8 文本，输出带行号，支持切片。会记录一个 freshness snapshot 给 `write`/`edit` 使用。 |
+| `write` | `write(path: str, content: str)` | 是 | 创建或完全覆写 UTF-8 文本文件；已有文件必须先被完整读取，snapshot 失效则中止。 |
+| `edit` | `edit(path: str, old_string: str, new_string: str, replace_all: bool = False)` | 是 | 在已读过的文件中替换唯一匹配（或 `replace_all=True` 时替换所有匹配）。 |
+| `glob` | `glob(pattern: str, ...)` | 否 | 返回最多 200 条匹配 glob 的路径，按最近修改时间倒序。 |
+| `grep` | `grep(pattern: str, globs: list[str] | None = None, mode: str = ...)` | 否 | UTF-8 文本正则搜索，支持 glob 过滤和分页输出模式。 |
+| `web_fetch` | `web_fetch(url: str, extract: str | None = None)` | 是 | 抓取 HTTP(S) 页面；`extract` 切换原始内容或 runtime 配置的提取模型。 |
+| `shell` | `shell(command: str, ...)` | 是（按风险） | 运行 shell 命令、轮询后台任务或终止任务。低风险命令跳过确认。 |
+| `lsp` | `lsp(path: str, method: str, ...)` | 否 | 查询语言服务器（Python 或 TS/JS），支持 `goToDefinition`、`findReferences`、`hover`、`documentSymbol`、`workspaceSymbol`。 |
+| `ask_user_question` | `ask_user_question(title, question, selection_mode, options, ...)` | n/a | 保留运行时工具：会暂停整个 run，由框架而非直接执行来满足。 |
+
+### Runtime 协作者
+
+- `LSPRuntime`（Python + TS/JS 语言服务器，按 `workspace_roots` 懒启动）。
+- `ShellRuntime`（探测 `bash`/`zsh`/`sh`，确认前做风险分类）。
+- `WebFetchService`（缓存响应；支持 runtime 配置的提取模型）。
+- 每 session 一张 `_ReadSnapshot` 表 —— write/edit 拒绝操作未被完整读取或磁盘上已变更的文件。
+
+### 生命周期与运行时职责
+
+- 构造函数装载工作区根，实例化 runtime，并调用 `_register_tools()`。
+- 工具方法走标准 `Toolkit.execute()`；需要确认的工具走 kernel 的 `ToolExecutionHarness`。
+- `shutdown()`（继承自 `Toolkit`）会拆掉 LSP 和 shell runtime。
+
+### 协作关系与关联类型
+
+- `BuiltinToolkit`
+- `ExternalAPIToolkit`
+- `MCPToolkit`
+
+### 最小调用示例
+
+```python
+from unchain import Agent
+from unchain.agent import ToolsModule
+from unchain.toolkits import CoreToolkit
+
+agent = Agent(
+    name="coder",
+    instructions="你是一个编码助手。",
+    modules=(ToolsModule(tools=(CoreToolkit(workspace_root="."),)),),
+)
+```
+
 ### `src/unchain/toolkits/builtin/external_api/external_api.py`
 
 提供简单 GET/POST HTTP 能力的外部 API toolkit。
