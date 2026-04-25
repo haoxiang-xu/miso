@@ -16,12 +16,7 @@ Docs: [English](docs/README.en.md) | [中文](docs/README.zh-CN.md)
 
 unchain is a modular agent framework that separates **agent configuration** from **execution**. It provides a harness-driven kernel loop, pluggable provider support, multi-tier memory, and a rich tool system — all composable through a clean module API.
 
-The project ships two packages under `src/`:
-
-| Package | Role |
-|---------|------|
-| `unchain` | New public namespace — kernel, agent builder, providers, tools, memory, optimizers, subagents |
-| `miso` | Legacy source tree — Broth engine, characters, workspace pins. Retained for backward compatibility |
+Everything lives under one package: `src/unchain/`. Agent behaviour is composed by passing modules (`ToolsModule`, `MemoryModule`, `PoliciesModule`, `OptimizersModule`, `SubagentModule`, `ToolDiscoveryModule`) into `Agent`.
 
 ## Install
 
@@ -35,16 +30,17 @@ pip install -e ".[dev]"
 
 ```python
 from unchain import Agent
-from unchain.tools import Toolkit, tool
+from unchain.agent import ToolsModule
 from unchain.toolkits import CoreToolkit
 
 agent = Agent(
     name="coder",
     provider="openai",
     model="gpt-5",
-    tools=[
-        CoreToolkit(workspace_root="."),
-    ],
+    instructions="You are a coding assistant.",
+    modules=(
+        ToolsModule(tools=(CoreToolkit(workspace_root="."),)),
+    ),
 )
 
 result = agent.run("Inspect the repo and explain what matters.")
@@ -54,6 +50,10 @@ print(result.messages[-1]["content"])
 ### Custom Tools
 
 ```python
+from unchain import Agent
+from unchain.agent import ToolsModule
+from unchain.tools import tool
+
 @tool
 def fetch_price(ticker: str) -> dict:
     """Fetch the latest stock price for a given ticker symbol."""
@@ -63,21 +63,39 @@ agent = Agent(
     name="analyst",
     provider="anthropic",
     model="claude-sonnet-4",
-    tools=[fetch_price],
+    modules=(ToolsModule(tools=(fetch_price,)),),
 )
 ```
 
-### Multi-Agent Teams
+### Subagents (multi-agent work)
+
+`Team` is no longer a top-level primitive. Compose multi-agent flows by giving a planner agent a `SubagentModule` so it can spawn typed children:
 
 ```python
-from unchain import Agent, Team
+from unchain import Agent
+from unchain.agent import SubagentModule
+from unchain.subagents import SubagentPolicy, SubagentTemplate
 
-researcher = Agent(name="researcher", provider="openai", model="gpt-5", instructions="...")
-writer = Agent(name="writer", provider="anthropic", model="claude-sonnet-4", instructions="...")
+planner = Agent(
+    name="planner",
+    provider="openai",
+    model="gpt-5",
+    instructions="Plan the work, then delegate.",
+    modules=(
+        SubagentModule(
+            templates=(
+                SubagentTemplate(name="researcher", instructions="Research the question."),
+                SubagentTemplate(name="writer", instructions="Write a report from the research."),
+            ),
+            policy=SubagentPolicy(max_depth=4, max_total_agents=8),
+        ),
+    ),
+)
 
-team = Team(agents=[researcher, writer])
-messages, bundle = team.run("Write a report on recent AI trends.")
+result = planner.run("Write a report on recent AI trends.")
 ```
+
+The planner gets `delegate_to_subagent`, `handoff_to_subagent`, and `spawn_worker_batch` tools; see [docs/en/skills/agent-and-team.md](docs/en/skills/agent-and-team.md) for the full surface.
 
 ## Architecture
 
@@ -244,27 +262,22 @@ Pluggable strategies for managing the context window:
 
 ```
 src/
-  unchain/                    # Public namespace
-    kernel/                   # Execution loop, state, harnesses, deltas
-    agent/                    # Agent class, builder, modules
-    providers/                # OpenAI, Anthropic, Ollama model I/O
-    tools/                    # Tool, Toolkit, execution, confirmation
-    toolkits/                 # Built-in toolkits + MCP bridge
-    memory/                   # Short-term + long-term memory
-    optimizers/               # Context window optimization
-    subagents/                # Delegation, handoff, workers
-    schemas/                  # ResponseFormat for structured output
-    runtime/                  # Provider SDK imports
-  miso/                       # Legacy source tree
-    agents/                   # Agent, Team
-    runtime/                  # Broth engine, model capabilities
-    tools/                    # Tool primitives (zero internal deps)
-    toolkits/                 # Builtin toolkit implementations
-    memory/                   # Memory manager, Qdrant adapter
-    characters/               # CharacterAgent, schedules, evaluation
-    workspace/                # Anchor-resilient file pinning
-    input/                    # Human input, media upload
-    schemas/                  # Response format
+  unchain/
+    __init__.py               # Public API: Agent
+    agent/                    # Agent, AgentBuilder, PreparedAgent, modules
+    kernel/                   # KernelLoop, RuntimeHarness, RuntimePhase, types
+    providers/                # OpenAI, Anthropic, Ollama ModelIO
+    tools/                    # Tool, Toolkit, registry, catalog, discovery, execution
+    toolkits/                 # CoreToolkit, ExternalAPIToolkit, MCPToolkit
+    memory/                   # MemoryManager, KernelMemoryRuntime, harnesses
+    optimizers/               # Context window / token compaction harnesses
+    subagents/                # Subagent executor + delegation tools
+    retry/                    # Provider-agnostic retry layer
+    schemas/                  # ResponseFormat (structured output)
+    input/                    # Human input + media
+    character/                # Persona / instruction helpers
+    runtime/                  # Legacy Broth runtime kept only for LegacyBrothModelIO
+    types/                    # Shared type aliases
 tests/
   evals/                      # Scenario-based evaluation framework
 docs/
@@ -276,25 +289,36 @@ docs/
 
 ```python
 # Top-level
-from unchain import Agent, Team
+from unchain import Agent
 
-# Kernel
-from unchain.kernel import KernelLoop, KernelRunResult, RunState, HarnessDelta
-
-# Tools
-from unchain.tools import Tool, Toolkit, tool, ToolParameter, ToolkitRegistry
-
-# Providers
-from unchain.providers import AnthropicModelIO, OpenAIModelIO, OllamaModelIO
-
-# Toolkits
-from unchain.toolkits import (
-    CoreToolkit, ExternalAPIToolkit,
-    MCPToolkit,
+# Agent + modules
+from unchain.agent import (
+    AgentBuilder, PreparedAgent,
+    ToolsModule, MemoryModule, PoliciesModule,
+    OptimizersModule, SubagentModule, ToolDiscoveryModule,
 )
 
+# Kernel
+from unchain.kernel import KernelLoop, KernelRunResult, RunState, RuntimeHarness, RuntimePhase
+
+# Tools
+from unchain.tools import (
+    Tool, Toolkit, tool, ToolParameter, ToolkitRegistry,
+    ToolkitCatalogRuntime, ToolkitCatalogConfig,
+    ToolDiscoveryRuntime, ToolDiscoveryConfig,
+)
+
+# Providers
+from unchain.providers import OpenAIModelIO, AnthropicModelIO, OllamaModelIO
+
+# Toolkits
+from unchain.toolkits import CoreToolkit, ExternalAPIToolkit, MCPToolkit
+
 # Memory
-from unchain.memory import MemoryConfig, MemoryManager
+from unchain.memory import MemoryConfig, MemoryManager, KernelMemoryRuntime
+
+# Subagents
+from unchain.subagents import SubagentPolicy, SubagentTemplate, SubagentExecutor
 
 # Schemas
 from unchain.schemas import ResponseFormat
@@ -317,7 +341,7 @@ PYTHONPATH=src pytest tests/ -q
 
 Full bilingual docs with skills chapters and API reference:
 
-**Skills Chapters**: Architecture Overview, Agent & Team, Runtime Engine, Tool System Patterns, Memory System, Creating Toolkits, Testing Conventions
+**Skills Chapters**: Architecture Overview, Agent & Subagents, Runtime Engine, Tool System Patterns, Memory System, Creating Toolkits, Testing Conventions
 
 **API Reference**: Agents, Runtime, Tools, Toolkits, Memory, Input/Workspace/Schemas
 

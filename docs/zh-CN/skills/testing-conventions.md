@@ -14,15 +14,15 @@
 
 ## 核心对象
 
-- `ProviderTurnResult`
-- `ToolCall`
+- `ModelTurnResult`、`ToolCall`（来自 `unchain.kernel`）
+- `FakeModelIO`（测试 helper，写在每个测试文件里）
 - `MemoryManager` fake
 - `ToolkitRegistry` fixture
-- `EvalCase`/`JudgeReport` in `tests/evals/`
+- `EvalCase` / `JudgeReport`（在 `tests/evals/`）
 
 ## 执行流与状态流
 
-- patch provider fetch 来模拟 tool turn。
+- 通过 `Agent(model_io_factory=...)` 注入 `FakeModelIO`，不打 provider 就能模拟 tool turn。
 - 用 fake store/adapter 获得确定性的 memory 行为。
 - 把 eval fixture 与单元测试分开运行。
 - 通过临时 package 和 tmp path 验证新 toolkit manifest 与安全约束。
@@ -107,43 +107,80 @@ norecursedirs = [".git", ".pytest_cache", ".venv", "tests/evals/fixtures"]
 
 ## Mock 模式
 
-### 模式 1: Mock `_fetch_once` 进行 Agent 测试
+### 模式 1: 注入 `FakeModelIO` 测试 Agent
 
-最常见的模式 -- 不发起 LLM 调用即可测试 agent 逻辑：
+标准模式 —— 不打 LLM 就能测 agent 逻辑。原来的 mock `_fetch_once` 已经废弃（kernel 架构里没这个 hook 了），改为通过 `model_io_factory` 注入 `FakeModelIO`：
 
 ```python
-from unchain.runtime import ProviderTurnResult, ToolCall
+from unchain import Agent
+from unchain.agent import ToolsModule
+from unchain.kernel import ModelTurnResult, ToolCall
 
-def _tool_turn(tool_name, arguments):
-    """模拟调用工具的 LLM turn。"""
-    return ProviderTurnResult(
-        assistant_message={"role": "assistant", "content": None},
-        tool_calls=[ToolCall(id="call_1", name=tool_name, arguments=arguments)],
-        token_usage={"prompt_tokens": 100, "completion_tokens": 50},
+
+def _tool_turn(tool_name, arguments, call_id="call_1"):
+    """模拟调用工具的 model turn。"""
+    return ModelTurnResult(
+        assistant_messages=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": str(arguments)},
+                }],
+            }
+        ],
+        tool_calls=[ToolCall(call_id=call_id, name=tool_name, arguments=arguments)],
+        final_text="",
     )
+
 
 def _final_turn(content):
-    """模拟返回最终答案的 LLM turn。"""
-    return ProviderTurnResult(
-        assistant_message={"role": "assistant", "content": content},
+    """模拟返回最终答案的 model turn。"""
+    return ModelTurnResult(
+        assistant_messages=[{"role": "assistant", "content": content}],
         tool_calls=[],
-        token_usage={"prompt_tokens": 100, "completion_tokens": 50},
+        final_text=content,
     )
 
-def test_agent_calls_tool(monkeypatch):
-    agent = Agent(name="test", provider="openai", model="gpt-5", tools=[...])
 
-    state = {"turn": 0}
-    def fake_fetch(messages, tools, **kwargs):
-        state["turn"] += 1
-        if state["turn"] == 1:
-            return _tool_turn("read_files", {"paths": ["main.py"]})
-        return _final_turn("Done reading the file.")
+def test_agent_calls_tool():
+    def echo(text: str) -> dict[str, str]:
+        return {"echo": text}
 
-    monkeypatch.setattr(agent, "_fetch_once", fake_fetch)
-    messages, bundle = agent.run("Read main.py")
-    assert "Done reading" in messages[-1]["content"]
+    class FakeModelIO:
+        provider = "openai"
+        model = "gpt-5"
+
+        def __init__(self):
+            self.calls = 0
+
+        def fetch_turn(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                return _tool_turn("echo", {"text": "pong"})
+            return _final_turn("Done reading the file.")
+
+    fake = FakeModelIO()
+    agent = Agent(
+        name="test",
+        provider="openai",
+        model="gpt-5",
+        modules=(ToolsModule(tools=(echo,)),),
+        model_io_factory=lambda spec, ctx: fake,
+    )
+
+    result = agent.run("Read main.py", max_iterations=2)
+    assert result.status == "completed"
+    assert "Done reading" in result.messages[-1]["content"]
 ```
+
+与旧模式的关键差异：
+- `ModelTurnResult`（来自 `unchain.kernel`）替代 `ProviderTurnResult`。字段是 `assistant_messages`（复数列表）、`tool_calls`、`final_text`、`response_id`、`consumed_tokens`、`input_tokens`、`output_tokens`。
+- `ToolCall` 用 `call_id=`（不是 `id=`）。
+- `Agent.run()` 返回 `KernelRunResult`，访问 `.status`、`.messages`、`.continuation` 等 —— 永远不要按 `(messages, bundle)` 解构。
+- 工具通过 `ToolsModule(tools=(...))` 传，不是构造器上的 `tools=[...]`。
 
 ### 模式 2: Fake Adapter 进行 Memory 测试
 
@@ -171,34 +208,38 @@ class _FakeLongTermProfileStore:
         self.profiles[namespace] = profile
 ```
 
-### 模式 3: State Dict 进行多轮序列
+### 模式 3: 在有状态的 FakeModelIO 上做多轮序列
 
 ```python
-def test_multi_turn_flow(monkeypatch):
-    state = {"turn": 0}
+def test_multi_turn_flow():
+    class FakeModelIO:
+        provider = "openai"
+        model = "gpt-5"
 
-    def fake_fetch(messages, tools, **kwargs):
-        state["turn"] += 1
-        if state["turn"] == 1:
-            return _tool_turn("list_directories", {"paths": ["."]})
-        elif state["turn"] == 2:
-            return _tool_turn("read_files", {"paths": ["README.md"]})
-        else:
+        def __init__(self):
+            self.turn = 0
+
+        def fetch_turn(self, request):
+            self.turn += 1
+            if self.turn == 1:
+                return _tool_turn("glob", {"pattern": "*.py"})
+            elif self.turn == 2:
+                return _tool_turn("read", {"path": "/abs/main.py"})
             return _final_turn("Here is the summary...")
 
-    # ... 测试代码 ...
+    # ... 用 model_io_factory=lambda *_: FakeModelIO() 构造 agent ...
 ```
 
 ### 模式 4: 事件 Callback 断言
 
 ```python
-def test_events_emitted(monkeypatch):
+def test_events_emitted():
     events = []
 
     def capture(event):
         events.append(event)
 
-    messages, bundle = agent.run("task", callback=capture)
+    result = agent.run("task", callback=capture)
 
     event_types = [e["type"] for e in events]
     assert "run_started" in event_types
@@ -210,13 +251,11 @@ def test_events_emitted(monkeypatch):
 
 ```python
 def test_workspace_tool(tmp_path):
-    # 创建测试文件
     (tmp_path / "hello.txt").write_text("world")
-    (tmp_path / "subdir").mkdir()
 
     tk = CoreToolkit(workspace_root=str(tmp_path))
-    result = tk.execute("read_files", {"paths": ["hello.txt"]})
-    assert result["files"][0]["content"] == "world"
+    result = tk.execute("read", {"path": str(tmp_path / "hello.txt")})
+    assert "world" in result["content"]
 ```
 
 ### 模式 6: 使用临时包进行 Toolkit Discovery
@@ -359,7 +398,7 @@ tests/evals/
 
 ## 常见测试陷阱
 
-1. **不要忘记 `monkeypatch`** -- Agent 测试应 mock `_fetch_once`，而非发起真正的 API 调用。真实调用放在 smoke test (`test_*_smoke.py`)。
+1. **注入 `FakeModelIO`，别 patch `_fetch_once`** —— `_fetch_once` 是 legacy hook，kernel 架构里没有。改成 `Agent(model_io_factory=lambda spec, ctx: fake_io)`。真实 provider 调用放在 smoke test (`test_*_smoke.py`)。
 
 2. **文件系统测试用 `tmp_path`** -- 始终使用 pytest 的 `tmp_path` fixture，不要使用真实 workspace。
 

@@ -193,8 +193,8 @@ memory 通过两个标识符来划定作用域：
 | -------------------------------------- | ------------- | ------------------------------------ |
 | 单 agent，单次运行                     | UUID          | UUID                                 |
 | 单 agent，多次运行 (同一 session)      | 固定用户 ID   | 固定用户 ID                          |
-| Team agent                             | UUID          | `{session_id}:{agent_name}`          |
 | 子代理                                 | 父级 ID       | `{parent_namespace}:{subagent_name}` |
+| 嵌套子代理                             | 根 ID         | `{root}:{parent}:{child}`            |
 
 **关键规则**: 跨 session 使用相同的 `memory_namespace` 来累积长期知识。使用不同的 `session_id` 来隔离对话轮次。
 

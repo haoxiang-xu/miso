@@ -193,8 +193,8 @@ Memory is scoped by two identifiers:
 | -------------------------------------- | ------------- | ------------------------------------ |
 | Single agent, single run               | UUID          | UUID                                 |
 | Single agent, multi-run (same session) | Fixed user ID | Fixed user ID                        |
-| Team agent                             | UUID          | `{session_id}:{agent_name}`          |
 | Subagent                               | Parent's ID   | `{parent_namespace}:{subagent_name}` |
+| Nested subagent                        | Root's ID     | `{root}:{parent}:{child}`            |
 
 **Key rule**: Use the same `memory_namespace` across sessions to accumulate long-term knowledge. Use different `session_id` values to keep conversation turns separate.
 

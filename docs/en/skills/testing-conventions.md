@@ -14,15 +14,15 @@ This chapter explains how the repository tests orchestration, tool execution, me
 
 ## Core objects
 
-- `ProviderTurnResult`
-- `ToolCall`
+- `ModelTurnResult`, `ToolCall` (from `unchain.kernel`)
+- `FakeModelIO` (test helper, lives in each test file)
 - `MemoryManager` fakes
 - `ToolkitRegistry` fixtures
-- `EvalCase`/`JudgeReport` in `tests/evals/`
+- `EvalCase` / `JudgeReport` in `tests/evals/`
 
 ## Execution and state flow
 
-- Patch provider fetches to simulate tool turns.
+- Inject a `FakeModelIO` via `Agent(model_io_factory=...)` to simulate tool turns without hitting a provider.
 - Use fake stores/adapters for deterministic memory behavior.
 - Run eval fixtures separately from unit tests.
 - Validate new toolkit manifests and safety constraints with temporary packages and tmp paths.
@@ -107,43 +107,80 @@ All test files are in the top-level `tests/` directory (flat structure, no subdi
 
 ## Mock Patterns
 
-### Pattern 1: Mock `_fetch_once` for Agent Testing
+### Pattern 1: Inject a `FakeModelIO` for Agent Testing
 
-The most common pattern — test agent logic without making LLM calls:
+The standard pattern — test agent logic without making LLM calls. Replace `_fetch_once` mocking (no longer exists in the kernel architecture) with a `FakeModelIO` injected via `model_io_factory`:
 
 ```python
-from unchain.runtime import ProviderTurnResult, ToolCall
+from unchain import Agent
+from unchain.agent import ToolsModule
+from unchain.kernel import ModelTurnResult, ToolCall
 
-def _tool_turn(tool_name, arguments):
-    """Simulate an LLM turn that calls a tool."""
-    return ProviderTurnResult(
-        assistant_message={"role": "assistant", "content": None},
-        tool_calls=[ToolCall(id="call_1", name=tool_name, arguments=arguments)],
-        token_usage={"prompt_tokens": 100, "completion_tokens": 50},
+
+def _tool_turn(tool_name, arguments, call_id="call_1"):
+    """Simulate a model turn that calls a tool."""
+    return ModelTurnResult(
+        assistant_messages=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": str(arguments)},
+                }],
+            }
+        ],
+        tool_calls=[ToolCall(call_id=call_id, name=tool_name, arguments=arguments)],
+        final_text="",
     )
+
 
 def _final_turn(content):
-    """Simulate an LLM turn that returns a final answer."""
-    return ProviderTurnResult(
-        assistant_message={"role": "assistant", "content": content},
+    """Simulate a model turn that returns a final answer."""
+    return ModelTurnResult(
+        assistant_messages=[{"role": "assistant", "content": content}],
         tool_calls=[],
-        token_usage={"prompt_tokens": 100, "completion_tokens": 50},
+        final_text=content,
     )
 
-def test_agent_calls_tool(monkeypatch):
-    agent = Agent(name="test", provider="openai", model="gpt-5", tools=[...])
 
-    state = {"turn": 0}
-    def fake_fetch(messages, tools, **kwargs):
-        state["turn"] += 1
-        if state["turn"] == 1:
-            return _tool_turn("read_files", {"paths": ["main.py"]})
-        return _final_turn("Done reading the file.")
+def test_agent_calls_tool():
+    def echo(text: str) -> dict[str, str]:
+        return {"echo": text}
 
-    monkeypatch.setattr(agent, "_fetch_once", fake_fetch)
-    messages, bundle = agent.run("Read main.py")
-    assert "Done reading" in messages[-1]["content"]
+    class FakeModelIO:
+        provider = "openai"
+        model = "gpt-5"
+
+        def __init__(self):
+            self.calls = 0
+
+        def fetch_turn(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                return _tool_turn("echo", {"text": "pong"})
+            return _final_turn("Done reading the file.")
+
+    fake = FakeModelIO()
+    agent = Agent(
+        name="test",
+        provider="openai",
+        model="gpt-5",
+        modules=(ToolsModule(tools=(echo,)),),
+        model_io_factory=lambda spec, ctx: fake,
+    )
+
+    result = agent.run("Read main.py", max_iterations=2)
+    assert result.status == "completed"
+    assert "Done reading" in result.messages[-1]["content"]
 ```
+
+Key differences from older patterns:
+- `ModelTurnResult` (from `unchain.kernel`) replaces `ProviderTurnResult`. Fields are `assistant_messages` (plural list), `tool_calls`, `final_text`, `response_id`, `consumed_tokens`, `input_tokens`, `output_tokens`.
+- `ToolCall` uses `call_id=` (not `id=`).
+- `Agent.run()` returns a `KernelRunResult`. Read `.status`, `.messages`, `.continuation`, etc. — never destructure as `(messages, bundle)`.
+- Tools are passed through `ToolsModule(tools=(...))`, not `tools=[...]` on the constructor.
 
 ### Pattern 2: Fake Adapters for Memory Testing
 
@@ -171,34 +208,38 @@ class _FakeLongTermProfileStore:
         self.profiles[namespace] = profile
 ```
 
-### Pattern 3: State Dict for Multi-Turn Sequencing
+### Pattern 3: Multi-Turn Sequencing on a Stateful FakeModelIO
 
 ```python
-def test_multi_turn_flow(monkeypatch):
-    state = {"turn": 0}
+def test_multi_turn_flow():
+    class FakeModelIO:
+        provider = "openai"
+        model = "gpt-5"
 
-    def fake_fetch(messages, tools, **kwargs):
-        state["turn"] += 1
-        if state["turn"] == 1:
-            return _tool_turn("list_directories", {"paths": ["."]})
-        elif state["turn"] == 2:
-            return _tool_turn("read_files", {"paths": ["README.md"]})
-        else:
+        def __init__(self):
+            self.turn = 0
+
+        def fetch_turn(self, request):
+            self.turn += 1
+            if self.turn == 1:
+                return _tool_turn("glob", {"pattern": "*.py"})
+            elif self.turn == 2:
+                return _tool_turn("read", {"path": "/abs/main.py"})
             return _final_turn("Here is the summary...")
 
-    # ... test code ...
+    # ... build agent with model_io_factory=lambda *_: FakeModelIO() ...
 ```
 
 ### Pattern 4: Event Callback Assertions
 
 ```python
-def test_events_emitted(monkeypatch):
+def test_events_emitted():
     events = []
 
     def capture(event):
         events.append(event)
 
-    messages, bundle = agent.run("task", callback=capture)
+    result = agent.run("task", callback=capture)
 
     event_types = [e["type"] for e in events]
     assert "run_started" in event_types
@@ -210,13 +251,11 @@ def test_events_emitted(monkeypatch):
 
 ```python
 def test_workspace_tool(tmp_path):
-    # Create test files
     (tmp_path / "hello.txt").write_text("world")
-    (tmp_path / "subdir").mkdir()
 
     tk = CoreToolkit(workspace_root=str(tmp_path))
-    result = tk.execute("read_files", {"paths": ["hello.txt"]})
-    assert result["files"][0]["content"] == "world"
+    result = tk.execute("read", {"path": str(tmp_path / "hello.txt")})
+    assert "world" in result["content"]
 ```
 
 ### Pattern 6: Toolkit Discovery with Temp Packages
@@ -359,11 +398,11 @@ To create a new eval: copy `single_test_template.ipynb` into `notebooks/`, then 
 
 ## Common Test Gotchas
 
-1. **Don't forget `monkeypatch`** — Agent tests should mock `_fetch_once`, not make real API calls. Real calls go to smoke tests (`test_*_smoke.py`).
+1. **Inject a `FakeModelIO`, don't patch `_fetch_once`** — `_fetch_once` is a legacy hook that does not exist on the kernel-based `Agent`. Inject through `Agent(model_io_factory=lambda spec, ctx: fake_io)`. Real provider calls go to smoke tests (`test_*_smoke.py`).
 
 2. **`tmp_path` for filesystem tests** — Always use pytest's `tmp_path` fixture, never the real workspace.
 
-3. **State dict for turn sequencing** — Use `state = {"turn": 0}` and increment in the mock to control multi-turn behavior.
+3. **Per-instance counter for turn sequencing** — Track `self.turn` (or a `state = {"turn": 0}` closure) inside `FakeModelIO.fetch_turn` to script multi-turn behaviour deterministically.
 
 4. **Eval fixtures are excluded from pytest** — `norecursedirs` skips `tests/evals/fixtures/`. Don't put test files there.
 
