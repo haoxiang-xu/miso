@@ -96,30 +96,6 @@ class ModelConfiguration:
 
 
 # Pre-defined model configurations
-CLAUDE_HAIKU_35 = ModelConfiguration(
-    name="claude-haiku-3.5",
-    capabilities=ModelCapabilities(
-        provider="anthropic",
-        provider_model="claude-3-5-haiku-20241022",
-        max_context_window_tokens=200000,
-        supports_tools=True,
-        supports_response_format=False,
-        supports_previous_response_id=False,
-        supports_reasoning=False,
-        input_modalities=["text", "image"],
-        input_source_types={
-            "image": ["url", "base64"]
-        },
-        allowed_payload_keys=["max_tokens", "temperature", "top_k", "top_p"]
-    ),
-    default_payload=ModelDefaultPayload(
-        payload={
-            "max_tokens": 32000,
-            "temperature": 0.7,
-        }
-    )
-)
-
 CLAUDE_HAIKU_45 = ModelConfiguration(
     name="claude-haiku-4.5",
     capabilities=ModelCapabilities(
@@ -256,7 +232,6 @@ __all__ = [
     "ModelCapabilities",
     "ModelDefaultPayload",
     "ModelConfiguration",
-    "CLAUDE_HAIKU_35",
     "CLAUDE_HAIKU_45",
     "GPT_41_MINI",
     "GPT_4O",

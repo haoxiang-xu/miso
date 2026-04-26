@@ -475,6 +475,50 @@ def test_ollama_model_io_parses_tool_calls():
     }]
 
 
+def test_ollama_model_io_omits_tools_when_model_capability_disables_tools():
+    toolkit = Toolkit()
+    toolkit.register(lambda x=None: {"x": x}, name="demo_tool")
+    captured_kwargs = {}
+
+    def stream_factory(method, url, **kwargs):
+        del method, url
+        captured_kwargs.update(kwargs)
+        return _FakeOllamaResponse(
+            lines=[
+                json.dumps({
+                    "message": {"content": "no tools"},
+                    "done": True,
+                })
+            ],
+            captured_kwargs=captured_kwargs,
+        )
+
+    io = OllamaModelIO(
+        model="deepseek-r1:14b",
+        stream_factory=stream_factory,
+        model_capabilities={
+            "deepseek-r1:14b": {
+                "provider": "ollama",
+                "supports_tools": False,
+            },
+        },
+    )
+    events = []
+    turn = io.fetch_turn(
+        ModelTurnRequest(
+            messages=[{"role": "user", "content": "use tool"}],
+            toolkit=toolkit,
+            callback=events.append,
+        )
+    )
+
+    assert turn.final_text == "no tools"
+    assert "tools" not in captured_kwargs["json"]
+    assert "tool_choice" not in captured_kwargs["json"]
+    request_event = next(event for event in events if event["type"] == "request_messages")
+    assert "tool_names" not in request_event
+
+
 def test_provider_message_builders_cover_anthropic_and_ollama_shapes():
     tool_call = SimpleNamespace(call_id="call_1", name="demo_tool")
     anthropic_message = get_provider_message_builder("anthropic").build_tool_result_message(

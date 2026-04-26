@@ -1113,7 +1113,9 @@ class OllamaModelIO(_NativeModelIOBase):
         }
 
         tools_json = request.toolkit.to_provider_json(self.provider)
-        tools: list[dict[str, Any]] = copy.deepcopy(tools_json)
+        tools: list[dict[str, Any]] = []
+        if tools_json and self._model_capability("supports_tools", True):
+            tools = copy.deepcopy(tools_json)
 
         if tools:
             request_body["tools"] = tools
@@ -1131,7 +1133,7 @@ class OllamaModelIO(_NativeModelIOBase):
             run_id=request.run_id,
             iteration=request.iteration,
             messages=request_body.get("messages", []),
-            tool_names=self._tool_names_for_trace(tools_json),
+            tool_names=self._tool_names_for_trace(tools),
         )
 
         collected_chunks: list[str] = []

@@ -33,6 +33,16 @@
       "effort": "medium"
     }
   },
+  "gpt-5.5": {
+    "instructions": "",
+    "max_output_tokens": 128000,
+    "truncation": "auto",
+    "store": false,
+    "include": [],
+    "reasoning": {
+      "effort": "medium"
+    }
+  },
   "gpt-5-codex": {
     "instructions": "",
     "max_output_tokens": 128000,
@@ -64,11 +74,6 @@
   "claude-opus-4-7": {
     "max_tokens": 128000,
     "temperature": 0.7
-  },
-  "claude-haiku-3.5": {
-    "max_tokens": 32000,
-    "temperature": 0.7,
-    "top_p": 1
   },
   "claude-haiku-4.5": {
     "max_tokens": 32000,
