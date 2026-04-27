@@ -19,7 +19,7 @@ This chapter is the implementation guide for adding or maintaining builtin toolk
 - `ToolkitRegistry`
 - `CoreToolkit`
 - `ExternalAPIToolkit`
-- `ExternalAPIToolkit`
+- `MCPToolkit`
 
 ## Execution and state flow
 

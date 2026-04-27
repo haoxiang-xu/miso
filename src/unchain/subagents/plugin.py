@@ -247,6 +247,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 memory_policy=memory_policy,
                 model=template.model,
                 allowed_tools=template.allowed_tools,
+                missing_tool_policy="warn_skip",
             )
             return child, memory_policy, template.name
         if mode == "handoff" and self.policy.handoff_requires_template:
@@ -264,6 +265,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             instructions=instructions,
             expected_output=expected_output,
             memory_policy=memory_policy,
+            missing_tool_policy="warn_skip",
         )
         return child, memory_policy, None
 

@@ -1,11 +1,11 @@
 # 工具系统 API 参考
 
-覆盖 Tool 原语、Toolkit 容器、动态 catalog 以及 toolkit 发现/描述对象。
+覆盖 Tool 原语、Toolkit 容器、catalog runtime、deferred discovery runtime 以及描述符类型。
 
 | 指标 | 值 |
 | --- | --- |
-| 类数量 | 14 |
-| Dataclass | 10 |
+| 类数量 | 16 |
+| Dataclass | 12 |
 | 协议 | 0 |
 | 仅内部类型 | 0 |
 
@@ -15,6 +15,9 @@
 | --- | --- | --- | --- |
 | `ToolkitCatalogConfig` | `src/unchain/tools/catalog.py:34` | subpackage | dataclass |
 | `ToolkitCatalogRuntime` | `src/unchain/tools/catalog.py:76` | subpackage | class |
+| `ToolDiscoveryConfig` | `src/unchain/tools/discovery.py:21` | subpackage | dataclass (frozen) |
+| `DeferredToolRecord` | `src/unchain/tools/discovery.py:49` | subpackage | dataclass (frozen) |
+| `ToolDiscoveryRuntime` | `src/unchain/tools/discovery.py:85` | subpackage | class |
 | `ToolParameter` | `src/unchain/tools/models.py:155` | subpackage | dataclass |
 | `ToolHistoryOptimizationContext` | `src/unchain/tools/models.py:178` | subpackage | dataclass |
 | `NormalizedToolHistoryRecord` | `src/unchain/tools/models.py:191` | subpackage | dataclass |
@@ -217,6 +220,124 @@ ToolkitCatalogConfig(managed_toolkit_ids=..., always_active_toolkit_ids=..., reg
 ```python
 obj = ToolkitCatalogRuntime(...)
 obj.visible_toolkits(...)
+```
+
+### `src/unchain/tools/discovery.py`
+
+Deferred 工具发现层。暴露三个 meta-tool（`tool_search`、`tool_load`、`tool_list_loaded`）让模型按需查找并加载受管 toolkit 的工具，避免一开始就把所有 schema 喂给模型。
+
+## ToolDiscoveryConfig
+
+声明哪些受管 toolkit 参与 deferred discovery 的 frozen dataclass。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/tools/discovery.py:21` |
+| 模块职责 | Deferred tool discovery 配置。 |
+| 继承/协议 | `-` |
+| 导出状态 | 通过 `unchain.tools` 导出。 |
+| 对象类型 | Dataclass（frozen）。 |
+
+### 字段
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `managed_toolkit_ids` | `tuple[str, ...]` | 必填；为空则拒绝构造。 |
+| `registry` | `ToolRegistryConfig` | 必填；可从 dict coerce。 |
+
+### 公共方法
+
+- `__init__(*, managed_toolkit_ids, registry=None)` — 规范化 ID 并校验非空。
+- `coerce(value)` — 接受已有 `ToolDiscoveryConfig`、dict 或 `None`。
+
+## DeferredToolRecord
+
+描述一个 deferred 工具的 frozen 记录：handle、所属 toolkit、可搜索元数据。`tool_search` 返回它，`tool_load` 消费它。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/tools/discovery.py:49` |
+| 继承/协议 | `-` |
+| 导出状态 | 通过 `unchain.tools` 导出。 |
+| 对象类型 | Dataclass（frozen）。 |
+
+### 字段
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `handle` | `str` | 形如 `toolkit_id:tool_name` 的稳定句柄。 |
+| `toolkit_id` | `str` | 所属 toolkit ID。 |
+| `toolkit_name` | `str` | toolkit 显示名。 |
+| `tool_name` | `str` | toolkit 内的工具方法名。 |
+| `title` | `str` | 来自 manifest 的标题。 |
+| `description` | `str` | 来自 manifest 的描述。 |
+| `tags` | `tuple[str, ...]` | toolkit 标签，参与排名。 |
+
+### 公共方法
+
+- `search_blob()` — 用于排名的小写拼接 blob。
+- `to_summary()` — 返回给模型 `tool_search` 结果的 dict。
+
+## ToolDiscoveryRuntime
+
+持有 deferred 工具索引，暴露三个 meta-tool，并把 load 进来的工具合并进活跃 runtime toolkit 的 runtime。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/tools/discovery.py:85` |
+| 模块职责 | Deferred tool discovery runtime。 |
+| 继承/协议 | `-` |
+| 导出状态 | 通过 `unchain.tools` 导出。 |
+| 对象类型 | 类。 |
+
+### 构造表面
+
+- `__init__(self, *, config: ToolDiscoveryConfig, runtime_toolkit: Toolkit)`
+
+初始化时扫描每个受管 toolkit 的 manifest，为每个非 hidden 工具建一条 `DeferredToolRecord`，缓存 `ToolkitDescriptor` 但不实例化。工具只在第一次 `tool_load` 时实例化。
+
+### 公共方法
+
+| 方法 | 返回 | 说明 |
+| --- | --- | --- |
+| `build_tools()` | `tuple[Tool, Tool, Tool]` | 返回三个 meta-tool（`tool_search`、`tool_load`、`tool_list_loaded`），可直接注册到 `Toolkit`。 |
+| `tool_search(query, max_results=5)` | `dict` | 按排名搜索 deferred 工具。返回 `{matches, query, total_matches, total_deferred_tools}`。直接 handle 命中走短路径。 |
+| `tool_load(handles)` | `dict` | 把一个或多个 deferred 工具实化进 `runtime_toolkit`。返回 `{loaded, already_loaded, failed}`。与活跃工具同名时拒绝加载。 |
+| `tool_list_loaded()` | `dict` | 列出已 load 的 deferred 工具。 |
+| `shutdown()` | `None` | 拆掉所有缓存的 toolkit 实例。 |
+
+### 搜索排名
+
+`tool_search` 按 term 在 handle、tool name、title、toolkit id/name、tags 的命中给每条剩余记录打分（handle 或 tool 名精确匹配 20，子串 10/8/6，toolkit 字段 4，tags blob 2）。结果按分数倒序、handle 字典序排序。
+
+### 生命周期与运行时职责
+
+- 构造校验受管 toolkit ID 在 registry 内；缺失则抛 `ValueError`。
+- 模型通过 `ToolDiscoveryModule`（见 Agents API）消费 `build_tools()` 输出。Load 后的工具下一轮就会出现在 kernel 读的同一个 `Toolkit` 里。
+- run 结束时应调用 `shutdown()`，让缓存的 toolkit 释放资源（LSP、shell、MCP session 等）。
+
+### 协作关系与关联类型
+
+- `Tool`、`Toolkit`
+- `ToolkitRegistry`、`ToolkitDescriptor`
+- `ToolDiscoveryModule`（见 `unchain.agent`）
+
+### 最小调用示例
+
+```python
+from unchain import Agent
+from unchain.agent import ToolDiscoveryModule
+from unchain.tools import ToolDiscoveryConfig
+
+agent = Agent(
+    name="explorer",
+    instructions="缺能力时先调用 tool_search，不要假设没有。",
+    modules=(
+        ToolDiscoveryModule(
+            config=ToolDiscoveryConfig(managed_toolkit_ids=("code", "external_api")),
+        ),
+    ),
+)
 ```
 
 ### `src/unchain/tools/models.py`

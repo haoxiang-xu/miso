@@ -19,7 +19,7 @@
 - `ToolkitRegistry`
 - `CoreToolkit`
 - `ExternalAPIToolkit`
-- `ExternalAPIToolkit`
+- `MCPToolkit`
 
 ## 执行流与状态流
 

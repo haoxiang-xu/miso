@@ -130,7 +130,7 @@ Agent.run()
 ## 相关文档
 
 - [架构总览](../skills/architecture-overview.md) -- 概念性架构指南
-- [Agent 与 Team](../skills/agent-and-team.md) -- agent 组合模式
+- [Agent 与 Subagents](../skills/agent-and-team.md) -- agent 组合模式
 - [类索引](../appendix/class-index.md) -- 完整类参考
 - [导出索引](../appendix/export-index.md) -- 公共 API 导出
 - [术语表](../appendix/glossary.md) -- 术语参考

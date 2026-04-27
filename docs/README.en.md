@@ -13,7 +13,7 @@ Language switch: [English](README.en.md) | [简体中文](README.zh-CN.md)
 ## Skills chapters
 
 - [Architecture Overview](en/skills/architecture-overview.md)
-- [Agent and Team](en/skills/agent-and-team.md)
+- [Agent and Subagents](en/skills/agent-and-team.md)
 - [Runtime Engine](en/skills/runtime-engine.md)
 - [Tool System Patterns](en/skills/tool-system-patterns.md)
 - [Memory System](en/skills/memory-system.md)

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
+
+
+MissingToolPolicy = Literal["raise", "warn_skip"]
 
 
 @dataclass(frozen=True)
@@ -13,6 +16,7 @@ class AgentSpec:
     api_key: str | None = None
     modules: tuple[Any, ...] = ()
     allowed_tools: tuple[str, ...] | None = None
+    missing_tool_policy: MissingToolPolicy = "raise"
 
 
 @dataclass

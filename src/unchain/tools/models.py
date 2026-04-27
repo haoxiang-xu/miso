@@ -204,6 +204,8 @@ class ToolConfirmationPolicy:
     requires_confirmation: bool = True
     description: str = ""
     render_component: dict[str, Any] | None = None
+    interact_type: str = "confirmation"
+    interact_config: dict[str, Any] | list[Any] | None = None
 
     @classmethod
     def from_raw(
@@ -216,10 +218,24 @@ class ToolConfirmationPolicy:
             return cls(requires_confirmation=raw)
         if isinstance(raw, dict):
             render_component = raw.get("render_component")
+            interact_type_raw = raw.get("interact_type", "confirmation")
+            interact_type = (
+                interact_type_raw
+                if isinstance(interact_type_raw, str) and interact_type_raw
+                else "confirmation"
+            )
+            interact_config_raw = raw.get("interact_config")
+            interact_config = (
+                interact_config_raw
+                if isinstance(interact_config_raw, (dict, list))
+                else None
+            )
             return cls(
                 requires_confirmation=bool(raw.get("requires_confirmation", True)),
                 description=str(raw.get("description") or ""),
                 render_component=render_component if isinstance(render_component, dict) else None,
+                interact_type=interact_type,
+                interact_config=interact_config,
             )
         return cls()
 

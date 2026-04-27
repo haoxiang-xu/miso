@@ -84,6 +84,27 @@
       "tool_choice"
     ]
   },
+  "gpt-5.5": {
+    "provider": "openai",
+    "max_context_window_tokens": 1050000,
+    "supports_tools": true,
+    "supports_response_format": true,
+    "supports_previous_response_id": true,
+    "supports_reasoning": true,
+    "input_modalities": ["text", "image"],
+    "input_source_types": {
+      "image": ["url", "base64"]
+    },
+    "allowed_payload_keys": [
+      "instructions",
+      "max_output_tokens",
+      "truncation",
+      "store",
+      "include",
+      "reasoning",
+      "tool_choice"
+    ]
+  },
   "gpt-5-codex": {
     "provider": "openai",
     "max_context_window_tokens": 1047576,
@@ -109,7 +130,7 @@
   "deepseek-r1:14b": {
     "provider": "ollama",
     "max_context_window_tokens": 128000,
-    "supports_tools": true,
+    "supports_tools": false,
     "supports_response_format": true,
     "supports_previous_response_id": false,
     "supports_reasoning": false,
@@ -146,7 +167,7 @@
       "image": ["url", "base64"],
       "pdf": ["url", "base64"]
     },
-    "allowed_payload_keys": ["max_tokens", "temperature", "top_k"]
+    "allowed_payload_keys": ["max_tokens", "top_k"]
   },
   "claude-opus-4-6": {
     "provider": "anthropic",
@@ -161,21 +182,22 @@
       "image": ["url", "base64"],
       "pdf": ["url", "base64"]
     },
-    "allowed_payload_keys": ["max_tokens", "temperature", "top_k"]
+    "allowed_payload_keys": ["max_tokens", "top_k"]
   },
-  "claude-haiku-3.5": {
+  "claude-opus-4-7": {
     "provider": "anthropic",
-    "provider_model": "claude-3-5-haiku-20241022",
     "max_context_window_tokens": 200000,
+    "max_output_tokens": 16384,
     "supports_tools": true,
     "supports_response_format": false,
     "supports_previous_response_id": false,
     "supports_reasoning": false,
-    "input_modalities": ["text", "image"],
+    "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
-      "image": ["url", "base64"]
+      "image": ["url", "base64"],
+      "pdf": ["url", "base64"]
     },
-    "allowed_payload_keys": ["max_tokens", "temperature", "top_k", "top_p"]
+    "allowed_payload_keys": ["max_tokens", "top_k"]
   },
   "claude-haiku-4.5": {
     "provider": "anthropic",
@@ -189,7 +211,7 @@
     "input_source_types": {
       "image": ["url", "base64"]
     },
-    "allowed_payload_keys": ["max_tokens", "temperature", "top_k", "top_p"]
+    "allowed_payload_keys": ["max_tokens", "top_k", "top_p"]
   },
   "gpt-5.2-codex": {
     "provider": "openai",

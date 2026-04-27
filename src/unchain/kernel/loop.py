@@ -5,6 +5,7 @@ import uuid
 from typing import Any
 
 from ..memory import KernelMemoryRuntime
+from ..retry import RetryConfig, RetryContext, fetch_turn_with_retry
 from ..schemas import ResponseFormat
 from ..tools import (
     HumanInputResumeHarness,
@@ -30,10 +31,12 @@ class KernelLoop:
         *,
         harnesses: list[RuntimeHarness] | None = None,
         model_io: ModelIO | None = None,
+        retry_config: RetryConfig | None = None,
     ) -> None:
         self._harnesses: list[RuntimeHarness] = []
         self._model_io = model_io
         self._memory_runtime: KernelMemoryRuntime | None = None
+        self._retry_config: RetryConfig = retry_config if retry_config is not None else RetryConfig()
         for harness in harnesses or []:
             self.register_harness(harness)
 
@@ -137,7 +140,17 @@ class KernelLoop:
             previous_response_id=state.provider_state.previous_response_id,
             openai_text_format=openai_text_format,
         )
-        return self._model_io.fetch_turn(request)
+        ctx = RetryContext(
+            run_id=run_id,
+            iteration=state.iteration,
+            is_background=(run_id == "observe"),
+        )
+        return fetch_turn_with_retry(
+            model_io=self._model_io,
+            request=request,
+            config=self._retry_config,
+            context=ctx,
+        )
 
     def apply_model_turn(
         self,

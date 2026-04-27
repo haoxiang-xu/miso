@@ -13,7 +13,7 @@ Language switch: [English](README.en.md) | [简体中文](README.zh-CN.md)
 ## Skills 章节
 
 - [架构总览](zh-CN/skills/architecture-overview.md)
-- [Agent 与 Team](zh-CN/skills/agent-and-team.md)
+- [Agent 与 Subagents](zh-CN/skills/agent-and-team.md)
 - [Runtime Engine](zh-CN/skills/runtime-engine.md)
 - [工具系统模式](zh-CN/skills/tool-system-patterns.md)
 - [Memory 系统](zh-CN/skills/memory-system.md)

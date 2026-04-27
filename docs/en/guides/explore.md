@@ -130,7 +130,7 @@ Agent.run()
 ## Related
 
 - [Architecture Overview](../skills/architecture-overview.md) -- conceptual architecture guide
-- [Agent and Team](../skills/agent-and-team.md) -- agent composition patterns
+- [Agent and Subagents](../skills/agent-and-team.md) -- agent composition patterns
 - [Class Index](../appendix/class-index.md) -- complete class reference
 - [Export Index](../appendix/export-index.md) -- public API exports
 - [Glossary](../appendix/glossary.md) -- terminology reference

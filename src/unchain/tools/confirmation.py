@@ -100,6 +100,21 @@ def execute_confirmable_tool_call(
         policy_render = confirmation_policy.render_component if confirmation_policy is not None else None
         if isinstance(policy_render, dict) and policy_render:
             effective_render = dict(policy_render)
+
+        # Propagate interact_type / interact_config from the resolved policy
+        # onto the request. Policy may be None if no resolver ran — in that
+        # case the request defaults apply ("confirmation" / None).
+        policy_interact_type = (
+            confirmation_policy.interact_type
+            if confirmation_policy is not None
+            else "confirmation"
+        )
+        policy_interact_config = (
+            confirmation_policy.interact_config
+            if confirmation_policy is not None
+            else None
+        )
+
         confirmation_request = ToolConfirmationRequest(
             tool_name=tool_call.name,
             call_id=tool_call.call_id,
@@ -109,6 +124,8 @@ def execute_confirmable_tool_call(
                 if confirmation_policy is not None and confirmation_policy.description
                 else tool_obj.description
             ),
+            interact_type=policy_interact_type,
+            interact_config=policy_interact_config,
             render_component=effective_render,
         )
         response = ToolConfirmationResponse.from_raw(on_tool_confirm(confirmation_request))
