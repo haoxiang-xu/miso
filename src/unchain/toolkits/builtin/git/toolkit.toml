@@ -1,0 +1,55 @@
+[toolkit]
+id = "git"
+name = "Git"
+description = "Local Git workflow: status, diff, stage, unstage, and commit — workspace-scoped with fixed argv templates and no arbitrary arguments."
+factory = "unchain.toolkits.builtin.git:GitToolkit"
+version = "1.0.0"
+readme = "README.md"
+icon = "terminal"
+color = "#f5f0ff"
+backgroundcolor = "#7c3aed"
+tags = ["builtin", "git", "vcs"]
+
+[display]
+category = "builtin"
+order = 40
+hidden = false
+
+[compat]
+python = ">=3.9"
+legacy = ">=0"
+
+[[tools]]
+name = "git_status"
+title = "Git Status"
+description = "Show working tree status (branch, staged, unstaged, untracked)."
+observe = false
+requires_confirmation = false
+
+[[tools]]
+name = "git_diff"
+title = "Git Diff"
+description = "Show changes as a unified diff for worktree or staged content, with optional path filter."
+observe = false
+requires_confirmation = false
+
+[[tools]]
+name = "git_stage"
+title = "Git Stage"
+description = "Stage specified files for the next commit."
+observe = false
+requires_confirmation = true
+
+[[tools]]
+name = "git_unstage"
+title = "Git Unstage"
+description = "Remove specified files from the staging area."
+observe = false
+requires_confirmation = true
+
+[[tools]]
+name = "git_commit"
+title = "Git Commit"
+description = "Commit currently staged changes with the given message."
+observe = false
+requires_confirmation = true

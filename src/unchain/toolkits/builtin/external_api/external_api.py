@@ -25,14 +25,9 @@ class ExternalAPIToolkit(BuiltinToolkit):
         self.register_many(
             self.http_get,
             self.http_post,
-            self.git_status,
-            self.git_log,
-            self.git_diff,
         )
-        self.register(self.git_add, requires_confirmation=True)
-        self.register(self.git_commit, requires_confirmation=True)
-        self.register(self.git_checkout, requires_confirmation=True)
-        self.register(self.git_branch, requires_confirmation=True)
+        # git_* methods kept for backwards compatibility but no longer
+        # registered as agent tools — use GitToolkit instead.
 
     def _truncate_text(self, text: str, max_output_chars: int) -> tuple[str, bool]:
         if max_output_chars < 0:
