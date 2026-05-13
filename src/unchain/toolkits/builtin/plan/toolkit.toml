@@ -1,0 +1,55 @@
+[toolkit]
+id = "plan"
+name = "Plan"
+description = "In-memory planning tools for drafting, updating, reading, listing, and finalizing structured implementation plans."
+factory = "unchain.toolkits.builtin.plan:PlanToolkit"
+version = "1.0.0"
+readme = "README.md"
+icon = "icon.svg"
+color = "#2563eb"
+backgroundcolor = "#bfdbfe"
+tags = ["builtin", "planning", "workflow"]
+
+[display]
+category = "builtin"
+order = 20
+hidden = false
+
+[compat]
+python = ">=3.9"
+legacy = ">=0"
+
+[[tools]]
+name = "plan_start"
+title = "Plan Start"
+description = "Create a new in-memory draft plan and return its plan_id."
+observe = false
+requires_confirmation = false
+
+[[tools]]
+name = "plan_update"
+title = "Plan Update"
+description = "Replace structured sections of a draft plan such as summary, steps, tests, assumptions, and references."
+observe = false
+requires_confirmation = false
+
+[[tools]]
+name = "plan_read"
+title = "Plan Read"
+description = "Return a plan's structured state and rendered Markdown."
+observe = false
+requires_confirmation = false
+
+[[tools]]
+name = "plan_finalize"
+title = "Plan Finalize"
+description = "Finalize a plan and return Markdown plus a Codex-compatible proposed_plan block."
+observe = false
+requires_confirmation = true
+
+[[tools]]
+name = "plan_list"
+title = "Plan List"
+description = "List draft and finalized plans currently stored in this toolkit instance."
+observe = false
+requires_confirmation = false

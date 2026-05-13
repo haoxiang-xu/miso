@@ -305,6 +305,10 @@ agent = Agent(
 | **Local**   | `ToolRegistryConfig.local_roots` 中的目录       | 配置时                                  |
 | **Plugins** | `entry_points(group="unchain.toolkits")`           | 已安装包声明时                          |
 
+当前内置 toolkit 包括 `core`、`external_api` 和 `plan`。`plan` toolkit 刻意保持进程内状态：draft/finalized plan 保存在当前 toolkit 实例中，可渲染 Markdown，并且 `plan_finalize` 走标准确认流程。它不会强制只读 Plan Mode，也不会把计划持久化到文件。
+
+交互式规划推荐同时加载 `CoreToolkit` 与 `PlanToolkit`。用 `plan_start` / `plan_update` / `plan_read` 维护计划；遇到会实质改变计划的关键歧义时，用 `CoreToolkit.ask_user_question` 让用户决策；只有计划已经 decision-complete 时才调用 `plan_finalize`。
+
 ### Plugin entry point 约定
 
 ```toml
