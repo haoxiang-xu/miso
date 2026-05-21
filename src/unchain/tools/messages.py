@@ -54,6 +54,12 @@ class AnthropicMessageBuilder:
         }
 
 
+class HyperspaceMessageBuilder(AnthropicMessageBuilder):
+    """SAP Hyperspace uses the Anthropic Messages API wire format."""
+
+    provider = "hyperspace"
+
+
 class GeminiMessageBuilder:
     provider = "gemini"
 
@@ -96,6 +102,8 @@ def get_provider_message_builder(provider: str) -> ProviderMessageBuilder:
         return OpenAIMessageBuilder()
     if normalized == "anthropic":
         return AnthropicMessageBuilder()
+    if normalized == "hyperspace":
+        return HyperspaceMessageBuilder()
     if normalized == "gemini":
         return GeminiMessageBuilder()
     if normalized == "ollama":

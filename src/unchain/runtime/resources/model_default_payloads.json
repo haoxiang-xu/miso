@@ -80,6 +80,23 @@
     "temperature": 0.7,
     "top_p": 1
   },
+  "hyperspace--claude-opus-4-6": {
+    "max_tokens": 16384,
+    "temperature": 0.7
+  },
+  "hyperspace--claude-opus-4-7": {
+    "max_tokens": 16384,
+    "temperature": 0.7
+  },
+  "hyperspace--claude-sonnet-4-6": {
+    "max_tokens": 16384,
+    "temperature": 0.7
+  },
+  "hyperspace--claude-haiku-4-5": {
+    "max_tokens": 8192,
+    "temperature": 0.7,
+    "top_p": 1
+  },
   "gpt-5.2-codex": {
     "instructions": "",
     "max_output_tokens": 128000,
