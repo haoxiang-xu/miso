@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+import httpx
+
 from .model_io import AnthropicModelIO
 
 DEFAULT_HYPERSPACE_BASE_URL = "http://localhost:6655/anthropic"
@@ -39,6 +41,8 @@ class HyperspaceModelIO(AnthropicModelIO):
     """
 
     provider = "hyperspace"
+
+    _ANTHROPIC_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=30.0, pool=10.0)
 
     def __init__(
         self,

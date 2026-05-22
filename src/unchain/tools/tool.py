@@ -195,7 +195,7 @@ class Tool:
         normalized_provider = str(provider or "openai").strip().lower()
         parameters = self._parameters_json_schema()
 
-        if normalized_provider == "anthropic":
+        if normalized_provider in {"anthropic", "hyperspace"}:
             return {
                 "name": self.name,
                 "description": self.description,
