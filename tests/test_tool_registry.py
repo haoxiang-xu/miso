@@ -113,10 +113,11 @@ def test_builtin_registry_lists_expected_toolkits_and_tools():
     registry = ToolkitRegistry()
     toolkit_ids = {item["id"] for item in registry.list_toolkits(include_tools=False)}
 
-    assert toolkit_ids == {"core", "external_api", "git"}
+    assert toolkit_ids == {"core", "external_api", "git", "plan"}
     assert registry.require("core").to_summary()["tool_count"] == 9
     assert registry.require("external_api").to_summary()["tool_count"] == 2
     assert registry.require("git").to_summary()["tool_count"] == 5
+    assert registry.require("plan").to_summary()["tool_count"] == 5
 
 
 def test_core_toolkit_description_encourages_user_clarification():

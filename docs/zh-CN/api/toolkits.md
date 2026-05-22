@@ -4,10 +4,10 @@
 
 | 指标 | 值 |
 | --- | --- |
-| 类数量 | 4 |
-| Dataclass | 0 |
+| 类数量 | 5 |
+| Dataclass | 2 |
 | 协议 | 0 |
-| 仅内部类型 | 0 |
+| 仅内部类型 | 2 |
 
 ## 覆盖地图
 
@@ -16,6 +16,7 @@
 | `BuiltinToolkit` | `src/unchain/toolkits/base.py:10` | subpackage | class |
 | `CoreToolkit` | `src/unchain/toolkits/builtin/core/core.py:30` | subpackage | class |
 | `ExternalAPIToolkit` | `src/unchain/toolkits/builtin/external_api/external_api.py:12` | subpackage | class |
+| `PlanToolkit` | `src/unchain/toolkits/builtin/plan/plan.py:148` | subpackage | class |
 | `MCPToolkit` | `src/unchain/toolkits/mcp.py:62` | subpackage | class |
 
 ### `src/unchain/toolkits/base.py`
@@ -77,6 +78,7 @@
 
 - `CoreToolkit`
 - `ExternalAPIToolkit`
+- `PlanToolkit`
 
 ### 最小调用示例
 
@@ -140,6 +142,7 @@ obj.push_execution_context(...)
 
 - `BuiltinToolkit`
 - `ExternalAPIToolkit`
+- `PlanToolkit`
 - `MCPToolkit`
 
 ### 最小调用示例
@@ -154,6 +157,60 @@ agent = Agent(
     instructions="你是一个编码助手。",
     modules=(ToolsModule(tools=(CoreToolkit(workspace_root="."),)),),
 )
+```
+
+### `src/unchain/toolkits/builtin/plan/plan.py`
+
+内存态规划 toolkit，用于创建、更新、读取、列出和定稿结构化实施计划。
+
+## PlanToolkit
+
+进程内 toolkit，注册 5 个规划工具。它不修改 `Agent.run`、`KernelLoop` 或 provider 协议；全部行为都通过普通工具调用完成。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/toolkits/builtin/plan/plan.py:148` |
+| 模块职责 | 内置 planning toolkit，维护结构化 plan 状态并渲染 Markdown。 |
+| 继承/协议 | `Toolkit` |
+| 导出状态 | 从 `unchain.toolkits` 导出。 |
+| 对象类型 | 类；公开。 |
+
+### 构造表面
+
+- `__init__(self) -> None`
+
+每个 toolkit 实例拥有一张内存态 plan 表，通过 `plan_id` 索引。Plan id 在当前实例内确定性递增（`plan_1`、`plan_2`、...）。状态不会持久化到磁盘，也不会跨进程重启或独立 toolkit 实例共享。
+
+### 注册的工具
+
+| 工具 | 签名 | 需要确认 | 说明 |
+| --- | --- | --- | --- |
+| `plan_start` | `plan_start(title, goal, constraints=None)` | 否 | 创建 draft plan，并返回 `plan_id`、结构化状态和渲染后的 Markdown。 |
+| `plan_update` | `plan_update(plan_id, summary=None, steps=None, ...)` | 否 | 替换传入的结构化章节。步骤状态只能是 `pending`、`in_progress` 或 `completed`；同一计划最多一个 `in_progress`。 |
+| `plan_read` | `plan_read(plan_id)` | 否 | 返回结构化 plan 状态和渲染后的 Markdown。 |
+| `plan_finalize` | `plan_finalize(plan_id)` | 是 | 将 plan 标记为 finalized，并返回 Markdown 与 Codex 兼容的 `<proposed_plan>` block。 |
+| `plan_list` | `plan_list()` | 否 | 列出当前 toolkit 实例内的 draft/finalized plans。 |
+
+成功调用在适用时返回 `{"ok": True, "plan_id": ..., "status": ..., "markdown": ...}`。错误返回 `{"ok": False, "error": ...}`，如果请求携带了 `plan_id`，错误载荷也会保留它。
+
+### 规划工作流
+
+当 agent 需要在探索需求时持续维护 design-first 计划，使用 `PlanToolkit`。工具的 prompt spec 会引导模型先探索上下文，随着事实变化更新结构化章节，并且只在计划 decision-complete 时调用 `plan_finalize`。
+
+交互式规划推荐组合 `CoreToolkit` 与 `PlanToolkit`：`PlanToolkit` 不重复实现 `ask_user_question`；遇到会实质改变计划的关键决策时，使用 `CoreToolkit.ask_user_question` 让用户选择。
+
+### 最小调用示例
+
+```python
+from unchain.toolkits import PlanToolkit
+
+plans = PlanToolkit()
+created = plans.plan_start(title="Auth rollout", goal="Plan the first auth rollout.")
+plans.plan_update(
+    created["plan_id"],
+    steps=[{"step": "Add lifecycle tests", "status": "in_progress"}],
+)
+finalized = plans.plan_finalize(created["plan_id"])
 ```
 
 ### `src/unchain/toolkits/builtin/external_api/external_api.py`
@@ -220,6 +277,7 @@ Send a POST request to an external API endpoint.
 
 - `BuiltinToolkit`
 - `CoreToolkit`
+- `PlanToolkit`
 
 ### 最小调用示例
 

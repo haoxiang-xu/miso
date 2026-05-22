@@ -38,6 +38,9 @@ Every production class under `src/unchain` grouped by reference page.
 - `BuiltinToolkit` -> `src/unchain/toolkits/base.py:14` (subpackage, class)
 - `CoreToolkit` -> `src/unchain/toolkits/builtin/core/core.py:30` (subpackage, class)
 - `ExternalAPIToolkit` -> `src/unchain/toolkits/builtin/external_api/external_api.py:13` (subpackage, class)
+- `_PlanStep` -> `src/unchain/toolkits/builtin/plan/plan.py:24` (internal, dataclass)
+- `_PlanState` -> `src/unchain/toolkits/builtin/plan/plan.py:53` (internal, dataclass)
+- `PlanToolkit` -> `src/unchain/toolkits/builtin/plan/plan.py:148` (subpackage, class)
 - `MCPToolkit` -> `src/unchain/toolkits/mcp.py:62` (subpackage, class)
 
 ## [Memory API Reference](../api/memory.md)

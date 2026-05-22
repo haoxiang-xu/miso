@@ -1,5 +1,5 @@
 from .base import BuiltinToolkit
-from .builtin import CoreToolkit, ExternalAPIToolkit, GitToolkit
+from .builtin import CoreToolkit, ExternalAPIToolkit, GitToolkit, PlanToolkit
 from .mcp import MCPToolkit
 
 __all__ = [
@@ -7,5 +7,6 @@ __all__ = [
     "CoreToolkit",
     "ExternalAPIToolkit",
     "GitToolkit",
+    "PlanToolkit",
     "MCPToolkit",
 ]
