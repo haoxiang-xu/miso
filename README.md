@@ -156,6 +156,7 @@ HarnessDelta.append(
 | Anthropic | claude-sonnet-4, claude-opus-4-6, claude-haiku-3.5 | Yes | Yes | Yes (thinking) |
 | Google Gemini | gemini-2.5-pro, gemini-2.5-flash | Yes | Yes | Yes |
 | Ollama | Any local model | Yes | Yes | Model-dependent |
+| SAP Hyperspace | hyperspace--claude-opus-4-6/4-7, hyperspace--claude-sonnet-4-6, hyperspace--claude-haiku-4-5 | Yes | Yes | Yes (thinking) |
 
 Configure via environment variables:
 

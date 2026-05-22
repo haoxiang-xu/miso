@@ -632,10 +632,10 @@ class KernelLoop:
         if self._model_io is None:
             raise RuntimeError("KernelLoop.model_io is not configured")
         provider = str(state.provider_state.provider or self._infer_provider() or "")
-        if provider not in {"openai", "anthropic", "ollama"}:
+        if provider not in {"openai", "anthropic", "ollama", "hyperspace"}:
             raise NotImplementedError(
                 "KernelLoop.run currently supports only provider in "
-                "{'openai', 'anthropic', 'ollama'}, "
+                "{'openai', 'anthropic', 'ollama', 'hyperspace'}, "
                 f"got {provider!r}"
             )
         state.provider_state.provider = provider
@@ -865,10 +865,10 @@ class KernelLoop:
         if not isinstance(continuation, dict):
             raise TypeError("continuation must be a dict returned by KernelRunResult.continuation")
         resolved_provider = str(continuation.get("provider") or self._infer_provider() or "")
-        if resolved_provider not in {"openai", "anthropic", "ollama"}:
+        if resolved_provider not in {"openai", "anthropic", "ollama", "hyperspace"}:
             raise NotImplementedError(
                 "KernelLoop.resume_human_input currently supports only provider in "
-                "{'openai', 'anthropic', 'ollama'}, "
+                "{'openai', 'anthropic', 'ollama', 'hyperspace'}, "
                 f"got {resolved_provider!r}"
             )
         expected_session_id = continuation.get("session_id")

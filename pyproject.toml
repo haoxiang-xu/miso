@@ -25,6 +25,9 @@ dev = [
     "python-dotenv>=1.0.1",
     "qdrant-client>=1.9.0",
 ]
+render = [
+    "rich>=13",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

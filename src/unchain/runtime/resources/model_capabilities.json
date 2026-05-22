@@ -213,6 +213,69 @@
     },
     "allowed_payload_keys": ["max_tokens", "top_k", "top_p"]
   },
+  "hyperspace--claude-opus-4-6": {
+    "provider": "hyperspace",
+    "provider_model": "anthropic--claude-opus-4-6",
+    "max_context_window_tokens": 200000,
+    "max_output_tokens": 16384,
+    "supports_tools": true,
+    "supports_response_format": false,
+    "supports_previous_response_id": false,
+    "supports_reasoning": false,
+    "input_modalities": ["text", "image", "pdf"],
+    "input_source_types": {
+      "image": ["url", "base64"],
+      "pdf": ["url", "base64"]
+    },
+    "allowed_payload_keys": ["max_tokens", "top_k", "thinking"]
+  },
+  "hyperspace--claude-opus-4-7": {
+    "provider": "hyperspace",
+    "provider_model": "anthropic--claude-opus-4-7",
+    "max_context_window_tokens": 200000,
+    "max_output_tokens": 16384,
+    "supports_tools": true,
+    "supports_response_format": false,
+    "supports_previous_response_id": false,
+    "supports_reasoning": false,
+    "input_modalities": ["text", "image", "pdf"],
+    "input_source_types": {
+      "image": ["url", "base64"],
+      "pdf": ["url", "base64"]
+    },
+    "allowed_payload_keys": ["max_tokens", "top_k", "thinking"]
+  },
+  "hyperspace--claude-sonnet-4-6": {
+    "provider": "hyperspace",
+    "provider_model": "anthropic--claude-sonnet-4-6",
+    "max_context_window_tokens": 200000,
+    "max_output_tokens": 16384,
+    "supports_tools": true,
+    "supports_response_format": false,
+    "supports_previous_response_id": false,
+    "supports_reasoning": false,
+    "input_modalities": ["text", "image", "pdf"],
+    "input_source_types": {
+      "image": ["url", "base64"],
+      "pdf": ["url", "base64"]
+    },
+    "allowed_payload_keys": ["max_tokens", "top_k", "thinking"]
+  },
+  "hyperspace--claude-haiku-4-5": {
+    "provider": "hyperspace",
+    "provider_model": "anthropic--claude-haiku-4-5",
+    "max_context_window_tokens": 200000,
+    "max_output_tokens": 8192,
+    "supports_tools": true,
+    "supports_response_format": false,
+    "supports_previous_response_id": false,
+    "supports_reasoning": false,
+    "input_modalities": ["text", "image"],
+    "input_source_types": {
+      "image": ["url", "base64"]
+    },
+    "allowed_payload_keys": ["max_tokens", "top_k", "top_p"]
+  },
   "gpt-5.2-codex": {
     "provider": "openai",
     "max_context_window_tokens": 400000,
