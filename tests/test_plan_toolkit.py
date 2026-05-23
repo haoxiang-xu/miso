@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from unchain.kernel import KernelLoop, ModelTurnResult
 from unchain.kernel.types import ToolCall as KernelToolCall
@@ -60,9 +61,11 @@ def test_plan_toolkit_lifecycle_renders_markdown_and_proposed_plan():
     assert read["ok"] is True
     assert read["plan"]["title"] == "Auth rollout"
     assert "## Summary" in read["markdown"]
-    assert "- [x] Create draft" in read["markdown"]
-    assert "- [~] Review plan" in read["markdown"]
-    assert "- [ ] Finalize plan" in read["markdown"]
+    assert "- [completed] Create draft" in read["markdown"]
+    assert "- [in_progress] Review plan" in read["markdown"]
+    assert "- [pending] Finalize plan" in read["markdown"]
+    assert "- [x]" not in read["markdown"]
+    assert "- [ ]" not in read["markdown"]
     assert "## Public Interfaces" in read["markdown"]
     assert read["artifact"] == {
         "type": "plan_doc",
@@ -111,12 +114,47 @@ def test_plan_toolkit_persists_plan_state_in_session_store():
 
     assert read["ok"] is True
     assert read["plan"]["summary"] == "Render this plan as a separate document."
-    assert "- [x] Persist state" in read["markdown"]
+    assert "- [completed] Persist state" in read["markdown"]
+    assert "- [x]" not in read["markdown"]
+    assert "- [ ]" not in read["markdown"]
 
     state = store.load("thread-1")
     assert state["plans"]["active_plan_id"] == plan_id
     assert state["plans"]["items"][plan_id]["title"] == "Standalone plan doc"
     assert "messages" not in state
+
+
+def test_plan_toolkit_mirrors_markdown_into_workspace(tmp_path: Path):
+    toolkit = PlanToolkit(workspace_root=tmp_path)
+
+    started = toolkit.plan_start(
+        title="Workspace backed plan",
+        goal="Mirror rendered plans into the selected workspace.",
+    )
+    plan_id = started["plan_id"]
+    plan_file = tmp_path / "plans" / f"{plan_id}.md"
+
+    assert started["ok"] is True
+    assert started["workspace_file"] == {
+        "path": str(plan_file),
+        "relative_path": f"plans/{plan_id}.md",
+    }
+    assert plan_file.read_text(encoding="utf-8").startswith("# Workspace backed plan\n")
+
+    updated = toolkit.plan_update(
+        plan_id=plan_id,
+        summary="Plans remain structured in memory but are visible as workspace files.",
+        steps=[{"step": "Write Markdown file", "status": "completed"}],
+    )
+
+    assert updated["ok"] is True
+    assert "- [completed] Write Markdown file" in plan_file.read_text(encoding="utf-8")
+
+    finalized = toolkit.plan_finalize(plan_id)
+
+    assert finalized["ok"] is True
+    assert finalized["artifact"]["workspace_file"]["relative_path"] == f"plans/{plan_id}.md"
+    assert "Plans remain structured in memory" in plan_file.read_text(encoding="utf-8")
 
 
 def test_plan_toolkit_reports_unknown_plan_and_invalid_steps():

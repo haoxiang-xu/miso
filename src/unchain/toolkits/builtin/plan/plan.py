@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from ....tools.models import ToolPromptSpec
@@ -9,14 +11,15 @@ from ....tools.toolkit import Toolkit
 
 
 _STEP_STATUS_MARKERS = {
-    "pending": "[ ]",
-    "in_progress": "[~]",
-    "completed": "[x]",
+    "pending": "[pending]",
+    "in_progress": "[in_progress]",
+    "completed": "[completed]",
 }
 _PLAN_STATUSES = {"draft", "finalized"}
 _PLANS_STATE_KEY = "plans"
 _PLAN_ITEMS_KEY = "items"
 _ACTIVE_PLAN_ID_KEY = "active_plan_id"
+_WORKSPACE_PLAN_DIR = "plans"
 
 
 def _utc_now() -> str:
@@ -194,10 +197,12 @@ class PlanToolkit(Toolkit):
         *,
         session_store: Any = None,
         session_id: str = "",
+        workspace_root: str | Path | None = None,
     ) -> None:
         super().__init__()
         self._session_store = session_store
         self._session_id = session_id.strip() if isinstance(session_id, str) else ""
+        self._workspace_root = Path(workspace_root).expanduser().resolve() if workspace_root else None
         self._plans: dict[str, _PlanState] = {}
         self._active_plan_id = ""
         self._next_plan_number = 1
@@ -382,7 +387,7 @@ class PlanToolkit(Toolkit):
             return _error(
                 "plan_id must be a non-empty string",
                 plan_id=plan_id if isinstance(plan_id, str) else None,
-        )
+            )
         normalized = plan_id.strip()
         plan = self._load_plans().get(normalized)
         if plan is None:
@@ -390,15 +395,55 @@ class PlanToolkit(Toolkit):
         return plan
 
     def _artifact(self, plan: _PlanState) -> dict[str, Any]:
-        return {
+        artifact: dict[str, Any] = {
             "type": "plan_doc",
             "plan_id": plan.plan_id,
             "revision": plan.revision,
             "status": plan.status,
             "title": plan.title,
         }
+        workspace_file = self._workspace_file(plan)
+        if workspace_file is not None:
+            artifact["workspace_file"] = workspace_file
+        return artifact
 
-    def _result(self, plan: _PlanState, *, proposed_plan: str | None = None) -> dict[str, Any]:
+    def _workspace_filename(self, plan: _PlanState) -> str:
+        safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", plan.plan_id).strip("._")
+        return f"{safe_id or 'plan'}.md"
+
+    def _workspace_file(self, plan: _PlanState) -> dict[str, str] | None:
+        if self._workspace_root is None:
+            return None
+
+        relative_path = Path(_WORKSPACE_PLAN_DIR) / self._workspace_filename(plan)
+        target_path = (self._workspace_root / relative_path).resolve()
+        if not target_path.is_relative_to(self._workspace_root):
+            return None
+        return {
+            "path": str(target_path),
+            "relative_path": relative_path.as_posix(),
+        }
+
+    def _write_workspace_plan(self, plan: _PlanState) -> str | None:
+        workspace_file = self._workspace_file(plan)
+        if workspace_file is None:
+            return None
+
+        try:
+            target_path = Path(workspace_file["path"])
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(self._render_markdown(plan) + "\n", encoding="utf-8")
+        except Exception as exc:
+            return str(exc)
+        return None
+
+    def _result(
+        self,
+        plan: _PlanState,
+        *,
+        proposed_plan: str | None = None,
+        workspace_error: str | None = None,
+    ) -> dict[str, Any]:
         artifact = self._artifact(plan)
         result: dict[str, Any] = {
             "ok": True,
@@ -412,6 +457,11 @@ class PlanToolkit(Toolkit):
         }
         if proposed_plan is not None:
             result["proposed_plan"] = proposed_plan
+        workspace_file = artifact.get("workspace_file")
+        if workspace_file is not None:
+            result["workspace_file"] = workspace_file
+        if workspace_error is not None:
+            result["workspace_error"] = workspace_error
         return result
 
     def _render_markdown(self, plan: _PlanState) -> str:
@@ -458,7 +508,8 @@ class PlanToolkit(Toolkit):
             )
             self._plans[plan_id] = plan
             self._save_plans(active_plan_id=plan_id)
-            return self._result(plan)
+            workspace_error = self._write_workspace_plan(plan)
+            return self._result(plan, workspace_error=workspace_error)
         except Exception as exc:
             return _error(str(exc))
 
@@ -519,7 +570,8 @@ class PlanToolkit(Toolkit):
             plan.touch()
             self._plans[plan.plan_id] = plan
             self._save_plans(active_plan_id=plan.plan_id)
-            return self._result(plan)
+            workspace_error = self._write_workspace_plan(plan)
+            return self._result(plan, workspace_error=workspace_error)
         except Exception as exc:
             return _error(str(exc), plan_id=plan.plan_id)
 
@@ -547,8 +599,13 @@ class PlanToolkit(Toolkit):
             self._plans[plan.plan_id] = plan
             self._save_plans(active_plan_id=plan.plan_id)
             markdown = self._render_markdown(plan)
+            workspace_error = self._write_workspace_plan(plan)
             proposed_plan = f"<proposed_plan>\n{markdown}\n</proposed_plan>"
-            return self._result(plan, proposed_plan=proposed_plan)
+            return self._result(
+                plan,
+                proposed_plan=proposed_plan,
+                workspace_error=workspace_error,
+            )
         except Exception as exc:
             return _error(str(exc), plan_id=plan.plan_id)
 

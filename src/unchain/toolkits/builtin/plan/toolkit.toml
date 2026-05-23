@@ -1,7 +1,7 @@
 [toolkit]
 id = "plan"
 name = "Plan"
-description = "In-memory planning tools for drafting, updating, reading, listing, and finalizing structured implementation plans."
+description = "Planning tools for drafting, updating, reading, listing, finalizing, and optionally mirroring structured plans into a workspace."
 factory = "unchain.toolkits.builtin.plan:PlanToolkit"
 version = "1.0.0"
 readme = "README.md"
@@ -22,7 +22,7 @@ legacy = ">=0"
 [[tools]]
 name = "plan_start"
 title = "Plan Start"
-description = "Create a new in-memory draft plan and return its plan_id."
+description = "Create a new draft plan and return its plan_id."
 observe = false
 requires_confirmation = false
 
