@@ -4,10 +4,10 @@ Builtin and MCP toolkit implementations, including workspace-safe base helpers.
 
 | Metric | Value |
 | --- | --- |
-| Classes | 4 |
-| Dataclasses | 0 |
+| Classes | 6 |
+| Dataclasses | 2 |
 | Protocols | 0 |
-| Internal-only types | 0 |
+| Internal-only types | 2 |
 
 ## Coverage map
 
@@ -16,6 +16,8 @@ Builtin and MCP toolkit implementations, including workspace-safe base helpers.
 | `BuiltinToolkit` | `src/unchain/toolkits/base.py:10` | subpackage | class |
 | `CoreToolkit` | `src/unchain/toolkits/builtin/core/core.py:30` | subpackage | class |
 | `ExternalAPIToolkit` | `src/unchain/toolkits/builtin/external_api/external_api.py:12` | subpackage | class |
+| `GitToolkit` | `src/unchain/toolkits/builtin/git/git.py:14` | subpackage | class |
+| `PlanToolkit` | `src/unchain/toolkits/builtin/plan/plan.py:192` | subpackage | class |
 | `MCPToolkit` | `src/unchain/toolkits/mcp.py:62` | subpackage | class |
 
 ### `src/unchain/toolkits/base.py`
@@ -77,6 +79,8 @@ Public method `pop_execution_context` exposed by `BuiltinToolkit`.
 
 - `CoreToolkit`
 - `ExternalAPIToolkit`
+- `GitToolkit`
+- `PlanToolkit`
 
 ### Minimal usage example
 
@@ -140,6 +144,8 @@ All nine tools are registered eagerly during `__init__` and validated against `t
 
 - `BuiltinToolkit`
 - `ExternalAPIToolkit`
+- `GitToolkit`
+- `PlanToolkit`
 - `MCPToolkit`
 
 ### Minimal usage example
@@ -154,6 +160,102 @@ agent = Agent(
     instructions="You are a coding assistant.",
     modules=(ToolsModule(tools=(CoreToolkit(workspace_root="."),)),),
 )
+```
+
+### `src/unchain/toolkits/builtin/git/git.py`
+
+Workspace-scoped Git toolkit for status, diff, stage, unstage, and commit workflows.
+
+## GitToolkit
+
+Builtin toolkit registering five fixed-argv Git tools. Path arguments are validated against workspace roots and mutating operations are confirmation-gated.
+
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/toolkits/builtin/git/git.py:14` |
+| Module role | Builtin Git workflow toolkit with workspace-scoped path validation. |
+| Inheritance | `BuiltinToolkit` |
+| Exposure | Exported from `unchain.toolkits`. |
+| Kind | Class; public-facing. |
+
+### Constructor surface
+
+- `__init__(self, *, workspace_root: str | Path | None = None, workspace_roots: list[str | Path] | None = None) -> None`
+
+`workspace_root` is the single-root convenience form; `workspace_roots` accepts multiple allowed roots. Git repository roots and path arguments must resolve inside those roots.
+
+### Registered tools
+
+| Tool | Signature | Confirmation | Notes |
+| --- | --- | --- | --- |
+| `git_status` | `git_status(cwd=".", include_untracked=True, max_output_chars=20000)` | no | Returns branch/status output plus a structured file summary. |
+| `git_diff` | `git_diff(cwd=".", staged=False, paths=None, context_lines=3, max_output_chars=50000)` | no | Returns unified worktree or staged diff output plus per-file addition/deletion counts. |
+| `git_stage` | `git_stage(paths, cwd=".", max_output_chars=20000)` | yes | Stages specific validated file paths. |
+| `git_unstage` | `git_unstage(paths, cwd=".", max_output_chars=20000)` | yes | Removes specific validated file paths from the staging area. |
+| `git_commit` | `git_commit(message, cwd=".", max_output_chars=20000)` | yes | Commits already-staged content only, with code-diff confirmation preview. |
+
+### Minimal usage example
+
+```python
+from unchain.toolkits import GitToolkit
+
+git = GitToolkit(workspace_root=".")
+status = git.git_status()
+diff = git.git_diff(staged=True)
+```
+
+### `src/unchain/toolkits/builtin/plan/plan.py`
+
+Planning toolkit for drafting, updating, reading, listing, and finalizing structured implementation plans.
+
+## PlanToolkit
+
+Stateful toolkit registering five planning tools. It does not modify `Agent.run`, `KernelLoop`, or provider protocols; all behavior lives behind normal tool calls.
+
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/toolkits/builtin/plan/plan.py:192` |
+| Module role | Builtin planning toolkit with structured plan state and Markdown rendering. |
+| Inheritance | `Toolkit` |
+| Exposure | Exported from `unchain.toolkits`. |
+| Kind | Class; public-facing. |
+
+### Constructor surface
+
+- `__init__(self, *, session_store: Any = None, session_id: str = "", workspace_root: str | Path | None = None) -> None`
+
+By default, each toolkit instance owns an in-memory plan table keyed by `plan_id`. When a compatible `session_store` and `session_id` are provided, structured plan state is loaded and saved through that store so separate toolkit instances can share it. When `workspace_root` is provided, rendered Markdown can also be mirrored under `plans/<plan_id>.md`; that file is a workspace mirror, not the canonical structured state.
+
+### Registered tools
+
+| Tool | Signature | Confirmation | Notes |
+| --- | --- | --- | --- |
+| `plan_start` | `plan_start(title, goal, constraints=None)` | no | Creates a draft plan and returns `plan_id`, structured state, and rendered Markdown. |
+| `plan_update` | `plan_update(plan_id, summary=None, steps=None, ...)` | no | Replaces provided structured sections. Step statuses are `pending`, `in_progress`, or `completed`; only one step may be `in_progress`. |
+| `plan_read` | `plan_read(plan_id)` | no | Returns the structured plan state and rendered Markdown. |
+| `plan_finalize` | `plan_finalize(plan_id)` | yes | Marks the plan finalized and returns Markdown plus a Codex-compatible `<proposed_plan>` block. |
+| `plan_list` | `plan_list()` | no | Lists draft and finalized plans in the current toolkit instance. |
+
+All successful tool calls return `{"ok": True, "plan_id": ..., "status": ..., "markdown": ...}` where applicable. Errors return `{"ok": False, "error": ...}` and include `plan_id` when the request identified one.
+
+### Planning workflow
+
+Use `PlanToolkit` when an agent should keep a design-first plan while it explores requirements. The tool prompt specs steer the model to gather context first, update structured sections as facts change, and call `plan_finalize` only once the plan is decision-complete.
+
+For interactive planning, combine `CoreToolkit` and `PlanToolkit`: `PlanToolkit` intentionally does not reimplement `ask_user_question`; use `CoreToolkit.ask_user_question` for key decisions that should come from the user.
+
+### Minimal usage example
+
+```python
+from unchain.toolkits import PlanToolkit
+
+plans = PlanToolkit()
+created = plans.plan_start(title="Auth rollout", goal="Plan the first auth rollout.")
+plans.plan_update(
+    created["plan_id"],
+    steps=[{"step": "Add lifecycle tests", "status": "in_progress"}],
+)
+finalized = plans.plan_finalize(created["plan_id"])
 ```
 
 ### `src/unchain/toolkits/builtin/external_api/external_api.py`
@@ -220,6 +322,8 @@ Send a POST request to an external API endpoint.
 
 - `BuiltinToolkit`
 - `CoreToolkit`
+- `GitToolkit`
+- `PlanToolkit`
 
 ### Minimal usage example
 
