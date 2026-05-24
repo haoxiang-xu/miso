@@ -102,7 +102,7 @@ src/unchain/
 ├── toolkits/            # Builtin + MCP toolkits
 │   ├── base.py          #   BuiltinToolkit — workspace-safe base
 │   ├── mcp.py           #   MCPToolkit — MCP server bridge
-│   └── builtin/         #   CoreToolkit, ExternalAPIToolkit, PlanToolkit
+│   └── builtin/         #   CoreToolkit, ExternalAPIToolkit, GitToolkit, PlanToolkit
 ├── memory/              # Two-tier memory
 │   ├── manager.py       #   MemoryManager — orchestrates stores + strategies
 │   ├── runtime.py       #   KernelMemoryRuntime — kernel-side facade

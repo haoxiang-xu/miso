@@ -169,6 +169,26 @@ def test_git_diff_staged(toolkit: GitToolkit, git_repo: Path) -> None:
     assert "--cached" in result["argv"]
 
 
+def test_git_diff_deleted_file_summary(toolkit: GitToolkit, git_repo: Path) -> None:
+    (git_repo / "a.txt").write_text("v1\n")
+    (git_repo / "b.txt").write_text("bye\n")
+    subprocess.run(["git", "add", "."], cwd=str(git_repo), check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"], cwd=str(git_repo), check=True, capture_output=True
+    )
+    (git_repo / "a.txt").write_text("v2\n")
+    (git_repo / "b.txt").unlink()
+
+    result = toolkit.git_diff(cwd=".")
+
+    assert result["ok"] is True
+    summary = {entry["path"]: entry for entry in result["file_summary"]}
+    assert summary["a.txt"]["additions"] == 1
+    assert summary["a.txt"]["deletions"] == 1
+    assert summary["b.txt"]["additions"] == 0
+    assert summary["b.txt"]["deletions"] == 1
+
+
 def test_git_diff_path_filter(toolkit: GitToolkit, git_repo: Path) -> None:
     (git_repo / "a.txt").write_text("v1\n")
     (git_repo / "b.txt").write_text("v1\n")
@@ -365,6 +385,25 @@ def test_commit_only_commits_staged(toolkit: GitToolkit, git_repo: Path) -> None
     status = toolkit.git_status(cwd=".")
     untracked = [e for e in status["file_summary"] if "?" in e["worktree_status"]]
     assert any("b.txt" in e["path"] for e in untracked)
+
+
+def test_commit_staged_check_error_is_reported(git_repo: Path) -> None:
+    toolkit = GitToolkit(workspace_root=str(git_repo))
+
+    def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if argv == ["git", "rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(argv, 0, stdout=f"{git_repo}\n", stderr="")
+        if argv == ["git", "diff", "--staged", "--quiet"]:
+            return subprocess.CompletedProcess(argv, 129, stdout="", stderr="fatal: bad revision\n")
+        raise AssertionError(f"unexpected git command: {argv}")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        result = toolkit.git_commit(message="test commit", cwd=".")
+
+    assert result["ok"] is False
+    assert result["argv"] == ["git", "diff", "--staged", "--quiet"]
+    assert result["returncode"] == 129
+    assert "fatal: bad revision" in result["error"]
 
 
 # ════════════════════════════════════════════════════════════════════════════

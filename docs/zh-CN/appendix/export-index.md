@@ -108,7 +108,8 @@
 | `BuiltinToolkit` | `src/unchain/toolkits/base.py:14` | `../api/toolkits.md#builtintoolkit` |
 | `CoreToolkit` | `src/unchain/toolkits/builtin/core/core.py:30` | `../api/toolkits.md#coretoolkit` |
 | `ExternalAPIToolkit` | `src/unchain/toolkits/builtin/external_api/external_api.py:13` | `../api/toolkits.md#externalapitoolkit` |
-| `PlanToolkit` | `src/unchain/toolkits/builtin/plan/plan.py:148` | `../api/toolkits.md#plantoolkit` |
+| `GitToolkit` | `src/unchain/toolkits/builtin/git/git.py:14` | `../api/toolkits.md#gittoolkit` |
+| `PlanToolkit` | `src/unchain/toolkits/builtin/plan/plan.py:192` | `../api/toolkits.md#plantoolkit` |
 | `MCPToolkit` | `src/unchain/toolkits/mcp.py:62` | `../api/toolkits.md#mcptoolkit` |
 
 ## `src/unchain/tools/__init__.py`

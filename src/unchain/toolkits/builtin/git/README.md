@@ -21,4 +21,4 @@ Local Git workflow tools for status inspection, diff viewing, staging, unstaging
 
 ## Usage note
 
-Do not load `GitToolkit` and `ExternalAPIToolkit` simultaneously — both register `git_status`, `git_diff`, and `git_commit`, causing tool name conflicts.
+Load `GitToolkit` for the registered `git_*` tools. `ExternalAPIToolkit` keeps legacy Git helper methods for compatibility, but it no longer registers those helpers as toolkit tools.

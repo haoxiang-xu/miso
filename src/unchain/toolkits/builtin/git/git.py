@@ -193,7 +193,18 @@ class GitToolkit(BuiltinToolkit):
         file_stats: dict[str, dict[str, int]] = {}
         current_file: str | None = None
         for line in output.splitlines():
-            if line.startswith("+++ b/"):
+            if line.startswith("diff --git "):
+                current_file = None
+                parts = line.split()
+                if len(parts) >= 4:
+                    candidate = parts[3]
+                    if candidate.startswith("b/"):
+                        current_file = candidate[2:]
+                    elif len(parts) >= 3 and parts[2].startswith("a/"):
+                        current_file = parts[2][2:]
+                    if current_file not in (None, "/dev/null"):
+                        file_stats.setdefault(current_file, {"additions": 0, "deletions": 0})
+            elif line.startswith("+++ b/"):
                 current_file = line[6:]
                 if current_file not in file_stats:
                     file_stats[current_file] = {"additions": 0, "deletions": 0}
@@ -461,17 +472,32 @@ class GitToolkit(BuiltinToolkit):
             return result
         result["repo_root"] = str(repo_root)
 
-        # Verify there is something staged before attempting the commit
-        check = subprocess.run(
-            ["git", "diff", "--staged", "--quiet"],
-            cwd=str(cwd_path),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            shell=False,
+        # Verify there is something staged before attempting the commit.
+        check_argv = ["git", "diff", "--staged", "--quiet"]
+        result["argv"] = check_argv
+        check_ok, returncode, stdout, stderr, timed_out, truncated = self._run_argv(
+            check_argv, cwd_path, max_output_chars, timeout=10
         )
-        if check.returncode == 0:
+        if returncode == 0:
+            result.update(
+                returncode=returncode,
+                stdout=stdout,
+                stderr=stderr,
+                timed_out=timed_out,
+                truncated=truncated,
+            )
             result["error"] = "nothing to commit (no staged changes)"
+            return result
+        if returncode != 1:
+            result.update(
+                ok=check_ok,
+                returncode=returncode,
+                stdout=stdout,
+                stderr=stderr,
+                timed_out=timed_out,
+                truncated=truncated,
+            )
+            result["error"] = stderr.strip() or "failed to check staged changes"
             return result
 
         argv = ["git", "commit", "-m", message]

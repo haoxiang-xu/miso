@@ -305,7 +305,7 @@ The `ToolkitRegistry` discovers toolkits from three sources:
 | **Local**   | Directories in `ToolRegistryConfig.local_roots` | When configured                         |
 | **Plugins** | `entry_points(group="unchain.toolkits")`           | When installed packages declare them    |
 
-Builtins currently include `core`, `external_api`, and `plan`. The `plan` toolkit is intentionally process-local: it keeps draft/finalized plan state in the toolkit instance, renders Markdown, and gates `plan_finalize` behind the normal confirmation flow. It does not enforce a read-only Plan Mode or persist plans to files.
+Builtins currently include `core`, `external_api`, `git`, and `plan`. The `plan` toolkit keeps structured draft/finalized plan state in the toolkit instance by default, can share that state through a provided `session_store`, renders Markdown, and gates `plan_finalize` behind the normal confirmation flow. It does not enforce a read-only Plan Mode; when `workspace_root` is provided, rendered Markdown may be mirrored to `plans/<plan_id>.md` as a workspace file.
 
 For interactive planning, load `CoreToolkit` with `PlanToolkit`. Use `plan_start` / `plan_update` / `plan_read` to maintain the plan, `CoreToolkit.ask_user_question` when a key ambiguity needs a user decision, and `plan_finalize` only after the plan is decision-complete.
 
