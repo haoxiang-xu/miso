@@ -4,10 +4,10 @@
 
 | 指标 | 值 |
 | --- | --- |
-| 类数量 | 4 |
-| Dataclass | 0 |
+| 类数量 | 6 |
+| Dataclass | 2 |
 | 协议 | 0 |
-| 仅内部类型 | 0 |
+| 仅内部类型 | 2 |
 
 ## 覆盖地图
 
@@ -16,6 +16,8 @@
 | `BuiltinToolkit` | `src/unchain/toolkits/base.py:10` | subpackage | class |
 | `CoreToolkit` | `src/unchain/toolkits/builtin/core/core.py:30` | subpackage | class |
 | `ExternalAPIToolkit` | `src/unchain/toolkits/builtin/external_api/external_api.py:12` | subpackage | class |
+| `GitToolkit` | `src/unchain/toolkits/builtin/git/git.py:14` | subpackage | class |
+| `PlanToolkit` | `src/unchain/toolkits/builtin/plan/plan.py:192` | subpackage | class |
 | `MCPToolkit` | `src/unchain/toolkits/mcp.py:62` | subpackage | class |
 
 ### `src/unchain/toolkits/base.py`
@@ -77,6 +79,8 @@
 
 - `CoreToolkit`
 - `ExternalAPIToolkit`
+- `GitToolkit`
+- `PlanToolkit`
 
 ### 最小调用示例
 
@@ -140,6 +144,8 @@ obj.push_execution_context(...)
 
 - `BuiltinToolkit`
 - `ExternalAPIToolkit`
+- `GitToolkit`
+- `PlanToolkit`
 - `MCPToolkit`
 
 ### 最小调用示例
@@ -154,6 +160,102 @@ agent = Agent(
     instructions="你是一个编码助手。",
     modules=(ToolsModule(tools=(CoreToolkit(workspace_root="."),)),),
 )
+```
+
+### `src/unchain/toolkits/builtin/git/git.py`
+
+工作区作用域 Git toolkit，用于 status、diff、stage、unstage 和 commit 工作流。
+
+## GitToolkit
+
+内置 toolkit，注册 5 个固定 argv 模板的 Git 工具。路径参数会按 workspace roots 校验，修改类操作都需要确认。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/toolkits/builtin/git/git.py:14` |
+| 模块职责 | 带工作区路径校验的内置 Git 工作流 toolkit。 |
+| 继承/协议 | `BuiltinToolkit` |
+| 导出状态 | 从 `unchain.toolkits` 导出。 |
+| 对象类型 | 类；公开。 |
+
+### 构造表面
+
+- `__init__(self, *, workspace_root: str | Path | None = None, workspace_roots: list[str | Path] | None = None) -> None`
+
+`workspace_root` 是单根便捷写法；`workspace_roots` 接收多个允许的根目录。Git repo root 和路径参数都必须解析到这些根目录内。
+
+### 注册的工具
+
+| 工具 | 签名 | 需要确认 | 说明 |
+| --- | --- | --- | --- |
+| `git_status` | `git_status(cwd=".", include_untracked=True, max_output_chars=20000)` | 否 | 返回 branch/status 输出和结构化文件摘要。 |
+| `git_diff` | `git_diff(cwd=".", staged=False, paths=None, context_lines=3, max_output_chars=50000)` | 否 | 返回 worktree 或 staged unified diff，以及每个文件的增删统计。 |
+| `git_stage` | `git_stage(paths, cwd=".", max_output_chars=20000)` | 是 | stage 指定且校验通过的文件路径。 |
+| `git_unstage` | `git_unstage(paths, cwd=".", max_output_chars=20000)` | 是 | 从 staging area 移除指定且校验通过的文件路径。 |
+| `git_commit` | `git_commit(message, cwd=".", max_output_chars=20000)` | 是 | 只提交已 staged 内容，并提供 code-diff 确认预览。 |
+
+### 最小调用示例
+
+```python
+from unchain.toolkits import GitToolkit
+
+git = GitToolkit(workspace_root=".")
+status = git.git_status()
+diff = git.git_diff(staged=True)
+```
+
+### `src/unchain/toolkits/builtin/plan/plan.py`
+
+规划 toolkit，用于创建、更新、读取、列出和定稿结构化实施计划。
+
+## PlanToolkit
+
+有状态 toolkit，注册 5 个规划工具。它不修改 `Agent.run`、`KernelLoop` 或 provider 协议；全部行为都通过普通工具调用完成。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/toolkits/builtin/plan/plan.py:192` |
+| 模块职责 | 内置 planning toolkit，维护结构化 plan 状态并渲染 Markdown。 |
+| 继承/协议 | `Toolkit` |
+| 导出状态 | 从 `unchain.toolkits` 导出。 |
+| 对象类型 | 类；公开。 |
+
+### 构造表面
+
+- `__init__(self, *, session_store: Any = None, session_id: str = "", workspace_root: str | Path | None = None) -> None`
+
+默认情况下，每个 toolkit 实例拥有一张内存态 plan 表，通过 `plan_id` 索引。提供兼容的 `session_store` 和 `session_id` 时，结构化 plan state 会通过该 store 读写，因此不同 toolkit 实例可以共享同一 session 的计划。提供 `workspace_root` 时，渲染后的 Markdown 也可以镜像到 `plans/<plan_id>.md`；该文件只是 workspace 镜像，不是规范的结构化 state。
+
+### 注册的工具
+
+| 工具 | 签名 | 需要确认 | 说明 |
+| --- | --- | --- | --- |
+| `plan_start` | `plan_start(title, goal, constraints=None)` | 否 | 创建 draft plan，并返回 `plan_id`、结构化状态和渲染后的 Markdown。 |
+| `plan_update` | `plan_update(plan_id, summary=None, steps=None, ...)` | 否 | 替换传入的结构化章节。步骤状态只能是 `pending`、`in_progress` 或 `completed`；同一计划最多一个 `in_progress`。 |
+| `plan_read` | `plan_read(plan_id)` | 否 | 返回结构化 plan 状态和渲染后的 Markdown。 |
+| `plan_finalize` | `plan_finalize(plan_id)` | 是 | 将 plan 标记为 finalized，并返回 Markdown 与 Codex 兼容的 `<proposed_plan>` block。 |
+| `plan_list` | `plan_list()` | 否 | 列出当前 toolkit 实例内的 draft/finalized plans。 |
+
+成功调用在适用时返回 `{"ok": True, "plan_id": ..., "status": ..., "markdown": ...}`。错误返回 `{"ok": False, "error": ...}`，如果请求携带了 `plan_id`，错误载荷也会保留它。
+
+### 规划工作流
+
+当 agent 需要在探索需求时持续维护 design-first 计划，使用 `PlanToolkit`。工具的 prompt spec 会引导模型先探索上下文，随着事实变化更新结构化章节，并且只在计划 decision-complete 时调用 `plan_finalize`。
+
+交互式规划推荐组合 `CoreToolkit` 与 `PlanToolkit`：`PlanToolkit` 不重复实现 `ask_user_question`；遇到会实质改变计划的关键决策时，使用 `CoreToolkit.ask_user_question` 让用户选择。
+
+### 最小调用示例
+
+```python
+from unchain.toolkits import PlanToolkit
+
+plans = PlanToolkit()
+created = plans.plan_start(title="Auth rollout", goal="Plan the first auth rollout.")
+plans.plan_update(
+    created["plan_id"],
+    steps=[{"step": "Add lifecycle tests", "status": "in_progress"}],
+)
+finalized = plans.plan_finalize(created["plan_id"])
 ```
 
 ### `src/unchain/toolkits/builtin/external_api/external_api.py`
@@ -220,6 +322,8 @@ Send a POST request to an external API endpoint.
 
 - `BuiltinToolkit`
 - `CoreToolkit`
+- `GitToolkit`
+- `PlanToolkit`
 
 ### 最小调用示例
 
