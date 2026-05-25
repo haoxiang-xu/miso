@@ -224,19 +224,19 @@ Stateful toolkit registering five planning tools. It does not modify `Agent.run`
 
 - `__init__(self, *, session_store: Any = None, session_id: str = "", workspace_root: str | Path | None = None) -> None`
 
-By default, each toolkit instance owns an in-memory plan table keyed by `plan_id`. When a compatible `session_store` and `session_id` are provided, structured plan state is loaded and saved through that store so separate toolkit instances can share it. When `workspace_root` is provided, rendered Markdown can also be mirrored under `plans/<plan_id>.md`; that file is a workspace mirror, not the canonical structured state.
+`workspace_root` is required. Structured plan state is stored in `plans/<plan_id>.json`, and user-readable Markdown is stored in `plans/<plan_id>.md`. `session_store` and `session_id` remain accepted for compatibility but are not read or written.
 
 ### Registered tools
 
 | Tool | Signature | Confirmation | Notes |
 | --- | --- | --- | --- |
-| `plan_start` | `plan_start(title, goal, constraints=None)` | no | Creates a draft plan and returns `plan_id`, structured state, and rendered Markdown. |
+| `plan_start` | `plan_start(title, goal, constraints=None)` | no | Creates a draft plan in the workspace and returns status plus the Markdown file location. |
 | `plan_update` | `plan_update(plan_id, summary=None, steps=None, ...)` | no | Replaces provided structured sections. Step statuses are `pending`, `in_progress`, or `completed`; only one step may be `in_progress`. |
-| `plan_read` | `plan_read(plan_id)` | no | Returns the structured plan state and rendered Markdown. |
-| `plan_finalize` | `plan_finalize(plan_id)` | yes | Marks the plan finalized and returns Markdown plus a Codex-compatible `<proposed_plan>` block. |
-| `plan_list` | `plan_list()` | no | Lists draft and finalized plans in the current toolkit instance. |
+| `plan_read` | `plan_read(plan_id)` | no | Returns status plus the workspace Markdown file location. |
+| `plan_finalize` | `plan_finalize(plan_id)` | yes | Marks the workspace plan finalized. |
+| `plan_list` | `plan_list()` | no | Lists draft and finalized plans in the workspace. |
 
-All successful tool calls return `{"ok": True, "plan_id": ..., "status": ..., "markdown": ...}` where applicable. Errors return `{"ok": False, "error": ...}` and include `plan_id` when the request identified one.
+Successful tool calls return `{"ok": True, "plan_id": ..., "status": ..., "revision": ..., "workspace_file": {"path": ..., "relative_path": ...}}`. They do not embed `plan`, `markdown`, `artifact`, `artifacts`, or `proposed_plan` in the tool result. Errors return `{"ok": False, "error": ...}` and include `plan_id` when the request identified one.
 
 ### Planning workflow
 
@@ -249,7 +249,7 @@ For interactive planning, combine `CoreToolkit` and `PlanToolkit`: `PlanToolkit`
 ```python
 from unchain.toolkits import PlanToolkit
 
-plans = PlanToolkit()
+plans = PlanToolkit(workspace_root=".")
 created = plans.plan_start(title="Auth rollout", goal="Plan the first auth rollout.")
 plans.plan_update(
     created["plan_id"],
