@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -16,9 +17,6 @@ _STEP_STATUS_MARKERS = {
     "completed": "[completed]",
 }
 _PLAN_STATUSES = {"draft", "finalized"}
-_PLANS_STATE_KEY = "plans"
-_PLAN_ITEMS_KEY = "items"
-_ACTIVE_PLAN_ID_KEY = "active_plan_id"
 _WORKSPACE_PLAN_DIR = "plans"
 
 
@@ -211,7 +209,7 @@ class PlanToolkit(Toolkit):
     def _register_tools(self) -> None:
         self.register(
             self.plan_start,
-            description="Create a new draft plan in session state and return its plan_id.",
+            description="Create a new draft plan in the workspace and return its plan_id.",
             prompt_spec=ToolPromptSpec(
                 purpose="Start a structured draft plan before implementation decisions are complete.",
                 when_to_use=(
@@ -257,18 +255,18 @@ class PlanToolkit(Toolkit):
         )
         self.register(
             self.plan_read,
-            description="Return a plan's structured state and rendered Markdown.",
+            description="Return a plan's status and workspace Markdown file location.",
             prompt_spec=ToolPromptSpec(
-                purpose="Inspect the current plan state before revising, summarizing, or finalizing it.",
+                purpose="Inspect the current plan status and workspace file before revising or finalizing it.",
                 when_to_use=(
-                    "You need the latest draft contents or rendered Markdown.",
-                    "The user asks to see the current plan.",
+                    "You need the latest draft status or Markdown file path.",
+                    "The user asks where the current plan is stored.",
                 ),
             ),
         )
         self.register(
             self.plan_finalize,
-            description="Finalize a plan and return Markdown plus a Codex-compatible proposed_plan block.",
+            description="Finalize a workspace-backed plan.",
             requires_confirmation=True,
             prompt_spec=ToolPromptSpec(
                 purpose="Finalize a decision-complete plan after user confirmation.",
@@ -283,15 +281,15 @@ class PlanToolkit(Toolkit):
                 examples=('plan_finalize(plan_id="plan_1")',),
                 advanced_tips=(
                     "This tool requires confirmation. Do not call it as a substitute for asking clarifying questions.",
-                    "The returned proposed_plan block is meant for Codex-style plan approval flows.",
+                    "The finalized plan is stored in workspace JSON and Markdown files.",
                 ),
             ),
         )
         self.register(
             self.plan_list,
-            description="List draft and finalized plans stored for this toolkit session.",
+            description="List draft and finalized plans stored in the workspace.",
             prompt_spec=ToolPromptSpec(
-                purpose="Find existing draft or finalized plan ids in the current session.",
+                purpose="Find existing draft or finalized plan ids in the current workspace.",
                 when_to_use=(
                     "You need to resume or inspect a plan but do not know its plan_id.",
                     "The user asks which plans exist.",
@@ -305,20 +303,6 @@ class PlanToolkit(Toolkit):
         self._next_plan_number += 1
         return plan_id
 
-    def _has_session_store(self) -> bool:
-        return (
-            bool(self._session_id)
-            and self._session_store is not None
-            and callable(getattr(self._session_store, "load", None))
-            and callable(getattr(self._session_store, "save", None))
-        )
-
-    def _load_session_state(self) -> dict[str, Any]:
-        if not self._has_session_store():
-            return {}
-        state = self._session_store.load(self._session_id)
-        return state if isinstance(state, dict) else {}
-
     def _next_plan_number_from(self, plans: dict[str, _PlanState]) -> int:
         next_number = 1
         for plan_id in plans:
@@ -327,60 +311,70 @@ class PlanToolkit(Toolkit):
                 next_number = max(next_number, int(suffix) + 1)
         return next_number
 
+    def _workspace_required_error(self) -> dict[str, Any] | None:
+        if self._workspace_root is not None:
+            return None
+        return _error("workspace_root is required for workspace-backed plans")
+
+    def _plans_dir(self) -> Path | None:
+        if self._workspace_root is None:
+            return None
+        return self._workspace_root / _WORKSPACE_PLAN_DIR
+
+    def _workspace_json_filename(self, plan: _PlanState) -> str:
+        safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", plan.plan_id).strip("._")
+        return f"{safe_id or 'plan'}.json"
+
+    def _workspace_json_file(self, plan: _PlanState) -> dict[str, str] | None:
+        if self._workspace_root is None:
+            return None
+        relative_path = Path(_WORKSPACE_PLAN_DIR) / self._workspace_json_filename(plan)
+        target_path = (self._workspace_root / relative_path).resolve()
+        if not target_path.is_relative_to(self._workspace_root):
+            return None
+        return {
+            "path": str(target_path),
+            "relative_path": relative_path.as_posix(),
+        }
+
     def _load_plans(self) -> dict[str, _PlanState]:
-        if not self._has_session_store():
+        plans_dir = self._plans_dir()
+        if plans_dir is None:
             return self._plans
-
-        state = self._load_session_state()
-        plans_state = state.get(_PLANS_STATE_KEY)
-        if not isinstance(plans_state, dict):
-            self._plans = {}
-            self._active_plan_id = ""
-            self._next_plan_number = 1
-            return self._plans
-
-        raw_items = plans_state.get(_PLAN_ITEMS_KEY)
-        if not isinstance(raw_items, dict):
-            raw_items = {}
 
         plans: dict[str, _PlanState] = {}
-        for raw_plan_id, raw_plan in raw_items.items():
+        for path in sorted(plans_dir.glob("*.json")):
             try:
+                raw_plan = json.loads(path.read_text(encoding="utf-8"))
                 plan = _PlanState.from_raw(raw_plan)
             except Exception:
                 continue
-            plan_id = str(raw_plan_id or plan.plan_id).strip() or plan.plan_id
+            plan_id = path.stem.strip() or plan.plan_id
             if plan.plan_id != plan_id:
                 plan.plan_id = plan_id
             plans[plan_id] = plan
 
-        active_plan_id = str(plans_state.get(_ACTIVE_PLAN_ID_KEY) or "").strip()
         self._plans = plans
-        self._active_plan_id = active_plan_id if active_plan_id in plans else ""
+        self._active_plan_id = ""
         self._next_plan_number = self._next_plan_number_from(plans)
         return self._plans
 
-    def _save_plans(self, *, active_plan_id: str | None = None) -> None:
-        if not self._has_session_store():
-            if active_plan_id is not None:
-                self._active_plan_id = active_plan_id
-            return
+    def _save_plan(self, plan: _PlanState) -> str | None:
+        plans_dir = self._plans_dir()
+        json_file = self._workspace_json_file(plan)
+        if plans_dir is None or json_file is None:
+            return "workspace_root is required for workspace-backed plans"
 
-        state = self._load_session_state()
-        selected_active_plan_id = (
-            active_plan_id if active_plan_id is not None else self._active_plan_id
-        )
-        if selected_active_plan_id not in self._plans:
-            selected_active_plan_id = ""
-        self._active_plan_id = selected_active_plan_id
-        state[_PLANS_STATE_KEY] = {
-            _ACTIVE_PLAN_ID_KEY: selected_active_plan_id,
-            _PLAN_ITEMS_KEY: {
-                plan_id: plan.to_dict()
-                for plan_id, plan in self._plans.items()
-            },
-        }
-        self._session_store.save(self._session_id, state)
+        try:
+            plans_dir.mkdir(parents=True, exist_ok=True)
+            Path(json_file["path"]).write_text(
+                json.dumps(plan.to_dict(), ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            return str(exc)
+
+        return self._write_workspace_plan(plan)
 
     def _get_plan(self, plan_id: str) -> _PlanState | dict[str, Any]:
         if not isinstance(plan_id, str) or not plan_id.strip():
@@ -393,19 +387,6 @@ class PlanToolkit(Toolkit):
         if plan is None:
             return _error(f"unknown plan_id: {normalized}", plan_id=normalized)
         return plan
-
-    def _artifact(self, plan: _PlanState) -> dict[str, Any]:
-        artifact: dict[str, Any] = {
-            "type": "plan_doc",
-            "plan_id": plan.plan_id,
-            "revision": plan.revision,
-            "status": plan.status,
-            "title": plan.title,
-        }
-        workspace_file = self._workspace_file(plan)
-        if workspace_file is not None:
-            artifact["workspace_file"] = workspace_file
-        return artifact
 
     def _workspace_filename(self, plan: _PlanState) -> str:
         safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", plan.plan_id).strip("._")
@@ -441,23 +422,15 @@ class PlanToolkit(Toolkit):
         self,
         plan: _PlanState,
         *,
-        proposed_plan: str | None = None,
         workspace_error: str | None = None,
     ) -> dict[str, Any]:
-        artifact = self._artifact(plan)
         result: dict[str, Any] = {
             "ok": True,
             "plan_id": plan.plan_id,
             "status": plan.status,
             "revision": plan.revision,
-            "plan": plan.to_dict(),
-            "markdown": self._render_markdown(plan),
-            "artifact": artifact,
-            "artifacts": [artifact],
         }
-        if proposed_plan is not None:
-            result["proposed_plan"] = proposed_plan
-        workspace_file = artifact.get("workspace_file")
+        workspace_file = self._workspace_file(plan)
         if workspace_file is not None:
             result["workspace_file"] = workspace_file
         if workspace_error is not None:
@@ -495,6 +468,9 @@ class PlanToolkit(Toolkit):
         :param goal: Concrete goal the plan should satisfy.
         :param constraints: Optional constraints as a string or list of strings.
         """
+        workspace_error = self._workspace_required_error()
+        if workspace_error is not None:
+            return workspace_error
         try:
             clean_title = _clean_required_text(title, "title")
             clean_goal = _clean_required_text(goal, "goal")
@@ -507,9 +483,8 @@ class PlanToolkit(Toolkit):
                 constraints=clean_constraints,
             )
             self._plans[plan_id] = plan
-            self._save_plans(active_plan_id=plan_id)
-            workspace_error = self._write_workspace_plan(plan)
-            return self._result(plan, workspace_error=workspace_error)
+            save_error = self._save_plan(plan)
+            return self._result(plan, workspace_error=save_error)
         except Exception as exc:
             return _error(str(exc))
 
@@ -539,6 +514,9 @@ class PlanToolkit(Toolkit):
         :param open_questions: Optional list of unresolved questions.
         :param constraints: Optional replacement list of constraints.
         """
+        workspace_error = self._workspace_required_error()
+        if workspace_error is not None:
+            return workspace_error
         plan = self._get_plan(plan_id)
         if isinstance(plan, dict):
             return plan
@@ -569,27 +547,32 @@ class PlanToolkit(Toolkit):
                 plan.status = "draft"
             plan.touch()
             self._plans[plan.plan_id] = plan
-            self._save_plans(active_plan_id=plan.plan_id)
-            workspace_error = self._write_workspace_plan(plan)
-            return self._result(plan, workspace_error=workspace_error)
+            save_error = self._save_plan(plan)
+            return self._result(plan, workspace_error=save_error)
         except Exception as exc:
             return _error(str(exc), plan_id=plan.plan_id)
 
     def plan_read(self, plan_id: str) -> dict[str, Any]:
-        """Return structured plan state and rendered Markdown.
+        """Return plan status and workspace Markdown file location.
 
         :param plan_id: Existing plan id returned by plan_start.
         """
+        workspace_error = self._workspace_required_error()
+        if workspace_error is not None:
+            return workspace_error
         plan = self._get_plan(plan_id)
         if isinstance(plan, dict):
             return plan
         return self._result(plan)
 
     def plan_finalize(self, plan_id: str) -> dict[str, Any]:
-        """Finalize a plan and return Markdown plus a proposed_plan block.
+        """Finalize a plan and return its workspace file location.
 
         :param plan_id: Existing plan id returned by plan_start.
         """
+        workspace_error = self._workspace_required_error()
+        if workspace_error is not None:
+            return workspace_error
         plan = self._get_plan(plan_id)
         if isinstance(plan, dict):
             return plan
@@ -597,20 +580,16 @@ class PlanToolkit(Toolkit):
             plan.status = "finalized"
             plan.touch()
             self._plans[plan.plan_id] = plan
-            self._save_plans(active_plan_id=plan.plan_id)
-            markdown = self._render_markdown(plan)
-            workspace_error = self._write_workspace_plan(plan)
-            proposed_plan = f"<proposed_plan>\n{markdown}\n</proposed_plan>"
-            return self._result(
-                plan,
-                proposed_plan=proposed_plan,
-                workspace_error=workspace_error,
-            )
+            save_error = self._save_plan(plan)
+            return self._result(plan, workspace_error=save_error)
         except Exception as exc:
             return _error(str(exc), plan_id=plan.plan_id)
 
     def plan_list(self) -> dict[str, Any]:
-        """List all draft and finalized plans in this toolkit instance."""
+        """List all draft and finalized plans in the workspace."""
+        workspace_error = self._workspace_required_error()
+        if workspace_error is not None:
+            return workspace_error
         self._load_plans()
         return {
             "ok": True,

@@ -1,7 +1,7 @@
 [toolkit]
 id = "plan"
 name = "Plan"
-description = "Planning tools for drafting, updating, reading, listing, finalizing, and optionally mirroring structured plans into a workspace."
+description = "Workspace-backed planning tools for drafting, updating, reading, listing, and finalizing structured plans."
 factory = "unchain.toolkits.builtin.plan:PlanToolkit"
 version = "1.0.0"
 readme = "README.md"
@@ -36,20 +36,20 @@ requires_confirmation = false
 [[tools]]
 name = "plan_read"
 title = "Plan Read"
-description = "Return a plan's structured state and rendered Markdown."
+description = "Return a plan's status and workspace Markdown file location."
 observe = false
 requires_confirmation = false
 
 [[tools]]
 name = "plan_finalize"
 title = "Plan Finalize"
-description = "Finalize a plan and return Markdown plus a Codex-compatible proposed_plan block."
+description = "Finalize a workspace-backed plan."
 observe = false
 requires_confirmation = true
 
 [[tools]]
 name = "plan_list"
 title = "Plan List"
-description = "List draft and finalized plans currently stored in this toolkit instance."
+description = "List draft and finalized plans stored in the workspace."
 observe = false
 requires_confirmation = false

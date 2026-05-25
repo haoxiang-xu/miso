@@ -224,19 +224,19 @@ diff = git.git_diff(staged=True)
 
 - `__init__(self, *, session_store: Any = None, session_id: str = "", workspace_root: str | Path | None = None) -> None`
 
-默认情况下，每个 toolkit 实例拥有一张内存态 plan 表，通过 `plan_id` 索引。提供兼容的 `session_store` 和 `session_id` 时，结构化 plan state 会通过该 store 读写，因此不同 toolkit 实例可以共享同一 session 的计划。提供 `workspace_root` 时，渲染后的 Markdown 也可以镜像到 `plans/<plan_id>.md`；该文件只是 workspace 镜像，不是规范的结构化 state。
+`workspace_root` 是必需的。结构化 plan state 写入 `plans/<plan_id>.json`，用户可读 Markdown 写入 `plans/<plan_id>.md`。`session_store` 和 `session_id` 仍然作为兼容参数接受，但不会被读取或写入。
 
 ### 注册的工具
 
 | 工具 | 签名 | 需要确认 | 说明 |
 | --- | --- | --- | --- |
-| `plan_start` | `plan_start(title, goal, constraints=None)` | 否 | 创建 draft plan，并返回 `plan_id`、结构化状态和渲染后的 Markdown。 |
+| `plan_start` | `plan_start(title, goal, constraints=None)` | 否 | 在 workspace 中创建 draft plan，并返回状态和 Markdown 文件位置。 |
 | `plan_update` | `plan_update(plan_id, summary=None, steps=None, ...)` | 否 | 替换传入的结构化章节。步骤状态只能是 `pending`、`in_progress` 或 `completed`；同一计划最多一个 `in_progress`。 |
-| `plan_read` | `plan_read(plan_id)` | 否 | 返回结构化 plan 状态和渲染后的 Markdown。 |
-| `plan_finalize` | `plan_finalize(plan_id)` | 是 | 将 plan 标记为 finalized，并返回 Markdown 与 Codex 兼容的 `<proposed_plan>` block。 |
-| `plan_list` | `plan_list()` | 否 | 列出当前 toolkit 实例内的 draft/finalized plans。 |
+| `plan_read` | `plan_read(plan_id)` | 否 | 返回状态和 workspace Markdown 文件位置。 |
+| `plan_finalize` | `plan_finalize(plan_id)` | 是 | 将 workspace plan 标记为 finalized。 |
+| `plan_list` | `plan_list()` | 否 | 列出 workspace 中的 draft/finalized plans。 |
 
-成功调用在适用时返回 `{"ok": True, "plan_id": ..., "status": ..., "markdown": ...}`。错误返回 `{"ok": False, "error": ...}`，如果请求携带了 `plan_id`，错误载荷也会保留它。
+成功调用返回 `{"ok": True, "plan_id": ..., "status": ..., "revision": ..., "workspace_file": {"path": ..., "relative_path": ...}}`。tool result 不再嵌入 `plan`、`markdown`、`artifact`、`artifacts` 或 `proposed_plan`。错误返回 `{"ok": False, "error": ...}`，如果请求携带了 `plan_id`，错误载荷也会保留它。
 
 ### 规划工作流
 
@@ -249,7 +249,7 @@ diff = git.git_diff(staged=True)
 ```python
 from unchain.toolkits import PlanToolkit
 
-plans = PlanToolkit()
+plans = PlanToolkit(workspace_root=".")
 created = plans.plan_start(title="Auth rollout", goal="Plan the first auth rollout.")
 plans.plan_update(
     created["plan_id"],
