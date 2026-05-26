@@ -269,6 +269,9 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         )
         return child, memory_policy, None
 
+    def _build_child_run_id(self, *, session_id: str, child_id: str) -> str:
+        return f"{session_id}:{child_id}:{uuid.uuid4()}"
+
     def _run_child(
         self,
         *,
@@ -288,7 +291,10 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         on_max_iterations: Any = None,
     ) -> SubagentResult:
         if not child_run_id:
-            child_run_id = f"{session_id}:{child_id}:{uuid.uuid4()}"
+            child_run_id = self._build_child_run_id(
+                session_id=session_id,
+                child_id=child_id,
+            )
         child_callback = callback
         if callable(callback):
             def _child_callback(event: dict[str, Any]) -> None:
@@ -404,7 +410,10 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         session_id = f"{context.session_id or context.run_id}:{child_id}"
         memory_namespace = f"{context.memory_namespace or context.session_id or context.run_id}:{child_id}"
         parent_id = state.active_agent_id or self.parent_agent.name
-        child_run_id = f"{session_id}:{child_id}:{uuid.uuid4()}"
+        child_run_id = self._build_child_run_id(
+            session_id=context.session_id or context.run_id,
+            child_id=child_id,
+        )
         self._emit_subagent_event(context, "subagent_spawned", subagent_id=child_id, parent_id=parent_id, mode="delegate", template=template_name, lineage=lineage, child_run_id=child_run_id)
         self._emit_subagent_event(context, "subagent_started", subagent_id=child_id, parent_id=parent_id, mode="delegate", template=template_name, lineage=lineage, child_run_id=child_run_id)
         result = self._run_child(
@@ -491,7 +500,10 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         session_id = f"{context.session_id or context.run_id}:{child_id}"
         memory_namespace = f"{context.memory_namespace or context.session_id or context.run_id}:{child_id}"
         parent_id = state.active_agent_id or self.parent_agent.name
-        child_run_id = f"{session_id}:{child_id}:{uuid.uuid4()}"
+        child_run_id = self._build_child_run_id(
+            session_id=context.session_id or context.run_id,
+            child_id=child_id,
+        )
         self._emit_subagent_event(context, "subagent_spawned", subagent_id=child_id, parent_id=parent_id, mode="handoff", template=template_name, lineage=lineage, child_run_id=child_run_id)
         self._emit_subagent_event(context, "subagent_handoff", subagent_id=child_id, parent_id=parent_id, mode="handoff", template=template_name, lineage=lineage, reason=reason, child_run_id=child_run_id)
         self._emit_subagent_event(context, "subagent_started", subagent_id=child_id, parent_id=parent_id, mode="handoff", template=template_name, lineage=lineage, child_run_id=child_run_id)
@@ -674,7 +686,10 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             )
             session_id = f"{context.session_id or context.run_id}:{child_id}"
             memory_namespace = f"{context.memory_namespace or context.session_id or context.run_id}:{child_id}"
-            worker_run_id = f"{session_id}:{child_id}:{uuid.uuid4()}"
+            worker_run_id = self._build_child_run_id(
+                session_id=context.session_id or context.run_id,
+                child_id=child_id,
+            )
             prepared_items.append(
                 {
                     "type": "run",

@@ -190,6 +190,11 @@ class AgentBuilder:
                 list(entry.tools.keys()),
                 source_label=f"toolkit {entry.__class__.__name__}",
             )
+            prompt_sections = tuple(getattr(entry, "prompt_sections", ()) or ())
+            if prompt_sections:
+                existing_sections = list(getattr(self.toolkit, "prompt_sections", ()) or ())
+                existing_sections.extend(prompt_sections)
+                self.toolkit.prompt_sections = tuple(existing_sections)
             for tool_obj in entry.tools.values():
                 self.toolkit.register(tool_obj)
             return

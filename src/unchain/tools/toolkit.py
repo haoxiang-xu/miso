@@ -7,11 +7,36 @@ from .tool import Tool
 
 
 class Toolkit:
-    def __init__(self, tools: dict[str, Tool] | None = None):
+    def __init__(
+        self,
+        tools: dict[str, Tool] | None = None,
+        *,
+        prompt_sections: str | list[str] | tuple[str, ...] | None = None,
+    ):
         self.tools: dict[str, Tool] = {}
+        self.prompt_sections = self._normalize_prompt_sections(prompt_sections)
         for tool_name, tool_obj in (tools or {}).items():
             if isinstance(tool_obj, Tool):
                 self.tools[tool_name] = tool_obj
+
+    @staticmethod
+    def _normalize_prompt_sections(value: str | list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, str):
+            text = value.strip()
+            return (text,) if text else ()
+        if isinstance(value, (list, tuple)):
+            sections: list[str] = []
+            for item in value:
+                text = str(item or "").strip()
+                if text:
+                    sections.append(text)
+            return tuple(sections)
+        raise TypeError(
+            "toolkit prompt_sections must be a string, list of strings, "
+            "tuple of strings, or None"
+        )
 
     def register(
         self,

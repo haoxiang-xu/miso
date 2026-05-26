@@ -55,17 +55,35 @@ def render_tool_prompt_entry(tool_obj: Tool) -> str:
     return "\n".join(lines)
 
 
+def _render_toolkit_prompt_sections(toolkit: Toolkit | None) -> tuple[str, ...]:
+    if not isinstance(toolkit, Toolkit):
+        return ()
+    sections = []
+    for section in getattr(toolkit, "prompt_sections", ()) or ():
+        text = str(section or "").strip()
+        if text:
+            sections.append(text)
+    return tuple(sections)
+
+
 def render_tool_prompt_block(toolkit: Toolkit | None) -> str:
     tool_map = toolkit.tools if isinstance(toolkit, Toolkit) else {}
-    if not tool_map:
+    prompt_sections = _render_toolkit_prompt_sections(toolkit)
+    if not tool_map and not prompt_sections:
         return ""
 
-    body = "\n\n".join(render_tool_prompt_entry(tool_obj) for tool_obj in tool_map.values())
+    body_parts = list(prompt_sections)
+    if tool_map:
+        body_parts.append(
+            "\n\n".join(render_tool_prompt_entry(tool_obj) for tool_obj in tool_map.values())
+        )
+    body = "\n\n".join(body_parts)
     return (
         f"{TOOLS_BLOCK_START}\n"
         f"{TOOLS_BLOCK_HEADER}\n"
         "Use provider-native tool schemas as the source of truth for callable arguments.\n"
-        "This block is guidance about when to use tools and how to use them well.\n\n"
+        "Toolkit-level policy sections are mandatory operating instructions.\n"
+        "Per-tool entries describe when and how to use callable tools.\n\n"
         f"{body}\n"
         f"{TOOLS_BLOCK_END}"
     )

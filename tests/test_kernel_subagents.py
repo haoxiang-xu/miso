@@ -153,6 +153,8 @@ def test_subagent_delegate_template_returns_structured_result_and_parent_keeps_c
     completed = next(event for event in events if event["type"] == "subagent_completed")
     assert spawned["root_run_id"] == "root-run"
     assert spawned["mode"] == "delegate"
+    assert spawned["child_run_id"].startswith(f"root-run:{spawned['subagent_id']}:")
+    assert f":{spawned['subagent_id']}:{spawned['subagent_id']}:" not in spawned["child_run_id"]
     assert completed["template"] == "researcher"
     assert completed["child_run_id"] == spawned["child_run_id"]
 
@@ -397,6 +399,10 @@ def test_subagent_worker_batch_runs_in_parallel_and_preserves_input_order():
     assert tracker["max_active"] > 1
     assert any(event["type"] == "subagent_batch_started" for event in events)
     assert any(event["type"] == "subagent_batch_joined" for event in events)
+    spawned_events = [event for event in events if event["type"] == "subagent_spawned"]
+    assert spawned_events
+    for spawned in spawned_events:
+        assert f":{spawned['subagent_id']}:{spawned['subagent_id']}:" not in spawned["child_run_id"]
 
 
 def test_subagent_worker_batch_rejects_non_parallel_safe_template():

@@ -3,6 +3,15 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 
+from ..artifacts import (
+    ArtifactOwner,
+    artifacts_from_code_diff_policy,
+    canonicalize_artifacts,
+    extract_authored_artifacts,
+    is_failed_tool_result,
+    plan_artifact_from_tool_result,
+    upsert_artifacts,
+)
 from ..input.human_input import HumanInputResponse, is_human_input_tool_name
 from .toolkit import Toolkit
 from ..kernel.delta import HarnessDelta, SuspendSignal
@@ -16,6 +25,91 @@ from .models import ToolExecutionContext
 from .observation import inject_observation, observation_token_state
 from .runtime import run_tool_runtime_plugins
 from .types import ToolBatchState
+
+
+def _artifact_owner(context: ToolContext, tool_call: ToolCall) -> ArtifactOwner:
+    return ArtifactOwner(
+        run_id=context.run_id,
+        turn_id=f"{context.run_id}:turn-{context.iteration}",
+        tool_name=tool_call.name,
+        call_id=tool_call.call_id,
+    )
+
+
+def _emit_artifact_events(
+    context: ToolContext,
+    tool_call: ToolCall,
+    artifacts: list[dict],
+) -> None:
+    existing_ids = {
+        artifact.get("artifact_id")
+        for artifact in context.state.artifacts
+        if isinstance(artifact, dict) and isinstance(artifact.get("artifact_id"), str)
+    }
+    seen_ids = set(existing_ids)
+    for artifact in artifacts:
+        artifact_id = artifact.get("artifact_id") if isinstance(artifact, dict) else None
+        if not isinstance(artifact_id, str) or not artifact_id:
+            continue
+        event_type = "artifact_updated" if artifact_id in seen_ids else "artifact_created"
+        seen_ids.add(artifact_id)
+        snapshot = artifact.get("snapshot") if isinstance(artifact.get("snapshot"), dict) else {}
+        plan_id = snapshot.get("plan_id") if isinstance(snapshot, dict) else None
+        emit_loop_event(
+            context.loop,
+            context.callback,
+            event_type,
+            context.run_id,
+            iteration=context.iteration,
+            tool_name=tool_call.name,
+            call_id=tool_call.call_id,
+            artifact_id=artifact_id,
+            plan_id=plan_id if isinstance(plan_id, str) and plan_id else None,
+            artifact=copy.deepcopy(artifact),
+        )
+
+
+def _canonical_artifacts_for_tool_result(
+    context: ToolContext,
+    tool_call: ToolCall,
+    tool_result: dict,
+    authored_artifacts: list[dict],
+    *,
+    confirmation_policy: object | None = None,
+    effective_arguments: object | None = None,
+) -> list[dict]:
+    if is_failed_tool_result(tool_result):
+        return []
+
+    descriptors = list(authored_artifacts)
+    has_authored_file_diff = any(
+        isinstance(descriptor, dict) and descriptor.get("kind") == "file_diff"
+        for descriptor in descriptors
+    )
+    arguments_changed = effective_arguments is not None and effective_arguments != tool_call.arguments
+    interact_type = getattr(confirmation_policy, "interact_type", None)
+    interact_config = getattr(confirmation_policy, "interact_config", None)
+    if interact_type == "code_diff" and not has_authored_file_diff and not arguments_changed:
+        descriptors.extend(
+            artifacts_from_code_diff_policy(
+                interact_config,
+                call_id=tool_call.call_id,
+                tool_name=tool_call.name,
+            )
+        )
+
+    plan_descriptor = plan_artifact_from_tool_result(
+        tool_name=tool_call.name,
+        tool_result=tool_result,
+    )
+    if plan_descriptor is not None:
+        descriptors.append(plan_descriptor)
+
+    return canonicalize_artifacts(
+        descriptors,
+        owner=_artifact_owner(context, tool_call),
+        existing_artifacts=context.state.artifacts,
+    )
 
 
 @dataclass
@@ -136,13 +230,24 @@ class ToolExecutionHarness(BaseToolHarness):
         if plugin_outcome is not None:
             builder = get_provider_message_builder(context.provider)
             result_messages = copy_messages(batch_state.result_messages)
+            visible_tool_result = plugin_outcome.tool_result
+            authored_artifacts: list[dict] = []
+            if isinstance(plugin_outcome.tool_result, dict):
+                visible_tool_result, authored_artifacts = extract_authored_artifacts(plugin_outcome.tool_result)
             if plugin_outcome.result_messages:
                 result_messages.extend(copy_messages(plugin_outcome.result_messages))
-            elif isinstance(plugin_outcome.tool_result, dict):
+            elif isinstance(visible_tool_result, dict):
                 result_messages.append(
-                    builder.build_tool_result_message(tool_call=tool_call, tool_result=plugin_outcome.tool_result)
+                    builder.build_tool_result_message(tool_call=tool_call, tool_result=visible_tool_result)
                 )
-            if isinstance(plugin_outcome.tool_result, dict):
+            emitted_artifacts: list[dict] = []
+            if isinstance(visible_tool_result, dict):
+                emitted_artifacts = _canonical_artifacts_for_tool_result(
+                    context,
+                    tool_call,
+                    visible_tool_result,
+                    authored_artifacts,
+                )
                 emit_loop_event(
                     context.loop,
                     context.callback,
@@ -151,9 +256,15 @@ class ToolExecutionHarness(BaseToolHarness):
                     iteration=context.iteration,
                     tool_name=tool_call.name,
                     call_id=tool_call.call_id,
-                    result=copy.deepcopy(plugin_outcome.tool_result),
+                    result=copy.deepcopy(visible_tool_result),
                 )
+                _emit_artifact_events(context, tool_call, emitted_artifacts)
             state_updates = copy.deepcopy(plugin_outcome.state_updates)
+            if emitted_artifacts:
+                state_updates["artifacts"] = upsert_artifacts(
+                    context.state.artifacts,
+                    emitted_artifacts,
+                )
             state_updates["tool_batch_state"] = ToolBatchState(
                 result_messages=result_messages,
                 should_observe=batch_state.should_observe or bool(plugin_outcome.should_observe),
@@ -345,9 +456,20 @@ class ToolExecutionHarness(BaseToolHarness):
         )
         should_observe = batch_state.should_observe or outcome.should_observe
         builder = get_provider_message_builder(context.provider)
+        visible_tool_result, authored_artifacts = extract_authored_artifacts(outcome.tool_result)
+        emitted_artifacts = []
+        if isinstance(visible_tool_result, dict):
+            emitted_artifacts = _canonical_artifacts_for_tool_result(
+                context,
+                tool_call,
+                visible_tool_result,
+                authored_artifacts,
+                confirmation_policy=outcome.confirmation_policy,
+                effective_arguments=outcome.effective_arguments,
+            )
         result_messages = copy_messages(batch_state.result_messages)
         result_messages.append(
-            builder.build_tool_result_message(tool_call=tool_call, tool_result=outcome.tool_result)
+            builder.build_tool_result_message(tool_call=tool_call, tool_result=visible_tool_result)
         )
         emit_loop_event(
             context.loop,
@@ -357,20 +479,27 @@ class ToolExecutionHarness(BaseToolHarness):
             iteration=context.iteration,
             tool_name=tool_call.name,
             call_id=tool_call.call_id,
-            result=copy.deepcopy(outcome.tool_result),
+            result=copy.deepcopy(visible_tool_result),
         )
+        _emit_artifact_events(context, tool_call, emitted_artifacts)
+        state_updates = {
+            "tool_batch_state": ToolBatchState(
+                result_messages=result_messages,
+                should_observe=should_observe,
+                awaiting_human_input=False,
+                human_input_request=batch_state.human_input_request,
+                human_input_tool_call_id=batch_state.human_input_tool_call_id,
+                executed_call_ids=append_executed_call_id(batch_state, tool_call.call_id),
+            ),
+        }
+        if emitted_artifacts:
+            state_updates["artifacts"] = upsert_artifacts(
+                context.state.artifacts,
+                emitted_artifacts,
+            )
         return HarnessDelta(
             created_by=self.created_by,
-            state_updates={
-                "tool_batch_state": ToolBatchState(
-                    result_messages=result_messages,
-                    should_observe=should_observe,
-                    awaiting_human_input=False,
-                    human_input_request=batch_state.human_input_request,
-                    human_input_tool_call_id=batch_state.human_input_tool_call_id,
-                    executed_call_ids=append_executed_call_id(batch_state, tool_call.call_id),
-                ),
-            },
+            state_updates=state_updates,
         )
 
     def _after_tool_batch(self, context: ToolContext) -> HarnessDelta | None:

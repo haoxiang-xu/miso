@@ -19,6 +19,7 @@ def test_runtime_event_links_serializes_all_reserved_keys():
         "channel_id": None,
         "team_id": None,
         "plan_id": None,
+        "artifact_id": None,
     }
 
 
@@ -69,6 +70,40 @@ def test_runtime_event_round_trips_from_dict():
     assert event.links.tool_call_id == "call-1"
     assert event.payload == {"kind": "text", "delta": "hi"}
     assert event.to_dict()["links"]["team_id"] is None
+
+
+def test_runtime_event_accepts_artifact_events_and_links():
+    raw = {
+        "schema_version": "v3",
+        "event_id": "evt-1",
+        "type": "artifact.created",
+        "timestamp": "2026-04-25T12:34:56.789Z",
+        "session_id": "thread-1",
+        "run_id": "run-1",
+        "agent_id": "developer",
+        "turn_id": "run-1:turn-0",
+        "links": {
+            "tool_call_id": "call-1",
+            "artifact_id": "plan:plan_1",
+            "plan_id": "plan_1",
+        },
+        "visibility": "user",
+        "payload": {
+            "schema_version": "unchain.artifact.v1",
+            "artifact_id": "plan:plan_1",
+            "kind": "plan",
+            "snapshot": {"markdown": "# Plan"},
+        },
+        "metadata": {},
+    }
+
+    event = RuntimeEvent.from_dict(raw)
+
+    assert event.type == "artifact.created"
+    assert event.links.tool_call_id == "call-1"
+    assert event.links.artifact_id == "plan:plan_1"
+    assert event.links.plan_id == "plan_1"
+    assert event.payload == raw["payload"]
 
 
 def test_runtime_event_rejects_invalid_schema_version():

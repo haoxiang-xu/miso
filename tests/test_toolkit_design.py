@@ -1,5 +1,9 @@
 import json
 
+from unchain.agent.agent import Agent
+from unchain.agent.builder import AgentBuilder, AgentCallContext
+from unchain.agent.model_io import ModelIOFactoryRegistry
+from unchain.toolkits import PlanToolkit
 from unchain.tools import Tool, Toolkit, ToolPromptSpec, render_tool_prompt_block
 
 
@@ -214,3 +218,53 @@ def test_tool_prompt_block_falls_back_to_short_description():
     rendered = render_tool_prompt_block(toolkit_obj)
 
     assert "- grep: Search file content." in rendered
+
+
+def test_toolkit_prompt_sections_render_before_tool_entries():
+    def grep(pattern: str):
+        return {"pattern": pattern}
+
+    toolkit_obj = Toolkit(
+        prompt_sections=("## Demo operating policy\nThis policy is mandatory.",)
+    )
+    toolkit_obj.register(grep, name="grep", description="Search file content.")
+
+    rendered = render_tool_prompt_block(toolkit_obj)
+
+    assert "Toolkit-level policy sections are mandatory operating instructions." in rendered
+    assert "## Demo operating policy\nThis policy is mandatory." in rendered
+    assert rendered.index("## Demo operating policy") < rendered.index("- grep:")
+
+
+def test_agent_builder_preserves_toolkit_prompt_sections_when_merging_toolkit():
+    def grep(pattern: str):
+        return {"pattern": pattern}
+
+    agent = Agent(name="builder-test")
+    builder = AgentBuilder(
+        agent=agent,
+        spec=agent.spec,
+        state=agent.state,
+        call_context=AgentCallContext(mode="run", input_messages=[]),
+        model_io_registry=ModelIOFactoryRegistry(),
+    )
+    toolkit_obj = Toolkit(
+        prompt_sections=("## Required toolkit policy\nKeep this section.",)
+    )
+    toolkit_obj.register(grep, name="grep", description="Search file content.")
+
+    builder.add_tool(toolkit_obj)
+
+    rendered = render_tool_prompt_block(builder.toolkit)
+    assert "## Required toolkit policy\nKeep this section." in rendered
+    assert "- grep: Search file content." in rendered
+
+
+def test_plan_toolkit_prompt_block_includes_operating_policy(tmp_path):
+    rendered = render_tool_prompt_block(PlanToolkit(workspace_root=tmp_path))
+
+    assert "## PlanToolkit operating policy" in rendered
+    assert "When PlanToolkit is active in the current tool pool" in rendered
+    assert "PlanToolkit-managed draft plan artifacts" in rendered
+    assert "Forbidden before implementation approval" in rendered
+    assert rendered.index("## PlanToolkit operating policy") < rendered.index("- plan_start:")

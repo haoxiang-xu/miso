@@ -75,6 +75,76 @@ def test_tool_started_preserves_confirmation_id():
     assert events[0].payload["requires_confirmation"] is True
 
 
+def test_normalizes_artifact_created_with_direct_payload_shape():
+    context = RuntimeEventNormalizerContext(
+        session_id="thread-1",
+        root_run_id="run-root",
+        root_agent_id="developer",
+    )
+    artifact = {
+        "schema_version": "unchain.artifact.v1",
+        "artifact_id": "plan:plan_1",
+        "kind": "plan",
+        "title": "Implementation plan",
+        "snapshot": {"markdown": "# Implementation plan"},
+    }
+
+    events = normalize_raw_event(
+        {
+            "type": "artifact_created",
+            "run_id": "run-root",
+            "iteration": 2,
+            "tool_name": "plan_start",
+            "call_id": "call-1",
+            "artifact_id": "stale-link-value",
+            "plan_id": "plan_1",
+            "artifact": artifact,
+        },
+        context=context,
+    )
+
+    assert len(events) == 1
+    assert events[0].type == "artifact.created"
+    assert events[0].turn_id == "run-root:turn-2"
+    assert events[0].links.tool_call_id == "call-1"
+    assert events[0].links.artifact_id == "plan:plan_1"
+    assert events[0].links.plan_id == "plan_1"
+    assert events[0].payload == artifact
+    assert "artifact" not in events[0].payload
+
+
+def test_normalizes_artifact_updated_with_direct_payload_shape():
+    context = RuntimeEventNormalizerContext(
+        session_id="thread-1",
+        root_run_id="run-root",
+        root_agent_id="developer",
+    )
+    artifact = {
+        "schema_version": "unchain.artifact.v1",
+        "artifact_id": "report",
+        "kind": "markdown",
+        "title": "Report",
+        "snapshot": {"markdown": "new"},
+    }
+
+    events = normalize_raw_event(
+        {
+            "type": "artifact_updated",
+            "run_id": "run-root",
+            "iteration": 3,
+            "tool_name": "report_tool",
+            "call_id": "call-2",
+            "artifact_id": "report",
+            "artifact": artifact,
+        },
+        context=context,
+    )
+
+    assert events[0].type == "artifact.updated"
+    assert events[0].links.artifact_id == "report"
+    assert events[0].payload == artifact
+
+
 def test_normalizes_human_input_request_and_resolution():
     context = RuntimeEventNormalizerContext(
         session_id="thread-1",

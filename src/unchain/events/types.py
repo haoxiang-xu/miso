@@ -18,6 +18,8 @@ RuntimeEventType = Literal[
     "tool.started",
     "tool.delta",
     "tool.completed",
+    "artifact.created",
+    "artifact.updated",
     "input.requested",
     "input.resolved",
 ]
@@ -38,6 +40,8 @@ RUNTIME_EVENT_TYPES: frozenset[str] = frozenset(
         "tool.started",
         "tool.delta",
         "tool.completed",
+        "artifact.created",
+        "artifact.updated",
         "input.requested",
         "input.resolved",
     }
@@ -70,6 +74,7 @@ class RuntimeEventLinks:
     channel_id: str | None = None
     team_id: str | None = None
     plan_id: str | None = None
+    artifact_id: str | None = None
 
     def to_dict(self) -> dict[str, str | None]:
         return {
@@ -81,6 +86,7 @@ class RuntimeEventLinks:
             "channel_id": self.channel_id,
             "team_id": self.team_id,
             "plan_id": self.plan_id,
+            "artifact_id": self.artifact_id,
         }
 
     @classmethod
