@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import logging
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -22,6 +23,68 @@ from .toolkit import Toolkit as RuntimeToolkit
 
 _ICON_SUFFIXES = {".svg", ".png"}
 _ENTRY_POINT_GROUPS = ("unchain.toolkits", "unchain.toolkits")
+_ARTIFACT_FALLBACK_RENDERERS = {"markdown", "text", "table", "kv", "log", "link", "json"}
+_LOGGER = logging.getLogger(__name__)
+
+
+def _builtin_artifact_icon(name: str) -> "IconDescriptor":
+    return IconDescriptor.from_builtin(name, "", "")
+
+
+_BUILTIN_ARTIFACT_KIND_DEFINITIONS = (
+    {
+        "kind": "file_diff",
+        "display_name": "Files changed",
+        "description": "Immutable snapshots of file changes produced by tools.",
+        "icon": "file_edit",
+        "fallback_renderer": "json",
+    },
+    {
+        "kind": "plan",
+        "display_name": "Plan",
+        "description": "Plan snapshots produced by PlanToolkit.",
+        "icon": "check_list",
+        "fallback_renderer": "markdown",
+    },
+    {
+        "kind": "markdown",
+        "display_name": "Markdown",
+        "description": "Markdown artifact snapshots.",
+        "icon": "markdown",
+        "fallback_renderer": "markdown",
+    },
+    {
+        "kind": "table",
+        "display_name": "Table",
+        "description": "Tabular artifact snapshots.",
+        "icon": "data",
+        "fallback_renderer": "table",
+    },
+    {
+        "kind": "kv",
+        "display_name": "Metadata",
+        "description": "Key-value artifact snapshots.",
+        "icon": "information",
+        "fallback_renderer": "kv",
+    },
+    {
+        "kind": "log",
+        "display_name": "Log",
+        "description": "Log artifact snapshots.",
+        "icon": "terminal",
+        "fallback_renderer": "log",
+    },
+    {
+        "kind": "link",
+        "display_name": "Link",
+        "description": "Link artifact snapshots.",
+        "icon": "link",
+        "fallback_renderer": "link",
+    },
+)
+_BUILTIN_ARTIFACT_KIND_NAMES = {
+    item["kind"] for item in _BUILTIN_ARTIFACT_KIND_DEFINITIONS
+}
 
 
 def _read_markdown(path: Path) -> str:
@@ -283,6 +346,26 @@ class IconDescriptor:
 
 
 @dataclass
+class ArtifactKindDescriptor:
+    kind: str
+    display_name: str
+    description: str
+    icon: IconDescriptor
+    fallback_renderer: str
+    toolkit_id: str
+
+    def to_summary(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "display_name": self.display_name,
+            "description": self.description,
+            "icon": self.icon.to_summary(),
+            "fallback_renderer": self.fallback_renderer,
+            "toolkit_id": self.toolkit_id,
+        }
+
+
+@dataclass
 class ToolkitDescriptor:
     id: str
     name: str
@@ -302,12 +385,19 @@ class ToolkitDescriptor:
     compat_python: str | None = None
     compat_legacy: str | None = None
     tools: dict[str, ToolDescriptor] = field(default_factory=dict)
+    artifact_kinds: dict[str, ArtifactKindDescriptor] = field(default_factory=dict)
     import_roots: tuple[Path, ...] = field(default_factory=tuple, repr=False)
 
     def sorted_tools(self) -> list[ToolDescriptor]:
         return sorted(
             self.tools.values(),
             key=lambda item: (item.title.casefold(), item.name.casefold()),
+        )
+
+    def sorted_artifact_kinds(self) -> list[ArtifactKindDescriptor]:
+        return sorted(
+            self.artifact_kinds.values(),
+            key=lambda item: item.kind.casefold(),
         )
 
     def to_summary(self, *, include_tools: bool = True) -> dict[str, Any]:
@@ -334,6 +424,10 @@ class ToolkitDescriptor:
                 "python": self.compat_python,
                 "legacy": self.compat_legacy,
             },
+            "artifact_kinds": [
+                artifact_kind.to_summary()
+                for artifact_kind in self.sorted_artifact_kinds()
+            ],
         }
         if include_tools:
             payload["tools"] = [tool.to_summary() for tool in self.sorted_tools()]
@@ -375,6 +469,86 @@ def _resolve_toolkit_icon(
     return None, IconDescriptor.from_builtin(icon_value, color, background_color)
 
 
+def _builtin_artifact_kinds() -> dict[str, ArtifactKindDescriptor]:
+    return {
+        str(item["kind"]): ArtifactKindDescriptor(
+            kind=str(item["kind"]),
+            display_name=str(item["display_name"]),
+            description=str(item["description"]),
+            icon=_builtin_artifact_icon(str(item["icon"])),
+            fallback_renderer=str(item["fallback_renderer"]),
+            toolkit_id="builtin",
+        )
+        for item in _BUILTIN_ARTIFACT_KIND_DEFINITIONS
+    }
+
+
+def _resolve_artifact_kind_icon(
+    root: Path,
+    artifact_kind: dict[str, Any],
+    manifest_path: Path,
+    kind: str,
+) -> IconDescriptor:
+    icon_value = _require_str(artifact_kind, "icon", manifest_path)
+    if _looks_like_icon_asset(icon_value):
+        icon_path = _resolve_asset(
+            root,
+            icon_value,
+            label=f"{manifest_path}: artifact icon for '{kind}'",
+            required_suffixes=_ICON_SUFFIXES,
+        )
+        return IconDescriptor.from_file(icon_path)
+
+    color = _optional_str(artifact_kind, "color") or ""
+    background_color = (
+        _optional_str(artifact_kind, "backgroundcolor")
+        or _optional_str(artifact_kind, "background_color")
+        or ""
+    )
+    return IconDescriptor.from_builtin(icon_value, color, background_color)
+
+
+def _parse_artifact_kinds(
+    root: Path,
+    manifest_path: Path,
+    toolkit_id: str,
+    artifact_kinds_section: list[Any],
+) -> dict[str, ArtifactKindDescriptor]:
+    artifact_kinds: dict[str, ArtifactKindDescriptor] = {}
+    for artifact_kind in artifact_kinds_section:
+        if not isinstance(artifact_kind, dict):
+            raise ValueError(f"{manifest_path}: invalid [[artifact_kinds]] entry")
+
+        kind = _require_str(artifact_kind, "kind", manifest_path)
+        if kind in _BUILTIN_ARTIFACT_KIND_NAMES:
+            _LOGGER.warning(
+                "%s: toolkit '%s' cannot override builtin artifact kind '%s'; ignoring manifest entry",
+                manifest_path,
+                toolkit_id,
+                kind,
+            )
+            continue
+        if kind in artifact_kinds:
+            raise ValueError(f"{manifest_path}: duplicate artifact kind '{kind}'")
+
+        fallback_renderer = _require_str(artifact_kind, "fallback_renderer", manifest_path)
+        if fallback_renderer not in _ARTIFACT_FALLBACK_RENDERERS:
+            raise ValueError(
+                f"{manifest_path}: invalid artifact fallback_renderer "
+                f"'{fallback_renderer}' for '{kind}'"
+            )
+
+        artifact_kinds[kind] = ArtifactKindDescriptor(
+            kind=kind,
+            display_name=_require_str(artifact_kind, "display_name", manifest_path),
+            description=_optional_str(artifact_kind, "description") or "",
+            icon=_resolve_artifact_kind_icon(root, artifact_kind, manifest_path, kind),
+            fallback_renderer=fallback_renderer,
+            toolkit_id=toolkit_id,
+        )
+    return artifact_kinds
+
+
 class ToolkitRegistry:
     """Discover toolkit metadata from builtin, local, and plugin sources."""
 
@@ -391,6 +565,48 @@ class ToolkitRegistry:
         return [
             descriptor.to_summary(include_tools=include_tools)
             for descriptor in self._sorted_toolkits()
+        ]
+
+    def list_artifact_kinds(self) -> list[dict[str, Any]]:
+        artifact_kinds = _builtin_artifact_kinds()
+        custom: dict[str, ArtifactKindDescriptor] = {}
+
+        for descriptor in self._sorted_toolkits():
+            for artifact_kind in descriptor.sorted_artifact_kinds():
+                kind = artifact_kind.kind
+                if kind in artifact_kinds:
+                    _LOGGER.warning(
+                        "%s: toolkit '%s' cannot override builtin artifact kind '%s'; ignoring manifest entry",
+                        descriptor.manifest_path,
+                        descriptor.id,
+                        kind,
+                    )
+                    continue
+
+                existing = custom.get(kind)
+                if existing is None:
+                    custom[kind] = artifact_kind
+                    continue
+
+                winner = min(
+                    (existing, artifact_kind),
+                    key=lambda item: item.toolkit_id.casefold(),
+                )
+                loser = artifact_kind if winner is existing else existing
+                custom[kind] = winner
+                _LOGGER.warning(
+                    "duplicate artifact kind '%s' from toolkit '%s' ignored; toolkit '%s' wins",
+                    kind,
+                    loser.toolkit_id,
+                    winner.toolkit_id,
+                )
+
+        return [
+            artifact_kind.to_summary()
+            for artifact_kind in (
+                list(artifact_kinds.values())
+                + sorted(custom.values(), key=lambda item: item.kind.casefold())
+            )
         ]
 
     def get(self, toolkit_id: str) -> ToolkitDescriptor | None:
@@ -560,6 +776,12 @@ class ToolkitRegistry:
         if not isinstance(tools_section, list):
             raise ValueError(f"{manifest_path}: [[tools]] must be an array of tables")
 
+        artifact_kinds_section = data.get("artifact_kinds", [])
+        if artifact_kinds_section is None:
+            artifact_kinds_section = []
+        if not isinstance(artifact_kinds_section, list):
+            raise ValueError(f"{manifest_path}: [[artifact_kinds]] must be an array of tables")
+
         toolkit_id = _require_str(toolkit_section, "id", manifest_path)
         toolkit_name = _require_str(toolkit_section, "name", manifest_path)
         toolkit_description = _require_str(toolkit_section, "description", manifest_path)
@@ -608,6 +830,13 @@ class ToolkitRegistry:
                 observe=_coerce_bool(tool_item.get("observe"), default=False),
             )
 
+        artifact_kinds = _parse_artifact_kinds(
+            root_path,
+            manifest_path,
+            toolkit_id,
+            artifact_kinds_section,
+        )
+
         descriptor = ToolkitDescriptor(
             id=toolkit_id,
             name=toolkit_name,
@@ -627,6 +856,7 @@ class ToolkitRegistry:
             compat_python=_optional_str(compat_section, "python"),
             compat_legacy=_optional_str(compat_section, "legacy"),
             tools=tools,
+            artifact_kinds=artifact_kinds,
             import_roots=tuple(import_roots),
         )
 
@@ -709,6 +939,13 @@ def list_toolkits(
     return ToolkitRegistry(config).list_toolkits(include_tools=include_tools)
 
 
+def list_artifact_kinds(
+    config: ToolRegistryConfig | dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Return JSON-safe artifact kind metadata for UI catalog consumers."""
+    return ToolkitRegistry(config).list_artifact_kinds()
+
+
 def get_toolkit_metadata(
     toolkit_id: str,
     tool_name: str | None = None,
@@ -720,10 +957,12 @@ def get_toolkit_metadata(
 
 
 __all__ = [
+    "ArtifactKindDescriptor",
     "ToolDescriptor",
     "ToolRegistryConfig",
     "ToolkitDescriptor",
     "ToolkitRegistry",
     "get_toolkit_metadata",
+    "list_artifact_kinds",
     "list_toolkits",
 ]

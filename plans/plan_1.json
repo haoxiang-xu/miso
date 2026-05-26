@@ -1,0 +1,77 @@
+{
+  "plan_id": "plan_1",
+  "title": "Add control_mouse toolkit for mouse control, screenshot, and computer operation",
+  "goal": "Implement a new builtin toolkit named control_mouse to provide mouse control, keyboard input, screen info, and screenshot capabilities with workspace-safe file handling and user confirmation for control actions.",
+  "constraints": [
+    "Cross-platform support, third-party dependencies, workspace path safety, user confirmation for control actions."
+  ],
+  "summary": "Implement a new builtin toolkit named control_mouse to enable mouse control, keyboard input, screen information retrieval, and screenshot functionality. Use third-party dependencies such as pyautogui, pynput, mss, and Pillow to support cross-platform operations. Ensure all screenshot outputs are saved within the workspace path for security. Require user confirmation for any control operations that affect the computer. Provide basic application/window control capabilities initially, with complex window management as a future enhancement.",
+  "steps": [
+    {
+      "step": "Create a new builtin toolkit directory src/unchain/toolkits/builtin/control_mouse/ and add toolkit.toml for registration.",
+      "status": "pending"
+    },
+    {
+      "step": "Implement ControlMouseToolkit class with registration and toolkit interface.",
+      "status": "pending"
+    },
+    {
+      "step": "Develop mouse control tools: move, click, drag, scroll.",
+      "status": "pending"
+    },
+    {
+      "step": "Develop keyboard input tools and shortcut key support.",
+      "status": "pending"
+    },
+    {
+      "step": "Implement screen information tools to get resolution and current mouse position.",
+      "status": "pending"
+    },
+    {
+      "step": "Implement screenshot tools for full screen and specific areas with output saved in workspace.",
+      "status": "pending"
+    },
+    {
+      "step": "Ensure all file outputs use _resolve_workspace_path() to enforce workspace safety.",
+      "status": "pending"
+    },
+    {
+      "step": "Add requires_confirmation flag for all control actions to prevent unintended operations.",
+      "status": "pending"
+    },
+    {
+      "step": "Add basic application/window control tools for opening and focusing applications.",
+      "status": "pending"
+    },
+    {
+      "step": "Write minimal smoke tests for the new toolkit functions.",
+      "status": "pending"
+    },
+    {
+      "step": "Update documentation to include usage and dependency information for the control_mouse toolkit.",
+      "status": "pending"
+    }
+  ],
+  "key_changes": [
+    "Add control_mouse builtin toolkit with mouse, keyboard, screen info, and screenshot tools, including workspace-safe file handling and user confirmation."
+  ],
+  "public_interfaces": [
+    "New control_mouse toolkit with tools for mouse control, keyboard input, screen info, screenshot, and basic app/window control."
+  ],
+  "test_cases": [
+    "Smoke tests verifying mouse movement, clicking, keyboard input, screenshot capture, and file output within workspace."
+  ],
+  "assumptions": [
+    "User environment supports pyautogui and other dependencies. Basic app/window control is sufficient for initial release."
+  ],
+  "references": [
+    "pyautogui documentation, pynput documentation, mss documentation, Pillow documentation."
+  ],
+  "open_questions": [
+    "Confirm third-party dependency allowance. Confirm scope of app/window control functionality for initial version."
+  ],
+  "status": "draft",
+  "revision": 2,
+  "created_at": "2026-05-26T20:08:00Z",
+  "updated_at": "2026-05-26T20:08:07Z"
+}
