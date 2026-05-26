@@ -40,6 +40,13 @@ _BUILTIN_ARTIFACT_KIND_DEFINITIONS = (
         "fallback_renderer": "json",
     },
     {
+        "kind": "workspace_change_set",
+        "display_name": "Workspace changes",
+        "description": "Run-scoped net workspace changes with safe restore metadata.",
+        "icon": "file_edit",
+        "fallback_renderer": "json",
+    },
+    {
         "kind": "plan",
         "display_name": "Plan",
         "description": "Plan snapshots produced by PlanToolkit.",

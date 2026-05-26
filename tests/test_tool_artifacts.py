@@ -7,6 +7,7 @@ from pathlib import Path
 
 from unchain import artifacts
 from unchain.events.bridge import RuntimeEventBridge
+from unchain.input import ASK_USER_QUESTION_TOOL_NAME
 from unchain.kernel import KernelLoop, ModelTurnResult
 from unchain.kernel.types import ToolCall as KernelToolCall
 from unchain.toolkits import CoreToolkit, GitToolkit, PlanToolkit
@@ -36,6 +37,7 @@ def _run_tool_turn(
     tmp_path: Path,
     callback_events: list[dict] | None = None,
     on_tool_confirm=None,
+    max_iterations: int = 2,
 ):
     assistant_messages = [
         {
@@ -78,7 +80,7 @@ def _run_tool_turn(
         callback=events.append,
         on_tool_confirm=on_tool_confirm,
         run_id="run-1",
-        max_iterations=2,
+        max_iterations=max_iterations,
     )
 
     return result, state, events, model_io
@@ -229,7 +231,183 @@ def test_core_write_emits_append_only_file_diff_artifact(tmp_path: Path):
     assert artifact["artifact_id"].startswith("file_diff:call-1")
     assert artifact["snapshot"]["files"][0]["path"] == str(tmp_path / "app.py")
     assert "+print('hi')" in artifact["snapshot"]["files"][0]["unified_diff"]
-    assert state.artifacts == [artifact]
+    assert artifact in state.artifacts
+    assert any(item["kind"] == "workspace_change_set" for item in state.artifacts)
+
+
+def test_core_write_and_edit_emit_one_run_level_workspace_change_set(tmp_path: Path):
+    toolkit = CoreToolkit(workspace_root=tmp_path)
+    target = tmp_path / "app.py"
+
+    _, state, raw_events, _ = _run_tool_turn(
+        tool_calls=[
+            KernelToolCall(
+                call_id="call-write",
+                name="write",
+                arguments={"path": str(target), "content": "print('one')\n"},
+            ),
+            KernelToolCall(
+                call_id="call-edit",
+                name="edit",
+                arguments={
+                    "path": str(target),
+                    "old_string": "one",
+                    "new_string": "two",
+                },
+            ),
+        ],
+        toolkit=toolkit,
+        tmp_path=tmp_path,
+    )
+
+    workspace_events = [
+        event
+        for event in raw_events
+        if event["type"].startswith("artifact_")
+        and event.get("artifact", {}).get("kind") == "workspace_change_set"
+    ]
+    assert len(workspace_events) == 1
+
+    artifact = workspace_events[0]["artifact"]
+    assert artifact["artifact_id"] == "workspace_change_set:run-1"
+    assert artifact["presentation"]["surface"] == "run_summary"
+    assert artifact["snapshot"]["totals"]["files"] == 1
+    assert artifact["snapshot"]["files"][0]["status"] == "created"
+    assert "+print('two')" in artifact["snapshot"]["files"][0]["unified_diff"]
+    assert artifact["snapshot"]["undo"]["supported"] is True
+    assert state.workspace_change_state["files"][str(target)]["latest_after"]["text"] == "print('two')\n"
+
+
+def test_workspace_change_set_emits_when_run_stops_at_max_iterations(tmp_path: Path):
+    toolkit = CoreToolkit(workspace_root=tmp_path)
+    target = tmp_path / "app.py"
+
+    result, state, raw_events, _ = _run_tool_turn(
+        tool_calls=[
+            KernelToolCall(
+                call_id="call-write",
+                name="write",
+                arguments={"path": str(target), "content": "print('one')\n"},
+            )
+        ],
+        toolkit=toolkit,
+        tmp_path=tmp_path,
+        max_iterations=1,
+    )
+
+    workspace_event = next(
+        event
+        for event in raw_events
+        if event["type"].startswith("artifact_")
+        and event.get("artifact", {}).get("kind") == "workspace_change_set"
+    )
+    run_max_index = next(index for index, event in enumerate(raw_events) if event["type"] == "run_max_iterations")
+    workspace_index = raw_events.index(workspace_event)
+
+    assert result.status == "max_iterations"
+    assert workspace_index < run_max_index
+    assert workspace_event["artifact"]["presentation"]["surface"] == "run_summary"
+    assert workspace_event["artifact"] in state.artifacts
+
+
+def test_workspace_change_state_survives_human_input_resume(tmp_path: Path):
+    target = tmp_path / "app.py"
+    ask_arguments = {
+        "title": "Continue",
+        "question": "Continue?",
+        "selection_mode": "single",
+        "options": [{"label": "Continue", "value": "continue"}],
+    }
+    toolkit = CoreToolkit(workspace_root=tmp_path)
+    initial_loop = KernelLoop(
+        model_io=_QueueModelIO(
+            [
+                ModelTurnResult(
+                    assistant_messages=[
+                        {
+                            "type": "function_call",
+                            "call_id": "call-write",
+                            "name": "write",
+                            "arguments": json.dumps(
+                                {"path": str(target), "content": "print('one')\n"}
+                            ),
+                        }
+                    ],
+                    tool_calls=[
+                        KernelToolCall(
+                            call_id="call-write",
+                            name="write",
+                            arguments={"path": str(target), "content": "print('one')\n"},
+                        )
+                    ],
+                    response_id="resp_write",
+                ),
+                ModelTurnResult(
+                    assistant_messages=[
+                        {
+                            "type": "function_call",
+                            "call_id": "call-user",
+                            "name": ASK_USER_QUESTION_TOOL_NAME,
+                            "arguments": json.dumps(ask_arguments),
+                        }
+                    ],
+                    tool_calls=[
+                        KernelToolCall(
+                            call_id="call-user",
+                            name=ASK_USER_QUESTION_TOOL_NAME,
+                            arguments=ask_arguments,
+                        )
+                    ],
+                    response_id="resp_ask",
+                ),
+            ]
+        )
+    )
+
+    suspended = initial_loop.run(
+        [{"role": "user", "content": "start"}],
+        toolkit=toolkit,
+        run_id="run-1",
+        max_iterations=4,
+    )
+
+    assert suspended.status == "awaiting_human_input"
+    assert suspended.continuation["run_id"] == "run-1"
+    assert suspended.continuation["workspace_change_state"]["files"][str(target)]["latest_after"]["text"] == (
+        "print('one')\n"
+    )
+
+    resumed_events: list[dict] = []
+    resumed_loop = KernelLoop(
+        model_io=_QueueModelIO(
+            [
+                ModelTurnResult(
+                    assistant_messages=[{"role": "assistant", "content": "done"}],
+                    tool_calls=[],
+                    final_text="done",
+                    response_id="resp_done",
+                )
+            ]
+        )
+    )
+    resumed = resumed_loop.resume_human_input(
+        conversation=suspended.messages,
+        continuation=suspended.continuation,
+        response={"request_id": "call-user", "selected_values": ["continue"]},
+        toolkit=toolkit,
+        callback=resumed_events.append,
+    )
+
+    workspace_event = next(
+        event
+        for event in resumed_events
+        if event["type"].startswith("artifact_")
+        and event.get("artifact", {}).get("kind") == "workspace_change_set"
+    )
+    assert resumed.status == "completed"
+    assert workspace_event["artifact"]["artifact_id"] == "workspace_change_set:run-1"
+    assert workspace_event["artifact"]["snapshot"]["files"][0]["relative_path"] == "app.py"
+    assert "+print('one')" in workspace_event["artifact"]["snapshot"]["files"][0]["unified_diff"]
 
 
 def test_core_write_large_file_diff_artifact_hashes_full_diff(tmp_path: Path):
@@ -271,7 +449,8 @@ def test_core_write_large_file_diff_artifact_hashes_full_diff(tmp_path: Path):
     assert file_snapshot["truncated"] is True
     assert file_snapshot["total_lines"] == expected_payload["total_lines"]
     assert file_snapshot["displayed_lines"] == 400
-    assert state.artifacts == [artifact]
+    assert artifact in state.artifacts
+    assert any(item["kind"] == "workspace_change_set" for item in state.artifacts)
 
 
 def test_modified_write_confirmation_artifact_matches_effective_arguments(tmp_path: Path):
@@ -300,7 +479,8 @@ def test_modified_write_confirmation_artifact_matches_effective_arguments(tmp_pa
     unified_diff = artifact["snapshot"]["files"][0]["unified_diff"]
     assert "+modified" in unified_diff
     assert "+original" not in unified_diff
-    assert state.artifacts == [artifact]
+    assert artifact in state.artifacts
+    assert any(item["kind"] == "workspace_change_set" for item in state.artifacts)
 
 
 def test_git_commit_emits_file_diff_artifact_from_captured_staged_diff(tmp_path: Path):

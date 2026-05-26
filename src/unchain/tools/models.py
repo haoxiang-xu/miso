@@ -197,6 +197,10 @@ class ToolExecutionContext:
     memory_namespace: str = ""
     session_store: Any = None
     tool_runtime_config: dict[str, Any] = field(default_factory=dict)
+    tool_name: str = ""
+    call_id: str = ""
+    turn_id: str = ""
+    workspace_changes: Any = None
 
 
 @dataclass(frozen=True)

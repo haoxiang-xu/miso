@@ -400,6 +400,7 @@ fallback_renderer = "markdown"
     }
 
     assert kinds["file_diff"]["display_name"] == "Files changed"
+    assert kinds["workspace_change_set"]["display_name"] == "Workspace changes"
     assert kinds["plan"]["display_name"] == "Plan"
     assert kinds["benchmark_report"]["display_name"] == "Benchmark"
     assert kinds["benchmark_report"]["toolkit_id"] == "demo"
