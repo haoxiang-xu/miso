@@ -10,6 +10,7 @@ from unchain.events.bridge import RuntimeEventBridge
 from unchain.input import ASK_USER_QUESTION_TOOL_NAME
 from unchain.kernel import KernelLoop, ModelTurnResult
 from unchain.kernel.types import ToolCall as KernelToolCall
+from unchain.toolkits.base import BuiltinToolkit
 from unchain.toolkits import CoreToolkit, GitToolkit, PlanToolkit
 from unchain.tools._diff_helpers import build_code_diff_payload
 from unchain.tools import Toolkit
@@ -28,6 +29,18 @@ class _QueueModelIO:
         if not self.results:
             raise AssertionError("unexpected fetch_turn call")
         return self.results.pop(0)
+
+
+class _AutoWriteToolkit(BuiltinToolkit):
+    def __init__(self, *, workspace_root: Path):
+        super().__init__(workspace_root=workspace_root)
+        self.register(self.write_raw, name="write_raw")
+
+    def write_raw(self, path: str, content: str) -> dict:
+        target = self._resolve_workspace_path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return {"ok": True, "path": str(target)}
 
 
 def _run_tool_turn(
@@ -275,7 +288,49 @@ def test_core_write_and_edit_emit_one_run_level_workspace_change_set(tmp_path: P
     assert artifact["snapshot"]["files"][0]["status"] == "created"
     assert "+print('two')" in artifact["snapshot"]["files"][0]["unified_diff"]
     assert artifact["snapshot"]["undo"]["supported"] is True
+    assert [
+        operation["call_id"]
+        for operation in state.workspace_change_state["files"][str(target)]["operations"]
+    ] == ["call-write", "call-edit"]
     assert state.workspace_change_state["files"][str(target)]["latest_after"]["text"] == "print('two')\n"
+
+
+def test_builtin_tool_file_mutations_are_auto_tracked_without_authored_artifact(tmp_path: Path):
+    toolkit = _AutoWriteToolkit(workspace_root=tmp_path)
+    target = tmp_path / "generated.txt"
+
+    _, state, raw_events, _ = _run_tool_turn(
+        tool_calls=[
+            KernelToolCall(
+                call_id="call-auto",
+                name="write_raw",
+                arguments={"path": str(target), "content": "auto tracked\n"},
+            )
+        ],
+        toolkit=toolkit,
+        tmp_path=tmp_path,
+    )
+
+    workspace_event = next(
+        event
+        for event in raw_events
+        if event["type"].startswith("artifact_")
+        and event.get("artifact", {}).get("kind") == "workspace_change_set"
+    )
+    artifact = workspace_event["artifact"]
+
+    assert artifact["artifact_id"] == "workspace_change_set:run-1"
+    assert artifact["snapshot"]["totals"]["files"] == 1
+    assert artifact["snapshot"]["files"][0]["relative_path"] == "generated.txt"
+    assert artifact["snapshot"]["files"][0]["status"] == "created"
+    assert "+auto tracked" in artifact["snapshot"]["files"][0]["unified_diff"]
+    assert state.workspace_change_state["files"][str(target)]["latest_after"]["text"] == "auto tracked\n"
+    assert state.workspace_change_state["files"][str(target)]["operations"][0] == {
+        "turn_id": "run-1:turn-0",
+        "tool_name": "write_raw",
+        "call_id": "call-auto",
+        "operation": "created",
+    }
 
 
 def test_workspace_change_set_emits_when_run_stops_at_max_iterations(tmp_path: Path):

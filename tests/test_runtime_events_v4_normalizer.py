@@ -98,8 +98,10 @@ def test_v4_normalizes_human_input_to_choice_interaction():
     assert events[0].links.interaction_id == "input-1"
     assert events[0].payload["kind"] == "choice"
     assert events[0].payload["renderer"] == "single"
+    assert events[0].payload["selection_mode"] == "single"
     assert events[0].payload["prompt"] == "Pick one"
     assert events[0].payload["options"] == [{"label": "A", "value": "a"}]
+    assert events[0].payload["config"]["selection_mode"] == "single"
 
 
 def test_v4_normalizes_tool_denied_to_interaction_resolved():

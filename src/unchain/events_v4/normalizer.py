@@ -201,6 +201,9 @@ def _interaction_payload(raw: dict[str, Any], *, raw_type: str) -> tuple[str, di
         },
         "config": copy.deepcopy(raw.get("interact_config")) if isinstance(raw.get("interact_config"), dict) else {},
     }
+    if selection_mode:
+        payload["selection_mode"] = selection_mode
+        payload["config"].setdefault("selection_mode", selection_mode)
     for key in ("allow_other", "other_label", "other_placeholder", "min_selected", "max_selected"):
         if key in raw:
             payload[key] = copy.deepcopy(raw[key])

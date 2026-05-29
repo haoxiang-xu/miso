@@ -255,6 +255,13 @@ class ToolExecutionHarness(BaseToolHarness):
             arguments=copy.deepcopy(tool_call.arguments),
         )
 
+        workspace_change_tracker = None
+        workspace_snapshot_before = None
+        if not is_human_input_tool_name(tool_call.name):
+            workspace_change_tracker = _workspace_change_tracker(context, toolkit, tool_call)
+            if workspace_change_tracker is not None:
+                workspace_snapshot_before = workspace_change_tracker.capture_text_snapshot()
+
         plugin_outcome = run_tool_runtime_plugins(
             context.tool_runtime_plugins,
             tool_call=tool_call,
@@ -293,6 +300,14 @@ class ToolExecutionHarness(BaseToolHarness):
                 )
                 _emit_artifact_events(context, tool_call, emitted_artifacts)
             state_updates = copy.deepcopy(plugin_outcome.state_updates)
+            if workspace_change_tracker is not None:
+                workspace_change_tracker.record_text_snapshot_changes(
+                    workspace_snapshot_before,
+                    tool_name=tool_call.name,
+                    call_id=tool_call.call_id,
+                    turn_id=f"{context.run_id}:turn-{context.iteration}",
+                )
+                state_updates.update(_workspace_change_state_update(workspace_change_tracker))
             if emitted_artifacts:
                 state_updates["artifacts"] = upsert_artifacts(
                     context.state.artifacts,
@@ -467,7 +482,6 @@ class ToolExecutionHarness(BaseToolHarness):
                 },
             )
 
-        workspace_change_tracker = _workspace_change_tracker(context, toolkit, tool_call)
         outcome = execute_confirmable_tool_call(
             toolkit=toolkit,
             tool_call=tool_call,
@@ -492,6 +506,13 @@ class ToolExecutionHarness(BaseToolHarness):
                 workspace_changes=workspace_change_tracker,
             ),
         )
+        if workspace_change_tracker is not None:
+            workspace_change_tracker.record_text_snapshot_changes(
+                workspace_snapshot_before,
+                tool_name=tool_call.name,
+                call_id=tool_call.call_id,
+                turn_id=f"{context.run_id}:turn-{context.iteration}",
+            )
         should_observe = batch_state.should_observe or outcome.should_observe
         builder = get_provider_message_builder(context.provider)
         visible_tool_result, authored_artifacts = extract_authored_artifacts(outcome.tool_result)

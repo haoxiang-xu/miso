@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import difflib
 import hashlib
+import os
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,25 @@ DEFAULT_MAX_RESTORE_BYTES_PER_FILE = 256 * 1024
 DEFAULT_MAX_RESTORE_TOTAL_BYTES = 1024 * 1024
 DEFAULT_MAX_DIFF_LINES = 400
 DEFAULT_MAX_DIFF_BYTES = 128 * 1024
+DEFAULT_AUTO_TRACK_MAX_FILE_BYTES = 256 * 1024
+DEFAULT_AUTO_TRACK_MAX_FILES = 5000
+AUTO_TRACK_SKIP_DIR_NAMES = {
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".next",
+    ".nuxt",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    "coverage",
+}
 
 
 def _sha256_text(text: str) -> str:
@@ -83,6 +103,142 @@ def _count_plus_minus(unified_diff: str) -> tuple[int, int]:
         elif line.startswith("-"):
             deletions += 1
     return additions, deletions
+
+
+class WorkspaceTextSnapshot:
+    """Bounded UTF-8 text snapshot used for automatic workspace change detection."""
+
+    def __init__(
+        self,
+        *,
+        entries: dict[str, dict[str, Any]] | None = None,
+        complete: bool = True,
+    ) -> None:
+        self.entries = entries or {}
+        self.complete = bool(complete)
+
+    @classmethod
+    def capture(
+        cls,
+        workspace_roots: list[str | Path],
+        *,
+        max_file_bytes: int = DEFAULT_AUTO_TRACK_MAX_FILE_BYTES,
+        max_files: int = DEFAULT_AUTO_TRACK_MAX_FILES,
+    ) -> "WorkspaceTextSnapshot":
+        entries: dict[str, dict[str, Any]] = {}
+        complete = True
+        resolved_roots = [Path(root).expanduser().resolve() for root in workspace_roots]
+
+        for root in resolved_roots:
+            if not root.exists():
+                continue
+            paths = [root] if root.is_file() else cls._iter_files(root)
+            for target in paths:
+                if len(entries) >= max(0, int(max_files)):
+                    complete = False
+                    break
+                entry = cls._entry_for(target, resolved_roots, max_file_bytes=max_file_bytes)
+                if entry is None:
+                    continue
+                entries[entry["path"]] = entry
+
+        return cls(entries=entries, complete=complete)
+
+    @staticmethod
+    def _iter_files(root: Path):
+        for current_root, dirnames, filenames in os.walk(root):
+            dirnames[:] = sorted(
+                name for name in dirnames if name not in AUTO_TRACK_SKIP_DIR_NAMES
+            )
+            for filename in sorted(filenames):
+                yield Path(current_root) / filename
+
+    @staticmethod
+    def _relative_path(target: Path, workspace_roots: list[Path]) -> str:
+        for root in workspace_roots:
+            try:
+                return target.relative_to(root).as_posix()
+            except ValueError:
+                continue
+        return target.name
+
+    @classmethod
+    def _entry_for(
+        cls,
+        target: Path,
+        workspace_roots: list[Path],
+        *,
+        max_file_bytes: int,
+    ) -> dict[str, Any] | None:
+        if target.is_symlink():
+            return None
+        try:
+            resolved = target.expanduser().resolve()
+        except Exception:
+            return None
+        if resolved.is_symlink() or not resolved.is_file():
+            return None
+        if not any(_is_relative_to(resolved, root) for root in workspace_roots):
+            return None
+
+        relative_path = cls._relative_path(resolved, workspace_roots)
+        try:
+            stat_result = resolved.stat()
+        except OSError:
+            return None
+        if stat_result.st_size > max(0, int(max_file_bytes)):
+            return {
+                "path": str(resolved),
+                "relative_path": relative_path,
+                "exists": True,
+                "trackable": False,
+                "sha256": "",
+                "size_bytes": int(stat_result.st_size),
+                "text": None,
+            }
+        try:
+            raw = resolved.read_bytes()
+        except OSError:
+            return None
+        if b"\x00" in raw[:8192]:
+            return {
+                "path": str(resolved),
+                "relative_path": relative_path,
+                "exists": True,
+                "trackable": False,
+                "sha256": "",
+                "size_bytes": len(raw),
+                "text": None,
+            }
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return {
+                "path": str(resolved),
+                "relative_path": relative_path,
+                "exists": True,
+                "trackable": False,
+                "sha256": "",
+                "size_bytes": len(raw),
+                "text": None,
+            }
+        return {
+            "path": str(resolved),
+            "relative_path": relative_path,
+            "exists": True,
+            "trackable": True,
+            "sha256": _sha256_text(text),
+            "size_bytes": len(raw),
+            "text": text,
+        }
+
+
+def _is_relative_to(target: Path, root: Path) -> bool:
+    try:
+        target.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 class WorkspaceChangeTracker:
@@ -165,6 +321,73 @@ class WorkspaceChangeTracker:
             }
         )
         self._refresh_undo_support()
+
+    def capture_text_snapshot(self) -> WorkspaceTextSnapshot:
+        return WorkspaceTextSnapshot.capture(self.workspace_roots)
+
+    def record_text_snapshot_changes(
+        self,
+        before: WorkspaceTextSnapshot | None,
+        *,
+        tool_name: str,
+        call_id: str,
+        turn_id: str,
+    ) -> None:
+        if before is None:
+            return
+        after = self.capture_text_snapshot()
+        path_keys = sorted(set(before.entries) | set(after.entries))
+        for path_key in path_keys:
+            before_entry = before.entries.get(path_key)
+            after_entry = after.entries.get(path_key)
+            if before_entry is None and not before.complete:
+                continue
+            if after_entry is None and not after.complete:
+                continue
+            if before_entry is not None and before_entry.get("trackable") is not True:
+                continue
+            if after_entry is not None and after_entry.get("trackable") is not True:
+                continue
+
+            before_text = (
+                str(before_entry.get("text"))
+                if isinstance(before_entry, dict) and before_entry.get("exists")
+                else None
+            )
+            after_text = (
+                str(after_entry.get("text"))
+                if isinstance(after_entry, dict) and after_entry.get("exists")
+                else None
+            )
+            if before_text == after_text:
+                continue
+            after_sha256 = (
+                str(after_entry.get("sha256") or "")
+                if isinstance(after_entry, dict) and after_entry.get("exists")
+                else ""
+            )
+            if self.latest_after_sha256(path_key) == after_sha256:
+                continue
+            operation = _status(_snapshot(before_text), _snapshot(after_text))
+            self.record_text_file_change(
+                path_key,
+                before_text,
+                after_text,
+                operation=operation,
+                tool_name=tool_name,
+                call_id=call_id,
+                turn_id=turn_id,
+            )
+
+    def latest_after_sha256(self, path: str) -> str | None:
+        target = Path(path).expanduser().resolve()
+        entry = self._files.get(str(target))
+        if not isinstance(entry, dict):
+            return None
+        latest = entry.get("latest_after")
+        if not isinstance(latest, dict):
+            return None
+        return str(latest.get("sha256") or "")
 
     def to_state(self) -> dict[str, Any]:
         self._refresh_undo_support()

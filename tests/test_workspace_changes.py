@@ -42,6 +42,33 @@ def test_tracker_collapses_multiple_changes_to_one_net_file(tmp_path: Path):
     assert [op["tool_name"] for op in file_state["operations"]] == ["write", "edit"]
 
 
+def test_tracker_records_automatic_snapshot_created_modified_and_deleted(tmp_path: Path):
+    created = tmp_path / "created.txt"
+    modified = tmp_path / "modified.txt"
+    deleted = tmp_path / "deleted.txt"
+    modified.write_text("before modified\n", encoding="utf-8")
+    deleted.write_text("before deleted\n", encoding="utf-8")
+    tracker = WorkspaceChangeTracker(run_id="run-1", workspace_roots=[tmp_path])
+    before = tracker.capture_text_snapshot()
+
+    created.write_text("created\n", encoding="utf-8")
+    modified.write_text("after modified\n", encoding="utf-8")
+    deleted.unlink()
+
+    tracker.record_text_snapshot_changes(
+        before,
+        tool_name="shell",
+        call_id="call-shell",
+        turn_id="run-1:turn-0",
+    )
+
+    state = tracker.to_state()
+    assert state["files"][str(created)]["status"] == "created"
+    assert state["files"][str(modified)]["status"] == "modified"
+    assert state["files"][str(deleted)]["status"] == "deleted"
+    assert state["files"][str(deleted)]["latest_after"]["exists"] is False
+
+
 def test_tracker_artifact_contains_run_level_net_diff_and_undo_metadata(tmp_path: Path):
     target = tmp_path / "app.py"
     tracker = WorkspaceChangeTracker(run_id="run-1", workspace_roots=[tmp_path])
