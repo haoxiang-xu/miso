@@ -37,6 +37,16 @@ class ArtifactOwner:
         }
 
 
+def _safe_deepcopy(value: Any) -> Any:
+    try:
+        return copy.deepcopy(value)
+    except Exception:
+        try:
+            return json.loads(json.dumps(value, default=str, ensure_ascii=False))
+        except Exception:
+            return str(value)
+
+
 def markdown(
     title: str,
     markdown: str,
@@ -185,9 +195,13 @@ def canonicalize_artifacts(
 
 def extract_authored_artifacts(tool_result: Any) -> tuple[Any, list[dict[str, Any]]]:
     if not isinstance(tool_result, dict):
-        return copy.deepcopy(tool_result), []
-    visible = copy.deepcopy(tool_result)
-    raw_artifacts = visible.pop("_artifacts", None)
+        return _safe_deepcopy(tool_result), []
+    raw_artifacts = tool_result.get("_artifacts")
+    visible = {
+        key: _safe_deepcopy(value)
+        for key, value in tool_result.items()
+        if key != "_artifacts"
+    }
     return visible, _coerce_artifact_list(raw_artifacts)
 
 
@@ -579,7 +593,14 @@ def _coerce_artifact_list(raw_artifacts: Any) -> list[dict[str, Any]]:
         candidates = raw_artifacts
     else:
         return []
-    return [copy.deepcopy(item) for item in candidates if isinstance(item, dict)]
+    copied: list[dict[str, Any]] = []
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        snapshot = _safe_deepcopy(item)
+        if isinstance(snapshot, dict):
+            copied.append(snapshot)
+    return copied
 
 
 def _revision_map(existing_artifacts: list[dict[str, Any]] | None) -> dict[str, int]:

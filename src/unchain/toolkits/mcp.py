@@ -327,12 +327,16 @@ class MCPToolkit(Toolkit):
             if getattr(annotations, "destructiveHint", None) is True:
                 requires_confirmation = True
 
-        # Create a tool whose execute() will be handled by our overridden
-        # execute() method (the func is a no-op placeholder).
+        def _execute_mcp_tool(**kwargs: Any) -> dict[str, Any]:
+            return self.execute(name, kwargs)
+
+        # AgentBuilder flattens Toolkit instances into a single Toolkit by
+        # registering Tool objects, so each converted Tool must delegate back
+        # to this MCPToolkit instance for execution.
         return tool(
             name=name,
             description=description,
-            func=lambda **kw: {"error": "direct call not supported; use toolkit.execute()"},
+            func=_execute_mcp_tool,
             parameters=parameters,
             requires_confirmation=requires_confirmation,
         )

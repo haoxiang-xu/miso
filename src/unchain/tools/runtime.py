@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -27,6 +28,16 @@ class ToolRuntimePlugin(Protocol):
         ...
 
 
+def _copy_tool_result_snapshot(tool_result: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return copy.deepcopy(tool_result)
+    except Exception:
+        try:
+            return json.loads(json.dumps(tool_result, default=str, ensure_ascii=False))
+        except Exception:
+            return {"result": str(tool_result)}
+
+
 def run_tool_runtime_plugins(
     plugins: list[ToolRuntimePlugin],
     *,
@@ -40,7 +51,7 @@ def run_tool_runtime_plugins(
         if isinstance(outcome, ToolRuntimeOutcome) and outcome.handled:
             return ToolRuntimeOutcome(
                 handled=True,
-                tool_result=copy.deepcopy(outcome.tool_result) if isinstance(outcome.tool_result, dict) else outcome.tool_result,
+                tool_result=_copy_tool_result_snapshot(outcome.tool_result) if isinstance(outcome.tool_result, dict) else outcome.tool_result,
                 result_messages=copy.deepcopy(outcome.result_messages),
                 state_updates=copy.deepcopy(outcome.state_updates),
                 should_observe=bool(outcome.should_observe),

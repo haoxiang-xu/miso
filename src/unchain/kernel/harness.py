@@ -20,6 +20,26 @@ RuntimePhase = Literal[
 ]
 
 
+# Event keys whose values are live runtime handles or callbacks, not data.
+# The kernel places these into the phase event (see KernelLoop._run_iteration):
+# an MCP ``toolkit`` owns a background event loop, daemon thread and session;
+# ``loop`` is the live KernelLoop; the rest are callables. None of them are
+# serializable, so deep-copying them is meaningless (callables) or a hard crash
+# (``cannot pickle 'async_generator'/'_queue.SimpleQueue'`` for live handles).
+# They are passed through by reference — consistent with ToolContext.toolkit /
+# .loop, which already read them from the un-copied ``raw_event``.
+_PASSTHROUGH_EVENT_KEYS = frozenset({
+    "toolkit",
+    "loop",
+    "callback",
+    "on_tool_confirm",
+    "on_human_input",
+    "on_max_iterations",
+    "tool_runtime_plugins",
+    "emit_stream",
+})
+
+
 @dataclass(frozen=True)
 class HarnessContext:
     state: RunState
@@ -37,7 +57,18 @@ class HarnessContext:
         return self.state.view_messages(version_id)
 
     def event_payload(self) -> dict[str, Any]:
-        return copy.deepcopy(self.event)
+        copied: dict[str, Any] = {}
+        for key, value in self.event.items():
+            if key in _PASSTHROUGH_EVENT_KEYS:
+                copied[key] = value
+                continue
+            try:
+                copied[key] = copy.deepcopy(value)
+            except TypeError:
+                # A live/unpicklable object reached the event under an
+                # unexpected key; pass it through rather than crashing the run.
+                copied[key] = value
+        return copied
 
 
 @runtime_checkable

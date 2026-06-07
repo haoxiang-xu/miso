@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-import copy
 from dataclasses import dataclass
 from typing import Callable
 
@@ -25,7 +24,7 @@ class SubagentExecutor:
         results: list[SubagentResult | None] = [None] * len(items)
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(run_item, index, copy.deepcopy(item)): index
+                executor.submit(run_item, index, dict(item)): index
                 for index, item in enumerate(items)
             }
             try:
