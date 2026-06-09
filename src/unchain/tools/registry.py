@@ -4,6 +4,7 @@ import importlib
 import inspect
 import logging
 import sys
+import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -157,6 +158,10 @@ def _resolve_asset(root: Path, relative_path: str, *, label: str, required_suffi
 
 def _looks_like_icon_asset(value: str) -> bool:
     return Path(value).suffix.lower() in _ICON_SUFFIXES
+
+
+def _looks_like_emoji_icon(value: str) -> bool:
+    return any(unicodedata.category(char) == "So" for char in value)
 
 
 def _require_builtin_icon_field(
@@ -319,10 +324,15 @@ class IconDescriptor:
     name: str | None = None
     color: str | None = None
     background_color: str | None = None
+    emoji: str | None = None
 
     @classmethod
     def from_file(cls, path: Path) -> "IconDescriptor":
         return cls(type="file", path=path)
+
+    @classmethod
+    def from_emoji(cls, emoji: str) -> "IconDescriptor":
+        return cls(type="emoji", emoji=emoji)
 
     @classmethod
     def from_builtin(
@@ -343,6 +353,11 @@ class IconDescriptor:
             return {
                 "type": "file",
                 "path": str(self.path) if self.path else "",
+            }
+        if self.type == "emoji":
+            return {
+                "type": "emoji",
+                "emoji": self.emoji or "",
             }
         return {
             "type": "builtin",
@@ -460,6 +475,8 @@ def _resolve_toolkit_icon(
             required_suffixes=_ICON_SUFFIXES,
         )
         return icon_path, IconDescriptor.from_file(icon_path)
+    if _looks_like_emoji_icon(icon_value):
+        return None, IconDescriptor.from_emoji(icon_value)
 
     color = _require_builtin_icon_field(
         toolkit_section,
@@ -655,7 +672,20 @@ class ToolkitRegistry:
                 f"{descriptor.manifest_path}: toolkit factory '{descriptor.factory}' "
                 "did not return a unchain.tools.Toolkit"
             )
+        self._apply_runtime_tool_metadata(runtime_toolkit, descriptor)
         return runtime_toolkit
+
+    def _apply_runtime_tool_metadata(
+        self,
+        runtime_toolkit: RuntimeToolkit,
+        descriptor: ToolkitDescriptor,
+    ) -> None:
+        for tool_name, tool_descriptor in descriptor.tools.items():
+            runtime_tool = runtime_toolkit.tools.get(tool_name)
+            if runtime_tool is None:
+                continue
+            runtime_tool.icon_path = str(tool_descriptor.icon_path) if tool_descriptor.icon_path else ""
+            runtime_tool.icon = tool_descriptor.icon.to_summary()
 
     def _sorted_toolkits(self) -> list[ToolkitDescriptor]:
         return sorted(

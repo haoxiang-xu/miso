@@ -1,8 +1,9 @@
 from .base import BuiltinToolkit
-from .builtin import CoreToolkit, ExternalAPIToolkit, GitToolkit, PlanToolkit
+from .builtin import AgentReachToolkit, CoreToolkit, ExternalAPIToolkit, GitToolkit, PlanToolkit
 from .mcp import MCPToolkit
 
 __all__ = [
+    "AgentReachToolkit",
     "BuiltinToolkit",
     "CoreToolkit",
     "ExternalAPIToolkit",
