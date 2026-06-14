@@ -4,7 +4,7 @@ import os
 from typing import Any, Callable
 
 from ..kernel.model_io import ModelIO
-from ..providers import AnthropicModelIO, OllamaModelIO, OpenAIModelIO
+from ..providers import AnthropicModelIO, HyperspaceModelIO, OllamaModelIO, OpenAIModelIO
 
 
 class ModelIOFactoryRegistry:
@@ -13,6 +13,7 @@ class ModelIOFactoryRegistry:
             "openai": self._create_openai,
             "anthropic": self._create_anthropic,
             "ollama": self._create_ollama,
+            "hyperspace": self._create_hyperspace,
         }
 
     def register(self, provider: str, factory: Callable[..., ModelIO]) -> None:
@@ -51,3 +52,14 @@ class ModelIOFactoryRegistry:
             model=model,
             base_url=str(os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434"),
         )
+
+    def _create_hyperspace(self, *, model: str, api_key: str | None) -> ModelIO:
+        resolved_api_key = api_key or os.getenv("HYPERSPACE_API_KEY")
+        base_url = os.getenv("HYPERSPACE_BASE_URL")
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "api_key": resolved_api_key or "",
+        }
+        if base_url:
+            kwargs["base_url"] = base_url
+        return HyperspaceModelIO(**kwargs)
