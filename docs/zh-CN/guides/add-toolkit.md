@@ -62,6 +62,25 @@ fallback_renderer = "markdown"
 
 `fallback_renderer` 必须是 `markdown`、`text`、`table`、`kv`、`log`、`link` 或 `json`。`icon` 可以是 PuPu 内置 icon id，也可以是 toolkit 包内相对路径的 `.svg` / `.png` 静态资源。不要在 artifact runtime event 里内联 SVG、HTML、CSS、React 组件或 icon hint；event 只应该携带不可变 snapshot 数据。
 
+如果 toolkit 会修改 workspace 内的文本文件，单独发 artifact event 不足以进入 run-level 文件总结或 undo。可用执行上下文存在时，应把文件变更上报给 workspace change tracker：
+
+```python
+context = self.current_execution_context
+tracker = getattr(context, "workspace_changes", None) if context is not None else None
+if tracker is not None:
+    tracker.record_text_file_change(
+        str(path),
+        before_text,
+        after_text,
+        operation="modified",
+        tool_name="my_tool",
+        call_id=context.call_id,
+        turn_id=context.turn_id,
+    )
+```
+
+workspace change tracker 会生成一个 run 级别的 `workspace_change_set` artifact，里面包含 net diff 和安全 restore 元数据。toolkit 自己的 artifact 仍然适合做语义 UI，但只有上报给 tracker 的文件变更才会参与 net diff 和 undo。
+
 ### \_\_init\_\_.py
 
 ```python

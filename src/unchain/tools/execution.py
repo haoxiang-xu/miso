@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
+from typing import Any
 
 from ..artifacts import (
     ArtifactOwner,
@@ -13,6 +14,8 @@ from ..artifacts import (
     upsert_artifacts,
 )
 from ..input.human_input import HumanInputResponse, is_human_input_tool_name
+from ..toolkits.base import BuiltinToolkit
+from ..workspace_changes import WorkspaceChangeTracker
 from .toolkit import Toolkit
 from ..kernel.delta import HarnessDelta, SuspendSignal
 from ..kernel.types import ToolCall
@@ -34,6 +37,36 @@ def _artifact_owner(context: ToolContext, tool_call: ToolCall) -> ArtifactOwner:
         tool_name=tool_call.name,
         call_id=tool_call.call_id,
     )
+
+
+def _builtin_toolkit_owner(toolkit: Toolkit, tool_name: str) -> BuiltinToolkit | None:
+    tool_obj = toolkit.get(tool_name)
+    owner = getattr(getattr(tool_obj, "func", None), "__self__", None) if tool_obj is not None else None
+    return owner if isinstance(owner, BuiltinToolkit) else None
+
+
+def _workspace_change_tracker(
+    context: ToolContext,
+    toolkit: Toolkit,
+    tool_call: ToolCall,
+) -> WorkspaceChangeTracker | None:
+    owner = _builtin_toolkit_owner(toolkit, tool_call.name)
+    workspace_roots = getattr(owner, "workspace_roots", None) if owner is not None else None
+    if not isinstance(workspace_roots, list) or not workspace_roots:
+        return None
+    return WorkspaceChangeTracker.from_state(
+        context.state.workspace_change_state,
+        run_id=context.run_id,
+        workspace_roots=workspace_roots,
+    )
+
+
+def _workspace_change_state_update(
+    tracker: WorkspaceChangeTracker | None,
+) -> dict[str, Any]:
+    if tracker is None or not tracker.has_changes():
+        return {}
+    return {"workspace_change_state": tracker.to_state()}
 
 
 def _emit_artifact_events(
@@ -222,6 +255,13 @@ class ToolExecutionHarness(BaseToolHarness):
             arguments=copy.deepcopy(tool_call.arguments),
         )
 
+        workspace_change_tracker = None
+        workspace_snapshot_before = None
+        if not is_human_input_tool_name(tool_call.name):
+            workspace_change_tracker = _workspace_change_tracker(context, toolkit, tool_call)
+            if workspace_change_tracker is not None:
+                workspace_snapshot_before = workspace_change_tracker.capture_text_snapshot()
+
         plugin_outcome = run_tool_runtime_plugins(
             context.tool_runtime_plugins,
             tool_call=tool_call,
@@ -260,6 +300,14 @@ class ToolExecutionHarness(BaseToolHarness):
                 )
                 _emit_artifact_events(context, tool_call, emitted_artifacts)
             state_updates = copy.deepcopy(plugin_outcome.state_updates)
+            if workspace_change_tracker is not None:
+                workspace_change_tracker.record_text_snapshot_changes(
+                    workspace_snapshot_before,
+                    tool_name=tool_call.name,
+                    call_id=tool_call.call_id,
+                    turn_id=f"{context.run_id}:turn-{context.iteration}",
+                )
+                state_updates.update(_workspace_change_state_update(workspace_change_tracker))
             if emitted_artifacts:
                 state_updates["artifacts"] = upsert_artifacts(
                     context.state.artifacts,
@@ -452,8 +500,19 @@ class ToolExecutionHarness(BaseToolHarness):
                 tool_runtime_config=context.event.get("tool_runtime_config")
                 if isinstance(context.event.get("tool_runtime_config"), dict)
                 else {},
+                tool_name=tool_call.name,
+                call_id=tool_call.call_id,
+                turn_id=f"{context.run_id}:turn-{context.iteration}",
+                workspace_changes=workspace_change_tracker,
             ),
         )
+        if workspace_change_tracker is not None:
+            workspace_change_tracker.record_text_snapshot_changes(
+                workspace_snapshot_before,
+                tool_name=tool_call.name,
+                call_id=tool_call.call_id,
+                turn_id=f"{context.run_id}:turn-{context.iteration}",
+            )
         should_observe = batch_state.should_observe or outcome.should_observe
         builder = get_provider_message_builder(context.provider)
         visible_tool_result, authored_artifacts = extract_authored_artifacts(outcome.tool_result)
@@ -491,6 +550,7 @@ class ToolExecutionHarness(BaseToolHarness):
                 human_input_tool_call_id=batch_state.human_input_tool_call_id,
                 executed_call_ids=append_executed_call_id(batch_state, tool_call.call_id),
             ),
+            **_workspace_change_state_update(workspace_change_tracker),
         }
         if emitted_artifacts:
             state_updates["artifacts"] = upsert_artifacts(
@@ -517,6 +577,7 @@ class ToolExecutionHarness(BaseToolHarness):
                     next_iteration=context.iteration + 1,
                     max_iterations=int(context.event.get("max_iterations") or 0),
                     state=context.state,
+                    run_id=context.run_id,
                 )
             return HarnessDelta(
                 created_by=self.created_by,

@@ -1,0 +1,39 @@
+[toolkit]
+id = "agent_reach"
+name = "Agent Reach"
+description = "Read-only Agent-Reach helpers for status checks, web pages, and YouTube metadata."
+factory = "unchain.toolkits.builtin.agent_reach:AgentReachToolkit"
+version = "1.0.0"
+readme = "README.md"
+icon = "👁️"
+tags = ["builtin", "agent-reach", "web", "youtube"]
+
+[display]
+category = "builtin"
+order = 50
+hidden = false
+
+[compat]
+python = ">=3.12"
+legacy = ">=0"
+
+[[tools]]
+name = "agent_reach_status"
+title = "Agent Reach Status"
+description = "Check Agent-Reach channel availability."
+observe = false
+requires_confirmation = false
+
+[[tools]]
+name = "agent_reach_read_web"
+title = "Read Web Page"
+description = "Read a web page through Agent-Reach's Jina Reader channel."
+observe = false
+requires_confirmation = false
+
+[[tools]]
+name = "agent_reach_youtube_metadata"
+title = "YouTube Metadata"
+description = "Fetch YouTube metadata with yt-dlp without downloading media."
+observe = false
+requires_confirmation = false

@@ -122,11 +122,29 @@ def test_builtin_registry_lists_expected_toolkits_and_tools():
     registry = ToolkitRegistry()
     toolkit_ids = {item["id"] for item in registry.list_toolkits(include_tools=False)}
 
-    assert toolkit_ids == {"core", "external_api", "git", "plan"}
+    assert toolkit_ids == {"agent_reach", "core", "external_api", "git", "plan"}
+    agent_reach_summary = registry.require("agent_reach").to_summary()
+    assert agent_reach_summary["tool_count"] == 3
+    assert agent_reach_summary["icon"] == {"type": "emoji", "emoji": "👁️"}
     assert registry.require("core").to_summary()["tool_count"] == 9
     assert registry.require("external_api").to_summary()["tool_count"] == 2
     assert registry.require("git").to_summary()["tool_count"] == 5
     assert registry.require("plan").to_summary()["tool_count"] == 5
+
+
+def test_registry_instantiated_agent_reach_tools_include_emoji_icon_metadata():
+    registry = ToolkitRegistry()
+
+    runtime_toolkit = registry.instantiate_toolkit("agent_reach")
+    tool_json = runtime_toolkit.to_json()
+
+    assert {item["name"] for item in tool_json} == {
+        "agent_reach_status",
+        "agent_reach_read_web",
+        "agent_reach_youtube_metadata",
+    }
+    assert all(item["icon_path"] == "" for item in tool_json)
+    assert all(item["icon"] == {"type": "emoji", "emoji": "👁️"} for item in tool_json)
 
 
 def test_core_toolkit_description_encourages_user_clarification():
@@ -201,6 +219,24 @@ def test_local_root_supports_builtin_toolkit_icon_with_colors(tmp_path, monkeypa
         "color": "#0f172a",
         "background_color": "#bae6fd",
     }
+    assert tool_summary["icon_path"] == ""
+    assert tool_summary["icon"] == summary["icon"]
+
+
+def test_local_root_supports_emoji_toolkit_icon_without_colors(tmp_path, monkeypatch):
+    _write_toolkit_package(
+        tmp_path,
+        toolkit_icon_value="👁️",
+        include_toolkit_icon=False,
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    registry = ToolkitRegistry(ToolRegistryConfig(include_builtin=False, local_roots=[tmp_path]))
+    summary = registry.require("demo").to_summary()
+    tool_summary = summary["tools"][0]
+
+    assert summary["icon_path"] == ""
+    assert summary["icon"] == {"type": "emoji", "emoji": "👁️"}
     assert tool_summary["icon_path"] == ""
     assert tool_summary["icon"] == summary["icon"]
 
@@ -400,6 +436,7 @@ fallback_renderer = "markdown"
     }
 
     assert kinds["file_diff"]["display_name"] == "Files changed"
+    assert kinds["workspace_change_set"]["display_name"] == "Workspace changes"
     assert kinds["plan"]["display_name"] == "Plan"
     assert kinds["benchmark_report"]["display_name"] == "Benchmark"
     assert kinds["benchmark_report"]["toolkit_id"] == "demo"

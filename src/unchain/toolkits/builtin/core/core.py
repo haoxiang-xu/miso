@@ -427,6 +427,13 @@ class CoreToolkit(BuiltinToolkit):
 
         target.write_text(content, encoding="utf-8")
         self._record_read_snapshot(target, content, fully_read=True)
+        self._record_workspace_change(
+            target=target,
+            before_text=old_raw if existed else None,
+            after_text=content,
+            operation="modified" if existed else "created",
+            tool_name="write",
+        )
 
         before_bytes = len(old_raw.encode("utf-8", errors="replace"))
         after_bytes = len(content.encode("utf-8", errors="replace"))
@@ -508,6 +515,13 @@ class CoreToolkit(BuiltinToolkit):
         first_match_line = raw.count("\n", 0, first_match_index) + 1 if first_match_index >= 0 else 0
         target.write_text(updated, encoding="utf-8")
         self._record_read_snapshot(target, updated, fully_read=True)
+        self._record_workspace_change(
+            target=target,
+            before_text=raw,
+            after_text=updated,
+            operation="modified",
+            tool_name="edit",
+        )
 
         result = {
             "path": str(target),
@@ -1008,6 +1022,31 @@ class CoreToolkit(BuiltinToolkit):
         if self._shell_runtime.is_low_risk_command(command, shell_family):
             return ToolConfirmationPolicy(requires_confirmation=False)
         return ToolConfirmationPolicy(requires_confirmation=True)
+
+    def _record_workspace_change(
+        self,
+        *,
+        target: Path,
+        before_text: str | None,
+        after_text: str | None,
+        operation: str,
+        tool_name: str,
+    ) -> None:
+        context = self.current_execution_context
+        tracker = getattr(context, "workspace_changes", None) if context is not None else None
+        if tracker is None or not hasattr(tracker, "record_text_file_change"):
+            return
+        call_id = str(getattr(context, "call_id", "") or "")
+        turn_id = str(getattr(context, "turn_id", "") or "")
+        tracker.record_text_file_change(
+            str(target),
+            before_text,
+            after_text,
+            operation=operation,
+            tool_name=tool_name,
+            call_id=call_id,
+            turn_id=turn_id,
+        )
 
     def _resolve_write_confirmation(
         self,

@@ -10,6 +10,8 @@ from unchain.providers import OpenAIModelIO
 from unchain.kernel.types import ToolCall as KernelToolCall
 from unchain.tools import Toolkit
 from unchain.kernel.types import ModelTurnResult
+from unchain.kernel.harness import HarnessContext
+from unchain.kernel.state import RunState
 
 
 def test_run_state_rebases_old_view_delta_onto_latest_version():
@@ -299,3 +301,44 @@ def test_step_once_dispatches_tool_phases_when_model_returns_tool_calls():
     assert state.iteration == 1
     assert len(state.pending_tool_calls) == 1
     assert state.pending_tool_calls[0].name == "demo_tool"
+
+
+def test_event_payload_keeps_live_handles_and_deep_copies_data():
+    # A connected MCP toolkit holds live, unpicklable resources (event loop,
+    # session, daemon thread). The kernel puts that live toolkit into the
+    # phase event; event_payload() must NOT try to deep-copy it, while still
+    # returning a mutation-safe copy of the actual data entries.
+    import threading
+
+    live_toolkit = threading.Lock()  # stands in for an unpicklable live handle
+    data = {"nested": [1, 2, 3]}
+    context = HarnessContext(
+        state=RunState(),
+        phase="on_tool_call",
+        event={"toolkit": live_toolkit, "payload": data},
+    )
+
+    payload = context.event_payload()
+
+    assert payload["toolkit"] is live_toolkit  # live handle passed by reference
+    assert payload["payload"] == data  # data is copied...
+    assert payload["payload"] is not data  # ...as an independent object
+    assert payload["payload"]["nested"] is not data["nested"]
+
+
+def test_event_payload_does_not_crash_on_unexpected_live_object():
+    # Even a live object under a key the kernel did not anticipate must not
+    # blow up event_payload(); it is passed through instead of deep-copied.
+    import threading
+
+    live = threading.Lock()
+    context = HarnessContext(
+        state=RunState(),
+        phase="after_model",
+        event={"turn_result": live, "run_id": "r1"},
+    )
+
+    payload = context.event_payload()
+
+    assert payload["turn_result"] is live
+    assert payload["run_id"] == "r1"
