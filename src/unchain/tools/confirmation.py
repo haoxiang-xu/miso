@@ -24,6 +24,7 @@ class ToolExecutionOutcome:
     denied: bool = False
     deny_reason: str = ""
     effective_arguments: Any = None
+    confirmation_policy: ToolConfirmationPolicy | None = None
 
 
 def _resolve_builtin_toolkit_owner(toolkit: Toolkit, tool_name: str) -> BuiltinToolkit | None:
@@ -85,6 +86,7 @@ def execute_confirmable_tool_call(
                 },
                 should_observe=should_observe,
                 effective_arguments=effective_arguments,
+                confirmation_policy=confirmation_policy,
             )
 
     requires_confirmation = bool(tool_obj is not None and tool_obj.requires_confirmation)
@@ -174,4 +176,5 @@ def execute_confirmable_tool_call(
         denied=denied,
         deny_reason=deny_reason,
         effective_arguments=effective_arguments,
+        confirmation_policy=confirmation_policy,
     )

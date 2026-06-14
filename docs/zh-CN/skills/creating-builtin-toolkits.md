@@ -89,9 +89,9 @@ description = "What this toolkit does."        # 必填
 factory = "unchain.toolkits.builtin.my_toolkit:MyToolkit"  # 必填 -- 零参 callable → Toolkit
 version = "1.0.0"                              # 可选
 readme = "README.md"                           # 必填 -- 相对于本文件
-icon = "folder"                                # 内置图标名称 或 .svg/.png 路径
-color = "#eff6ff"                              # 使用内置图标名称时必填
-backgroundcolor = "#2563eb"                    # 使用内置图标名称时必填
+icon = "folder"                                # 内置图标名称、emoji 或 .svg/.png 路径
+color = "#eff6ff"                              # 仅使用内置图标名称时必填
+backgroundcolor = "#2563eb"                    # 仅使用内置图标名称时必填
 tags = ["builtin", "my-toolkit"]               # 可选
 
 [display]

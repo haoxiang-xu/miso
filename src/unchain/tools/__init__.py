@@ -4,6 +4,7 @@ import importlib
 
 __all__ = [
     "AnthropicMessageBuilder",
+    "ArtifactKindDescriptor",
     "BaseToolHarness",
     "CATALOG_TOOL_NAMES",
     "DeferredToolRecord",
@@ -55,6 +56,7 @@ __all__ = [
     "extract_toolkit_catalog_token",
     "get_provider_message_builder",
     "get_toolkit_metadata",
+    "list_artifact_kinds",
     "list_toolkits",
     "render_tool_prompt_block",
     "render_tool_prompt_entry",
@@ -106,10 +108,12 @@ _EXPORT_TO_MODULE = {
     "ToolDiscoveryConfig": ".discovery",
     "ToolDiscoveryRuntime": ".discovery",
     "ToolDescriptor": ".registry",
+    "ArtifactKindDescriptor": ".registry",
     "ToolRegistryConfig": ".registry",
     "ToolkitDescriptor": ".registry",
     "ToolkitRegistry": ".registry",
     "get_toolkit_metadata": ".registry",
+    "list_artifact_kinds": ".registry",
     "list_toolkits": ".registry",
     "ToolRuntimeOutcome": ".runtime",
     "ToolRuntimePlugin": ".runtime",

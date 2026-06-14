@@ -1,4 +1,5 @@
 import json
+import queue
 
 from unchain.input.human_input import ASK_USER_QUESTION_TOOL_NAME
 from unchain.kernel import KernelLoop, ModelTurnResult
@@ -74,6 +75,53 @@ def test_kernel_run_executes_openai_tool_and_continues_with_previous_response_ch
     assert json.loads(tool_message["output"]) == {"value": 2}
     assert model_io.requests[1].previous_response_id == "resp_1"
     assert tool_message in model_io.requests[1].messages
+
+
+def test_kernel_run_sanitizes_non_deepcopyable_tool_result_values():
+    model_io = _QueueModelIO([
+        ModelTurnResult(
+            assistant_messages=[
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "queue_tool",
+                    "arguments": "{}",
+                }
+            ],
+            tool_calls=[KernelToolCall(call_id="call_1", name="queue_tool", arguments={})],
+            response_id="resp_1",
+        ),
+        ModelTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "done"}],
+            tool_calls=[],
+            final_text="done",
+            response_id="resp_2",
+        ),
+    ])
+    toolkit = Toolkit()
+    toolkit.register(lambda: {"queue": queue.SimpleQueue()}, name="queue_tool")
+    events = []
+
+    result = KernelLoop(model_io=model_io).run(
+        [{"role": "user", "content": "start"}],
+        provider="openai",
+        model="gpt-4.1",
+        toolkit=toolkit,
+        callback=events.append,
+        max_iterations=3,
+    )
+
+    tool_message = next(
+        message for message in result.messages
+        if message.get("type") == "function_call_output"
+    )
+    tool_output = json.loads(tool_message["output"])
+    tool_event = next(event for event in events if event["type"] == "tool_result")
+
+    assert result.status == "completed"
+    assert isinstance(tool_output["queue"], str)
+    assert "SimpleQueue" in tool_output["queue"]
+    assert tool_event["result"] == tool_output
 
 
 def test_kernel_run_confirmation_denied_and_modified_arguments():

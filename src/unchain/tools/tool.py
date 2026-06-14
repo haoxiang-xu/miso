@@ -33,6 +33,8 @@ class Tool:
         prompt_spec: ToolPromptSpec | dict[str, Any] | None = None,
         history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
         history_result_optimizer: HistoryPayloadOptimizer | None = None,
+        icon_path: str = "",
+        icon: dict[str, Any] | None = None,
     ):
         if callable(name) and func is None:
             func = name
@@ -48,6 +50,8 @@ class Tool:
         self.prompt_spec = ToolPromptSpec.from_raw(prompt_spec)
         self.history_arguments_optimizer = history_arguments_optimizer
         self.history_result_optimizer = history_result_optimizer
+        self.icon_path = icon_path
+        self.icon = dict(icon) if isinstance(icon, dict) else None
         self.parameters = self._construct_parameters(parameters)
 
         if self.func is not None and not self.parameters:
@@ -75,6 +79,8 @@ class Tool:
                 prompt_spec=self.prompt_spec,
                 history_arguments_optimizer=self.history_arguments_optimizer,
                 history_result_optimizer=self.history_result_optimizer,
+                icon_path=self.icon_path,
+                icon=self.icon,
             )
 
         if self.func is not None:
@@ -100,6 +106,8 @@ class Tool:
         prompt_spec: ToolPromptSpec | dict[str, Any] | None = None,
         history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
         history_result_optimizer: HistoryPayloadOptimizer | None = None,
+        icon_path: str = "",
+        icon: dict[str, Any] | None = None,
     ) -> "Tool":
         summary, _ = _parse_docstring(func)
         return cls(
@@ -114,6 +122,8 @@ class Tool:
             prompt_spec=prompt_spec,
             history_arguments_optimizer=history_arguments_optimizer,
             history_result_optimizer=history_result_optimizer,
+            icon_path=icon_path,
+            icon=icon,
         )
 
     def _construct_parameters(
@@ -184,12 +194,16 @@ class Tool:
         return json_parameters
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        payload = {
             "type": "function",
             "name": self.name,
             "description": self.description,
             "parameters": self._parameters_json_schema(),
         }
+        if self.icon is not None:
+            payload["icon_path"] = self.icon_path
+            payload["icon"] = self.icon
+        return payload
 
     def to_provider_json(self, provider: str | None = None) -> dict[str, Any]:
         normalized_provider = str(provider or "openai").strip().lower()

@@ -3,7 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from unchain.tools import ToolRegistryConfig, ToolkitRegistry, get_toolkit_metadata, list_toolkits
+from unchain.tools import (
+    ToolRegistryConfig,
+    ToolkitRegistry,
+    get_toolkit_metadata,
+    list_artifact_kinds,
+    list_toolkits,
+)
 
 
 def _write_icon(path: Path) -> None:
@@ -26,6 +32,7 @@ def _write_toolkit_package(
     toolkit_icon_value: str = "icon.svg",
     toolkit_color: str | None = None,
     toolkit_backgroundcolor: str | None = None,
+    artifact_kinds: str = "",
 ) -> Path:
     package_dir = root / package_name
     package_dir.mkdir(parents=True, exist_ok=True)
@@ -92,6 +99,8 @@ title = "Echo"
 description = "Echo text back."
 {tool_readme_line}observe = false
 requires_confirmation = false
+
+{artifact_kinds}
 """.strip()
             + "\n",
             encoding="utf-8",
@@ -113,11 +122,29 @@ def test_builtin_registry_lists_expected_toolkits_and_tools():
     registry = ToolkitRegistry()
     toolkit_ids = {item["id"] for item in registry.list_toolkits(include_tools=False)}
 
-    assert toolkit_ids == {"core", "external_api", "git", "plan"}
+    assert toolkit_ids == {"agent_reach", "core", "external_api", "git", "plan"}
+    agent_reach_summary = registry.require("agent_reach").to_summary()
+    assert agent_reach_summary["tool_count"] == 3
+    assert agent_reach_summary["icon"] == {"type": "emoji", "emoji": "👁️"}
     assert registry.require("core").to_summary()["tool_count"] == 9
     assert registry.require("external_api").to_summary()["tool_count"] == 2
     assert registry.require("git").to_summary()["tool_count"] == 5
     assert registry.require("plan").to_summary()["tool_count"] == 5
+
+
+def test_registry_instantiated_agent_reach_tools_include_emoji_icon_metadata():
+    registry = ToolkitRegistry()
+
+    runtime_toolkit = registry.instantiate_toolkit("agent_reach")
+    tool_json = runtime_toolkit.to_json()
+
+    assert {item["name"] for item in tool_json} == {
+        "agent_reach_status",
+        "agent_reach_read_web",
+        "agent_reach_youtube_metadata",
+    }
+    assert all(item["icon_path"] == "" for item in tool_json)
+    assert all(item["icon"] == {"type": "emoji", "emoji": "👁️"} for item in tool_json)
 
 
 def test_core_toolkit_description_encourages_user_clarification():
@@ -192,6 +219,24 @@ def test_local_root_supports_builtin_toolkit_icon_with_colors(tmp_path, monkeypa
         "color": "#0f172a",
         "background_color": "#bae6fd",
     }
+    assert tool_summary["icon_path"] == ""
+    assert tool_summary["icon"] == summary["icon"]
+
+
+def test_local_root_supports_emoji_toolkit_icon_without_colors(tmp_path, monkeypatch):
+    _write_toolkit_package(
+        tmp_path,
+        toolkit_icon_value="👁️",
+        include_toolkit_icon=False,
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    registry = ToolkitRegistry(ToolRegistryConfig(include_builtin=False, local_roots=[tmp_path]))
+    summary = registry.require("demo").to_summary()
+    tool_summary = summary["tools"][0]
+
+    assert summary["icon_path"] == ""
+    assert summary["icon"] == {"type": "emoji", "emoji": "👁️"}
     assert tool_summary["icon_path"] == ""
     assert tool_summary["icon"] == summary["icon"]
 
@@ -275,3 +320,190 @@ def test_enabled_plugin_is_loaded_only_when_explicitly_enabled(tmp_path, monkeyp
     assert summary["source"] == "plugin"
     assert summary["tool_count"] == 1
     assert summary["tools"][0]["name"] == "echo"
+
+
+def test_local_root_parses_artifact_kind_metadata_with_builtin_icon(tmp_path, monkeypatch):
+    _write_toolkit_package(
+        tmp_path,
+        artifact_kinds="""
+[[artifact_kinds]]
+kind = "benchmark_report"
+display_name = "Benchmark"
+description = "Benchmark summary artifacts."
+icon = "bar_chart"
+fallback_renderer = "markdown"
+""",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    registry = ToolkitRegistry(ToolRegistryConfig(include_builtin=False, local_roots=[tmp_path]))
+    summary = registry.require("demo").to_summary(include_tools=False)
+
+    assert summary["artifact_kinds"] == [
+        {
+            "kind": "benchmark_report",
+            "display_name": "Benchmark",
+            "description": "Benchmark summary artifacts.",
+            "icon": {
+                "type": "builtin",
+                "name": "bar_chart",
+                "color": "",
+                "background_color": "",
+            },
+            "fallback_renderer": "markdown",
+            "toolkit_id": "demo",
+        }
+    ]
+
+
+def test_local_root_parses_artifact_kind_metadata_with_file_icon(tmp_path, monkeypatch):
+    _write_toolkit_package(
+        tmp_path,
+        artifact_kinds="""
+[[artifact_kinds]]
+kind = "benchmark_report"
+display_name = "Benchmark"
+description = "Benchmark summary artifacts."
+icon = "icon.svg"
+fallback_renderer = "markdown"
+""",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    registry = ToolkitRegistry(ToolRegistryConfig(include_builtin=False, local_roots=[tmp_path]))
+    [artifact_kind] = registry.require("demo").to_summary(include_tools=False)["artifact_kinds"]
+
+    assert artifact_kind["icon"]["type"] == "file"
+    assert artifact_kind["icon"]["path"].endswith("demo_toolkit/icon.svg")
+
+
+def test_local_root_rejects_invalid_artifact_kind_renderer(tmp_path, monkeypatch):
+    _write_toolkit_package(
+        tmp_path,
+        artifact_kinds="""
+[[artifact_kinds]]
+kind = "benchmark_report"
+display_name = "Benchmark"
+description = "Benchmark summary artifacts."
+icon = "bar_chart"
+fallback_renderer = "chart"
+""",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    with pytest.raises(ValueError, match="invalid artifact fallback_renderer"):
+        ToolkitRegistry(ToolRegistryConfig(include_builtin=False, local_roots=[tmp_path]))
+
+
+def test_local_root_rejects_artifact_icon_path_outside_toolkit_root(tmp_path, monkeypatch):
+    (tmp_path / "outside.svg").write_text("<svg></svg>", encoding="utf-8")
+    _write_toolkit_package(
+        tmp_path,
+        artifact_kinds="""
+[[artifact_kinds]]
+kind = "benchmark_report"
+display_name = "Benchmark"
+description = "Benchmark summary artifacts."
+icon = "../outside.svg"
+fallback_renderer = "markdown"
+""",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    with pytest.raises(ValueError, match="artifact icon for 'benchmark_report' must stay within toolkit directory"):
+        ToolkitRegistry(ToolRegistryConfig(include_builtin=False, local_roots=[tmp_path]))
+
+
+def test_list_artifact_kinds_exposes_builtin_and_toolkit_definitions(tmp_path, monkeypatch):
+    _write_toolkit_package(
+        tmp_path,
+        artifact_kinds="""
+[[artifact_kinds]]
+kind = "benchmark_report"
+display_name = "Benchmark"
+description = "Benchmark summary artifacts."
+icon = "bar_chart"
+fallback_renderer = "markdown"
+""",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    kinds = {
+        item["kind"]: item
+        for item in list_artifact_kinds(
+            ToolRegistryConfig(include_builtin=False, local_roots=[tmp_path])
+        )
+    }
+
+    assert kinds["file_diff"]["display_name"] == "Files changed"
+    assert kinds["workspace_change_set"]["display_name"] == "Workspace changes"
+    assert kinds["plan"]["display_name"] == "Plan"
+    assert kinds["benchmark_report"]["display_name"] == "Benchmark"
+    assert kinds["benchmark_report"]["toolkit_id"] == "demo"
+
+
+def test_custom_artifact_kind_duplicates_are_deterministic_and_logged(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    artifact_kinds = """
+[[artifact_kinds]]
+kind = "shared.report"
+display_name = "{display_name}"
+description = "Shared report."
+icon = "bar_chart"
+fallback_renderer = "markdown"
+"""
+    _write_toolkit_package(
+        tmp_path,
+        package_name="z_toolkit",
+        toolkit_id="z_toolkit",
+        artifact_kinds=artifact_kinds.format(display_name="Z Report"),
+    )
+    _write_toolkit_package(
+        tmp_path,
+        package_name="a_toolkit",
+        toolkit_id="a_toolkit",
+        artifact_kinds=artifact_kinds.format(display_name="A Report"),
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    with caplog.at_level("WARNING"):
+        kinds = {
+            item["kind"]: item
+            for item in list_artifact_kinds(
+                ToolRegistryConfig(include_builtin=False, local_roots=[tmp_path])
+            )
+        }
+
+    assert kinds["shared.report"]["toolkit_id"] == "a_toolkit"
+    assert kinds["shared.report"]["display_name"] == "A Report"
+    assert "duplicate artifact kind 'shared.report'" in caplog.text
+
+
+def test_toolkit_artifact_kind_cannot_override_builtin_kind(tmp_path, monkeypatch, caplog):
+    _write_toolkit_package(
+        tmp_path,
+        artifact_kinds="""
+[[artifact_kinds]]
+kind = "file_diff"
+display_name = "Custom Files"
+description = "Should not replace builtin metadata."
+icon = "bar_chart"
+fallback_renderer = "markdown"
+""",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    with caplog.at_level("WARNING"):
+        kinds = {
+            item["kind"]: item
+            for item in list_artifact_kinds(
+                ToolRegistryConfig(include_builtin=False, local_roots=[tmp_path])
+            )
+        }
+
+    assert kinds["file_diff"]["display_name"] == "Files changed"
+    assert kinds["file_diff"]["toolkit_id"] == "builtin"
+    assert "cannot override builtin artifact kind 'file_diff'" in caplog.text

@@ -18,6 +18,34 @@ _STEP_STATUS_MARKERS = {
 }
 _PLAN_STATUSES = {"draft", "finalized"}
 _WORKSPACE_PLAN_DIR = "plans"
+PLAN_TOOLKIT_OPERATING_POLICY = """## PlanToolkit operating policy
+
+When PlanToolkit is active in the current tool pool, treat the turn as planning mode
+unless the user has explicitly approved implementation.
+
+Required behavior:
+- Use `plan_start` to create a draft plan when the user asks for a plan,
+  design-first workflow, implementation strategy, investigation plan, or multi-step change.
+- Use `plan_update` to keep the draft plan current as repository facts, decisions,
+  steps, tests, assumptions, or open questions change.
+- Use `plan_read` or `plan_list` when you need to inspect existing plan state
+  before updating it.
+- `plan_finalize` may only be used after the user has confirmed the plan is decision-complete.
+
+Allowed before implementation approval:
+- Read-only repository exploration and analysis.
+- Running tests, builds, or dry-run checks only when they do not intentionally
+  modify repo-tracked files.
+- PlanToolkit-managed draft plan artifacts created or updated through `plan_*` tools.
+
+Forbidden before implementation approval:
+- Editing, creating, deleting, or rewriting repo files outside PlanToolkit-managed plan artifacts.
+- Running formatters, codegen, migrations, installs, commits, pushes, or other mutating commands.
+- Implementing the planned code change or claiming the implementation is complete.
+
+If a key decision would materially change the plan, ask the user before choosing.
+The final assistant response in planning mode should summarize the current plan,
+open questions, and next approval needed; it should not perform or imply implementation."""
 
 
 def _utc_now() -> str:
@@ -197,7 +225,7 @@ class PlanToolkit(Toolkit):
         session_id: str = "",
         workspace_root: str | Path | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(prompt_sections=(PLAN_TOOLKIT_OPERATING_POLICY,))
         self._session_store = session_store
         self._session_id = session_id.strip() if isinstance(session_id, str) else ""
         self._workspace_root = Path(workspace_root).expanduser().resolve() if workspace_root else None
@@ -225,6 +253,7 @@ class PlanToolkit(Toolkit):
                 ),
                 advanced_tips=(
                     "Use CoreToolkit.ask_user_question alongside this toolkit when a key ambiguity changes the plan.",
+                    "Draft plan artifacts are the only workspace writes allowed before implementation approval.",
                 ),
             ),
         )

@@ -89,9 +89,9 @@ description = "What this toolkit does."        # REQUIRED
 factory = "unchain.toolkits.builtin.my_toolkit:MyToolkit"  # REQUIRED — no-arg callable → Toolkit
 version = "1.0.0"                              # optional
 readme = "README.md"                           # REQUIRED — relative to this file
-icon = "folder"                                # builtin icon name OR path to .svg/.png
-color = "#eff6ff"                              # REQUIRED if icon is a builtin name
-backgroundcolor = "#2563eb"                    # REQUIRED if icon is a builtin name
+icon = "folder"                                # builtin icon name, emoji, OR path to .svg/.png
+color = "#eff6ff"                              # REQUIRED only if icon is a builtin name
+backgroundcolor = "#2563eb"                    # REQUIRED only if icon is a builtin name
 tags = ["builtin", "my-toolkit"]               # optional
 
 [display]

@@ -32,6 +32,7 @@ def test_unchain_common_subpackages_are_available():
     assert hasattr(subagents, "SubagentPolicy")
     assert hasattr(tools, "Toolkit")
     assert hasattr(tools, "ToolPromptHarness")
+    assert hasattr(toolkits, "AgentReachToolkit")
     assert hasattr(toolkits, "CoreToolkit")
     assert not hasattr(toolkits, "CodeToolkit")
     assert not hasattr(toolkits, "AskUserToolkit")

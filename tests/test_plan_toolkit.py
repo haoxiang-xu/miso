@@ -323,6 +323,37 @@ def test_kernel_runs_plan_tools_and_finalize_requires_confirmation(tmp_path: Pat
         assert forbidden not in finalize_output
 
 
+def test_kernel_injects_plan_toolkit_operating_policy_before_model(tmp_path: Path):
+    model_io = _QueueModelIO(
+        [
+            ModelTurnResult(
+                assistant_messages=[{"role": "assistant", "content": "planned"}],
+                tool_calls=[],
+                final_text="planned",
+                response_id="resp_1",
+            )
+        ]
+    )
+
+    KernelLoop(model_io=model_io).run(
+        [{"role": "user", "content": "plan this"}],
+        provider="openai",
+        model="gpt-4.1",
+        toolkit=PlanToolkit(workspace_root=tmp_path),
+        max_iterations=1,
+    )
+
+    messages = model_io.requests[0].messages
+    tools_prompt = next(
+        message["content"]
+        for message in messages
+        if message.get("role") == "system"
+        and "## PlanToolkit operating policy" in str(message.get("content") or "")
+    )
+    assert "PlanToolkit-managed draft plan artifacts" in tools_prompt
+    assert tools_prompt.index("## PlanToolkit operating policy") < tools_prompt.index("- plan_start:")
+
+
 def test_kernel_plan_finalize_denial_returns_standard_denied_result():
     model_io = _QueueModelIO(
         [

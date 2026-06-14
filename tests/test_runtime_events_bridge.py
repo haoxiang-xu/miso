@@ -49,6 +49,7 @@ def test_bridge_emits_session_started():
             "channel_id": None,
             "team_id": None,
             "plan_id": None,
+            "artifact_id": None,
         },
         "visibility": "debug",
         "payload": {"model": "gpt-5"},

@@ -90,6 +90,41 @@ def _tool_payload(raw: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _artifact_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    artifact = raw.get("artifact")
+    if isinstance(artifact, dict):
+        return copy.deepcopy(artifact)
+
+    payload: dict[str, Any] = {}
+    reserved = {
+        "type",
+        "run_id",
+        "iteration",
+        "tool_name",
+        "call_id",
+        "tool_call_id",
+        "plan_id",
+        "artifact",
+    }
+    for key, value in raw.items():
+        if key in reserved:
+            continue
+        if key == "artifact_id" or key in {
+            "schema_version",
+            "kind",
+            "title",
+            "summary",
+            "revision",
+            "status",
+            "owner",
+            "snapshot",
+            "source",
+            "presentation",
+        }:
+            payload[key] = copy.deepcopy(value)
+    return payload
+
+
 def _input_request_payload(raw: dict[str, Any]) -> dict[str, Any]:
     selection_mode = _str_value(raw.get("selection_mode"))
     interact_type = _str_value(raw.get("interact_type"), selection_mode)
@@ -351,6 +386,30 @@ def normalize_raw_event(
                 agent_id=agent_id,
                 turn_id=turn_id,
                 links=RuntimeEventLinks(tool_call_id=call_id or None),
+                payload=payload,
+                metadata=metadata,
+            )
+        ]
+
+    if raw_type in {"artifact_created", "artifact_updated"}:
+        call_id = _str_value(raw_event.get("call_id"), _str_value(raw_event.get("tool_call_id")))
+        artifact_id = _str_value(raw_event.get("artifact_id"))
+        plan_id = _str_value(raw_event.get("plan_id"))
+        payload = _artifact_payload(raw_event)
+        payload_artifact_id = _str_value(payload.get("artifact_id"))
+        if payload_artifact_id:
+            artifact_id = payload_artifact_id
+        return [
+            RuntimeEventDraft(
+                type="artifact.created" if raw_type == "artifact_created" else "artifact.updated",
+                run_id=run_id,
+                agent_id=agent_id,
+                turn_id=turn_id,
+                links=RuntimeEventLinks(
+                    tool_call_id=call_id or None,
+                    artifact_id=artifact_id or None,
+                    plan_id=plan_id or None,
+                ),
                 payload=payload,
                 metadata=metadata,
             )

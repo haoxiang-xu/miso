@@ -22,6 +22,10 @@ from .shell_runtime import ShellRuntime
 from .web_fetch import WebFetchService, run_extract_model
 
 
+_ARTIFACT_DIFF_MAX_LINES = 1_000_000
+_ARTIFACT_DIFF_MAX_BYTES = 50_000_000
+
+
 @dataclass
 class _ReadSnapshot:
     path: str
@@ -301,6 +305,46 @@ class CoreToolkit(BuiltinToolkit):
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         return hashlib.sha1(encoded.encode("utf-8", errors="replace")).hexdigest()
 
+    def _file_diff_artifact_descriptor(
+        self,
+        *,
+        title: str,
+        path: str,
+        old_content: str,
+        new_content: str,
+        operation: str,
+    ) -> dict[str, Any] | None:
+        from ....tools._diff_helpers import build_code_diff_payload
+
+        file_payload = build_code_diff_payload(
+            path,
+            old_content,
+            new_content,
+            operation,
+            max_lines=_ARTIFACT_DIFF_MAX_LINES,
+            max_bytes=_ARTIFACT_DIFF_MAX_BYTES,
+        )
+        if file_payload is None or file_payload.get("truncated"):
+            return None
+        unified_diff = file_payload.get("unified_diff")
+        if not isinstance(unified_diff, str) or not unified_diff:
+            return None
+        file_entry = {
+            "path": path,
+            "operation": operation,
+            "sub_operation": file_payload.get("sub_operation", operation),
+            "unified_diff_full": unified_diff,
+            "unified_diff": unified_diff,
+            "truncated": False,
+            "total_lines": file_payload.get("total_lines", 0),
+            "displayed_lines": file_payload.get("displayed_lines", 0),
+        }
+        return {
+            "kind": "file_diff",
+            "title": title,
+            "files": [file_entry],
+        }
+
     def _workspace_root_for_target(self, target: Path) -> Path | None:
         for root in self.workspace_roots:
             try:
@@ -383,10 +427,18 @@ class CoreToolkit(BuiltinToolkit):
 
         target.write_text(content, encoding="utf-8")
         self._record_read_snapshot(target, content, fully_read=True)
+        self._record_workspace_change(
+            target=target,
+            before_text=old_raw if existed else None,
+            after_text=content,
+            operation="modified" if existed else "created",
+            tool_name="write",
+        )
 
         before_bytes = len(old_raw.encode("utf-8", errors="replace"))
         after_bytes = len(content.encode("utf-8", errors="replace"))
-        return {
+        operation = "edit" if existed else "create"
+        result = {
             "path": str(target),
             "operation": "update" if existed else "create",
             "bytes_written": after_bytes,
@@ -404,6 +456,16 @@ class CoreToolkit(BuiltinToolkit):
                 "total_lines": self._total_lines(old_raw),
             },
         }
+        artifact = self._file_diff_artifact_descriptor(
+            title=f"{'Edit' if existed else 'Create'} {target}",
+            path=str(target),
+            old_content=old_raw,
+            new_content=content,
+            operation=operation,
+        )
+        if artifact is not None:
+            result["_artifacts"] = [artifact]
+        return result
 
     def edit(
         self,
@@ -453,8 +515,15 @@ class CoreToolkit(BuiltinToolkit):
         first_match_line = raw.count("\n", 0, first_match_index) + 1 if first_match_index >= 0 else 0
         target.write_text(updated, encoding="utf-8")
         self._record_read_snapshot(target, updated, fully_read=True)
+        self._record_workspace_change(
+            target=target,
+            before_text=raw,
+            after_text=updated,
+            operation="modified",
+            tool_name="edit",
+        )
 
-        return {
+        result = {
             "path": str(target),
             "old_string": old_string,
             "new_string": new_string,
@@ -472,6 +541,16 @@ class CoreToolkit(BuiltinToolkit):
                 "total_lines": self._total_lines(raw),
             },
         }
+        artifact = self._file_diff_artifact_descriptor(
+            title=f"Edit {target}",
+            path=str(target),
+            old_content=raw,
+            new_content=updated,
+            operation="edit",
+        )
+        if artifact is not None:
+            result["_artifacts"] = [artifact]
+        return result
 
     def glob(self, pattern: str, path: str | None = None) -> dict[str, Any]:
         """List files matching a glob pattern inside the workspace.
@@ -943,6 +1022,31 @@ class CoreToolkit(BuiltinToolkit):
         if self._shell_runtime.is_low_risk_command(command, shell_family):
             return ToolConfirmationPolicy(requires_confirmation=False)
         return ToolConfirmationPolicy(requires_confirmation=True)
+
+    def _record_workspace_change(
+        self,
+        *,
+        target: Path,
+        before_text: str | None,
+        after_text: str | None,
+        operation: str,
+        tool_name: str,
+    ) -> None:
+        context = self.current_execution_context
+        tracker = getattr(context, "workspace_changes", None) if context is not None else None
+        if tracker is None or not hasattr(tracker, "record_text_file_change"):
+            return
+        call_id = str(getattr(context, "call_id", "") or "")
+        turn_id = str(getattr(context, "turn_id", "") or "")
+        tracker.record_text_file_change(
+            str(target),
+            before_text,
+            after_text,
+            operation=operation,
+            tool_name=tool_name,
+            call_id=call_id,
+            turn_id=turn_id,
+        )
 
     def _resolve_write_confirmation(
         self,

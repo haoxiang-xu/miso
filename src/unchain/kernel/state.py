@@ -79,6 +79,7 @@ class RunState:
     memory_prepare_info: dict[str, Any] = field(default_factory=dict)
     memory_commit_info: dict[str, Any] = field(default_factory=dict)
     artifacts: list[dict[str, Any]] = field(default_factory=list)
+    workspace_change_state: dict[str, Any] = field(default_factory=dict)
     optimizer_state: dict[str, dict[str, Any]] = field(default_factory=dict)
     subagent_state: SubagentState = field(default_factory=SubagentState)
     component_state: dict[str, Any] = field(default_factory=dict)
@@ -104,6 +105,7 @@ class RunState:
             }
         )
         self.component_bucket("tools")["tool_batch_state"] = self.tool_batch_state.copy()
+        self.component_bucket("workspace_changes")["state"] = copy.deepcopy(self.workspace_change_state)
         self.component_bucket("subagents")["state"] = self.subagent_state.copy()
 
     def seed_messages(
@@ -222,6 +224,10 @@ class RunState:
                 continue
             if key == "artifacts":
                 self.artifacts = copy.deepcopy(value) if isinstance(value, list) else []
+                continue
+            if key == "workspace_change_state":
+                self.workspace_change_state = copy.deepcopy(value) if isinstance(value, dict) else {}
+                self.component_bucket("workspace_changes")["state"] = copy.deepcopy(self.workspace_change_state)
                 continue
             if key == "optimizer_state" and isinstance(value, dict):
                 for optimizer_name, optimizer_value in value.items():

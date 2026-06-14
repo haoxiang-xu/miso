@@ -7,6 +7,7 @@ from typing import Any
 from ..memory import KernelMemoryRuntime
 from ..retry import RetryConfig, RetryContext, fetch_turn_with_retry
 from ..schemas import ResponseFormat
+from ..artifacts import upsert_artifacts
 from ..tools import (
     HumanInputResumeHarness,
     OBSERVATION_MAX_OUTPUT_TOKENS,
@@ -15,6 +16,7 @@ from ..tools import (
     ToolExecutionHarness,
     ToolPromptHarness,
 )
+from ..workspace_changes import WorkspaceChangeTracker
 from ..tools.toolkit import Toolkit
 from .delta import HarnessDelta
 from .harness import HarnessContext, RuntimeHarness, RuntimePhase
@@ -381,6 +383,44 @@ class KernelLoop:
         event.update(copy.deepcopy(extra))
         callback(event)
 
+    def _emit_workspace_change_set_artifact(
+        self,
+        state: RunState,
+        *,
+        callback: Any,
+        run_id: str,
+        iteration: int,
+    ) -> None:
+        if not isinstance(state.workspace_change_state, dict) or not state.workspace_change_state:
+            return
+        tracker = WorkspaceChangeTracker.from_state(
+            state.workspace_change_state,
+            run_id=run_id,
+            workspace_roots=[],
+        )
+        artifact = tracker.to_artifact()
+        if artifact is None:
+            return
+        artifact_id = str(artifact.get("artifact_id") or "")
+        if not artifact_id:
+            return
+        existing_ids = {
+            item.get("artifact_id")
+            for item in state.artifacts
+            if isinstance(item, dict) and isinstance(item.get("artifact_id"), str)
+        }
+        self.emit_event(
+            callback,
+            "artifact_updated" if artifact_id in existing_ids else "artifact_created",
+            run_id,
+            iteration=iteration,
+            tool_name="workspace_change_tracker",
+            call_id="",
+            artifact_id=artifact_id,
+            artifact=copy.deepcopy(artifact),
+        )
+        state.artifacts = upsert_artifacts(state.artifacts, [artifact])
+
     def _infer_provider(self) -> str | None:
         if self._model_io is None:
             return None
@@ -462,10 +502,12 @@ class KernelLoop:
         next_iteration: int,
         max_iterations: int,
         state: RunState,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         return {
             "type": "human_input_continuation",
             "kind": getattr(request, "kind", None),
+            "run_id": run_id,
             "provider": state.provider_state.provider,
             "model": state.provider_state.model,
             "request_id": getattr(request, "request_id", None),
@@ -486,6 +528,7 @@ class KernelLoop:
             "last_turn_tokens": int(state.token_state.last_turn_tokens or 0),
             "last_turn_input_tokens": int(state.token_state.last_turn_input_tokens or 0),
             "last_turn_output_tokens": int(state.token_state.last_turn_output_tokens or 0),
+            "workspace_change_state": copy.deepcopy(state.workspace_change_state),
         }
 
     def _last_assistant_text(self, messages: list[dict[str, Any]]) -> str:
@@ -685,9 +728,21 @@ class KernelLoop:
                         effective_max += max(1, int(mi_response.get("extra_iterations", effective_max)))
                     else:
                         state.run_status = "max_iterations"
+                        self._emit_workspace_change_set_artifact(
+                            state,
+                            callback=callback,
+                            run_id=run_id,
+                            iteration=int(state.iteration),
+                        )
                         return self._build_result(state, status="max_iterations")
                 else:
                     state.run_status = "max_iterations"
+                    self._emit_workspace_change_set_artifact(
+                        state,
+                        callback=callback,
+                        run_id=run_id,
+                        iteration=int(state.iteration),
+                    )
                     self.emit_event(
                         callback,
                         "run_max_iterations",
@@ -742,6 +797,12 @@ class KernelLoop:
                     iteration=max(0, int(state.iteration) - 1),
                     content=final_text,
                 )
+                self._emit_workspace_change_set_artifact(
+                    state,
+                    callback=callback,
+                    run_id=run_id,
+                    iteration=max(0, int(state.iteration) - 1),
+                )
                 self.emit_event(
                     callback,
                     "run_completed",
@@ -767,6 +828,12 @@ class KernelLoop:
                 run_id,
                 iteration=max(0, int(state.iteration) - 1),
                 content=final_text,
+            )
+            self._emit_workspace_change_set_artifact(
+                state,
+                callback=callback,
+                run_id=run_id,
+                iteration=max(0, int(state.iteration) - 1),
             )
             self.emit_event(
                 callback,
@@ -884,7 +951,7 @@ class KernelLoop:
             if response_format is not None
             else self._deserialize_response_format(continuation.get("response_format"))
         )
-        resolved_run_id = str(run_id or uuid.uuid4())
+        resolved_run_id = str(run_id or continuation.get("run_id") or uuid.uuid4())
         state = self.seed_state(
             conversation,
             provider=resolved_provider,
@@ -904,6 +971,10 @@ class KernelLoop:
         state.token_state.last_turn_tokens = int(continuation.get("last_turn_tokens") or 0)
         state.token_state.last_turn_input_tokens = int(continuation.get("last_turn_input_tokens") or 0)
         state.token_state.last_turn_output_tokens = int(continuation.get("last_turn_output_tokens") or 0)
+        workspace_change_state = continuation.get("workspace_change_state")
+        if isinstance(workspace_change_state, dict):
+            state.workspace_change_state = copy.deepcopy(workspace_change_state)
+            state.component_bucket("workspace_changes")["state"] = copy.deepcopy(workspace_change_state)
         state.run_status = "running"
         self._ensure_runtime_harnesses()
         self._ensure_memory_components()

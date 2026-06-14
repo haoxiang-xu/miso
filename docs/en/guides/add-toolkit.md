@@ -51,7 +51,35 @@ This guide walks you through creating a new built-in toolkit for the unchain fra
 name = "<name>"
 description = "<description>"
 version = "0.1.0"
+
+[[artifact_kinds]]
+kind = "example.report"
+display_name = "Example report"
+description = "Rendered from immutable artifact snapshots."
+icon = "bar_chart"
+fallback_renderer = "markdown"
 ```
+
+`fallback_renderer` must be one of `markdown`, `text`, `table`, `kv`, `log`, `link`, or `json`. `icon` is either a PuPu builtin icon id or a relative `.svg` / `.png` asset inside the toolkit package. Do not put raw SVG, HTML, CSS, React components, or icon hints in artifact runtime events; events should only carry immutable snapshot data.
+
+If a toolkit mutates workspace text files, artifact events alone are not enough for the run-level file summary or undo support. Report the mutation through the active execution context when it is available:
+
+```python
+context = self.current_execution_context
+tracker = getattr(context, "workspace_changes", None) if context is not None else None
+if tracker is not None:
+    tracker.record_text_file_change(
+        str(path),
+        before_text,
+        after_text,
+        operation="modified",
+        tool_name="my_tool",
+        call_id=context.call_id,
+        turn_id=context.turn_id,
+    )
+```
+
+The workspace change tracker builds one run-scoped `workspace_change_set` artifact with a net diff and safe restore metadata. Toolkit-specific artifacts remain useful for semantic UI, but they do not participate in net diff or undo unless the file mutation is reported to the tracker.
 
 ### \_\_init\_\_.py
 

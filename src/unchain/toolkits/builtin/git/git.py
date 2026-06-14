@@ -162,6 +162,40 @@ class GitToolkit(BuiltinToolkit):
         ok = completed.returncode == 0
         return ok, completed.returncode, out, err, False, out_trunc or err_trunc
 
+    def _capture_full_staged_diff(self, cwd: Path) -> str:
+        try:
+            proc = subprocess.run(
+                ["git", "diff", "--staged", "--no-ext-diff", "--unified=5"],
+                cwd=str(cwd),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30,
+                check=False,
+                shell=False,
+            )
+        except Exception:
+            return ""
+        if proc.returncode != 0:
+            return ""
+        return proc.stdout or ""
+
+    def _staged_diff_artifact_descriptor(self, diff_text: str) -> dict[str, Any] | None:
+        if not isinstance(diff_text, str) or not diff_text.strip():
+            return None
+        files = _parse_staged_diff_files(
+            diff_text,
+            max_lines=None,
+            include_full_diff=True,
+        )
+        if not files:
+            return None
+        return {
+            "kind": "file_diff",
+            "title": "Committed staged changes",
+            "files": files,
+        }
+
     # ════════════════════════════════════════════════════════════════════════
     #  Output parsers
     # ════════════════════════════════════════════════════════════════════════
@@ -500,6 +534,7 @@ class GitToolkit(BuiltinToolkit):
             result["error"] = stderr.strip() or "failed to check staged changes"
             return result
 
+        artifact_diff_text = self._capture_full_staged_diff(cwd_path)
         argv = ["git", "commit", "-m", message]
         result["argv"] = argv
 
@@ -514,6 +549,9 @@ class GitToolkit(BuiltinToolkit):
             timed_out=timed_out,
             truncated=truncated,
         )
+        artifact = self._staged_diff_artifact_descriptor(artifact_diff_text) if ok else None
+        if artifact is not None:
+            result["_artifacts"] = [artifact]
         return result
 
     # ════════════════════════════════════════════════════════════════════════
@@ -572,7 +610,12 @@ class GitToolkit(BuiltinToolkit):
 #  Diff parser (module-level, no I/O)
 # ════════════════════════════════════════════════════════════════════════════
 
-def _parse_staged_diff_files(diff_text: str) -> list[dict[str, Any]]:
+def _parse_staged_diff_files(
+    diff_text: str,
+    *,
+    max_lines: int | None = _MAX_DIFF_LINES_PER_FILE,
+    include_full_diff: bool = False,
+) -> list[dict[str, Any]]:
     """Split a unified diff into per-file entries matching the code_diff interact_config schema."""
     sections: list[tuple[str, list[str]]] = []
     current_path: str | None = None
@@ -603,22 +646,26 @@ def _parse_staged_diff_files(diff_text: str) -> list[dict[str, Any]]:
             sub_operation = "edit"
 
         total_lines = len(lines)
-        truncated = total_lines > _MAX_DIFF_LINES_PER_FILE
-        displayed = lines[:_MAX_DIFF_LINES_PER_FILE] if truncated else lines
+        truncated = max_lines is not None and total_lines > max_lines
+        displayed = lines[:max_lines] if truncated and max_lines is not None else lines
+        full_unified_diff = "".join(lines)
+        if full_unified_diff and not full_unified_diff.endswith("\n"):
+            full_unified_diff += "\n"
         unified_diff = "".join(displayed)
         if unified_diff and not unified_diff.endswith("\n"):
             unified_diff += "\n"
 
-        entries.append(
-            {
-                "path": path,
-                "sub_operation": sub_operation,
-                "unified_diff": unified_diff,
-                "truncated": truncated,
-                "total_lines": total_lines,
-                "displayed_lines": min(total_lines, _MAX_DIFF_LINES_PER_FILE),
-            }
-        )
+        entry = {
+            "path": path,
+            "sub_operation": sub_operation,
+            "unified_diff": unified_diff,
+            "truncated": truncated,
+            "total_lines": total_lines,
+            "displayed_lines": total_lines if max_lines is None else min(total_lines, max_lines),
+        }
+        if include_full_diff:
+            entry["unified_diff_full"] = full_unified_diff
+        entries.append(entry)
     return entries
 
 

@@ -119,6 +119,32 @@ class TestMcpToolConversion:
         assert converted.name == "ping"
         assert len(converted.parameters) == 0
 
+    def test_converted_tool_delegates_execution_to_mcp_toolkit(self):
+        m = MCPToolkit(command="echo")
+        calls = []
+
+        def fake_execute(function_name, arguments):
+            calls.append((function_name, arguments))
+            return {"ok": True, "tool": function_name}
+
+        m.execute = fake_execute
+        fake_tool = _make_fake_tool(
+            "repo_search",
+            "Search repository content",
+            {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                },
+                "required": ["query"],
+            },
+        )
+
+        converted = m._convert_mcp_tool(fake_tool)
+
+        assert converted.execute({"query": "pupu"}) == {"ok": True, "tool": "repo_search"}
+        assert calls == [("repo_search", {"query": "pupu"})]
+
     def test_to_json_produces_valid_tool_definitions(self):
         m = MCPToolkit(command="echo")
         fake_tool = _make_fake_tool(
