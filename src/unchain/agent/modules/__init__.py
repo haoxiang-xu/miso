@@ -4,6 +4,7 @@ from .optimizers import OptimizersModule
 from .policies import PoliciesModule
 from .subagents import SubagentModule
 from .tool_discovery import ToolDiscoveryModule
+from .tool_optimizer import ToolOptimizerModule
 from .tools import ToolsModule
 
 __all__ = [
@@ -15,6 +16,7 @@ __all__ = [
     "PoliciesModule",
     "SubagentModule",
     "ToolDiscoveryModule",
+    "ToolOptimizerModule",
     "ToolsModule",
 ]
 

@@ -23,6 +23,9 @@ def tool(
     prompt_spec: ToolPromptSpec | dict[str, Any] | None = None,
     history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
     history_result_optimizer: HistoryPayloadOptimizer | None = None,
+    always_load: bool = False,
+    defer_by_default: bool = False,
+    search_hint: str = "",
 ):
     target = func
     if callable(__func) and target is None:
@@ -41,6 +44,9 @@ def tool(
             prompt_spec=prompt_spec,
             history_arguments_optimizer=history_arguments_optimizer,
             history_result_optimizer=history_result_optimizer,
+            always_load=always_load,
+            defer_by_default=defer_by_default,
+            search_hint=search_hint,
         )
 
     def decorator(inner: Callable[..., Any]) -> Tool:
@@ -56,6 +62,9 @@ def tool(
             prompt_spec=prompt_spec,
             history_arguments_optimizer=history_arguments_optimizer,
             history_result_optimizer=history_result_optimizer,
+            always_load=always_load,
+            defer_by_default=defer_by_default,
+            search_hint=search_hint,
         )
 
     return decorator

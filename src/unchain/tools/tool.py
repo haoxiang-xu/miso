@@ -35,6 +35,9 @@ class Tool:
         history_result_optimizer: HistoryPayloadOptimizer | None = None,
         icon_path: str = "",
         icon: dict[str, Any] | None = None,
+        always_load: bool = False,
+        defer_by_default: bool = False,
+        search_hint: str = "",
     ):
         if callable(name) and func is None:
             func = name
@@ -52,6 +55,9 @@ class Tool:
         self.history_result_optimizer = history_result_optimizer
         self.icon_path = icon_path
         self.icon = dict(icon) if isinstance(icon, dict) else None
+        self.always_load = bool(always_load)
+        self.defer_by_default = bool(defer_by_default)
+        self.search_hint = str(search_hint or "")
         self.parameters = self._construct_parameters(parameters)
 
         if self.func is not None and not self.parameters:
@@ -81,6 +87,9 @@ class Tool:
                 history_result_optimizer=self.history_result_optimizer,
                 icon_path=self.icon_path,
                 icon=self.icon,
+                always_load=self.always_load,
+                defer_by_default=self.defer_by_default,
+                search_hint=self.search_hint,
             )
 
         if self.func is not None:
@@ -108,6 +117,9 @@ class Tool:
         history_result_optimizer: HistoryPayloadOptimizer | None = None,
         icon_path: str = "",
         icon: dict[str, Any] | None = None,
+        always_load: bool = False,
+        defer_by_default: bool = False,
+        search_hint: str = "",
     ) -> "Tool":
         summary, _ = _parse_docstring(func)
         return cls(
@@ -124,6 +136,9 @@ class Tool:
             history_result_optimizer=history_result_optimizer,
             icon_path=icon_path,
             icon=icon,
+            always_load=always_load,
+            defer_by_default=defer_by_default,
+            search_hint=search_hint,
         )
 
     def _construct_parameters(

@@ -13,6 +13,7 @@ from ..kernel.model_io import ModelIO
 from ..kernel.types import KernelRunResult
 from ..schemas import ResponseFormat
 from ..tools import Tool, Toolkit
+from ..tools.exposure import ToolExposureRuntime, ToolOptimizerConfig
 from .model_io import ModelIOFactoryRegistry
 from .spec import AgentSpec, AgentState
 
@@ -59,6 +60,7 @@ class PreparedAgent:
     default_on_max_iterations: Callable[..., Any] | None = None
     run_hooks: list[RunHook] = field(default_factory=list)
     tool_runtime_plugins: list[Any] = field(default_factory=list)
+    tool_optimizer_config: ToolOptimizerConfig | None = None
 
     def _merge_payloads(self, *payloads: dict[str, Any] | None) -> dict[str, Any] | None:
         merged: dict[str, Any] = {}
@@ -98,10 +100,51 @@ class PreparedAgent:
                 current = next_result
         return current
 
+    def _prepare_tool_exposure(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        payload: dict[str, Any] | None,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> tuple[Toolkit, list[Any]]:
+        plugins = list(self.tool_runtime_plugins)
+        config = ToolOptimizerConfig.coerce(self.tool_optimizer_config)
+        if config is None or not config.enabled:
+            return self.toolkit, plugins
+
+        model_io = self.loop.model_io
+        if model_io is None:
+            return self.toolkit, plugins
+
+        runtime = ToolExposureRuntime(
+            config=config,
+            full_toolkit=self.toolkit,
+            model_io=model_io,
+            provider=provider or self.spec.provider,
+            model=model or self.spec.model,
+            messages=messages,
+            instructions=self.spec.instructions,
+            payload=payload,
+            callback=self.call_context.callback,
+            run_id=self.call_context.run_id,
+        )
+        exposed_toolkit = runtime.prepare()
+        plugins.extend(runtime.build_plugins())
+        return exposed_toolkit, plugins
+
     def run(self) -> KernelRunResult:
+        messages = copy.deepcopy(self.call_context.input_messages or [])
+        payload = self._merge_payloads(self.default_payload, self.call_context.payload)
+        toolkit, tool_runtime_plugins = self._prepare_tool_exposure(
+            messages=messages,
+            payload=payload,
+            provider=self.spec.provider,
+            model=self.spec.model,
+        )
         result = self.loop.run(
-            messages=copy.deepcopy(self.call_context.input_messages or []),
-            payload=self._merge_payloads(self.default_payload, self.call_context.payload),
+            messages=messages,
+            payload=payload,
             response_format=self._resolved_response_format(),
             callback=self.call_context.callback,
             verbose=self.call_context.verbose,
@@ -115,9 +158,9 @@ class PreparedAgent:
             provider=self.spec.provider,
             model=self.spec.model,
             max_context_window_tokens=self._resolved_max_context_window_tokens(),
-            toolkit=self.toolkit,
+            toolkit=toolkit,
             run_id=self.call_context.run_id,
-            tool_runtime_plugins=list(self.tool_runtime_plugins),
+            tool_runtime_plugins=tool_runtime_plugins,
             tool_runtime_config=copy.deepcopy(self.call_context.tool_runtime_config or {}),
         )
         return self._apply_run_hooks(result)
@@ -127,11 +170,27 @@ class PreparedAgent:
         if isinstance(self.call_context.continuation, dict):
             raw_payload = self.call_context.continuation.get("payload")
             continuation_payload = raw_payload if isinstance(raw_payload, dict) else None
+        conversation = copy.deepcopy(self.call_context.conversation or [])
+        payload = self._merge_payloads(self.default_payload, continuation_payload, self.call_context.payload)
+        toolkit, tool_runtime_plugins = self._prepare_tool_exposure(
+            messages=conversation,
+            payload=payload,
+            provider=(
+                str(self.call_context.continuation.get("provider") or "")
+                if isinstance(self.call_context.continuation, dict)
+                else None
+            ),
+            model=(
+                str(self.call_context.continuation.get("model") or "")
+                if isinstance(self.call_context.continuation, dict)
+                else None
+            ),
+        )
         result = self.loop.resume_human_input(
-            conversation=copy.deepcopy(self.call_context.conversation or []),
+            conversation=conversation,
             continuation=copy.deepcopy(self.call_context.continuation or {}),
             response=copy.deepcopy(self.call_context.response),
-            payload=self._merge_payloads(self.default_payload, continuation_payload, self.call_context.payload),
+            payload=payload,
             response_format=self._resolved_response_format(),
             callback=self.call_context.callback,
             verbose=self.call_context.verbose,
@@ -140,9 +199,9 @@ class PreparedAgent:
             on_max_iterations=self._resolved_on_max_iterations(),
             session_id=self.call_context.session_id,
             memory_namespace=self.call_context.memory_namespace,
-            toolkit=self.toolkit,
+            toolkit=toolkit,
             run_id=self.call_context.run_id,
-            tool_runtime_plugins=list(self.tool_runtime_plugins),
+            tool_runtime_plugins=tool_runtime_plugins,
             tool_runtime_config=copy.deepcopy(self.call_context.tool_runtime_config or {}),
         )
         return self._apply_run_hooks(result)
@@ -167,6 +226,7 @@ class AgentBuilder:
     default_on_max_iterations: Callable[..., Any] | None = None
     run_hooks: list[RunHook] = field(default_factory=list)
     tool_runtime_plugins: list[Any] = field(default_factory=list)
+    tool_optimizer_config: ToolOptimizerConfig | None = None
     _model_io: ModelIO | None = None
     _model_io_factory: Callable[[AgentSpec, AgentCallContext], ModelIO] | None = None
 
@@ -227,6 +287,9 @@ class AgentBuilder:
 
     def add_tool_runtime_plugin(self, plugin: Any) -> None:
         self.tool_runtime_plugins.append(plugin)
+
+    def set_tool_optimizer_config(self, config: ToolOptimizerConfig | dict[str, Any] | None) -> None:
+        self.tool_optimizer_config = ToolOptimizerConfig.coerce(config)
 
     def set_payload_defaults(self, payload: dict[str, Any]) -> None:
         self.default_payload.update(copy.deepcopy(payload))
@@ -306,4 +369,5 @@ class AgentBuilder:
             default_on_max_iterations=self.default_on_max_iterations,
             run_hooks=list(self.run_hooks),
             tool_runtime_plugins=list(self.tool_runtime_plugins),
+            tool_optimizer_config=self.tool_optimizer_config,
         )

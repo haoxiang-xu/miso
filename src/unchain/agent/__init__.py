@@ -9,6 +9,7 @@ from .modules import (
     PoliciesModule,
     SubagentModule,
     ToolDiscoveryModule,
+    ToolOptimizerModule,
     ToolsModule,
 )
 from .spec import AgentSpec, AgentState
@@ -28,5 +29,6 @@ __all__ = [
     "PreparedAgent",
     "SubagentModule",
     "ToolDiscoveryModule",
+    "ToolOptimizerModule",
     "ToolsModule",
 ]

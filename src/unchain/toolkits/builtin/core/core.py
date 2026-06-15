@@ -11,10 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ....input.human_input import (
-    ASK_USER_QUESTION_TOOL_DESCRIPTION,
-    ASK_USER_QUESTION_TOOL_PROMPT_SPEC,
-)
+from ....input.human_input import build_ask_user_question_tool
 from ...base import BuiltinToolkit
 from ....tools.models import ToolConfirmationPolicy, ToolExecutionContext, ToolHistoryOptimizationContext
 from .lsp_runtime import LSPRuntime, LSPRuntimeError
@@ -99,11 +96,7 @@ class CoreToolkit(BuiltinToolkit):
         return {"error": "ask_user_question is a reserved runtime tool and cannot be executed directly"}
 
     def _register_tools(self) -> None:
-        self.register(
-            self.ask_user_question,
-            description=ASK_USER_QUESTION_TOOL_DESCRIPTION,
-            prompt_spec=ASK_USER_QUESTION_TOOL_PROMPT_SPEC,
-        )
+        self.register(build_ask_user_question_tool())
         self.register(
             self.read,
             description="Read a UTF-8 text file by absolute path with line-numbered output and optional line slicing.",
