@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from unchain.events_v4.normalizer import RuntimeEventNormalizerContextV4, normalize_raw_event_v4
+from unchain.events.normalizer import RuntimeEventNormalizerContext, normalize_raw_event
 
 
 def _context():
-    return RuntimeEventNormalizerContextV4(
+    return RuntimeEventNormalizerContext(
         session_id="thread-1",
         root_run_id="run-root",
         root_agent_id="developer",
@@ -12,7 +12,7 @@ def _context():
 
 
 def test_v4_normalizes_tool_call_to_step_started():
-    events = normalize_raw_event_v4(
+    events = normalize_raw_event(
         {
             "type": "tool_call",
             "run_id": "run-root",
@@ -42,7 +42,7 @@ def test_v4_normalizes_tool_call_to_step_started():
 
 
 def test_v4_normalizes_code_diff_confirmation_to_interaction_requested():
-    events = normalize_raw_event_v4(
+    events = normalize_raw_event(
         {
             "type": "tool_confirmation_requested",
             "run_id": "run-root",
@@ -79,7 +79,7 @@ def test_v4_normalizes_code_diff_confirmation_to_interaction_requested():
 
 
 def test_v4_normalizes_human_input_to_choice_interaction():
-    events = normalize_raw_event_v4(
+    events = normalize_raw_event(
         {
             "type": "human_input_requested",
             "run_id": "run-root",
@@ -105,7 +105,7 @@ def test_v4_normalizes_human_input_to_choice_interaction():
 
 
 def test_v4_normalizes_tool_denied_to_interaction_resolved():
-    events = normalize_raw_event_v4(
+    events = normalize_raw_event(
         {
             "type": "tool_denied",
             "run_id": "run-root",
@@ -144,7 +144,7 @@ def test_v4_artifact_surface_uses_run_summary_for_workspace_change_set():
         },
     }
 
-    events = normalize_raw_event_v4(
+    events = normalize_raw_event(
         {
             "type": "artifact_created",
             "run_id": "run-root",

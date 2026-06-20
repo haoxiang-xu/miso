@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from unchain.events_v4 import RuntimeEventLinksV4, RuntimeEventV4, RuntimeEventSurface
+from unchain.events import RuntimeEventLinks, RuntimeEvent, RuntimeEventSurface
 
 
 def test_runtime_event_v4_round_trips_surface_and_extended_links():
-    event = RuntimeEventV4(
+    event = RuntimeEvent(
         event_id="evt-1",
         type="artifact.created",
         timestamp="2026-05-26T12:00:00Z",
@@ -13,7 +13,7 @@ def test_runtime_event_v4_round_trips_surface_and_extended_links():
         agent_id="developer",
         turn_id=None,
         seq=7,
-        links=RuntimeEventLinksV4(
+        links=RuntimeEventLinks(
             step_id="step-1",
             tool_call_id="call-1",
             interaction_id="confirm-1",
@@ -43,7 +43,7 @@ def test_runtime_event_v4_round_trips_surface_and_extended_links():
         "default_state": "expanded",
         "priority": 50,
     }
-    assert RuntimeEventV4.from_dict(raw).to_dict() == raw
+    assert RuntimeEvent.from_dict(raw).to_dict() == raw
 
 
 def test_runtime_event_v4_rejects_unknown_strict_event_type():
@@ -59,7 +59,7 @@ def test_runtime_event_v4_rejects_unknown_strict_event_type():
     }
 
     try:
-        RuntimeEventV4.from_dict(raw)
+        RuntimeEvent.from_dict(raw)
     except ValueError as exc:
         assert "unknown event type" in str(exc)
     else:

@@ -1,27 +1,29 @@
 from __future__ import annotations
 
-from .types import (
-    RUNTIME_EVENT_TYPES,
-    RuntimeEvent,
-    RuntimeEventLinks,
-    RuntimeEventType,
-    Visibility,
-)
 from .bridge import RuntimeEventBridge
 from .normalizer import (
     RuntimeEventDraft,
     RuntimeEventNormalizerContext,
     normalize_raw_event,
 )
+from .types import (
+    RUNTIME_EVENT_TYPES,
+    RuntimeEventLinks,
+    RuntimeEventSurface,
+    RuntimeEventType,
+    RuntimeEvent,
+    Visibility,
+)
 
 __all__ = [
     "RUNTIME_EVENT_TYPES",
-    "RuntimeEvent",
     "RuntimeEventBridge",
     "RuntimeEventDraft",
     "RuntimeEventLinks",
     "RuntimeEventNormalizerContext",
+    "RuntimeEventSurface",
     "RuntimeEventType",
+    "RuntimeEvent",
     "Visibility",
     "normalize_raw_event",
 ]
