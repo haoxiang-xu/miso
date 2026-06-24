@@ -1,4 +1,4 @@
-"""Tests for miso.mcp – MCP client toolkit integration."""
+"""Tests for unchain MCP client toolkit integration."""
 
 import asyncio
 import json
@@ -10,6 +10,8 @@ import pytest
 
 from unchain.toolkits import MCPToolkit
 from unchain.tools import Toolkit
+from unchain.agent import Agent, ToolsModule
+from unchain.agent.builder import AgentCallContext
 
 
 # ── helpers: fake MCP objects ──────────────────────────────────────────────
@@ -341,12 +343,9 @@ class TestMcpConnectDisconnect:
 
 
 class TestMcpWithAgent:
-    """Test that mcp integrates with broth's multi-toolkit system."""
+    """Test that MCP integrates with the current agent toolkit assembly."""
 
     def test_agent_can_add_mcp_Toolkit(self):
-        # Broth removed
-
-        a = Broth()
         m = MCPToolkit(command="echo")
 
         # Register a fake tool manually (simulating what connect() does)
@@ -357,18 +356,19 @@ class TestMcpWithAgent:
             parameters=[],
         )
 
-        a.add_toolkit(m)
-        assert len(a.toolkits) == 1
+        agent = Agent(
+            name="mcp_test",
+            modules=(ToolsModule(tools=(m,)),),
+            model_io_factory=lambda spec, context: None,
+        )
+        prepared = agent._prepare(AgentCallContext(mode="run", input_messages=[]))
 
         # Verify tools are visible through the merged view
-        merged_json = a._merged_tools_json()
+        merged_json = prepared.toolkit.to_json()
         tool_names = [t["name"] for t in merged_json]
         assert "mcp_tool" in tool_names
 
     def test_agent_find_tool_in_mcp_Toolkit(self):
-        # Broth removed
-
-        a = Broth()
         m = MCPToolkit(command="echo")
 
         from unchain.tools import Tool
@@ -378,8 +378,13 @@ class TestMcpWithAgent:
             parameters=[],
         )
 
-        a.add_toolkit(m)
-        found = a._find_tool("remote_tool")
+        agent = Agent(
+            name="mcp_test",
+            modules=(ToolsModule(tools=(m,)),),
+            model_io_factory=lambda spec, context: None,
+        )
+        prepared = agent._prepare(AgentCallContext(mode="run", input_messages=[]))
+        found = prepared.toolkit.get("remote_tool")
         assert found is not None
         assert found.name == "remote_tool"
 
@@ -405,7 +410,7 @@ def test_mcp_stdio_smoke():
     with tempfile.TemporaryDirectory() as tmpdir:
         # Write a test file
         test_file = Path(tmpdir) / "hello.txt"
-        test_file.write_text("hello from miso")
+        test_file.write_text("hello from unchain")
 
         with MCPToolkit(
             command="npx",

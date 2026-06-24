@@ -5,6 +5,7 @@ from .core import CoreToolkit
 from .external_api import ExternalAPIToolkit
 from .git import GitToolkit
 from .plan import PlanToolkit
+from .workspace import WorkspaceToolkit
 
 
 __all__ = [
@@ -13,4 +14,5 @@ __all__ = [
     "ExternalAPIToolkit",
     "GitToolkit",
     "PlanToolkit",
+    "WorkspaceToolkit",
 ]

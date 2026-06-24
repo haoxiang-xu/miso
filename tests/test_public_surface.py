@@ -50,6 +50,28 @@ def test_toolkits_surface_exports_current_concrete_toolkits():
     assert MCPToolkit.__name__ == "MCPToolkit"
 
 
+def test_toolkits_surface_exports_workspace_compatibility_toolkit(tmp_path):
+    from unchain.toolkits import DevToolkit, WorkspaceToolkit
+
+    toolkit = WorkspaceToolkit(workspace_root=tmp_path)
+
+    assert WorkspaceToolkit.__name__ == "WorkspaceToolkit"
+    assert DevToolkit.__name__ == "DevToolkit"
+    assert {
+        "read_file",
+        "write_file",
+        "delete_file",
+        "move_file",
+        "terminal_exec",
+        "pin_file_context",
+        "unpin_file_context",
+    }.issubset(toolkit.tools)
+    assert toolkit.tools["write_file"].requires_confirmation is True
+    assert toolkit.tools["delete_file"].requires_confirmation is True
+    assert toolkit.tools["move_file"].requires_confirmation is True
+    assert toolkit.tools["terminal_exec"].requires_confirmation is True
+
+
 def test_memory_surface_exports_pupu_runtime_dependencies():
     from unchain.memory import (
         JsonFileLongTermProfileStore,

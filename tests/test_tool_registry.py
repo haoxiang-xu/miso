@@ -122,7 +122,7 @@ def test_builtin_registry_lists_expected_toolkits_and_tools():
     registry = ToolkitRegistry()
     toolkit_ids = {item["id"] for item in registry.list_toolkits(include_tools=False)}
 
-    assert toolkit_ids == {"agent_reach", "core", "external_api", "git", "plan"}
+    assert toolkit_ids == {"agent_reach", "core", "external_api", "git", "plan", "workspace_toolkit"}
     agent_reach_summary = registry.require("agent_reach").to_summary()
     assert agent_reach_summary["tool_count"] == 3
     assert agent_reach_summary["icon"] == {"type": "emoji", "emoji": "👁️"}
@@ -130,6 +130,7 @@ def test_builtin_registry_lists_expected_toolkits_and_tools():
     assert registry.require("external_api").to_summary()["tool_count"] == 2
     assert registry.require("git").to_summary()["tool_count"] == 5
     assert registry.require("plan").to_summary()["tool_count"] == 5
+    assert registry.require("workspace_toolkit").to_summary()["tool_count"] == 12
 
 
 def test_registry_instantiated_agent_reach_tools_include_emoji_icon_metadata():
