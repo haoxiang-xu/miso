@@ -44,3 +44,7 @@ pip-wheel-metadata/
 # OS files
 .DS_Store
 .gitnexus
+
+# Local planning drafts
+docs/plans/
+docs/superpowers/
