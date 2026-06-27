@@ -98,10 +98,25 @@ class KernelLoop:
         for harness in self._iter_phase_harnesses(phase):
             if not harness.applies(context):
                 continue
-            delta = harness.build_delta(context)
+            apply = getattr(harness, "apply", None)
+            raw_outcome = apply(context) if callable(apply) else harness.build_delta(context)
+            if raw_outcome is None:
+                continue
+
+            from ..capabilities import RunDelta, normalize_capability_outcome
+
+            outcome = normalize_capability_outcome(
+                raw_outcome,
+                created_by=f"harness.{harness.name}",
+            )
+            delta = outcome.delta
             if delta is None:
                 continue
             if not isinstance(delta, HarnessDelta):
+                if isinstance(delta, RunDelta) and delta.context_ops:
+                    raise NotImplementedError(
+                        "structured RunDelta context_ops are not applied by KernelLoop yet"
+                    )
                 raise TypeError(
                     f"harness '{harness.name}' returned {type(delta).__name__}, expected HarnessDelta"
                 )

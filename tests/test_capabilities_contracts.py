@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import pytest
+
 
 def test_capabilities_surface_exports_core_contracts():
     from unchain.capabilities import (
@@ -218,3 +220,133 @@ def test_active_and_passive_capabilities_can_both_return_delta_outcomes():
     assert passive.applies(run_context)
     assert passive_outcome.delta is not None
     assert passive_outcome.delta.context_ops[0].value == "before_model"
+
+
+def test_tool_invoke_wraps_existing_dict_result_as_capability_outcome():
+    from unchain.capabilities import CapabilityOutcome, RunContext
+    from unchain.tools import Tool
+
+    tool = Tool.from_callable(
+        lambda value: {"ok": True, "value": value},
+        name="echo",
+    )
+
+    outcome = tool.invoke(
+        {"arguments": {"value": 7}, "call_id": "call-1"},
+        RunContext(messages=[{"role": "user", "content": "hi"}]),
+    )
+
+    assert isinstance(outcome, CapabilityOutcome)
+    assert outcome.value == {"ok": True, "value": 7}
+    assert outcome.delta is None
+    assert outcome.created_by == "tool.echo"
+    assert tool.execute({"value": 7}) == {"ok": True, "value": 7}
+
+
+def test_tool_invoke_preserves_capability_outcome_returned_by_tool_function():
+    from unchain.capabilities import CapabilityOutcome, RunContext, RunDelta, SetRuntimeStateOp
+    from unchain.tools import Tool
+
+    def configured_tool(value: int) -> CapabilityOutcome:
+        return CapabilityOutcome(
+            value={"ok": True},
+            delta=RunDelta(
+                created_by="tool.configured",
+                context_ops=(
+                    SetRuntimeStateOp(
+                        path=("demo", "value"),
+                        value=value,
+                        reason="tool_delta",
+                    ),
+                ),
+            ),
+        )
+
+    tool = Tool.from_callable(configured_tool, name="configured")
+
+    outcome = tool.invoke(
+        {"arguments": {"value": 9}},
+        RunContext(messages=[]),
+    )
+
+    assert outcome.value == {"ok": True}
+    assert outcome.created_by == "tool.configured"
+    assert outcome.delta is not None
+    assert outcome.delta.context_ops[0].value == 9
+
+
+def test_base_runtime_harness_apply_wraps_legacy_delta_as_capability_outcome():
+    from unchain.capabilities import CapabilityOutcome
+    from unchain.kernel import BaseRuntimeHarness, HarnessContext, HarnessDelta, KernelLoop
+
+    class DemoHarness(BaseRuntimeHarness):
+        def build_delta(self, context):
+            return HarnessDelta.append(
+                created_by="harness.demo",
+                messages=[{"role": "system", "content": context.phase}],
+            )
+
+    loop = KernelLoop()
+    state = loop.seed_state([{"role": "user", "content": "start"}])
+    context = HarnessContext(state=state, phase="before_model")
+
+    outcome = DemoHarness(name="demo", phases=("before_model",)).apply(context)
+
+    assert isinstance(outcome, CapabilityOutcome)
+    assert outcome.value is None
+    assert isinstance(outcome.delta, HarnessDelta)
+    assert outcome.delta.created_by == "harness.demo"
+
+
+def test_kernel_loop_dispatch_phase_accepts_capability_outcome_delta():
+    from unchain.capabilities import CapabilityOutcome
+    from unchain.kernel import BaseRuntimeHarness, HarnessDelta, KernelLoop
+
+    class OutcomeHarness(BaseRuntimeHarness):
+        def build_delta(self, context):
+            return CapabilityOutcome(
+                delta=HarnessDelta.append(
+                    created_by="harness.outcome",
+                    messages=[{"role": "system", "content": "from outcome"}],
+                ),
+            )
+
+    loop = KernelLoop(harnesses=[OutcomeHarness(name="outcome", phases=("before_model",))])
+    state = loop.seed_state([{"role": "user", "content": "start"}])
+
+    loop.dispatch_phase(state, phase="before_model")
+
+    assert state.latest_messages() == [
+        {"role": "user", "content": "start"},
+        {"role": "system", "content": "from outcome"},
+    ]
+
+
+def test_kernel_loop_rejects_structured_run_delta_until_phase_three_application_layer():
+    from unchain.capabilities import (
+        CapabilityOutcome,
+        RunDelta,
+        SetRuntimeStateOp,
+    )
+    from unchain.kernel import BaseRuntimeHarness, KernelLoop
+
+    class StructuredHarness(BaseRuntimeHarness):
+        def build_delta(self, context):
+            return CapabilityOutcome(
+                delta=RunDelta(
+                    created_by="harness.structured",
+                    context_ops=(
+                        SetRuntimeStateOp(
+                            path=("demo", "value"),
+                            value=1,
+                            reason="phase_two_contract_only",
+                        ),
+                    ),
+                ),
+            )
+
+    loop = KernelLoop(harnesses=[StructuredHarness(name="structured", phases=("before_model",))])
+    state = loop.seed_state([{"role": "user", "content": "start"}])
+
+    with pytest.raises(NotImplementedError, match="structured RunDelta"):
+        loop.dispatch_phase(state, phase="before_model")
