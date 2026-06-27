@@ -178,10 +178,17 @@ def normalize_capability_outcome(
         )
 
     return CapabilityOutcome(
-        value=copy.deepcopy(outcome),
+        value=_copy_outcome_value(outcome),
         delta=None,
         created_by=created_by,
     )
+
+
+def _copy_outcome_value(value: Any) -> Any:
+    try:
+        return copy.deepcopy(value)
+    except Exception:
+        return value
 
 
 from ..kernel.delta import HarnessDelta  # noqa: E402

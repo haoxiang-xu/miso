@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
+from ..capabilities import CapabilityOutcome, RunContext, RunDelta
 from ..toolkits.base import BuiltinToolkit
 from .models import (
     ToolConfirmationPolicy,
@@ -25,6 +26,7 @@ class ToolExecutionOutcome:
     deny_reason: str = ""
     effective_arguments: Any = None
     confirmation_policy: ToolConfirmationPolicy | None = None
+    capability_outcome: CapabilityOutcome | None = None
 
 
 def _resolve_builtin_toolkit_owner(toolkit: Toolkit, tool_name: str) -> BuiltinToolkit | None:
@@ -52,6 +54,23 @@ def _tool_execution_scope(
         yield
     finally:
         owner.pop_execution_context()
+
+
+def _tool_result_from_capability_outcome(
+    outcome: CapabilityOutcome,
+    *,
+    tool_name: str,
+) -> dict[str, Any]:
+    delta = outcome.delta
+    if isinstance(delta, RunDelta) and delta.context_ops:
+        return {
+            "error": "structured RunDelta context_ops are not applied by ToolExecutionHarness yet",
+            "tool": tool_name,
+        }
+    value = outcome.value
+    if isinstance(value, dict):
+        return value
+    return {"result": value}
 
 
 def execute_confirmable_tool_call(
@@ -168,7 +187,27 @@ def execute_confirmable_tool_call(
             tool_name=tool_call.name,
             execution_context=execution_context,
         ):
-            tool_result = toolkit.execute(tool_call.name, effective_arguments)
+            if tool_obj is None:
+                tool_result = toolkit.execute(tool_call.name, effective_arguments)
+            else:
+                capability_outcome = tool_obj.invoke(
+                    {
+                        "tool_name": tool_call.name,
+                        "call_id": tool_call.call_id,
+                        "arguments": effective_arguments,
+                    },
+                    RunContext(
+                        phase="on_tool_call",
+                        event={
+                            "tool_call": tool_call,
+                            "execution_context": execution_context,
+                        },
+                    ),
+                )
+                tool_result = _tool_result_from_capability_outcome(
+                    capability_outcome,
+                    tool_name=tool_call.name,
+                )
 
     return ToolExecutionOutcome(
         tool_result=tool_result,
@@ -177,4 +216,5 @@ def execute_confirmable_tool_call(
         deny_reason=deny_reason,
         effective_arguments=effective_arguments,
         confirmation_policy=confirmation_policy,
+        capability_outcome=capability_outcome if not denied and tool_obj is not None else None,
     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -350,3 +351,133 @@ def test_kernel_loop_rejects_structured_run_delta_until_phase_three_application_
 
     with pytest.raises(NotImplementedError, match="structured RunDelta"):
         loop.dispatch_phase(state, phase="before_model")
+
+
+def test_execute_confirmable_tool_call_uses_tool_invoke_capability_value():
+    from unchain.capabilities import CapabilityOutcome
+    from unchain.kernel import ToolCall
+    from unchain.tools import Toolkit
+    from unchain.tools.confirmation import execute_confirmable_tool_call
+
+    toolkit = Toolkit()
+
+    @toolkit.tool(name="capability_tool")
+    def capability_tool(value: int) -> CapabilityOutcome:
+        return CapabilityOutcome(value={"ok": True, "value": value + 1})
+
+    outcome = execute_confirmable_tool_call(
+        toolkit=toolkit,
+        tool_call=ToolCall(call_id="call-1", name="capability_tool", arguments={"value": 4}),
+        on_tool_confirm=None,
+        loop=None,
+        callback=None,
+        run_id="run-1",
+        iteration=0,
+    )
+
+    assert outcome.tool_result == {"ok": True, "value": 5}
+    assert outcome.capability_outcome is not None
+    assert outcome.capability_outcome.value == {"ok": True, "value": 5}
+
+
+def test_kernel_tool_execution_path_uses_tool_invoke_capability_value():
+    from unchain.capabilities import CapabilityOutcome
+    from unchain.kernel import KernelLoop, ModelTurnResult, ToolCall
+    from unchain.tools import Toolkit
+
+    class QueueModelIO:
+        provider = "openai"
+
+        def __init__(self):
+            self.requests = []
+            self.results = [
+                ModelTurnResult(
+                    assistant_messages=[
+                        {
+                            "type": "function_call",
+                            "call_id": "call-1",
+                            "name": "capability_tool",
+                            "arguments": "{\"value\": 6}",
+                        }
+                    ],
+                    tool_calls=[
+                        ToolCall(
+                            call_id="call-1",
+                            name="capability_tool",
+                            arguments={"value": 6},
+                        )
+                    ],
+                    response_id="resp-1",
+                ),
+                ModelTurnResult(
+                    assistant_messages=[{"role": "assistant", "content": "done"}],
+                    tool_calls=[],
+                    final_text="done",
+                    response_id="resp-2",
+                ),
+            ]
+
+        def fetch_turn(self, request):
+            self.requests.append(request)
+            return self.results.pop(0)
+
+    toolkit = Toolkit()
+
+    @toolkit.tool(name="capability_tool")
+    def capability_tool(value: int) -> CapabilityOutcome:
+        return CapabilityOutcome(value={"ok": True, "value": value + 1})
+
+    result = KernelLoop(model_io=QueueModelIO()).run(
+        [{"role": "user", "content": "start"}],
+        provider="openai",
+        model="gpt-5",
+        toolkit=toolkit,
+        max_iterations=3,
+    )
+
+    tool_message = next(
+        message
+        for message in result.messages
+        if message.get("type") == "function_call_output"
+    )
+
+    assert result.status == "completed"
+    assert json.loads(tool_message["output"]) == {"ok": True, "value": 7}
+
+
+def test_execute_confirmable_tool_call_rejects_structured_tool_delta_for_now():
+    from unchain.capabilities import CapabilityOutcome, RunDelta, SetRuntimeStateOp
+    from unchain.kernel import ToolCall
+    from unchain.tools import Toolkit
+    from unchain.tools.confirmation import execute_confirmable_tool_call
+
+    toolkit = Toolkit()
+
+    @toolkit.tool(name="delta_tool")
+    def delta_tool() -> CapabilityOutcome:
+        return CapabilityOutcome(
+            value={"ok": True},
+            delta=RunDelta(
+                created_by="tool.delta_tool",
+                context_ops=(
+                    SetRuntimeStateOp(
+                        path=("demo", "value"),
+                        value=1,
+                        reason="phase_two_contract_only",
+                    ),
+                ),
+            ),
+        )
+
+    outcome = execute_confirmable_tool_call(
+        toolkit=toolkit,
+        tool_call=ToolCall(call_id="call-1", name="delta_tool", arguments={}),
+        on_tool_confirm=None,
+        loop=None,
+        callback=None,
+        run_id="run-1",
+        iteration=0,
+    )
+
+    assert outcome.tool_result["tool"] == "delta_tool"
+    assert "structured RunDelta context_ops" in outcome.tool_result["error"]
