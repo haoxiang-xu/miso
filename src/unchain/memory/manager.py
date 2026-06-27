@@ -2240,7 +2240,7 @@ class MemoryManager:
 
         return result
 
-    def ensure_long_term_components(self, *, broth_instance: Any | None = None) -> None:
+    def ensure_long_term_components(self, *, api_key_source: Any | None = None) -> None:
         long_term = self.config.long_term
         if long_term is None:
             return
@@ -2255,7 +2255,7 @@ class MemoryManager:
 
         qdrant_path = Path(long_term.qdrant_path) if long_term.qdrant_path is not None else (_default_user_data_dir() / "qdrant_long_term")
         long_term.vector_adapter = build_default_long_term_qdrant_vector_adapter(
-            broth_instance=broth_instance,
+            api_key_source=api_key_source,
             model=long_term.embedding_model,
             payload=long_term.embedding_payload,
             path=qdrant_path,

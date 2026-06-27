@@ -19,7 +19,6 @@ This chapter explains the `KernelLoop` engine, the `RuntimeHarness` extension pr
 - `RuntimeHarness` / `RuntimePhase` / `HarnessContext`
 - `ModelIO` / `ModelTurnRequest`
 - `ToolCall` / `ModelTurnResult` / `TokenUsage` / `KernelRunResult`
-- `LegacyBrothModelIO` (compat)
 
 ## Execution and state flow
 
@@ -40,7 +39,7 @@ This chapter explains the `KernelLoop` engine, the `RuntimeHarness` extension pr
 - Observation turns count toward the iteration budget.
 - Callbacks run synchronously inside the loop; offload long work.
 - Provider SDK imports are lazy; missing SDK fails when `fetch_turn()` runs, not at import.
-- `Broth` is **not** a runtime anymore — it survives only as `LegacyBrothModelIO`, an adapter so old code paths can plug into the new kernel.
+- Provider calls go through `ModelIO` implementations; the old provider runtime compatibility layer has been removed.
 
 ## Related class references
 
@@ -230,7 +229,7 @@ result = agent.run("Analyze this code.", response_format=fmt)
 
 6. **Token counting is approximate** — Token usage in `KernelRunResult` depends on provider accuracy. Use it for budgeting, not billing.
 
-7. **`Broth` is gone from the runtime path** — If you grep for it, you'll find `LegacyBrothModelIO` in `kernel/model_io.py` and an old `runtime/` package. Both exist for migration only; new work should target `ModelIO` directly.
+7. **Provider boundaries are explicit** — New work should target `ModelIO` implementations directly; `runtime/` now holds resource loading, not a provider runtime.
 
 ## Related Skills
 

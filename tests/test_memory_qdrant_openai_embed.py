@@ -63,13 +63,13 @@ def fake_openai_module(monkeypatch):
     return _FakeOpenAI
 
 
-def test_build_openai_embed_fn_uses_broth_api_key_and_allowed_payload(monkeypatch, fake_openai_module):
+def test_build_openai_embed_fn_uses_api_key_source_and_allowed_payload(monkeypatch, fake_openai_module):
     monkeypatch.setenv("OPENAI_API_KEY", "env-key")
-    broth_instance = types.SimpleNamespace(api_key="broth-key")
+    api_key_source = types.SimpleNamespace(api_key="source-key")
 
     embed_fn, vector_size = build_openai_embed_fn(
         model="text-embedding-3-large",
-        broth_instance=broth_instance,
+        api_key_source=api_key_source,
         payload={
             "dimensions": 1024,
             "encoding_format": "base64",
@@ -81,7 +81,7 @@ def test_build_openai_embed_fn_uses_broth_api_key_and_allowed_payload(monkeypatc
     vectors = embed_fn(["alpha", "beta"])
 
     client = fake_openai_module.instances[-1]
-    assert client.api_key == "broth-key"
+    assert client.api_key == "source-key"
 
     call = client.embeddings.calls[-1]
     assert call["model"] == "text-embedding-3-large"
@@ -94,11 +94,11 @@ def test_build_openai_embed_fn_uses_broth_api_key_and_allowed_payload(monkeypatc
 
 def test_build_openai_embed_fn_falls_back_to_openai_env_key(monkeypatch, fake_openai_module):
     monkeypatch.setenv("OPENAI_API_KEY", "env-key")
-    broth_instance = types.SimpleNamespace(api_key="   ")
+    api_key_source = types.SimpleNamespace(api_key="   ")
 
     embed_fn, vector_size = build_openai_embed_fn(
         model="text-embedding-3-small",
-        broth_instance=broth_instance,
+        api_key_source=api_key_source,
     )
 
     assert vector_size == 1536
@@ -108,23 +108,23 @@ def test_build_openai_embed_fn_falls_back_to_openai_env_key(monkeypatch, fake_op
 
 def test_build_openai_embed_fn_raises_when_api_key_missing(monkeypatch, fake_openai_module):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    broth_instance = types.SimpleNamespace(api_key="")
+    api_key_source = types.SimpleNamespace(api_key="")
 
-    with pytest.raises(ValueError, match="broth.api_key or OPENAI_API_KEY"):
+    with pytest.raises(ValueError, match="api_key_source.api_key or OPENAI_API_KEY"):
         build_openai_embed_fn(
             model="text-embedding-3-small",
-            broth_instance=broth_instance,
+            api_key_source=api_key_source,
         )
 
 
 def test_build_openai_embed_fn_rejects_dimensions_for_ada_002(monkeypatch, fake_openai_module):
     monkeypatch.setenv("OPENAI_API_KEY", "env-key")
-    broth_instance = types.SimpleNamespace(api_key="")
+    api_key_source = types.SimpleNamespace(api_key="")
 
     with pytest.raises(ValueError, match="does not support dimensions"):
         build_openai_embed_fn(
             model="text-embedding-ada-002",
-            broth_instance=broth_instance,
+            api_key_source=api_key_source,
             payload={"dimensions": 1024},
         )
 
@@ -135,7 +135,7 @@ def test_build_openai_embed_fn_rejects_unknown_model(monkeypatch, fake_openai_mo
     with pytest.raises(ValueError, match="is not configured"):
         build_openai_embed_fn(
             model="text-embedding-unknown",
-            broth_instance=None,
+            api_key_source=None,
         )
 
 
@@ -145,7 +145,7 @@ def test_build_default_long_term_qdrant_vector_adapter_requires_qdrant_client(mo
 
     with pytest.raises(ValueError, match="qdrant-client.*default long-term vector storage"):
         build_default_long_term_qdrant_vector_adapter(
-            broth_instance=types.SimpleNamespace(api_key="broth-key"),
+            api_key_source=types.SimpleNamespace(api_key="source-key"),
             path="/tmp/lt-qdrant-test",
         )
 

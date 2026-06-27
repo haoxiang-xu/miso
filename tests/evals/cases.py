@@ -59,9 +59,9 @@ def list_eval_cases(repo_root: str | Path) -> list[EvalCase]:
             ),
             rule_checks={
                 "required_paths": [
-                    "src/miso/agents/agent.py",
-                    "src/miso/runtime/engine.py",
-                    "src/miso/schemas/response.py",
+                    "src/unchain/agent/agent.py",
+                    "src/unchain/kernel/loop.py",
+                    "src/unchain/schemas/response.py",
                     "README.md",
                 ],
                 "required_substrings": [
@@ -72,7 +72,7 @@ def list_eval_cases(repo_root: str | Path) -> list[EvalCase]:
                 ],
                 "required_any_substrings": [
                     ["Agent", "agent"],
-                    ["broth", "Broth"],
+                    ["ModelIO", "providers"],
                 ],
                 "required_tool_any_of": [["list_directories", "search_text", "read_files"]],
                 "min_tool_calls": 3,

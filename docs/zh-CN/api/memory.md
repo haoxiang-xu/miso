@@ -716,7 +716,7 @@ obj.prepare(...)
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
-#### `ensure_long_term_components(self, *, broth_instance: Any | None=None)`
+#### `ensure_long_term_components(self, *, api_key_source: Any | None=None)`
 
 `MemoryManager` 对外暴露的方法 `ensure_long_term_components`。
 

@@ -163,8 +163,8 @@ def test_build_judge_messages_embeds_message_list():
         duration_seconds=1.0,
         workspace_mode=case.workspace_mode,
         workspace_source=case.workspace_source,
-        final_answer="See src/miso/agents/agent.py and src/miso/runtime/engine.py.",
-        messages=[{"role": "assistant", "content": "See src/miso/agents/agent.py and src/miso/runtime/engine.py."}],
+        final_answer="See src/unchain/agent/agent.py and src/unchain/kernel/loop.py.",
+        messages=[{"role": "assistant", "content": "See src/unchain/agent/agent.py and src/unchain/kernel/loop.py."}],
     )
 
     messages = build_judge_messages(case=case, run_artifact=run_artifact, rubric_weights=case.rubric_weights)

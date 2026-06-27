@@ -49,7 +49,7 @@
 
 - 顶层公共 API 故意保持极小：只有 `Agent`。其他一切都在子包里。
 - 每次 `Agent.run()` 都构造新的 `KernelLoop`；module 状态存在 `AgentState`，不存在 loop 上。
-- `Broth` 已经**不再**是引擎 —— 只剩 `LegacyBrothModelIO` 这一个 `ModelIO` 适配器，给老代码路径用。
+- Provider 调用统一通过 `providers/` 下的 `ModelIO` 实现；旧的 provider 兼容层已经移除。
 
 ## 关联 class 参考
 
@@ -83,7 +83,7 @@ src/unchain/
 │   ├── harness.py       #   RuntimeHarness 协议 + RuntimePhase + HarnessContext
 │   ├── state.py         #   RunState — 单次 run 的可变状态
 │   ├── types.py         #   ToolCall, TokenUsage, ModelTurnResult, KernelRunResult
-│   └── model_io.py      #   LegacyBrothModelIO（兼容垫片）
+│   └── model_io.py      #   ModelIO 协议 + ModelTurnRequest
 ├── providers/           # ModelIO 实现
 │   ├── model_io.py      #   ModelIO 协议 + ModelTurnRequest
 │   ├── openai.py        #   OpenAIModelIO
@@ -121,8 +121,8 @@ src/unchain/
 │   ├── backoff.py       #   compute_delay_ms
 │   ├── executor.py      #   execute_with_retry
 │   └── wrapper.py       #   fetch_turn_with_retry
-├── runtime/             # 遗留 Broth runtime（兼容用）
-│   └── ...              #   仅 LegacyBrothModelIO 用，新代码直接用 providers/
+├── runtime/             # Model resource 与默认 payload 加载
+│   └── resources/       #   Model capability/default payload JSON
 ├── input/               # 人类输入 + media
 ├── character/           # Agent persona / instruction 工具
 ├── schemas/             # ResponseFormat（结构化输出）

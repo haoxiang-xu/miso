@@ -19,7 +19,6 @@
 - `RuntimeHarness` / `RuntimePhase` / `HarnessContext`
 - `ModelIO` / `ModelTurnRequest`
 - `ToolCall` / `ModelTurnResult` / `TokenUsage` / `KernelRunResult`
-- `LegacyBrothModelIO`（兼容用）
 
 ## 执行流与状态流
 
@@ -40,7 +39,7 @@
 - Observation turn 计入迭代预算。
 - callback 在 loop 内同步执行；耗时工作要外抛。
 - Provider SDK 懒加载；缺 SDK 时 `fetch_turn()` 才报错，不是 import 时。
-- `Broth` **不再**是 runtime —— 只剩 `LegacyBrothModelIO` 这个适配器，让老代码路径能挂进新 kernel。
+- Provider 调用统一通过 `ModelIO` 实现；旧的 provider runtime 兼容层已经移除。
 
 ## 关联 class 参考
 
@@ -230,7 +229,7 @@ result = agent.run("Analyze this code.", response_format=fmt)
 
 6. **Token 计数是近似** —— `KernelRunResult` 里的 token 用量看 provider 准确度。用来做预算，别用来计费。
 
-7. **`Broth` 已经不在 runtime 路径上** —— 你 grep 它会找到 `kernel/model_io.py` 里的 `LegacyBrothModelIO` 和老的 `runtime/` 包。这两个只为迁移而存在；新代码直接面向 `ModelIO`。
+7. **Provider 边界是显式的** —— 新代码直接面向 `ModelIO` 实现；`runtime/` 现在负责 resource loading，不再是 provider runtime。
 
 ## 相关 skills
 

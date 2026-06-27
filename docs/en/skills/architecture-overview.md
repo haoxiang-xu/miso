@@ -49,7 +49,7 @@ This chapter explains how the package is layered, which modules are foundational
 
 - The top-level public API is intentionally tiny: only `Agent`. Everything else lives in subpackages.
 - A fresh `KernelLoop` is built per `Agent.run()`; module state lives in `AgentState`, not on the loop.
-- `Broth` is **not** the engine anymore — it survives only as `LegacyBrothModelIO`, a `ModelIO` adapter for older code paths.
+- Provider calls go through `ModelIO` implementations under `providers/`; the old provider compatibility layer has been removed.
 
 ## Related class references
 
@@ -83,7 +83,7 @@ src/unchain/
 │   ├── harness.py       #   RuntimeHarness protocol + RuntimePhase + HarnessContext
 │   ├── state.py         #   RunState — mutable per-run state
 │   ├── types.py         #   ToolCall, TokenUsage, ModelTurnResult, KernelRunResult
-│   └── model_io.py      #   LegacyBrothModelIO (compat shim)
+│   └── model_io.py      #   ModelIO protocol + ModelTurnRequest
 ├── providers/           # ModelIO implementations
 │   ├── model_io.py      #   ModelIO protocol + ModelTurnRequest
 │   ├── openai.py        #   OpenAIModelIO
@@ -121,8 +121,8 @@ src/unchain/
 │   ├── backoff.py       #   compute_delay_ms
 │   ├── executor.py      #   execute_with_retry
 │   └── wrapper.py       #   fetch_turn_with_retry
-├── runtime/             # Legacy Broth runtime (compat)
-│   └── ...              #   Used only by LegacyBrothModelIO; new code uses providers/ directly
+├── runtime/             # Model resources and default payload loading
+│   └── resources/       #   Model capability/default payload JSON
 ├── input/               # Human input + media
 ├── character/           # Agent persona / instruction helpers
 ├── schemas/             # ResponseFormat for structured output

@@ -716,7 +716,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
-#### `ensure_long_term_components(self, *, broth_instance: Any | None=None)`
+#### `ensure_long_term_components(self, *, api_key_source: Any | None=None)`
 
 Public method `ensure_long_term_components` exposed by `MemoryManager`.
 

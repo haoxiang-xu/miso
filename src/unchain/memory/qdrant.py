@@ -84,11 +84,11 @@ def _merged_embedding_payload(
     return defaults
 
 
-def _resolve_embedding_api_key(*, broth_instance: Any | None) -> str:
-    if broth_instance is not None:
-        broth_key = getattr(broth_instance, "api_key", None)
-        if isinstance(broth_key, str) and broth_key.strip():
-            return broth_key.strip()
+def _resolve_embedding_api_key(*, api_key_source: Any | None) -> str:
+    if api_key_source is not None:
+        source_key = getattr(api_key_source, "api_key", None)
+        if isinstance(source_key, str) and source_key.strip():
+            return source_key.strip()
 
     env_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if env_key:
@@ -96,14 +96,14 @@ def _resolve_embedding_api_key(*, broth_instance: Any | None) -> str:
 
     raise ValueError(
         "error: openai api key is required for embedding requests. "
-        "set broth.api_key or OPENAI_API_KEY."
+        "set api_key_source.api_key or OPENAI_API_KEY."
     )
 
 
 def build_openai_embed_fn(
     *,
     model: str,
-    broth_instance: Any | None = None,
+    api_key_source: Any | None = None,
     payload: dict[str, Any] | None = None,
 ) -> tuple[Callable[[list[str]], list[list[float]]], int]:
     """Build an OpenAI embedding function from model JSON config.
@@ -112,7 +112,7 @@ def build_openai_embed_fn(
         ``(embed_fn, vector_size)``
 
     Key resolution order:
-        1. ``broth_instance.api_key``
+        1. ``api_key_source.api_key``
         2. ``OPENAI_API_KEY`` env var
     """
     if not isinstance(model, str) or not model.strip():
@@ -168,7 +168,7 @@ def build_openai_embed_fn(
 
     from openai import OpenAI
 
-    api_key = _resolve_embedding_api_key(broth_instance=broth_instance)
+    api_key = _resolve_embedding_api_key(api_key_source=api_key_source)
     openai_client = OpenAI(api_key=api_key)
 
     def _embed(texts: list[str]) -> list[list[float]]:
@@ -471,7 +471,7 @@ def build_embedded_qdrant_client(*, path: str | Path) -> "QdrantClient":
 
 def build_default_long_term_qdrant_vector_adapter(
     *,
-    broth_instance: Any | None = None,
+    api_key_source: Any | None = None,
     model: str = "text-embedding-3-small",
     payload: dict[str, Any] | None = None,
     path: str | Path,
@@ -485,7 +485,7 @@ def build_default_long_term_qdrant_vector_adapter(
     client = build_embedded_qdrant_client(path=path)
     embed_fn, vector_size = build_openai_embed_fn(
         model=model,
-        broth_instance=broth_instance,
+        api_key_source=api_key_source,
         payload=payload,
     )
     return QdrantLongTermVectorAdapter(
