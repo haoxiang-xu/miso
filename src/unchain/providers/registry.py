@@ -6,8 +6,8 @@ from typing import Any
 def _default_adapter_classes() -> dict[str, type]:
     from .anthropic import AnthropicModelIO
     from .hyperspace import HyperspaceModelIO
-    from .model_io import OllamaModelIO
     from .openai import OpenAIModelIO
+    from .ollama import OllamaModelIO
 
     return {
         "anthropic": AnthropicModelIO,

@@ -63,6 +63,18 @@ def test_anthropic_adapter_lives_in_provider_specific_module_with_legacy_reexpor
     assert issubclass(HyperspaceModelIO, ProviderAnthropicModelIO)
 
 
+def test_ollama_adapter_lives_in_provider_specific_module_with_legacy_reexports():
+    from unchain.providers import OllamaModelIO
+    from unchain.providers.model_io import OllamaModelIO as LegacyOllamaModelIO
+    from unchain.providers.ollama import OllamaModelIO as ProviderOllamaModelIO
+    from unchain.providers.registry import get_model_adapter_class
+
+    assert ProviderOllamaModelIO.__module__ == "unchain.providers.ollama"
+    assert OllamaModelIO is ProviderOllamaModelIO
+    assert LegacyOllamaModelIO is ProviderOllamaModelIO
+    assert get_model_adapter_class("ollama") is ProviderOllamaModelIO
+
+
 def test_native_provider_substrate_lives_in_dedicated_module_with_legacy_reexports():
     from unchain.providers.model_io import _NativeModelIOBase as LegacyNativeModelIOBase
     from unchain.providers.model_io import (
