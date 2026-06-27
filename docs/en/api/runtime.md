@@ -17,8 +17,8 @@ Core execution types: kernel loop, provider abstraction (`ModelIO`), model turn 
 | `TokenUsage` | `src/unchain/kernel/types.py` | subpackage | dataclass (frozen) |
 | `ModelTurnResult` | `src/unchain/kernel/types.py` | subpackage | dataclass (frozen) |
 | `KernelRunResult` | `src/unchain/kernel/types.py` | subpackage | dataclass (frozen) |
-| `ModelTurnRequest` | `src/unchain/providers/model_io.py` | subpackage | dataclass (frozen) |
-| `ModelIO` | `src/unchain/providers/model_io.py` | subpackage | protocol |
+| `ModelTurnRequest` | `src/unchain/providers/base.py` | subpackage | dataclass (frozen) |
+| `ModelIO` | `src/unchain/providers/base.py` | subpackage | protocol |
 | `KernelLoop` | `src/unchain/kernel/loop.py` | subpackage | class |
 
 ### `src/unchain/kernel/types.py`
@@ -125,7 +125,7 @@ Frozen dataclass returned by `Agent.run()` and `PreparedAgent.run()` with the fi
 | `previous_response_id` | `str \| None` | Default: `None`. |
 | `iteration` | `int` | Default: `0`. |
 
-### `src/unchain/providers/model_io.py`
+### `src/unchain/providers/base.py`
 
 Provider abstraction layer. `ModelIO` is the protocol that all provider implementations satisfy; `ModelTurnRequest` is the frozen input.
 
@@ -135,7 +135,7 @@ Frozen dataclass packaging messages, payload, format, and toolkit for a single m
 
 | Item | Details |
 | --- | --- |
-| Source | `src/unchain/providers/model_io.py` |
+| Source | `src/unchain/providers/base.py` |
 | Inheritance | `-` |
 | Exposure | Exported from `unchain.providers`. |
 | Kind | Dataclass (frozen). |
@@ -168,7 +168,7 @@ Provider-facing boundary used by the kernel loop. All provider implementations (
 
 | Item | Details |
 | --- | --- |
-| Source | `src/unchain/providers/model_io.py` |
+| Source | `src/unchain/providers/base.py` |
 | Kind | Protocol (runtime-checkable). |
 
 ### Required interface
@@ -205,7 +205,7 @@ The main execution engine. Runs a step-once loop: dispatch harness phases, fetch
 
 ```python
 from unchain.kernel.loop import KernelLoop
-from unchain.providers.model_io import ModelIO
+from unchain.providers import ModelIO
 
 loop = KernelLoop(model_io=my_model_io)
 loop.register_harness(my_harness)

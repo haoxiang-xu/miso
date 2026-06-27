@@ -17,8 +17,8 @@
 | `TokenUsage` | `src/unchain/kernel/types.py` | subpackage | dataclass (frozen) |
 | `ModelTurnResult` | `src/unchain/kernel/types.py` | subpackage | dataclass (frozen) |
 | `KernelRunResult` | `src/unchain/kernel/types.py` | subpackage | dataclass (frozen) |
-| `ModelTurnRequest` | `src/unchain/providers/model_io.py` | subpackage | dataclass (frozen) |
-| `ModelIO` | `src/unchain/providers/model_io.py` | subpackage | protocol |
+| `ModelTurnRequest` | `src/unchain/providers/base.py` | subpackage | dataclass (frozen) |
+| `ModelIO` | `src/unchain/providers/base.py` | subpackage | protocol |
 | `KernelLoop` | `src/unchain/kernel/loop.py` | subpackage | class |
 
 ### `src/unchain/kernel/types.py`
@@ -125,7 +125,7 @@ Frozen dataclass，由 `Agent.run()` 和 `PreparedAgent.run()` 返回，包含�
 | `previous_response_id` | `str \| None` | 默认值：`None`。 |
 | `iteration` | `int` | 默认值：`0`。 |
 
-### `src/unchain/providers/model_io.py`
+### `src/unchain/providers/base.py`
 
 Provider 抽象层。`ModelIO` 是所有 provider 实现必须满足的协议；`ModelTurnRequest` 是 frozen 输入。
 
@@ -135,7 +135,7 @@ Frozen dataclass，打包单次模型 turn 的消息、payload、格式和 toolk
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/unchain/providers/model_io.py` |
+| 源码 | `src/unchain/providers/base.py` |
 | 继承/协议 | `-` |
 | 导出状态 | 通过 `unchain.providers` 导出。 |
 | 对象类型 | Dataclass (frozen)。 |
@@ -168,7 +168,7 @@ Kernel loop 使用的 provider 边界。所有 provider 实现（OpenAI、Anthro
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/unchain/providers/model_io.py` |
+| 源码 | `src/unchain/providers/base.py` |
 | 对象类型 | 协议（runtime-checkable）。 |
 
 ### 必需接口
@@ -205,7 +205,7 @@ Harness 驱动的执行循环，编排模型 turn、工具执行、memory 提交
 
 ```python
 from unchain.kernel.loop import KernelLoop
-from unchain.providers.model_io import ModelIO
+from unchain.providers import ModelIO
 
 loop = KernelLoop(model_io=my_model_io)
 loop.register_harness(my_harness)

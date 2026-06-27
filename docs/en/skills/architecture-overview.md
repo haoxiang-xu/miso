@@ -84,11 +84,14 @@ src/unchain/
 │   ├── state.py         #   RunState — mutable per-run state
 │   ├── types.py         #   ToolCall, TokenUsage, ModelTurnResult, KernelRunResult
 │   └── model_io.py      #   ModelIO protocol + ModelTurnRequest
-├── providers/           # ModelIO implementations
-│   ├── model_io.py      #   ModelIO protocol + ModelTurnRequest
+├── providers/           # ModelIO adapters
+│   ├── base.py          #   ModelIO protocol + ModelTurnRequest
+│   ├── native.py        #   shared native adapter substrate
+│   ├── model_io.py      #   legacy compatibility shim
 │   ├── openai.py        #   OpenAIModelIO
 │   ├── anthropic.py     #   AnthropicModelIO
-│   └── ollama.py        #   OllamaModelIO
+│   ├── ollama.py        #   OllamaModelIO
+│   └── hyperspace.py    #   HyperspaceModelIO
 ├── tools/               # Tool primitives + discovery
 │   ├── tool.py          #   Tool — wrapped callable with metadata
 │   ├── toolkit.py       #   Toolkit — dict container of Tools

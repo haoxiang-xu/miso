@@ -1,3 +1,11 @@
+"""Legacy compatibility shim for provider model adapters.
+
+Provider implementations live in provider-specific modules such as
+``unchain.providers.openai``, ``unchain.providers.anthropic``, and
+``unchain.providers.ollama``. This module keeps older imports working and
+should not define provider classes directly.
+"""
+
 from __future__ import annotations
 
 from .base import ModelAdapter, ModelIO, ModelTurnRequest

@@ -84,11 +84,14 @@ src/unchain/
 │   ├── state.py         #   RunState — 单次 run 的可变状态
 │   ├── types.py         #   ToolCall, TokenUsage, ModelTurnResult, KernelRunResult
 │   └── model_io.py      #   ModelIO 协议 + ModelTurnRequest
-├── providers/           # ModelIO 实现
-│   ├── model_io.py      #   ModelIO 协议 + ModelTurnRequest
+├── providers/           # ModelIO adapter
+│   ├── base.py          #   ModelIO 协议 + ModelTurnRequest
+│   ├── native.py        #   共享 native adapter 底座
+│   ├── model_io.py      #   legacy compatibility shim
 │   ├── openai.py        #   OpenAIModelIO
 │   ├── anthropic.py     #   AnthropicModelIO
-│   └── ollama.py        #   OllamaModelIO
+│   ├── ollama.py        #   OllamaModelIO
+│   └── hyperspace.py    #   HyperspaceModelIO
 ├── tools/               # Tool 原语 + 发现
 │   ├── tool.py          #   Tool — 带元数据的 callable 包装
 │   ├── toolkit.py       #   Toolkit — Tool 字典容器

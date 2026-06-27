@@ -53,7 +53,10 @@ This chapter explains the `KernelLoop` engine, the `RuntimeHarness` extension pr
 - `src/unchain/kernel/harness.py`
 - `src/unchain/kernel/state.py`
 - `src/unchain/kernel/types.py`
-- `src/unchain/providers/model_io.py`
+- `src/unchain/providers/base.py`
+- `src/unchain/providers/openai.py`
+- `src/unchain/providers/anthropic.py`
+- `src/unchain/providers/ollama.py`
 
 ## KernelLoop In Practice
 

@@ -12,7 +12,10 @@
 
 | 文件 | 职责 |
 |------|------|
-| `src/unchain/providers/model_io.py` | `_NativeModelIOBase` 及现有 provider 实现（OpenAI、Anthropic、Ollama） |
+| `src/unchain/providers/base.py` | canonical `ModelIO` 与 `ModelTurnRequest` contract |
+| `src/unchain/providers/native.py` | `_NativeModelIOBase` 与共享 native provider helper |
+| `src/unchain/providers/openai.py`、`anthropic.py`、`ollama.py` | 现有 provider-specific 实现 |
+| `src/unchain/providers/model_io.py` | legacy compatibility shim；不要把新的 provider 实现加到这里 |
 | `src/unchain/agent/model_io.py` | `ModelIOFactoryRegistry` -- 将 provider 名称映射到 `ModelIO` 工厂函数 |
 | `src/unchain/tools/messages.py` | Provider 特定的工具结果消息构建器 |
 | `src/unchain/runtime/resources/model_capabilities.json` | 模型注册表 |
@@ -21,7 +24,7 @@
 
 ## 步骤
 
-1. **学习 provider 抽象层。** 阅读 `src/unchain/providers/model_io.py`，理解：
+1. **学习 provider 抽象层。** 阅读 `src/unchain/providers/base.py`、`src/unchain/providers/native.py` 和一个现有 provider 模块，理解：
    - `_NativeModelIOBase` -- 带有模型能力解析的基类
    - 现有实现：`OpenAIModelIO`、`AnthropicModelIO`、`OllamaModelIO`
 
@@ -29,7 +32,7 @@
 
 3. **学习消息构建器。** 阅读 `src/unchain/tools/messages.py`，查看各 provider 的工具结果格式化方式。
 
-4. **创建新的 `ModelIO` 类**，添加到 `src/unchain/providers/model_io.py` 中：
+4. **创建新的 provider-specific module**，放在 `src/unchain/providers/<provider>.py`：
    - 继承 `_NativeModelIOBase`
    - 设置 `provider = "<provider_name>"`
    - 实现 `fetch_turn(self, request: ModelTurnRequest) -> ModelTurnResult`
@@ -37,7 +40,7 @@
    - 解析 provider 响应格式中的工具调用
    - 跟踪输入/输出 token 用量
 
-5. **在 `ModelIOFactoryRegistry` 中注册**，位于 `src/unchain/agent/model_io.py`，将 provider 名称解析到你的新类。
+5. **注册 adapter**，在 `src/unchain/providers/registry.py` 中加入映射，并从 `src/unchain/providers/__init__.py` 导出。
 
 6. **添加 provider 特定的消息构建器**，位于 `src/unchain/tools/messages.py`：
    - 实现 `build_tool_result_message(tool_call, tool_result)`，按照 provider 的预期格式构造工具结果。
@@ -53,7 +56,7 @@
 ## 模板
 
 ```python
-# In src/unchain/providers/model_io.py
+# In src/unchain/providers/my_provider.py
 
 class MyProviderModelIO(_NativeModelIOBase):
     provider = "my_provider"

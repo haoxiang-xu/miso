@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import ast
+import inspect
+
 
 def test_provider_base_is_the_single_model_adapter_contract():
     from unchain import kernel, providers
@@ -73,6 +76,17 @@ def test_ollama_adapter_lives_in_provider_specific_module_with_legacy_reexports(
     assert OllamaModelIO is ProviderOllamaModelIO
     assert LegacyOllamaModelIO is ProviderOllamaModelIO
     assert get_model_adapter_class("ollama") is ProviderOllamaModelIO
+
+
+def test_legacy_model_io_module_stays_a_compatibility_shim_without_provider_classes():
+    from unchain.providers import model_io as legacy_model_io
+
+    source_tree = ast.parse(inspect.getsource(legacy_model_io))
+    class_defs = [node.name for node in source_tree.body if isinstance(node, ast.ClassDef)]
+
+    assert ast.get_docstring(source_tree) is not None
+    assert "legacy compatibility shim" in ast.get_docstring(source_tree).lower()
+    assert class_defs == []
 
 
 def test_native_provider_substrate_lives_in_dedicated_module_with_legacy_reexports():

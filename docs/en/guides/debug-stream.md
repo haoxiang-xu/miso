@@ -11,7 +11,7 @@ This guide helps you diagnose why a chat stream is stuck, erroring, or not compl
 
 | File | Role |
 |------|------|
-| `src/unchain/providers/model_io.py` | Provider fetch implementations (OpenAI, Anthropic, Ollama) |
+| `src/unchain/providers/openai.py`, `anthropic.py`, `ollama.py` | Provider fetch implementations |
 | `src/unchain/kernel/loop.py` | Kernel loop step dispatch |
 | `src/unchain/tools/execution.py` | Tool execution harness |
 | `src/unchain/tools/confirmation.py` | Tool confirmation gate (blocking wait) |
@@ -26,7 +26,7 @@ Match the symptom to the likely layer:
 | Symptom | Likely Layer | Where to Look |
 |---------|-------------|---------------|
 | No stream starts at all | Frontend / IPC | Entry point (adapter or route handler) |
-| Stream starts but no tokens appear | Provider fetch | `src/unchain/providers/model_io.py` |
+| Stream starts but no tokens appear | Provider fetch | The provider-specific module in `src/unchain/providers/` |
 | Stuck after a tool call | Tool confirmation | `src/unchain/tools/confirmation.py`, `src/unchain/tools/execution.py` |
 | No continuation after tool results | Kernel loop | `src/unchain/kernel/loop.py` (max_iterations) |
 | Error not surfacing to user | SSE / event parsing | Event serialization layer |
@@ -42,7 +42,7 @@ Frontend / client
       -> KernelLoop.run()
         -> step_once() loop:
           -> dispatch_phase(harnesses)
-          -> fetch_model_turn(provider)  [src/unchain/providers/model_io.py]
+          -> fetch_model_turn(provider)  [src/unchain/providers/<provider>.py]
           -> tool execution              [src/unchain/tools/execution.py]
           -> memory commit
         -> KernelRunResult

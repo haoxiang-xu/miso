@@ -12,7 +12,10 @@ This guide walks you through adding support for a new LLM provider to the unchai
 
 | File | Role |
 |------|------|
-| `src/unchain/providers/model_io.py` | `_NativeModelIOBase` and existing provider implementations (OpenAI, Anthropic, Ollama) |
+| `src/unchain/providers/base.py` | Canonical `ModelIO` and `ModelTurnRequest` contracts |
+| `src/unchain/providers/native.py` | `_NativeModelIOBase` and shared native provider helpers |
+| `src/unchain/providers/openai.py`, `anthropic.py`, `ollama.py` | Existing provider-specific implementations |
+| `src/unchain/providers/model_io.py` | Legacy compatibility shim; do not add new provider implementations here |
 | `src/unchain/agent/model_io.py` | `ModelIOFactoryRegistry` -- maps provider names to `ModelIO` factories |
 | `src/unchain/tools/messages.py` | Provider-specific message builders for tool results |
 | `src/unchain/runtime/resources/model_capabilities.json` | Model registry |
@@ -21,7 +24,7 @@ This guide walks you through adding support for a new LLM provider to the unchai
 
 ## Steps
 
-1. **Study the provider abstraction.** Read `src/unchain/providers/model_io.py` to understand:
+1. **Study the provider abstraction.** Read `src/unchain/providers/base.py`, `src/unchain/providers/native.py`, and an existing provider module to understand:
    - `_NativeModelIOBase` -- base class with model capability resolution
    - Existing implementations: `OpenAIModelIO`, `AnthropicModelIO`, `OllamaModelIO`
 
@@ -29,7 +32,7 @@ This guide walks you through adding support for a new LLM provider to the unchai
 
 3. **Study message builders.** Read `src/unchain/tools/messages.py` to see how tool results are formatted for each provider.
 
-4. **Create the new `ModelIO` class** in `src/unchain/providers/model_io.py`:
+4. **Create the new provider-specific module** in `src/unchain/providers/<provider>.py`:
    - Extend `_NativeModelIOBase`
    - Set `provider = "<provider_name>"`
    - Implement `fetch_turn(self, request: ModelTurnRequest) -> ModelTurnResult`
@@ -37,7 +40,7 @@ This guide walks you through adding support for a new LLM provider to the unchai
    - Parse tool calls from the provider's response format
    - Track input/output token usage
 
-5. **Register in `ModelIOFactoryRegistry`** in `src/unchain/agent/model_io.py` so that the provider name is resolved to your new class.
+5. **Register the adapter** in `src/unchain/providers/registry.py` and expose it from `src/unchain/providers/__init__.py`.
 
 6. **Add a provider-specific message builder** in `src/unchain/tools/messages.py`:
    - Implement `build_tool_result_message(tool_call, tool_result)` to format tool results in the provider's expected format.
@@ -53,7 +56,7 @@ This guide walks you through adding support for a new LLM provider to the unchai
 ## Template
 
 ```python
-# In src/unchain/providers/model_io.py
+# In src/unchain/providers/my_provider.py
 
 class MyProviderModelIO(_NativeModelIOBase):
     provider = "my_provider"

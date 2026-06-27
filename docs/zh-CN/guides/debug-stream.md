@@ -11,7 +11,7 @@
 
 | 文件 | 职责 |
 |------|------|
-| `src/unchain/providers/model_io.py` | Provider fetch 实现（OpenAI、Anthropic、Ollama） |
+| `src/unchain/providers/openai.py`、`anthropic.py`、`ollama.py` | Provider fetch 实现 |
 | `src/unchain/kernel/loop.py` | Kernel loop 步骤调度 |
 | `src/unchain/tools/execution.py` | 工具执行 harness |
 | `src/unchain/tools/confirmation.py` | 工具确认门控（阻塞等待） |
@@ -26,7 +26,7 @@
 | 症状 | 可能的层 | 查看位置 |
 |------|---------|---------|
 | 流完全没有启动 | 前端 / IPC | 入口点（adapter 或 route handler） |
-| 流已启动但没有 token 出现 | Provider fetch | `src/unchain/providers/model_io.py` |
+| 流已启动但没有 token 出现 | Provider fetch | `src/unchain/providers/` 下的 provider-specific module |
 | 工具调用后卡住 | 工具确认 | `src/unchain/tools/confirmation.py`、`src/unchain/tools/execution.py` |
 | 工具结果返回后没有继续 | Kernel loop | `src/unchain/kernel/loop.py`（max_iterations） |
 | 错误未传达给用户 | SSE / 事件解析 | 事件序列化层 |
@@ -42,7 +42,7 @@ Frontend / client
       -> KernelLoop.run()
         -> step_once() loop:
           -> dispatch_phase(harnesses)
-          -> fetch_model_turn(provider)  [src/unchain/providers/model_io.py]
+          -> fetch_model_turn(provider)  [src/unchain/providers/<provider>.py]
           -> tool execution              [src/unchain/tools/execution.py]
           -> memory commit
         -> KernelRunResult
