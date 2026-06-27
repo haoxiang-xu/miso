@@ -5,8 +5,10 @@ import json
 from unchain.capabilities import (
     CapabilityOutcome,
     ContextTarget,
+    DeleteMessagesOp,
     EmitEventOp,
     InsertMessagesOp,
+    PatchMessageOp,
     RequestSuspendOp,
     RunDelta,
     SetRuntimeStateOp,
@@ -166,3 +168,88 @@ def test_tool_structured_delta_uses_same_application_layer_for_next_model_contex
     assert {"role": "system", "content": "tool memory"} not in result.messages
     assert json.loads(tool_message["output"]) == {"ok": True}
     assert any(event["type"] == "tool_delta_event" and event["source"] == "tool" for event in events)
+
+
+def test_patch_and_delete_messages_update_model_context_without_touching_transcript():
+    class StructuredHarness(BaseRuntimeHarness):
+        def build_delta(self, context):
+            return CapabilityOutcome(
+                delta=RunDelta(
+                    created_by="harness.context_editor",
+                    context_ops=(
+                        PatchMessageOp(
+                            target=ContextTarget.MODEL_CONTEXT,
+                            selector={"role": "system"},
+                            patch={"content": "patched system"},
+                            reason="test_patch_model_context",
+                        ),
+                        DeleteMessagesOp(
+                            target=ContextTarget.MODEL_CONTEXT,
+                            selector={"role": "assistant"},
+                            reason="test_delete_model_context",
+                        ),
+                    ),
+                ),
+            )
+
+    loop = KernelLoop(harnesses=[StructuredHarness(name="structured", phases=("before_model",))])
+    state = loop.seed_state(
+        [
+            {"role": "system", "content": "original system"},
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": "old draft"},
+        ]
+    )
+
+    loop.dispatch_phase(state, phase="before_model", event={"run_id": "run-1"})
+
+    assert state.latest_messages() == [
+        {"role": "system", "content": "patched system"},
+        {"role": "user", "content": "start"},
+    ]
+    assert state.next_model_input == [
+        {"role": "system", "content": "patched system"},
+        {"role": "user", "content": "start"},
+    ]
+    assert state.transcript == [
+        {"role": "system", "content": "original system"},
+        {"role": "user", "content": "start"},
+        {"role": "assistant", "content": "old draft"},
+    ]
+
+
+def test_patch_and_delete_messages_update_conversation_transcript():
+    class StructuredHarness(BaseRuntimeHarness):
+        def build_delta(self, context):
+            return CapabilityOutcome(
+                delta=RunDelta(
+                    created_by="harness.conversation_editor",
+                    context_ops=(
+                        PatchMessageOp(
+                            target=ContextTarget.CONVERSATION,
+                            selector=0,
+                            patch={"content": "patched user"},
+                            reason="test_patch_conversation",
+                        ),
+                        DeleteMessagesOp(
+                            target=ContextTarget.CONVERSATION,
+                            selector={"role": "assistant"},
+                            reason="test_delete_conversation",
+                        ),
+                    ),
+                ),
+            )
+
+    loop = KernelLoop(harnesses=[StructuredHarness(name="structured", phases=("before_model",))])
+    state = loop.seed_state(
+        [
+            {"role": "user", "content": "original user"},
+            {"role": "assistant", "content": "old reply"},
+        ]
+    )
+
+    loop.dispatch_phase(state, phase="before_model", event={"run_id": "run-1"})
+
+    assert state.transcript == [{"role": "user", "content": "patched user"}]
+    assert state.latest_messages() == [{"role": "user", "content": "patched user"}]
+    assert state.next_model_input is None
