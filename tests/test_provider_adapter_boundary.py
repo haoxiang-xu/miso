@@ -50,6 +50,20 @@ def test_openai_adapter_lives_in_provider_specific_module_with_legacy_reexports(
     assert get_model_adapter_class("openai") is ProviderOpenAIModelIO
 
 
+def test_native_provider_substrate_lives_in_dedicated_module_with_legacy_reexports():
+    from unchain.providers.model_io import _NativeModelIOBase as LegacyNativeModelIOBase
+    from unchain.providers.model_io import (
+        _translate_content_blocks_for_openai as legacy_translate_for_openai,
+    )
+    from unchain.providers.native import _NativeModelIOBase, _translate_content_blocks_for_openai
+    from unchain.providers.openai import _NativeModelIOBase as OpenAINativeModelIOBase
+
+    assert _NativeModelIOBase.__module__ == "unchain.providers.native"
+    assert LegacyNativeModelIOBase is _NativeModelIOBase
+    assert OpenAINativeModelIOBase is _NativeModelIOBase
+    assert legacy_translate_for_openai is _translate_content_blocks_for_openai
+
+
 def test_provider_resources_reexport_runtime_model_resource_loaders():
     from unchain.providers import resources
     from unchain.runtime import payloads

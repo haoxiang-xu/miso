@@ -7,7 +7,7 @@ from typing import Any, Callable
 from openai import OpenAI
 
 from .base import ModelTurnRequest
-from .model_io import _NativeModelIOBase, _translate_content_blocks_for_openai
+from .native import _NativeModelIOBase, _translate_content_blocks_for_openai
 from ..kernel.types import ModelTurnResult, TokenUsage, ToolCall
 
 
