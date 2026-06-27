@@ -103,7 +103,8 @@ class KernelLoop:
             if raw_outcome is None:
                 continue
 
-            from ..capabilities import RunDelta, normalize_capability_outcome
+            from ..capabilities import normalize_capability_outcome
+            from .application import apply_run_delta
 
             outcome = normalize_capability_outcome(
                 raw_outcome,
@@ -112,15 +113,22 @@ class KernelLoop:
             delta = outcome.delta
             if delta is None:
                 continue
-            if not isinstance(delta, HarnessDelta):
-                if isinstance(delta, RunDelta) and delta.context_ops:
-                    raise NotImplementedError(
-                        "structured RunDelta context_ops are not applied by KernelLoop yet"
-                    )
+            if not isinstance(delta, HarnessDelta) and not getattr(delta, "context_ops", ()):
                 raise TypeError(
-                    f"harness '{harness.name}' returned {type(delta).__name__}, expected HarnessDelta"
+                    f"harness '{harness.name}' returned {type(delta).__name__}, expected RunDelta"
                 )
-            state.apply_delta(delta)
+
+            def emit_structured_event(op):
+                payload = op.payload if isinstance(op.payload, dict) else {}
+                self.emit_event(
+                    (event or {}).get("callback"),
+                    op.type,
+                    str((event or {}).get("run_id") or "kernel"),
+                    iteration=int(state.iteration),
+                    **copy.deepcopy(payload),
+                )
+
+            apply_run_delta(state, delta, emit_event=emit_structured_event)
             context = HarnessContext(state=state, phase=phase, event=event or {})
         return state
 

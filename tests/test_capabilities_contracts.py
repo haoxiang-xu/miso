@@ -4,8 +4,6 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-import pytest
-
 
 def test_capabilities_surface_exports_core_contracts():
     from unchain.capabilities import (
@@ -323,7 +321,7 @@ def test_kernel_loop_dispatch_phase_accepts_capability_outcome_delta():
     ]
 
 
-def test_kernel_loop_rejects_structured_run_delta_until_phase_three_application_layer():
+def test_kernel_loop_applies_structured_run_delta_context_ops():
     from unchain.capabilities import (
         CapabilityOutcome,
         RunDelta,
@@ -349,8 +347,9 @@ def test_kernel_loop_rejects_structured_run_delta_until_phase_three_application_
     loop = KernelLoop(harnesses=[StructuredHarness(name="structured", phases=("before_model",))])
     state = loop.seed_state([{"role": "user", "content": "start"}])
 
-    with pytest.raises(NotImplementedError, match="structured RunDelta"):
-        loop.dispatch_phase(state, phase="before_model")
+    loop.dispatch_phase(state, phase="before_model")
+
+    assert state.component_state["demo"]["value"] == 1
 
 
 def test_execute_confirmable_tool_call_uses_tool_invoke_capability_value():
@@ -445,7 +444,7 @@ def test_kernel_tool_execution_path_uses_tool_invoke_capability_value():
     assert json.loads(tool_message["output"]) == {"ok": True, "value": 7}
 
 
-def test_execute_confirmable_tool_call_rejects_structured_tool_delta_for_now():
+def test_execute_confirmable_tool_call_preserves_structured_tool_delta_for_harness():
     from unchain.capabilities import CapabilityOutcome, RunDelta, SetRuntimeStateOp
     from unchain.kernel import ToolCall
     from unchain.tools import Toolkit
@@ -479,5 +478,7 @@ def test_execute_confirmable_tool_call_rejects_structured_tool_delta_for_now():
         iteration=0,
     )
 
-    assert outcome.tool_result["tool"] == "delta_tool"
-    assert "structured RunDelta context_ops" in outcome.tool_result["error"]
+    assert outcome.tool_result == {"ok": True}
+    assert outcome.capability_outcome is not None
+    assert outcome.capability_outcome.delta is not None
+    assert outcome.capability_outcome.delta.context_ops[0].value == 1

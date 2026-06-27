@@ -4,6 +4,7 @@ import copy
 from dataclasses import dataclass
 from typing import Any
 
+from ..capabilities import CapabilityOutcome, RunDelta
 from ..artifacts import (
     ArtifactOwner,
     artifacts_from_code_diff_policy,
@@ -557,6 +558,32 @@ class ToolExecutionHarness(BaseToolHarness):
                 context.state.artifacts,
                 emitted_artifacts,
             )
+        capability_delta = (
+            outcome.capability_outcome.delta
+            if outcome.capability_outcome is not None
+            else None
+        )
+        if isinstance(capability_delta, RunDelta) and (
+            capability_delta.context_ops
+            or capability_delta.state_updates
+            or capability_delta.suspend is not None
+        ):
+            return CapabilityOutcome(
+                delta=RunDelta(
+                    created_by=self.created_by,
+                    context_ops=capability_delta.context_ops,
+                    state_updates={
+                        **copy.deepcopy(capability_delta.state_updates),
+                        **state_updates,
+                    },
+                    trace={
+                        **copy.deepcopy(capability_delta.trace),
+                        "tool_call": tool_call.name,
+                        "call_id": tool_call.call_id,
+                    },
+                    suspend=capability_delta.suspend,
+                ),
+            )
         return HarnessDelta(
             created_by=self.created_by,
             state_updates=state_updates,
@@ -649,6 +676,9 @@ class ToolExecutionHarness(BaseToolHarness):
         if context.provider == "openai" and context.state.provider_state.use_previous_response_chain:
             if context.state.provider_state.previous_response_id:
                 next_model_input = copy_messages(result_messages)
+        elif isinstance(context.state.next_model_input, list):
+            next_model_input = copy_messages(context.state.next_model_input)
+            next_model_input.extend(copy_messages(result_messages))
 
         return HarnessDelta.append(
             created_by=self.created_by,

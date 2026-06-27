@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from ..capabilities import CapabilityOutcome, RunContext, RunDelta
+from ..capabilities import CapabilityOutcome, RunContext
 from ..toolkits.base import BuiltinToolkit
 from .models import (
     ToolConfirmationPolicy,
@@ -61,12 +61,7 @@ def _tool_result_from_capability_outcome(
     *,
     tool_name: str,
 ) -> dict[str, Any]:
-    delta = outcome.delta
-    if isinstance(delta, RunDelta) and delta.context_ops:
-        return {
-            "error": "structured RunDelta context_ops are not applied by ToolExecutionHarness yet",
-            "tool": tool_name,
-        }
+    del tool_name
     value = outcome.value
     if isinstance(value, dict):
         return value
