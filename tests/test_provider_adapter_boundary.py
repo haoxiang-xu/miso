@@ -50,6 +50,19 @@ def test_openai_adapter_lives_in_provider_specific_module_with_legacy_reexports(
     assert get_model_adapter_class("openai") is ProviderOpenAIModelIO
 
 
+def test_anthropic_adapter_lives_in_provider_specific_module_with_legacy_reexports():
+    from unchain.providers import AnthropicModelIO, HyperspaceModelIO
+    from unchain.providers.anthropic import AnthropicModelIO as ProviderAnthropicModelIO
+    from unchain.providers.model_io import AnthropicModelIO as LegacyAnthropicModelIO
+    from unchain.providers.registry import get_model_adapter_class
+
+    assert ProviderAnthropicModelIO.__module__ == "unchain.providers.anthropic"
+    assert AnthropicModelIO is ProviderAnthropicModelIO
+    assert LegacyAnthropicModelIO is ProviderAnthropicModelIO
+    assert get_model_adapter_class("anthropic") is ProviderAnthropicModelIO
+    assert issubclass(HyperspaceModelIO, ProviderAnthropicModelIO)
+
+
 def test_native_provider_substrate_lives_in_dedicated_module_with_legacy_reexports():
     from unchain.providers.model_io import _NativeModelIOBase as LegacyNativeModelIOBase
     from unchain.providers.model_io import (
