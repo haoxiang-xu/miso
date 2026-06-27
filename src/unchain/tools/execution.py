@@ -4,7 +4,7 @@ import copy
 from dataclasses import dataclass
 from typing import Any
 
-from ..capabilities import CapabilityOutcome, RunDelta
+from ..capabilities import CapabilityOutcome, CreateArtifactOp, RunDelta
 from ..artifacts import (
     ArtifactOwner,
     artifacts_from_code_diff_policy,
@@ -12,7 +12,6 @@ from ..artifacts import (
     extract_authored_artifacts,
     is_failed_tool_result,
     plan_artifact_from_tool_result,
-    upsert_artifacts,
 )
 from ..input.human_input import HumanInputResponse, is_human_input_tool_name
 from ..toolkits.base import BuiltinToolkit
@@ -101,6 +100,14 @@ def _emit_artifact_events(
             plan_id=plan_id if isinstance(plan_id, str) and plan_id else None,
             artifact=copy.deepcopy(artifact),
         )
+
+
+def _create_artifact_ops(artifacts: list[dict], *, reason: str) -> tuple[CreateArtifactOp, ...]:
+    return tuple(
+        CreateArtifactOp(artifact=copy.deepcopy(artifact), reason=reason)
+        for artifact in artifacts
+        if isinstance(artifact, dict)
+    )
 
 
 def _canonical_artifacts_for_tool_result(
@@ -299,7 +306,10 @@ class ToolExecutionHarness(BaseToolHarness):
                     call_id=tool_call.call_id,
                     result=copy.deepcopy(visible_tool_result),
                 )
-                _emit_artifact_events(context, tool_call, emitted_artifacts)
+            artifact_ops = _create_artifact_ops(
+                emitted_artifacts,
+                reason="tool_runtime_plugin_artifact",
+            )
             state_updates = copy.deepcopy(plugin_outcome.state_updates)
             if workspace_change_tracker is not None:
                 workspace_change_tracker.record_text_snapshot_changes(
@@ -309,11 +319,6 @@ class ToolExecutionHarness(BaseToolHarness):
                     turn_id=f"{context.run_id}:turn-{context.iteration}",
                 )
                 state_updates.update(_workspace_change_state_update(workspace_change_tracker))
-            if emitted_artifacts:
-                state_updates["artifacts"] = upsert_artifacts(
-                    context.state.artifacts,
-                    emitted_artifacts,
-                )
             state_updates["tool_batch_state"] = ToolBatchState(
                 result_messages=result_messages,
                 should_observe=batch_state.should_observe or bool(plugin_outcome.should_observe),
@@ -322,6 +327,19 @@ class ToolExecutionHarness(BaseToolHarness):
                 human_input_tool_call_id=batch_state.human_input_tool_call_id,
                 executed_call_ids=append_executed_call_id(batch_state, tool_call.call_id),
             )
+            if artifact_ops:
+                return CapabilityOutcome(
+                    delta=RunDelta(
+                        created_by=self.created_by,
+                        context_ops=artifact_ops,
+                        state_updates=state_updates,
+                        trace={
+                            "tool_call": tool_call.name,
+                            "call_id": tool_call.call_id,
+                        },
+                        suspend=plugin_outcome.suspend_override,
+                    )
+                )
             return HarnessDelta(
                 created_by=self.created_by,
                 state_updates=state_updates,
@@ -541,7 +559,10 @@ class ToolExecutionHarness(BaseToolHarness):
             call_id=tool_call.call_id,
             result=copy.deepcopy(visible_tool_result),
         )
-        _emit_artifact_events(context, tool_call, emitted_artifacts)
+        artifact_ops = _create_artifact_ops(
+            emitted_artifacts,
+            reason="tool_result_artifact",
+        )
         state_updates = {
             "tool_batch_state": ToolBatchState(
                 result_messages=result_messages,
@@ -553,35 +574,49 @@ class ToolExecutionHarness(BaseToolHarness):
             ),
             **_workspace_change_state_update(workspace_change_tracker),
         }
-        if emitted_artifacts:
-            state_updates["artifacts"] = upsert_artifacts(
-                context.state.artifacts,
-                emitted_artifacts,
-            )
         capability_delta = (
             outcome.capability_outcome.delta
             if outcome.capability_outcome is not None
             else None
         )
-        if isinstance(capability_delta, RunDelta) and (
-            capability_delta.context_ops
-            or capability_delta.state_updates
-            or capability_delta.suspend is not None
-        ):
+        capability_state_updates: dict[str, Any] = {}
+        context_ops = artifact_ops
+        created_by = (
+            outcome.capability_outcome.created_by
+            if outcome.capability_outcome is not None
+            else self.created_by
+        )
+        trace: dict[str, Any] = {
+            "tool_call": tool_call.name,
+            "call_id": tool_call.call_id,
+        }
+        suspend = None
+        if isinstance(capability_delta, RunDelta):
+            capability_state_updates = copy.deepcopy(capability_delta.state_updates)
+            context_ops = tuple(capability_delta.context_ops) + artifact_ops
+            created_by = capability_delta.created_by or created_by or self.created_by
+            trace = {
+                **copy.deepcopy(capability_delta.trace),
+                "tool_call": tool_call.name,
+                "call_id": tool_call.call_id,
+            }
+            if capability_delta.created_by:
+                trace["capability_created_by"] = capability_delta.created_by
+            if created_by != self.created_by:
+                trace["applied_by"] = self.created_by
+            suspend = capability_delta.suspend
+
+        if context_ops or capability_state_updates or suspend is not None:
             return CapabilityOutcome(
                 delta=RunDelta(
-                    created_by=self.created_by,
-                    context_ops=capability_delta.context_ops,
+                    created_by=created_by,
+                    context_ops=context_ops,
                     state_updates={
-                        **copy.deepcopy(capability_delta.state_updates),
+                        **capability_state_updates,
                         **state_updates,
                     },
-                    trace={
-                        **copy.deepcopy(capability_delta.trace),
-                        "tool_call": tool_call.name,
-                        "call_id": tool_call.call_id,
-                    },
-                    suspend=capability_delta.suspend,
+                    trace=trace,
+                    suspend=suspend,
                 ),
             )
         return HarnessDelta(

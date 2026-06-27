@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from typing import Callable
 
+from ..artifacts import upsert_artifacts
 from ..capabilities import (
     ContextTarget,
     CreateArtifactOp,
@@ -40,7 +41,7 @@ def apply_run_delta(
             _apply_runtime_state_op(state, op)
             continue
         if isinstance(op, CreateArtifactOp):
-            state.artifacts.append(copy.deepcopy(op.artifact))
+            _apply_create_artifact_op(state, delta, op, emit_event=emit_event)
             continue
         if isinstance(op, EmitEventOp):
             if callable(emit_event):
@@ -253,6 +254,65 @@ def _apply_runtime_state_op(state: RunState, op: SetRuntimeStateOp) -> None:
         bucket["value"] = value
         return
     _set_nested_value(bucket, path[1:], value)
+
+
+def _apply_create_artifact_op(
+    state: RunState,
+    delta: RunDelta,
+    op: CreateArtifactOp,
+    *,
+    emit_event: Callable[[EmitEventOp], None] | None = None,
+) -> None:
+    artifact = copy.deepcopy(op.artifact) if isinstance(op.artifact, dict) else {}
+    artifact_id = artifact.get("artifact_id") if isinstance(artifact, dict) else None
+    if not isinstance(artifact_id, str) or not artifact_id:
+        state.artifacts.append(artifact)
+        return
+
+    existing_ids = {
+        item.get("artifact_id")
+        for item in state.artifacts
+        if isinstance(item, dict) and isinstance(item.get("artifact_id"), str)
+    }
+    event_type = "artifact_updated" if artifact_id in existing_ids else "artifact_created"
+    state.artifacts = upsert_artifacts(state.artifacts, [artifact])
+
+    if not callable(emit_event):
+        return
+
+    snapshot = artifact.get("snapshot") if isinstance(artifact.get("snapshot"), dict) else {}
+    plan_id = snapshot.get("plan_id") if isinstance(snapshot, dict) else None
+    trace = copy.deepcopy(delta.trace) if isinstance(delta.trace, dict) else {}
+    payload: dict[str, object] = {
+        "artifact_id": artifact_id,
+        "artifact": artifact,
+        "created_by": delta.created_by,
+    }
+    if op.reason:
+        payload["reason"] = op.reason
+    if isinstance(plan_id, str) and plan_id:
+        payload["plan_id"] = plan_id
+
+    tool_name = trace.get("tool_name") or trace.get("tool_call")
+    if isinstance(tool_name, str) and tool_name:
+        payload["tool_name"] = tool_name
+    call_id = trace.get("call_id")
+    if isinstance(call_id, str) and call_id:
+        payload["call_id"] = call_id
+    capability_created_by = trace.get("capability_created_by")
+    if isinstance(capability_created_by, str) and capability_created_by:
+        payload["capability_created_by"] = capability_created_by
+    applied_by = trace.get("applied_by")
+    if isinstance(applied_by, str) and applied_by:
+        payload["applied_by"] = applied_by
+
+    emit_event(
+        EmitEventOp(
+            type=event_type,
+            payload=payload,
+            reason=op.reason,
+        )
+    )
 
 
 def _set_nested_value(root: dict, path: tuple[str, ...], value) -> None:

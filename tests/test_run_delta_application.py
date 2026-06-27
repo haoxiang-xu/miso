@@ -5,6 +5,7 @@ import json
 from unchain.capabilities import (
     CapabilityOutcome,
     ContextTarget,
+    CreateArtifactOp,
     DeleteMessagesOp,
     EmitEventOp,
     InsertMessagesOp,
@@ -253,3 +254,122 @@ def test_patch_and_delete_messages_update_conversation_transcript():
     assert state.transcript == [{"role": "user", "content": "patched user"}]
     assert state.latest_messages() == [{"role": "user", "content": "patched user"}]
     assert state.next_model_input is None
+
+
+def test_create_artifact_op_upserts_and_emits_events_from_hook():
+    events = []
+    calls = {"count": 0}
+
+    class ArtifactHarness(BaseRuntimeHarness):
+        def build_delta(self, context):
+            calls["count"] += 1
+            revision = calls["count"]
+            return CapabilityOutcome(
+                delta=RunDelta(
+                    created_by="harness.artifact_writer",
+                    context_ops=(
+                        CreateArtifactOp(
+                            artifact={
+                                "schema_version": "unchain.artifact.v1",
+                                "artifact_id": "stable-report",
+                                "kind": "markdown",
+                                "title": "Report",
+                                "revision": revision,
+                                "snapshot": {"markdown": f"revision {revision}"},
+                            },
+                            reason="test_artifact_upsert",
+                        ),
+                    ),
+                ),
+            )
+
+    loop = KernelLoop(harnesses=[ArtifactHarness(name="artifact", phases=("before_model",))])
+    state = loop.seed_state([{"role": "user", "content": "start"}])
+
+    loop.dispatch_phase(
+        state,
+        phase="before_model",
+        event={"callback": events.append, "run_id": "run-1"},
+    )
+    loop.dispatch_phase(
+        state,
+        phase="before_model",
+        event={"callback": events.append, "run_id": "run-1"},
+    )
+
+    artifact_events = [event for event in events if event["type"].startswith("artifact_")]
+    assert [event["type"] for event in artifact_events] == ["artifact_created", "artifact_updated"]
+    assert artifact_events[0]["artifact_id"] == "stable-report"
+    assert artifact_events[0]["created_by"] == "harness.artifact_writer"
+    assert artifact_events[0]["reason"] == "test_artifact_upsert"
+    assert state.artifacts == [artifact_events[1]["artifact"]]
+    assert state.artifacts[0]["revision"] == 2
+
+
+def test_tool_create_artifact_op_uses_delta_application_for_artifact_events():
+    events = []
+    model_io = _QueueModelIO(
+        [
+            ModelTurnResult(
+                assistant_messages=[
+                    {
+                        "type": "function_call",
+                        "call_id": "call-1",
+                        "name": "delta_artifact_tool",
+                        "arguments": "{}",
+                    }
+                ],
+                tool_calls=[ToolCall(call_id="call-1", name="delta_artifact_tool", arguments={})],
+                response_id="resp-1",
+            ),
+            ModelTurnResult(
+                assistant_messages=[{"role": "assistant", "content": "done"}],
+                tool_calls=[],
+                final_text="done",
+                response_id="resp-2",
+            ),
+        ]
+    )
+    toolkit = Toolkit()
+
+    @toolkit.tool(name="delta_artifact_tool")
+    def delta_artifact_tool() -> CapabilityOutcome:
+        return CapabilityOutcome(
+            value={"ok": True},
+            delta=RunDelta(
+                created_by="tool.delta_artifact_tool",
+                context_ops=(
+                    CreateArtifactOp(
+                        artifact={
+                            "schema_version": "unchain.artifact.v1",
+                            "artifact_id": "tool-report",
+                            "kind": "markdown",
+                            "title": "Tool Report",
+                            "revision": 1,
+                            "snapshot": {"markdown": "from tool"},
+                        },
+                        reason="test_tool_artifact",
+                    ),
+                ),
+            ),
+        )
+
+    result = KernelLoop(model_io=model_io).run(
+        [{"role": "user", "content": "start"}],
+        provider="openai",
+        model="gpt-5",
+        payload={"store": False},
+        toolkit=toolkit,
+        callback=events.append,
+        max_iterations=3,
+        run_id="run-1",
+    )
+
+    artifact_event = next(event for event in events if event["type"] == "artifact_created")
+
+    assert result.status == "completed"
+    assert artifact_event["artifact_id"] == "tool-report"
+    assert artifact_event["tool_name"] == "delta_artifact_tool"
+    assert artifact_event["call_id"] == "call-1"
+    assert artifact_event["created_by"] == "tool.delta_artifact_tool"
+    assert artifact_event["reason"] == "test_tool_artifact"
