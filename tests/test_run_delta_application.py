@@ -82,7 +82,10 @@ def test_runtime_hook_structured_delta_updates_model_context_state_events_and_su
     assert state.transcript == [{"role": "user", "content": "start"}]
     assert state.component_state["tool_exposure"]["active"] == ["read_file"]
     assert state.suspend_state.signal_kind == "checkpoint"
-    assert state.suspend_state.payload == {"source": "hook"}
+    assert state.suspend_state.payload == {
+        "source": "hook",
+        "context_version_id": state.latest_version_id,
+    }
     assert events == [
         {
             "type": "hook_delta_event",

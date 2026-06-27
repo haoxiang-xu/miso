@@ -420,6 +420,7 @@ def test_kernel_run_ask_user_question_returns_awaiting_human_input():
 
     assert result.status == "awaiting_human_input"
     assert result.continuation is not None
+    assert isinstance(result.continuation["context_version_id"], str)
     assert result.continuation["previous_response_id"] == "resp_ask"
     assert result.continuation["iteration"] == 1
     assert result.human_input_request["request_id"] == "call_user"

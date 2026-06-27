@@ -23,6 +23,13 @@ def _deepcopy_messages(messages: list[dict] | None) -> list[dict]:
     return [copy.deepcopy(message) for message in (messages or []) if isinstance(message, dict)]
 
 
+def _suspend_payload_with_context_version(state: RunState, payload) -> dict:
+    enriched = copy.deepcopy(payload) if isinstance(payload, dict) else {}
+    if state.latest_version_id is not None and "context_version_id" not in enriched:
+        enriched["context_version_id"] = state.latest_version_id
+    return enriched
+
+
 def apply_run_delta(
     state: RunState,
     delta: RunDelta,
@@ -49,7 +56,7 @@ def apply_run_delta(
             continue
         if isinstance(op, RequestSuspendOp):
             state.suspend_state.signal_kind = op.kind
-            state.suspend_state.payload = copy.deepcopy(op.payload)
+            state.suspend_state.payload = _suspend_payload_with_context_version(state, op.payload)
             continue
         if isinstance(op, PatchMessageOp):
             version_id = _apply_patch_message_op(state, delta, op)
@@ -63,7 +70,7 @@ def apply_run_delta(
         state._apply_state_updates(delta.state_updates)
     if delta.suspend is not None:
         state.suspend_state.signal_kind = delta.suspend.kind
-        state.suspend_state.payload = copy.deepcopy(delta.suspend.payload)
+        state.suspend_state.payload = _suspend_payload_with_context_version(state, delta.suspend.payload)
     return version_id
 
 

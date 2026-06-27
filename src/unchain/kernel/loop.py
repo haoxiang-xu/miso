@@ -538,6 +538,7 @@ class KernelLoop:
             "request": request.to_dict(),
             "payload": self._ensure_json_safe(copy.deepcopy(payload)),
             "response_format": self._ensure_json_safe(self._serialize_response_format(response_format)),
+            "context_version_id": state.latest_version_id,
             "iteration": int(next_iteration),
             "max_iterations": int(max_iterations),
             "previous_response_id": state.provider_state.previous_response_id,
