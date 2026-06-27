@@ -321,6 +321,10 @@ class ModelIO(Protocol):
     def fetch_turn(self, request: ModelTurnRequest) -> ModelTurnResult:
         ...
 
+
+ModelAdapter = ModelIO
+
+
 class _NativeModelIOBase:
     provider = ""
 
