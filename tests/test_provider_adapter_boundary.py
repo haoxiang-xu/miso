@@ -38,6 +38,18 @@ def test_provider_registry_exposes_default_adapter_classes_and_custom_registrati
     assert adapter.kwargs == {"model": "demo-model", "api_key": "test-key"}
 
 
+def test_openai_adapter_lives_in_provider_specific_module_with_legacy_reexports():
+    from unchain.providers import OpenAIModelIO
+    from unchain.providers.model_io import OpenAIModelIO as LegacyOpenAIModelIO
+    from unchain.providers.openai import OpenAIModelIO as ProviderOpenAIModelIO
+    from unchain.providers.registry import get_model_adapter_class
+
+    assert ProviderOpenAIModelIO.__module__ == "unchain.providers.openai"
+    assert OpenAIModelIO is ProviderOpenAIModelIO
+    assert LegacyOpenAIModelIO is ProviderOpenAIModelIO
+    assert get_model_adapter_class("openai") is ProviderOpenAIModelIO
+
+
 def test_provider_resources_reexport_runtime_model_resource_loaders():
     from unchain.providers import resources
     from unchain.runtime import payloads
