@@ -3,20 +3,14 @@ from __future__ import annotations
 import copy
 import json
 import uuid
-from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable
 
 import httpx
 
 from openai import OpenAI
 
-from ..schemas import ResponseFormat
-from ..tools.toolkit import Toolkit
+from .base import ModelAdapter, ModelIO, ModelTurnRequest
 from ..kernel.types import ModelTurnResult, TokenUsage, ToolCall
-
-def _deepcopy_messages(messages: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    return [copy.deepcopy(message) for message in (messages or []) if isinstance(message, dict)]
-
 
 def _parse_base64_data_url(value: Any, *, default_media_type: str) -> tuple[str, str] | None:
     if not isinstance(value, str) or not value.strip():
@@ -292,37 +286,6 @@ def _translate_content_blocks_for_openai(messages: list[dict[str, Any]]) -> None
             new_content.append(block)
 
         message["content"] = new_content
-
-
-@dataclass(frozen=True)
-class ModelTurnRequest:
-    messages: list[dict[str, Any]]
-    payload: dict[str, Any] = field(default_factory=dict)
-    response_format: ResponseFormat | None = None
-    callback: Callable[[dict[str, Any]], None] | None = None
-    verbose: bool = False
-    run_id: str = "kernel"
-    iteration: int = 0
-    toolkit: Toolkit = field(default_factory=Toolkit)
-    emit_stream: bool = False
-    previous_response_id: str | None = None
-    openai_text_format: dict[str, Any] | None = None
-
-    def copied_messages(self) -> list[dict[str, Any]]:
-        return _deepcopy_messages(self.messages)
-
-
-@runtime_checkable
-class ModelIO(Protocol):
-    """Provider-facing boundary used by the new kernel loop."""
-
-    provider: str
-
-    def fetch_turn(self, request: ModelTurnRequest) -> ModelTurnResult:
-        ...
-
-
-ModelAdapter = ModelIO
 
 
 class _NativeModelIOBase:
