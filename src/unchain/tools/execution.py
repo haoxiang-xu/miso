@@ -14,10 +14,15 @@ from ..artifacts import (
     plan_artifact_from_tool_result,
 )
 from ..input.human_input import HumanInputResponse, is_human_input_tool_name
+from ..interaction import (
+    INTERACTION_EFFECT_CREATED_BY,
+    build_human_input_requested_event,
+    build_human_input_suspend_request,
+)
 from ..toolkits.base import BuiltinToolkit
 from ..workspace_changes import WorkspaceChangeTracker
 from .toolkit import Toolkit
-from ..kernel.delta import HarnessDelta, SuspendSignal
+from ..kernel.delta import HarnessDelta
 from ..kernel.types import ToolCall
 from .base import BaseToolHarness, ToolContext
 from .common import append_executed_call_id, copy_messages, emit_loop_event
@@ -469,36 +474,25 @@ class ToolExecutionHarness(BaseToolHarness):
                     },
                 )
 
-            emit_loop_event(
-                context.loop,
-                context.callback,
-                "human_input_requested",
-                context.run_id,
-                iteration=context.iteration,
-                request_id=request.request_id,
-                kind=request.kind,
-                title=request.title,
-                question=request.question,
-                selection_mode=request.selection_mode,
-                options=[option.to_dict() for option in request.options],
-                allow_other=request.allow_other,
-                other_label=request.other_label,
-                other_placeholder=request.other_placeholder,
-                min_selected=request.min_selected,
-                max_selected=request.max_selected,
-            )
-            return HarnessDelta(
-                created_by=self.created_by,
-                state_updates={
-                    "tool_batch_state": ToolBatchState(
-                        result_messages=copy_messages(batch_state.result_messages),
-                        should_observe=False,
-                        awaiting_human_input=True,
-                        human_input_request=request,
-                        human_input_tool_call_id=tool_call.call_id,
-                        executed_call_ids=append_executed_call_id(batch_state, tool_call.call_id),
-                    ),
-                },
+            return CapabilityOutcome(
+                delta=RunDelta(
+                    created_by=INTERACTION_EFFECT_CREATED_BY,
+                    context_ops=(build_human_input_requested_event(request),),
+                    state_updates={
+                        "tool_batch_state": ToolBatchState(
+                            result_messages=copy_messages(batch_state.result_messages),
+                            should_observe=False,
+                            awaiting_human_input=True,
+                            human_input_request=request,
+                            human_input_tool_call_id=tool_call.call_id,
+                            executed_call_ids=append_executed_call_id(batch_state, tool_call.call_id),
+                        ),
+                    },
+                    trace={
+                        "tool_call": tool_call.name,
+                        "call_id": tool_call.call_id,
+                    },
+                ),
             )
 
         outcome = execute_confirmable_tool_call(
@@ -641,27 +635,29 @@ class ToolExecutionHarness(BaseToolHarness):
                     state=context.state,
                     run_id=context.run_id,
                 )
-            return HarnessDelta(
-                created_by=self.created_by,
-                state_updates={
-                    "run_status": "awaiting_human_input",
-                    "last_continuation": continuation,
-                    "pending_tool_calls": [],
-                    "next_model_input": None,
-                    "tool_batch_state": batch_state,
-                },
-                suspend=(
-                    SuspendSignal(
-                        kind="human_input",
-                        payload={
-                            "continuation": copy.deepcopy(continuation) if isinstance(continuation, dict) else {},
-                            "request": batch_state.human_input_request.to_dict(),
-                        },
-                    )
-                    if isinstance(continuation, dict)
-                    else None
+            suspend_ops = (
+                (
+                    build_human_input_suspend_request(
+                        batch_state.human_input_request,
+                        continuation=continuation,
+                    ),
+                )
+                if isinstance(continuation, dict)
+                else ()
+            )
+            return CapabilityOutcome(
+                delta=RunDelta(
+                    created_by=INTERACTION_EFFECT_CREATED_BY,
+                    context_ops=suspend_ops,
+                    state_updates={
+                        "run_status": "awaiting_human_input",
+                        "last_continuation": continuation,
+                        "pending_tool_calls": [],
+                        "next_model_input": None,
+                        "tool_batch_state": batch_state,
+                    },
+                    trace={"awaiting_human_input": True},
                 ),
-                trace={"awaiting_human_input": True},
             )
 
         result_messages = copy_messages(batch_state.result_messages)
