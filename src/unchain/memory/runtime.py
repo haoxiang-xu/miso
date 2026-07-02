@@ -319,6 +319,12 @@ class KernelMemoryRuntime:
         )
         from .bootstrap import MemoryBootstrapHarness
         from .commit import MemoryCommitHarness
+        from .events import (
+            MemoryCommitEventHarness,
+            MemoryCommitInfoResetHarness,
+            MemoryPrepareEventHarness,
+            MemoryPrepareInfoResetHarness,
+        )
         from .recall_long_term import LongTermRecallMemoryHarness
         from .short_term import ShortTermRecallMemoryHarness
 
@@ -351,8 +357,12 @@ class KernelMemoryRuntime:
                     max_window_tokens=config.sliding_window_max_tokens,
                 )
             ),
+            MemoryPrepareInfoResetHarness(runtime=self),
             ShortTermRecallMemoryHarness(runtime=self),
             LongTermRecallMemoryHarness(runtime=self),
+            MemoryPrepareEventHarness(runtime=self),
             MemoryBootstrapHarness(runtime=self),
+            MemoryCommitInfoResetHarness(runtime=self),
             MemoryCommitHarness(runtime=self),
+            MemoryCommitEventHarness(runtime=self),
         ]

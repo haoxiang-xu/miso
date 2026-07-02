@@ -263,18 +263,7 @@ class KernelLoop:
             "tool_runtime_config": copy.deepcopy(tool_runtime_config or {}),
         }
 
-        if self._memory_runtime is not None and current_iteration > 0:
-            state.memory_prepare_info = {}
-            state.component_bucket("memory")["prepare_info"] = {}
         self.dispatch_phase(state, phase="before_model", event=phase_event)
-        if self._memory_runtime is not None and state.memory_prepare_info:
-            self.emit_event(
-                callback,
-                "memory_prepare",
-                run_id,
-                iteration=current_iteration,
-                **copy.deepcopy(state.memory_prepare_info),
-            )
         turn = self.fetch_model_turn(
             state,
             payload=payload,
@@ -316,18 +305,7 @@ class KernelLoop:
                 },
             )
         else:
-            if self._memory_runtime is not None:
-                state.memory_commit_info = {}
-                state.component_bucket("memory")["commit_info"] = {}
             self.dispatch_phase(state, phase="before_commit", event=after_model_event)
-            if self._memory_runtime is not None and state.memory_commit_info:
-                self.emit_event(
-                    callback,
-                    "memory_commit",
-                    run_id,
-                    iteration=current_iteration,
-                    **copy.deepcopy(state.memory_commit_info),
-                )
 
         state.iteration = current_iteration + 1
         return turn

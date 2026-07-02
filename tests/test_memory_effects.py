@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 
 def test_memory_surface_exports_effect_helpers():
     from unchain.capabilities import EmitEventOp
@@ -76,3 +78,29 @@ def test_memory_delta_helper_preserves_run_state_memory_merge_behavior():
         "bootstrap": True,
         "short_term_recall_count": 2,
     }
+
+
+def test_memory_surface_exports_event_harnesses_and_default_runtime_registers_them():
+    from unchain.memory import (
+        KernelMemoryRuntime,
+        MemoryCommitEventHarness,
+        MemoryPrepareEventHarness,
+    )
+
+    runtime = KernelMemoryRuntime.from_config()
+    components = runtime.build_default_components()
+    names = {component.name for component in components}
+
+    assert MemoryPrepareEventHarness.__name__ == "MemoryPrepareEventHarness"
+    assert MemoryCommitEventHarness.__name__ == "MemoryCommitEventHarness"
+    assert "memory_prepare_event" in names
+    assert "memory_commit_event" in names
+
+
+def test_kernel_loop_does_not_directly_emit_memory_prepare_or_commit_events():
+    from unchain.kernel.loop import KernelLoop
+
+    source = inspect.getsource(KernelLoop.step_once)
+
+    assert "memory_prepare" not in source
+    assert "memory_commit" not in source

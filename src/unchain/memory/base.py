@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from ..tools.toolkit import Toolkit
-from ..kernel.delta import HarnessDelta
 from ..kernel.harness import BaseRuntimeHarness, HarnessContext, RuntimeHarness, RuntimePhase
 from ..kernel.state import RunState
 from .runtime import KernelMemoryRuntime
@@ -93,7 +92,7 @@ class BaseMemoryHarness(BaseRuntimeHarness):
     def created_by(self) -> str:
         return f"memory.{self.name}"
 
-    def build_delta(self, context: HarnessContext) -> HarnessDelta | None:
+    def build_delta(self, context: HarnessContext) -> Any | None:
         memory_context = MemoryContext(
             harness_context=context,
             memory_name=self.name,
@@ -101,5 +100,5 @@ class BaseMemoryHarness(BaseRuntimeHarness):
         )
         return self.build_memory_delta(memory_context)
 
-    def build_memory_delta(self, context: MemoryContext) -> HarnessDelta | None:
+    def build_memory_delta(self, context: MemoryContext) -> Any | None:
         raise NotImplementedError
