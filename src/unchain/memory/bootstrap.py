@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..kernel.delta import HarnessDelta
 from .base import BaseMemoryHarness, MemoryContext
+from .effects import build_memory_delta, memory_prepare_update, memory_state_update
 
 
 @dataclass
@@ -36,8 +36,8 @@ class MemoryBootstrapHarness(BaseMemoryHarness):
         }
         state_updates = {
             "transcript": merged_messages,
-            "memory_state": memory_state,
-            "memory_prepare_info": prepare_info,
+            **memory_state_update(memory_state),
+            **memory_prepare_update(prepare_info),
         }
         if summary_text:
             state_updates["optimizer_state"] = {
@@ -45,7 +45,7 @@ class MemoryBootstrapHarness(BaseMemoryHarness):
                     "summary": summary_text,
                 }
             }
-        return HarnessDelta(
+        return build_memory_delta(
             created_by=self.created_by,
             state_updates=state_updates,
             trace={

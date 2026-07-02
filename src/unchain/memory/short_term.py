@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from ..kernel.delta import HarnessDelta, ReplaceSpanOp
+from ..kernel.delta import ReplaceSpanOp
 from ..optimizers.common import latest_user_query, replace_non_system_span, split_system_and_non_system
 from .base import BaseMemoryHarness, MemoryContext
+from .effects import build_memory_delta, memory_prepare_update
 
 
 @dataclass
@@ -18,17 +19,17 @@ class ShortTermRecallMemoryHarness(BaseMemoryHarness):
         prepare_info: dict[str, object] = {}
         if not context.session_id:
             prepare_info["short_term_skip_reason"] = "missing_session_id"
-            return HarnessDelta(
+            return build_memory_delta(
                 created_by=self.created_by,
-                state_updates={"memory_prepare_info": prepare_info},
+                state_updates=memory_prepare_update(prepare_info),
             )
 
         query = latest_user_query(context.latest_messages())
         if not query:
             prepare_info["short_term_skip_reason"] = "missing_query"
-            return HarnessDelta(
+            return build_memory_delta(
                 created_by=self.created_by,
-                state_updates={"memory_prepare_info": prepare_info},
+                state_updates=memory_prepare_update(prepare_info),
             )
 
         recall_result = context.runtime.recall_memory(
@@ -52,9 +53,9 @@ class ShortTermRecallMemoryHarness(BaseMemoryHarness):
             prepare_info["short_term_fallback_reason"] = fallback_reason
 
         if not recalled_messages:
-            return HarnessDelta(
+            return build_memory_delta(
                 created_by=self.created_by,
-                state_updates={"memory_prepare_info": prepare_info},
+                state_updates=memory_prepare_update(prepare_info),
             )
 
         messages = context.latest_messages()
@@ -70,12 +71,12 @@ class ShortTermRecallMemoryHarness(BaseMemoryHarness):
             ],
         )
         if updated_messages == messages:
-            return HarnessDelta(
+            return build_memory_delta(
                 created_by=self.created_by,
-                state_updates={"memory_prepare_info": prepare_info},
+                state_updates=memory_prepare_update(prepare_info),
                 trace={"short_term_recall_count": len(recalled_messages)},
             )
-        return HarnessDelta(
+        return build_memory_delta(
             created_by=self.created_by,
             base_version_id=context.latest_version_id,
             ops=(
@@ -85,6 +86,6 @@ class ShortTermRecallMemoryHarness(BaseMemoryHarness):
                     messages=updated_messages,
                 ),
             ),
-            state_updates={"memory_prepare_info": prepare_info},
+            state_updates=memory_prepare_update(prepare_info),
             trace={"short_term_recall_count": len(recalled_messages)},
         )

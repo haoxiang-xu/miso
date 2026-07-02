@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..kernel.delta import HarnessDelta
 from .base import BaseMemoryHarness, MemoryContext
+from .effects import build_memory_delta, memory_commit_update, memory_state_update
 
 
 @dataclass
@@ -35,11 +35,11 @@ class MemoryCommitHarness(BaseMemoryHarness):
             "long_term_pending_turn_count": int(stored_state.get("long_term_pending_turn_count") or 0),
             "summary": str(stored_state.get("summary", "") or ""),
         }
-        return HarnessDelta(
+        return build_memory_delta(
             created_by=self.created_by,
             state_updates={
-                "memory_state": memory_state,
-                "memory_commit_info": commit_info,
+                **memory_state_update(memory_state),
+                **memory_commit_update(commit_info),
             },
             trace={
                 "stored_message_count": int(commit_info.get("stored_message_count") or 0),
