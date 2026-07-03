@@ -4,6 +4,7 @@ from pathlib import Path
 
 from unchain.tools import ToolExecutionContext
 from unchain.toolkits import WorkspaceToolkit
+from unchain.toolkits.builtin.workspace.backend import WorkspaceToolkitBackend
 
 
 class _MemorySessionStore:
@@ -60,6 +61,21 @@ def test_workspace_toolkit_uses_workspace_backend_instead_of_core_toolkit(monkey
     toolkit = WorkspaceToolkit(workspace_root=tmp_path)
 
     assert type(toolkit._inner).__name__ == "WorkspaceToolkitBackend"
+
+
+def test_workspace_backend_declares_workspace_api_explicitly():
+    assert "__getattr__" not in WorkspaceToolkitBackend.__dict__
+    assert {
+        "read",
+        "write",
+        "edit",
+        "glob",
+        "grep",
+        "shell",
+        "lsp",
+        "_resolve_workspace_path",
+        "_record_workspace_change",
+    }.issubset(WorkspaceToolkitBackend.__dict__)
 
 
 def test_workspace_toolkit_pins_file_context_in_session_store(tmp_path: Path):
