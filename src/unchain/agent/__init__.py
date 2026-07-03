@@ -1,5 +1,6 @@
 from .agent import Agent
 from .builder import AgentBuilder, AgentCallContext, PreparedAgent
+from .completion import CompletionEvaluation, CompletionPolicy, CompletionValidator
 from .model_io import ModelIOFactoryRegistry
 from .modules import (
     AgentModule,
@@ -22,6 +23,9 @@ __all__ = [
     "AgentSpec",
     "AgentState",
     "BaseAgentModule",
+    "CompletionEvaluation",
+    "CompletionPolicy",
+    "CompletionValidator",
     "MemoryModule",
     "ModelIOFactoryRegistry",
     "OptimizersModule",

@@ -4,7 +4,15 @@ from pathlib import Path
 
 from unchain.input import HumanInputResponse, build_ask_user_question_tool
 from unchain.kernel import BaseRuntimeHarness, HarnessDelta, ModelTurnResult, ToolCall
-from unchain.agent import Agent, MemoryModule, OptimizersModule, PoliciesModule, ToolsModule
+from unchain.agent import (
+    Agent,
+    CompletionEvaluation,
+    CompletionPolicy,
+    MemoryModule,
+    OptimizersModule,
+    PoliciesModule,
+    ToolsModule,
+)
 from unchain.memory import MemoryManager
 from unchain.tools import Toolkit
 from unchain.toolkits import CoreToolkit
@@ -404,6 +412,123 @@ def test_kernel_agent_optimizer_module_registers_custom_harness_and_policy_defau
     assert result.status == "completed"
     assert fake_model_io.seen_messages[0][1] == {"role": "system", "content": "prefix"}
     assert fake_model_io.seen_payloads[0]["store"] is False
+
+
+def test_completion_policy_retries_completed_run_until_validator_passes():
+    events: list[dict] = []
+
+    class FakeModelIO:
+        provider = "openai"
+        model = "gpt-5"
+
+        def __init__(self):
+            self.requests = []
+            self.results = [
+                ModelTurnResult(
+                    assistant_messages=[{"role": "assistant", "content": "draft answer"}],
+                    tool_calls=[],
+                    final_text="draft answer",
+                    response_id="resp_draft",
+                ),
+                ModelTurnResult(
+                    assistant_messages=[{"role": "assistant", "content": "final answer with checklist"}],
+                    tool_calls=[],
+                    final_text="final answer with checklist",
+                    response_id="resp_final",
+                ),
+            ]
+
+        def fetch_turn(self, request):
+            self.requests.append(request)
+            return self.results.pop(0)
+
+    fake_model_io = FakeModelIO()
+
+    def validate(result):
+        final_text = str(result.messages[-1].get("content") or "")
+        if "checklist" in final_text:
+            return CompletionEvaluation(complete=True)
+        return CompletionEvaluation(
+            complete=False,
+            feedback="Revise the answer and include a checklist.",
+        )
+
+    agent = Agent(
+        name="completion_agent",
+        modules=(
+            PoliciesModule(
+                completion_policy=CompletionPolicy(
+                    validator=validate,
+                    max_repair_turns=1,
+                )
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: fake_model_io,
+    )
+
+    result = agent.run("produce an answer", max_iterations=1, callback=events.append)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "final answer with checklist"
+    assert len(fake_model_io.requests) == 2
+    assert fake_model_io.requests[1].messages[-1] == {
+        "role": "user",
+        "content": "Revise the answer and include a checklist.",
+    }
+    assert [event["type"] for event in events if event["type"].startswith("completion_policy_")] == [
+        "completion_policy_evaluated",
+        "completion_policy_retry",
+        "completion_policy_evaluated",
+    ]
+
+
+def test_completion_policy_marks_incomplete_when_repair_budget_is_exhausted():
+    events: list[dict] = []
+
+    class FakeModelIO:
+        provider = "openai"
+        model = "gpt-5"
+
+        def __init__(self):
+            self.results = [
+                ModelTurnResult(
+                    assistant_messages=[{"role": "assistant", "content": "still draft"}],
+                    tool_calls=[],
+                    final_text="still draft",
+                    response_id="resp_1",
+                ),
+                ModelTurnResult(
+                    assistant_messages=[{"role": "assistant", "content": "still draft"}],
+                    tool_calls=[],
+                    final_text="still draft",
+                    response_id="resp_2",
+                ),
+            ]
+
+        def fetch_turn(self, request):
+            return self.results.pop(0)
+
+    agent = Agent(
+        name="completion_budget_agent",
+        modules=(
+            PoliciesModule(
+                completion_policy=CompletionPolicy(
+                    validator=lambda result: CompletionEvaluation(
+                        complete=False,
+                        feedback="Try again with the missing acceptance criteria.",
+                    ),
+                    max_repair_turns=1,
+                )
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: FakeModelIO(),
+    )
+
+    result = agent.run("produce an answer", max_iterations=1, callback=events.append)
+
+    assert result.status == "completion_incomplete"
+    assert events[-1]["type"] == "completion_policy_exhausted"
+    assert events[-1]["reason"] == "repair_budget_exhausted"
 
 
 def test_unchain_agent_import_works():

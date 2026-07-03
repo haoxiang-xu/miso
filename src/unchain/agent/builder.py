@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import copy
 import logging
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,7 @@ from ..schemas import ResponseFormat
 from ..runtime import build_runtime_loop
 from ..tools import Tool, Toolkit
 from ..tools.exposure import ToolExposureRuntime, ToolOptimizerConfig
+from .completion import CompletionPolicy
 from .model_io import ModelIOFactoryRegistry
 from .spec import AgentSpec, AgentState
 
@@ -62,6 +64,7 @@ class PreparedAgent:
     run_hooks: list[RunHook] = field(default_factory=list)
     tool_runtime_plugins: list[Any] = field(default_factory=list)
     tool_optimizer_config: ToolOptimizerConfig | None = None
+    completion_policy: CompletionPolicy | None = None
 
     def _merge_payloads(self, *payloads: dict[str, Any] | None) -> dict[str, Any] | None:
         merged: dict[str, Any] = {}
@@ -101,6 +104,17 @@ class PreparedAgent:
                 current = next_result
         return current
 
+    def _emit_completion_policy_event(self, event_type: str, **payload: Any) -> None:
+        callback = self.call_context.callback
+        if not callable(callback):
+            return
+        event = {
+            "type": event_type,
+            "run_id": str(self.call_context.run_id or "agent"),
+            **copy.deepcopy(payload),
+        }
+        callback(event)
+
     def _prepare_tool_exposure(
         self,
         *,
@@ -134,23 +148,28 @@ class PreparedAgent:
         plugins.extend(runtime.build_plugins())
         return exposed_toolkit, plugins
 
-    def run(self) -> KernelRunResult:
-        messages = copy.deepcopy(self.call_context.input_messages or [])
-        payload = self._merge_payloads(self.default_payload, self.call_context.payload)
+    def _run_once(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        payload: dict[str, Any] | None,
+        previous_response_id: str | None,
+        max_iterations: int,
+    ) -> KernelRunResult:
         toolkit, tool_runtime_plugins = self._prepare_tool_exposure(
             messages=messages,
             payload=payload,
             provider=self.spec.provider,
             model=self.spec.model,
         )
-        result = self.loop.run(
+        return self.loop.run(
             messages=messages,
             payload=payload,
             response_format=self._resolved_response_format(),
             callback=self.call_context.callback,
             verbose=self.call_context.verbose,
-            max_iterations=self._resolved_max_iterations(),
-            previous_response_id=self.call_context.previous_response_id,
+            max_iterations=max_iterations,
+            previous_response_id=previous_response_id,
             on_tool_confirm=self._resolved_on_tool_confirm(),
             on_human_input=self._resolved_on_human_input(),
             on_max_iterations=self._resolved_on_max_iterations(),
@@ -163,6 +182,120 @@ class PreparedAgent:
             run_id=self.call_context.run_id,
             tool_runtime_plugins=tool_runtime_plugins,
             tool_runtime_config=copy.deepcopy(self.call_context.tool_runtime_config or {}),
+        )
+
+    @staticmethod
+    def _final_assistant_text(result: KernelRunResult) -> str:
+        for message in reversed(result.messages):
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                return content
+        return ""
+
+    def _completion_incomplete_result(self, result: KernelRunResult, *, reason: str) -> KernelRunResult:
+        self._emit_completion_policy_event(
+            "completion_policy_exhausted",
+            reason=reason,
+            iteration=int(result.iteration),
+        )
+        return replace(result, status="completion_incomplete")
+
+    def _apply_completion_policy(
+        self,
+        result: KernelRunResult,
+        *,
+        payload: dict[str, Any] | None,
+        max_iterations: int,
+    ) -> KernelRunResult:
+        policy = self.completion_policy
+        if policy is None or result.status != "completed":
+            return result
+
+        started_at = time.monotonic()
+        repairs_completed = 0
+        current = result
+        previous_final_text = ""
+        total_tokens = int(current.consumed_tokens or 0)
+
+        while True:
+            evaluation = policy.evaluate(current)
+            final_text = self._final_assistant_text(current)
+            self._emit_completion_policy_event(
+                "completion_policy_evaluated",
+                complete=bool(evaluation.complete),
+                feedback=evaluation.feedback,
+                reason=evaluation.reason,
+                repair_attempt=repairs_completed,
+            )
+            if evaluation.complete:
+                return current
+            if repairs_completed >= max(0, int(policy.max_repair_turns)):
+                return self._completion_incomplete_result(
+                    current,
+                    reason="repair_budget_exhausted",
+                )
+            if policy.max_total_tokens is not None and total_tokens >= int(policy.max_total_tokens):
+                return self._completion_incomplete_result(
+                    current,
+                    reason="token_budget_exhausted",
+                )
+            if (
+                policy.max_elapsed_seconds is not None
+                and time.monotonic() - started_at >= float(policy.max_elapsed_seconds)
+            ):
+                return self._completion_incomplete_result(
+                    current,
+                    reason="time_budget_exhausted",
+                )
+            if (
+                repairs_completed > 0
+                and policy.stop_on_no_progress
+                and final_text == previous_final_text
+            ):
+                return self._completion_incomplete_result(
+                    current,
+                    reason="no_progress",
+                )
+
+            feedback = str(evaluation.feedback or "").strip()
+            if not feedback:
+                return self._completion_incomplete_result(
+                    current,
+                    reason="missing_repair_feedback",
+                )
+
+            repairs_completed += 1
+            previous_final_text = final_text
+            self._emit_completion_policy_event(
+                "completion_policy_retry",
+                feedback=feedback,
+                repair_attempt=repairs_completed,
+            )
+            repair_messages = copy.deepcopy(current.messages)
+            repair_messages.append({"role": "user", "content": feedback})
+            current = self._run_once(
+                messages=repair_messages,
+                payload=payload,
+                previous_response_id=current.previous_response_id,
+                max_iterations=max(1, int(policy.repair_max_iterations or max_iterations)),
+            )
+            total_tokens += int(current.consumed_tokens or 0)
+
+    def run(self) -> KernelRunResult:
+        messages = copy.deepcopy(self.call_context.input_messages or [])
+        payload = self._merge_payloads(self.default_payload, self.call_context.payload)
+        result = self._run_once(
+            payload=payload,
+            messages=messages,
+            max_iterations=self._resolved_max_iterations(),
+            previous_response_id=self.call_context.previous_response_id,
+        )
+        result = self._apply_completion_policy(
+            result,
+            payload=payload,
+            max_iterations=self._resolved_max_iterations(),
         )
         return self._apply_run_hooks(result)
 
@@ -228,6 +361,7 @@ class AgentBuilder:
     run_hooks: list[RunHook] = field(default_factory=list)
     tool_runtime_plugins: list[Any] = field(default_factory=list)
     tool_optimizer_config: ToolOptimizerConfig | None = None
+    completion_policy: CompletionPolicy | None = None
     _model_io: ModelIO | None = None
     _model_io_factory: Callable[[AgentSpec, AgentCallContext], ModelIO] | None = None
 
@@ -291,6 +425,9 @@ class AgentBuilder:
 
     def set_tool_optimizer_config(self, config: ToolOptimizerConfig | dict[str, Any] | None) -> None:
         self.tool_optimizer_config = ToolOptimizerConfig.coerce(config)
+
+    def set_completion_policy(self, policy: CompletionPolicy | None) -> None:
+        self.completion_policy = policy
 
     def set_payload_defaults(self, payload: dict[str, Any]) -> None:
         self.default_payload.update(copy.deepcopy(payload))
@@ -372,4 +509,5 @@ class AgentBuilder:
             run_hooks=list(self.run_hooks),
             tool_runtime_plugins=list(self.tool_runtime_plugins),
             tool_optimizer_config=self.tool_optimizer_config,
+            completion_policy=self.completion_policy,
         )
