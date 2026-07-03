@@ -32,6 +32,23 @@ def test_workspace_toolkit_exposes_legacy_file_tools(tmp_path: Path):
     assert "hello" in read_result["content"]
 
 
+def test_workspace_toolkit_exposes_canonical_coding_tools(tmp_path: Path):
+    toolkit = WorkspaceToolkit(workspace_root=tmp_path)
+
+    assert {
+        "read",
+        "write",
+        "edit",
+        "glob",
+        "grep",
+        "shell",
+        "lsp",
+    }.issubset(toolkit.tools)
+    assert toolkit.tools["write"].requires_confirmation is True
+    assert toolkit.tools["edit"].requires_confirmation is True
+    assert toolkit.tools["shell"].requires_confirmation is True
+
+
 def test_workspace_toolkit_pins_file_context_in_session_store(tmp_path: Path):
     store = _MemorySessionStore()
     toolkit = WorkspaceToolkit(workspace_root=tmp_path)

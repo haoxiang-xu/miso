@@ -9,7 +9,7 @@ from ..core import CoreToolkit
 
 
 class WorkspaceToolkit(BuiltinToolkit):
-    """Compatibility workspace toolkit with legacy workspace tool names."""
+    """Workspace and coding toolkit with legacy compatibility tool names."""
 
     def __init__(
         self,
@@ -22,6 +22,59 @@ class WorkspaceToolkit(BuiltinToolkit):
         self._register_workspace_tools()
 
     def _register_workspace_tools(self) -> None:
+        self.register(
+            self.read,
+            name="read",
+            description="Read a UTF-8 text file by absolute path with optional line slicing.",
+            history_arguments_optimizer=self._inner._compact_read_args,
+            history_result_optimizer=self._inner._compact_read_result,
+        )
+        self.register(
+            self.write,
+            name="write",
+            description="Create or fully overwrite a UTF-8 text file by absolute path.",
+            requires_confirmation=True,
+            confirmation_resolver=self._inner._resolve_write_confirmation,
+            history_arguments_optimizer=self._inner._compact_write_args,
+            history_result_optimizer=self._inner._compact_mutation_result,
+        )
+        self.register(
+            self.edit,
+            name="edit",
+            description="Replace one unique string match, or all matches when requested, in a UTF-8 text file.",
+            requires_confirmation=True,
+            confirmation_resolver=self._inner._resolve_edit_confirmation,
+            history_arguments_optimizer=self._inner._compact_edit_args,
+            history_result_optimizer=self._inner._compact_mutation_result,
+        )
+        self.register(
+            self.glob,
+            name="glob",
+            description="List files matching a glob pattern inside the workspace.",
+            history_result_optimizer=self._inner._compact_glob_result,
+        )
+        self.register(
+            self.grep,
+            name="grep",
+            description="Search UTF-8 text files inside the workspace with regex.",
+            history_result_optimizer=self._inner._compact_grep_result,
+        )
+        self.register(
+            self.shell,
+            name="shell",
+            description="Run, poll, or kill a shell task inside the workspace.",
+            requires_confirmation=True,
+            confirmation_resolver=self._inner._resolve_shell_confirmation,
+            history_arguments_optimizer=self._inner._compact_shell_args,
+            history_result_optimizer=self._inner._compact_shell_result,
+        )
+        self.register(
+            self.lsp,
+            name="lsp",
+            description="Query a language server for definitions, references, hover text, and symbols.",
+            history_arguments_optimizer=self._inner._compact_lsp_args,
+            history_result_optimizer=self._inner._compact_lsp_result,
+        )
         self.register(
             self.read_files,
             name="read_files",
@@ -100,6 +153,91 @@ class WorkspaceToolkit(BuiltinToolkit):
 
     def _resolve_path(self, path: str) -> Path:
         return self._inner._resolve_workspace_path(path)
+
+    def read(self, path: str, offset: int = 0, limit: int | None = None) -> dict[str, Any]:
+        return self._inner.read(path=path, offset=offset, limit=limit)
+
+    def write(self, path: str, content: str) -> dict[str, Any]:
+        return self._inner.write(path=path, content=content)
+
+    def edit(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> dict[str, Any]:
+        return self._inner.edit(
+            path=path,
+            old_string=old_string,
+            new_string=new_string,
+            replace_all=replace_all,
+        )
+
+    def glob(self, pattern: str, path: str | None = None) -> dict[str, Any]:
+        return self._inner.glob(pattern=pattern, path=path)
+
+    def grep(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        output_mode: str = "content",
+        context: int = 0,
+        head_limit: int = 50,
+        offset: int = 0,
+        case_sensitive: bool = True,
+        multiline: bool = False,
+    ) -> dict[str, Any]:
+        return self._inner.grep(
+            pattern=pattern,
+            path=path,
+            glob=glob,
+            output_mode=output_mode,
+            context=context,
+            head_limit=head_limit,
+            offset=offset,
+            case_sensitive=case_sensitive,
+            multiline=multiline,
+        )
+
+    def shell(
+        self,
+        action: str,
+        command: str = "",
+        cwd: str | None = None,
+        timeout_ms: int = 120000,
+        run_in_background: bool = False,
+        max_output_chars: int = 20000,
+        yield_time_ms: int = 300,
+        task_id: str = "",
+    ) -> dict[str, Any]:
+        return self._inner.shell(
+            action=action,
+            command=command,
+            cwd=cwd,
+            timeout_ms=timeout_ms,
+            run_in_background=run_in_background,
+            max_output_chars=max_output_chars,
+            yield_time_ms=yield_time_ms,
+            task_id=task_id,
+        )
+
+    def lsp(
+        self,
+        operation: str,
+        file_path: str,
+        line: int | None = None,
+        character: int | None = None,
+        query: str = "",
+    ) -> dict[str, Any]:
+        return self._inner.lsp(
+            operation=operation,
+            file_path=file_path,
+            line=line,
+            character=character,
+            query=query,
+        )
 
     def read_file(
         self,

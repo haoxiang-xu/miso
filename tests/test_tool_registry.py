@@ -141,7 +141,7 @@ def test_builtin_registry_lists_expected_toolkits_and_tools():
     assert registry.require("interaction_toolkit").to_summary()["tool_count"] == 1
     assert registry.require("plan").to_summary()["tool_count"] == 5
     assert registry.require("web_toolkit").to_summary()["tool_count"] == 1
-    assert registry.require("workspace_toolkit").to_summary()["tool_count"] == 12
+    assert registry.require("workspace_toolkit").to_summary()["tool_count"] == 19
 
 
 def test_registry_instantiated_agent_reach_tools_include_emoji_icon_metadata():

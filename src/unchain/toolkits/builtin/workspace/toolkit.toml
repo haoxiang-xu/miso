@@ -1,14 +1,14 @@
 [toolkit]
 id = "workspace_toolkit"
 name = "Workspace Toolkit"
-description = "Compatibility workspace toolkit for file reads, guarded writes, search, shell execution, and pinned file context."
+description = "Workspace and coding toolkit for file reads, guarded writes and edits, search, LSP code intelligence, shell execution, and pinned file context."
 factory = "unchain.toolkits.builtin.workspace:WorkspaceToolkit"
 version = "1.0.0"
 readme = "README.md"
 icon = "terminal"
 color = "#0f172a"
 backgroundcolor = "#bae6fd"
-tags = ["builtin", "workspace", "files", "search", "editing", "shell"]
+tags = ["builtin", "workspace", "files", "search", "editing", "shell", "lsp"]
 
 [display]
 category = "builtin"
@@ -18,6 +18,55 @@ hidden = false
 [compat]
 python = ">=3.9"
 legacy = ">=0"
+
+[[tools]]
+name = "read"
+title = "Read"
+description = "Read a UTF-8 text file by absolute path with optional line slicing."
+observe = false
+requires_confirmation = false
+
+[[tools]]
+name = "write"
+title = "Write"
+description = "Create or fully overwrite a UTF-8 text file by absolute path."
+observe = false
+requires_confirmation = true
+
+[[tools]]
+name = "edit"
+title = "Edit"
+description = "Replace one unique string match, or all matches when requested, in a UTF-8 text file."
+observe = false
+requires_confirmation = true
+
+[[tools]]
+name = "glob"
+title = "Glob"
+description = "List files matching a glob pattern inside the workspace."
+observe = false
+requires_confirmation = false
+
+[[tools]]
+name = "grep"
+title = "Grep"
+description = "Search UTF-8 text files inside the workspace with regex."
+observe = false
+requires_confirmation = false
+
+[[tools]]
+name = "shell"
+title = "Shell"
+description = "Run, poll, or kill a shell task inside the workspace."
+observe = false
+requires_confirmation = true
+
+[[tools]]
+name = "lsp"
+title = "LSP"
+description = "Query a language server for definitions, references, hover text, and symbols."
+observe = false
+requires_confirmation = false
 
 [[tools]]
 name = "read_files"
