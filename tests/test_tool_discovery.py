@@ -6,8 +6,9 @@ import sys
 from pathlib import Path
 
 from unchain.agent import Agent, ToolDiscoveryModule
-from unchain.kernel import KernelLoop, ModelTurnResult
+from unchain.kernel import ModelTurnResult
 from unchain.kernel.types import ToolCall as KernelToolCall
+from unchain.runtime import build_runtime_loop
 from unchain.tools import ToolDiscoveryConfig, ToolDiscoveryRuntime, Toolkit
 
 
@@ -126,7 +127,7 @@ def test_tool_discovery_runtime_reports_name_conflicts(tmp_path):
 
 
 def test_tool_prompt_harness_inserts_and_replaces_tools_block():
-    loop = KernelLoop()
+    loop = build_runtime_loop()
     state = loop.seed_state(
         [
             {"role": "system", "content": "base system"},
@@ -135,8 +136,6 @@ def test_tool_prompt_harness_inserts_and_replaces_tools_block():
         provider="openai",
         model="gpt-4.1",
     )
-    loop._ensure_runtime_harnesses()
-
     toolkit_one = Toolkit()
     toolkit_one.register(lambda text=None: {"text": text}, name="alpha", description="Alpha tool.")
     loop.dispatch_phase(state, phase="before_model", event={"toolkit": toolkit_one})

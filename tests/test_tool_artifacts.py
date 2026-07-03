@@ -8,8 +8,9 @@ from pathlib import Path
 from unchain import artifacts
 from unchain.events.bridge import RuntimeEventBridge
 from unchain.input import ASK_USER_QUESTION_TOOL_NAME
-from unchain.kernel import KernelLoop, ModelTurnResult
+from unchain.kernel import ModelTurnResult
 from unchain.kernel.types import ToolCall as KernelToolCall
+from unchain.runtime import build_runtime_loop
 from unchain.toolkits.base import BuiltinToolkit
 from unchain.toolkits import CoreToolkit, GitToolkit, PlanToolkit
 from unchain.tools._diff_helpers import build_code_diff_payload
@@ -76,8 +77,7 @@ def _run_tool_turn(
             ),
         ]
     )
-    loop = KernelLoop(model_io=model_io)
-    loop._ensure_runtime_harnesses()
+    loop = build_runtime_loop(model_io=model_io)
     state = loop.seed_state(
         [{"role": "user", "content": "start"}],
         provider="openai",
@@ -374,7 +374,7 @@ def test_workspace_change_state_survives_human_input_resume(tmp_path: Path):
         "options": [{"label": "Continue", "value": "continue"}],
     }
     toolkit = CoreToolkit(workspace_root=tmp_path)
-    initial_loop = KernelLoop(
+    initial_loop = build_runtime_loop(
         model_io=_QueueModelIO(
             [
                 ModelTurnResult(
@@ -433,7 +433,7 @@ def test_workspace_change_state_survives_human_input_resume(tmp_path: Path):
     )
 
     resumed_events: list[dict] = []
-    resumed_loop = KernelLoop(
+    resumed_loop = build_runtime_loop(
         model_io=_QueueModelIO(
             [
                 ModelTurnResult(

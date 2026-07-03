@@ -2,10 +2,11 @@ import copy
 import json
 
 from unchain.input.human_input import ASK_USER_QUESTION_TOOL_NAME
-from unchain.kernel import KernelLoop, ModelTurnResult
+from unchain.kernel import BaseRuntimeHarness, KernelLoop, ModelTurnResult
 from unchain.memory import KernelMemoryRuntime
 from unchain.kernel.types import ToolCall as KernelToolCall
 from unchain.memory import InMemorySessionStore, LongTermMemoryConfig, MemoryConfig, MemoryManager
+from unchain.runtime import build_runtime_loop
 from unchain.tools import Toolkit
 
 
@@ -97,6 +98,46 @@ class _LongTermVectorAdapter:
             }
         )
         return copy.deepcopy(self.search_results_by_type.get(memory_type, []))
+
+
+def test_kernel_run_dispatches_bootstrap_harness_without_memory_runtime():
+    bootstrap_events = []
+
+    class CustomBootstrapHarness(BaseRuntimeHarness):
+        def build_delta(self, context):
+            bootstrap_events.append(context.event_payload())
+            return None
+
+    loop = KernelLoop(
+        model_io=_QueueModelIO(
+            [
+                ModelTurnResult(
+                    assistant_messages=[{"role": "assistant", "content": "done"}],
+                    tool_calls=[],
+                    final_text="done",
+                    response_id="resp_bootstrap",
+                )
+            ]
+        ),
+        harnesses=[
+            CustomBootstrapHarness(
+                name="custom_bootstrap",
+                phases=("bootstrap",),
+            )
+        ],
+    )
+
+    result = loop.run(
+        [{"role": "user", "content": "hello"}],
+        provider="openai",
+        model="gpt-4.1",
+        run_id="run_bootstrap_no_memory",
+    )
+
+    assert result.status == "completed"
+    assert len(bootstrap_events) == 1
+    assert bootstrap_events[0]["run_id"] == "run_bootstrap_no_memory"
+    assert bootstrap_events[0]["resume_mode"] is False
 
 
 def test_memory_bootstrap_merges_history_and_restores_summary():
@@ -569,7 +610,7 @@ def test_memory_suspend_skips_commit_and_resume_does_not_duplicate_history():
             )
         ]
     )
-    suspend_loop = KernelLoop(model_io=ask_model_io)
+    suspend_loop = build_runtime_loop(model_io=ask_model_io)
     suspend_loop.attach_memory(runtime)
 
     suspended = suspend_loop.run(
@@ -594,7 +635,7 @@ def test_memory_suspend_skips_commit_and_resume_does_not_duplicate_history():
             )
         ]
     )
-    resume_loop = KernelLoop(model_io=resume_model_io)
+    resume_loop = build_runtime_loop(model_io=resume_model_io)
     resume_loop.attach_memory(runtime)
 
     resumed = resume_loop.resume_human_input(

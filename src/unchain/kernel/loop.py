@@ -4,17 +4,15 @@ import copy
 import uuid
 from typing import Any
 
-from ..memory import KernelMemoryRuntime
+from ..memory.assembly import build_default_memory_components
+from ..memory.runtime import KernelMemoryRuntime
 from ..retry import RetryConfig, RetryContext, fetch_turn_with_retry
 from ..schemas import ResponseFormat
 from ..artifacts import upsert_artifacts
-from ..tools import (
-    HumanInputResumeHarness,
+from ..tools.observation import (
     OBSERVATION_MAX_OUTPUT_TOKENS,
     OBSERVATION_RECENT_MESSAGES,
     OBSERVATION_SYSTEM_PROMPT,
-    ToolExecutionHarness,
-    ToolPromptHarness,
 )
 from ..workspace_changes import WorkspaceChangeTracker
 from ..tools.toolkit import Toolkit
@@ -37,7 +35,6 @@ class KernelLoop:
     ) -> None:
         self._harnesses: list[RuntimeHarness] = []
         self._model_io = model_io
-        self._memory_runtime: KernelMemoryRuntime | None = None
         self._retry_config: RetryConfig = retry_config if retry_config is not None else RetryConfig()
         for harness in harnesses or []:
             self.register_harness(harness)
@@ -57,8 +54,12 @@ class KernelLoop:
         self.register_harness(memory_harness)
 
     def attach_memory(self, memory_runtime: KernelMemoryRuntime) -> None:
-        self._memory_runtime = memory_runtime
-        self._ensure_memory_components()
+        existing_names = {harness.name for harness in self._harnesses}
+        for component in build_default_memory_components(memory_runtime):
+            if component.name in existing_names:
+                continue
+            self.register_harness(component)
+            existing_names.add(component.name)
 
     @property
     def model_io(self) -> ModelIO | None:
@@ -313,25 +314,6 @@ class KernelLoop:
     def _iter_phase_harnesses(self, phase: RuntimePhase) -> list[RuntimeHarness]:
         return [harness for harness in self._harnesses if phase in harness.phases]
 
-    def _ensure_runtime_harnesses(self) -> None:
-        existing_names = {harness.name for harness in self._harnesses}
-        if "tool_prompt" not in existing_names:
-            self.register_harness(ToolPromptHarness())
-        if "tool_execution" not in existing_names:
-            self.register_harness(ToolExecutionHarness())
-        if "human_input_resume" not in existing_names:
-            self.register_harness(HumanInputResumeHarness())
-
-    def _ensure_memory_components(self) -> None:
-        if self._memory_runtime is None:
-            return
-        existing_names = {harness.name for harness in self._harnesses}
-        for component in self._memory_runtime.build_default_components():
-            if component.name in existing_names:
-                continue
-            self.register_harness(component)
-            existing_names.add(component.name)
-
     def _dispatch_bootstrap(
         self,
         state: RunState,
@@ -345,8 +327,6 @@ class KernelLoop:
         resume_mode: bool,
         tool_runtime_config: dict[str, Any] | None = None,
     ) -> None:
-        if self._memory_runtime is None:
-            return
         runtime_toolkit = toolkit if toolkit is not None else Toolkit()
         self.dispatch_phase(
             state,
@@ -686,8 +666,6 @@ class KernelLoop:
         state.provider_state.provider = provider
         if not state.provider_state.model:
             state.provider_state.model = self._infer_model()
-        self._ensure_runtime_harnesses()
-        self._ensure_memory_components()
         run_id = str(run_id or uuid.uuid4())
         runtime_toolkit = toolkit if toolkit is not None else Toolkit()
         if not skip_bootstrap:
@@ -978,8 +956,6 @@ class KernelLoop:
             state.workspace_change_state = copy.deepcopy(workspace_change_state)
             state.component_bucket("workspace_changes")["state"] = copy.deepcopy(workspace_change_state)
         state.run_status = "running"
-        self._ensure_runtime_harnesses()
-        self._ensure_memory_components()
         self._dispatch_bootstrap(
             state,
             payload=resolved_payload,

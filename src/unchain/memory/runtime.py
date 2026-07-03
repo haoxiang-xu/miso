@@ -307,62 +307,6 @@ class KernelMemoryRuntime:
         return commit_info, stored_state
 
     def build_default_components(self) -> list[Any]:
-        from ..optimizers import (
-            LastNOptimizer,
-            LastNOptimizerConfig,
-            LlmSummaryOptimizer,
-            LlmSummaryOptimizerConfig,
-            SlidingWindowOptimizer,
-            SlidingWindowOptimizerConfig,
-            ToolHistoryCompactionOptimizer,
-            ToolHistoryCompactionOptimizerConfig,
-        )
-        from .bootstrap import MemoryBootstrapHarness
-        from .commit import MemoryCommitHarness
-        from .events import (
-            MemoryCommitEventHarness,
-            MemoryCommitInfoResetHarness,
-            MemoryPrepareEventHarness,
-            MemoryPrepareInfoResetHarness,
-        )
-        from .recall_long_term import LongTermRecallMemoryHarness
-        from .short_term import ShortTermRecallMemoryHarness
+        from .assembly import build_default_memory_components
 
-        config = self.config
-        return [
-            ToolHistoryCompactionOptimizer(
-                ToolHistoryCompactionOptimizerConfig(
-                    enabled=bool(config.deferred_tool_compaction_enabled),
-                    keep_completed_turns=int(config.deferred_tool_compaction_keep_completed_turns),
-                    max_chars=int(config.deferred_tool_compaction_max_chars),
-                    preview_chars=int(config.deferred_tool_compaction_preview_chars),
-                    include_tools=copy.deepcopy(config.deferred_tool_compaction_include_tools),
-                    hash_payloads=bool(config.deferred_tool_compaction_hash_payloads),
-                )
-            ),
-            LlmSummaryOptimizer(
-                LlmSummaryOptimizerConfig(
-                    summary_trigger_pct=float(config.summary_trigger_pct),
-                    summary_target_pct=float(config.summary_target_pct),
-                    max_summary_chars=int(config.max_summary_chars),
-                    summary_generator=self.summary_generator,
-                )
-            ),
-            LastNOptimizer(
-                LastNOptimizerConfig(last_n_turns=int(config.last_n_turns))
-            ),
-            SlidingWindowOptimizer(
-                SlidingWindowOptimizerConfig(
-                    max_window_pct=float(config.sliding_window_pct),
-                    max_window_tokens=config.sliding_window_max_tokens,
-                )
-            ),
-            MemoryPrepareInfoResetHarness(runtime=self),
-            ShortTermRecallMemoryHarness(runtime=self),
-            LongTermRecallMemoryHarness(runtime=self),
-            MemoryPrepareEventHarness(runtime=self),
-            MemoryBootstrapHarness(runtime=self),
-            MemoryCommitInfoResetHarness(runtime=self),
-            MemoryCommitHarness(runtime=self),
-            MemoryCommitEventHarness(runtime=self),
-        ]
+        return build_default_memory_components(self)

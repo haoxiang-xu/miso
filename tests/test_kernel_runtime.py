@@ -2,8 +2,9 @@ import json
 import queue
 
 from unchain.input.human_input import ASK_USER_QUESTION_TOOL_NAME
-from unchain.kernel import KernelLoop, ModelTurnResult
+from unchain.kernel import ModelTurnResult
 from unchain.kernel.types import ToolCall as KernelToolCall
+from unchain.runtime import build_runtime_loop
 from unchain.tools.observation import inject_observation
 from unchain.tools import Toolkit, tool
 
@@ -58,7 +59,7 @@ def test_kernel_run_executes_openai_tool_and_continues_with_previous_response_ch
     ])
     toolkit = Toolkit()
     toolkit.register(lambda x: {"value": x + 1}, name="demo_tool")
-    loop = KernelLoop(model_io=model_io)
+    loop = build_runtime_loop(model_io=model_io)
 
     result = loop.run(
         [{"role": "user", "content": "start"}],
@@ -102,7 +103,7 @@ def test_kernel_run_sanitizes_non_deepcopyable_tool_result_values():
     toolkit.register(lambda: {"queue": queue.SimpleQueue()}, name="queue_tool")
     events = []
 
-    result = KernelLoop(model_io=model_io).run(
+    result = build_runtime_loop(model_io=model_io).run(
         [{"role": "user", "content": "start"}],
         provider="openai",
         model="gpt-4.1",
@@ -177,7 +178,7 @@ def test_kernel_run_confirmation_denied_and_modified_arguments():
         ),
     ])
 
-    denied_loop = KernelLoop(model_io=denied_model_io)
+    denied_loop = build_runtime_loop(model_io=denied_model_io)
     denied_toolkit = Toolkit()
     denied_toolkit.register(denied_tool)
     denied_result = denied_loop.run(
@@ -194,7 +195,7 @@ def test_kernel_run_confirmation_denied_and_modified_arguments():
         "reason": "nope",
     }
 
-    modified_loop = KernelLoop(model_io=modified_model_io)
+    modified_loop = build_runtime_loop(model_io=modified_model_io)
     modified_toolkit = Toolkit()
     modified_toolkit.register(modified_tool)
     modified_result = modified_loop.run(
@@ -257,7 +258,7 @@ def test_kernel_run_dynamic_confirmation_resolver_skips_low_risk_but_prompts_hig
 
     safe_toolkit = Toolkit()
     safe_toolkit.register(resolver_tool)
-    safe_result = KernelLoop(model_io=FakeModelIO("safe")).run(
+    safe_result = build_runtime_loop(model_io=FakeModelIO("safe")).run(
         [{"role": "user", "content": "safe"}],
         provider="openai",
         model="gpt-4.1",
@@ -269,7 +270,7 @@ def test_kernel_run_dynamic_confirmation_resolver_skips_low_risk_but_prompts_hig
 
     dangerous_toolkit = Toolkit()
     dangerous_toolkit.register(resolver_tool)
-    dangerous_result = KernelLoop(model_io=FakeModelIO("dangerous")).run(
+    dangerous_result = build_runtime_loop(model_io=FakeModelIO("dangerous")).run(
         [{"role": "user", "content": "dangerous"}],
         provider="openai",
         model="gpt-4.1",
@@ -319,7 +320,7 @@ def test_kernel_run_observe_injects_observation_without_interrupting():
     ])
     toolkit = Toolkit()
     toolkit.register(tool(name="observe_tool", func=lambda topic=None: {"topic": topic, "ok": True}, observe=True))
-    loop = KernelLoop(model_io=model_io)
+    loop = build_runtime_loop(model_io=model_io)
 
     result = loop.run(
         [{"role": "user", "content": "observe"}],
@@ -409,7 +410,7 @@ def test_kernel_run_ask_user_question_returns_awaiting_human_input():
         name=ASK_USER_QUESTION_TOOL_NAME,
         parameters=[],
     )
-    loop = KernelLoop(model_io=model_io)
+    loop = build_runtime_loop(model_io=model_io)
 
     result = loop.run(
         [{"role": "user", "content": "need a choice"}],
@@ -451,7 +452,7 @@ def test_kernel_run_mixed_batch_with_ask_user_question_returns_errors_without_ex
     toolkit = Toolkit()
     toolkit.register(lambda x=None: executed.__setitem__("count", executed["count"] + 1) or {"x": x}, name="demo_tool")
     toolkit.register(lambda **_: {"error": "reserved"}, name=ASK_USER_QUESTION_TOOL_NAME, parameters=[])
-    loop = KernelLoop(model_io=model_io)
+    loop = build_runtime_loop(model_io=model_io)
 
     result = loop.run(
         [{"role": "user", "content": "mixed"}],
@@ -513,7 +514,7 @@ def test_kernel_resume_human_input_openai_uses_function_call_output_and_previous
     ])
     ask_toolkit = Toolkit()
     ask_toolkit.register(lambda **_: {"error": "reserved"}, name=ASK_USER_QUESTION_TOOL_NAME, parameters=[])
-    initial_loop = KernelLoop(model_io=initial_model_io)
+    initial_loop = build_runtime_loop(model_io=initial_model_io)
     suspended = initial_loop.run(
         [{"role": "user", "content": "need a choice"}],
         provider="openai",
@@ -532,7 +533,7 @@ def test_kernel_resume_human_input_openai_uses_function_call_output_and_previous
             output_tokens=2,
         ),
     ])
-    resumed_loop = KernelLoop(model_io=resumed_model_io)
+    resumed_loop = build_runtime_loop(model_io=resumed_model_io)
     resumed = resumed_loop.resume_human_input(
         conversation=suspended.messages,
         continuation=suspended.continuation,
@@ -568,7 +569,7 @@ def test_kernel_run_stops_at_max_iterations():
     ])
     toolkit = Toolkit()
     toolkit.register(lambda x=None: {"x": x}, name="demo_tool")
-    loop = KernelLoop(model_io=model_io)
+    loop = build_runtime_loop(model_io=model_io)
 
     result = loop.run(
         [{"role": "user", "content": "loop"}],
@@ -593,7 +594,7 @@ def test_kernel_run_completes_single_anthropic_turn():
             output_tokens=2,
         ),
     ])
-    loop = KernelLoop(model_io=model_io)
+    loop = build_runtime_loop(model_io=model_io)
 
     result = loop.run(
         [{"role": "user", "content": "hello"}],
@@ -626,7 +627,7 @@ def test_kernel_run_executes_anthropic_tool_and_continues_with_full_transcript()
     ])
     toolkit = Toolkit()
     toolkit.register(lambda x=None: {"value": x + 1}, name="demo_tool")
-    loop = KernelLoop(model_io=model_io)
+    loop = build_runtime_loop(model_io=model_io)
 
     result = loop.run(
         [{"role": "user", "content": "start"}],
@@ -701,7 +702,7 @@ def test_kernel_resume_human_input_anthropic_appends_tool_result_and_uses_full_t
     ])
     ask_toolkit = Toolkit()
     ask_toolkit.register(lambda **_: {"error": "reserved"}, name=ASK_USER_QUESTION_TOOL_NAME, parameters=[])
-    initial_loop = KernelLoop(model_io=initial_model_io)
+    initial_loop = build_runtime_loop(model_io=initial_model_io)
     suspended = initial_loop.run(
         [{"role": "user", "content": "need a choice"}],
         provider="anthropic",
@@ -716,7 +717,7 @@ def test_kernel_resume_human_input_anthropic_appends_tool_result_and_uses_full_t
             final_text="resume done",
         ),
     ])
-    resumed_loop = KernelLoop(model_io=resumed_model_io)
+    resumed_loop = build_runtime_loop(model_io=resumed_model_io)
     resumed = resumed_loop.resume_human_input(
         conversation=suspended.messages,
         continuation=suspended.continuation,
@@ -745,7 +746,7 @@ def test_kernel_run_completes_single_ollama_turn():
             final_text="done",
         ),
     ])
-    loop = KernelLoop(model_io=model_io)
+    loop = build_runtime_loop(model_io=model_io)
 
     result = loop.run(
         [{"role": "user", "content": "hello"}],
@@ -776,7 +777,7 @@ def test_kernel_run_executes_ollama_tool_and_continues_with_full_transcript():
     ])
     toolkit = Toolkit()
     toolkit.register(lambda x=None: {"value": x + 1}, name="demo_tool")
-    loop = KernelLoop(model_io=model_io)
+    loop = build_runtime_loop(model_io=model_io)
 
     result = loop.run(
         [{"role": "user", "content": "start"}],
@@ -837,7 +838,7 @@ def test_kernel_resume_human_input_ollama_appends_tool_result_and_uses_full_tran
     ])
     ask_toolkit = Toolkit()
     ask_toolkit.register(lambda **_: {"error": "reserved"}, name=ASK_USER_QUESTION_TOOL_NAME, parameters=[])
-    initial_loop = KernelLoop(model_io=initial_model_io)
+    initial_loop = build_runtime_loop(model_io=initial_model_io)
     suspended = initial_loop.run(
         [{"role": "user", "content": "need a choice"}],
         provider="ollama",
@@ -852,7 +853,7 @@ def test_kernel_resume_human_input_ollama_appends_tool_result_and_uses_full_tran
             final_text="resume done",
         ),
     ])
-    resumed_loop = KernelLoop(model_io=resumed_model_io)
+    resumed_loop = build_runtime_loop(model_io=resumed_model_io)
     resumed = resumed_loop.resume_human_input(
         conversation=suspended.messages,
         continuation=suspended.continuation,
@@ -879,7 +880,7 @@ def test_kernel_observe_tool_batch_uses_anthropic_payload_keys():
             final_text="looks fine",
         ),
     ])
-    loop = KernelLoop(model_io=model_io)
+    loop = build_runtime_loop(model_io=model_io)
 
     observation, usage = loop.observe_tool_batch(
         full_messages=[{"role": "user", "content": "observe"}],
@@ -905,7 +906,7 @@ def test_kernel_observe_tool_batch_uses_ollama_payload_keys():
             final_text="looks fine",
         ),
     ])
-    loop = KernelLoop(model_io=model_io)
+    loop = build_runtime_loop(model_io=model_io)
 
     observation, usage = loop.observe_tool_batch(
         full_messages=[{"role": "user", "content": "observe"}],

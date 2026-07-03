@@ -15,6 +15,7 @@ from unchain.capabilities import (
     SetRuntimeStateOp,
 )
 from unchain.kernel import BaseRuntimeHarness, KernelLoop, ModelTurnResult, ToolCall
+from unchain.runtime import build_runtime_loop
 from unchain.tools import Toolkit
 
 
@@ -149,7 +150,7 @@ def test_tool_structured_delta_uses_same_application_layer_for_next_model_contex
             ),
         )
 
-    result = KernelLoop(model_io=model_io).run(
+    result = build_runtime_loop(model_io=model_io).run(
         [{"role": "user", "content": "start"}],
         provider="openai",
         model="gpt-5",
@@ -357,7 +358,7 @@ def test_tool_create_artifact_op_uses_delta_application_for_artifact_events():
             ),
         )
 
-    result = KernelLoop(model_io=model_io).run(
+    result = build_runtime_loop(model_io=model_io).run(
         [{"role": "user", "content": "start"}],
         provider="openai",
         model="gpt-5",

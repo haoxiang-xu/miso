@@ -381,7 +381,8 @@ def test_execute_confirmable_tool_call_uses_tool_invoke_capability_value():
 
 def test_kernel_tool_execution_path_uses_tool_invoke_capability_value():
     from unchain.capabilities import CapabilityOutcome
-    from unchain.kernel import KernelLoop, ModelTurnResult, ToolCall
+    from unchain.kernel import ModelTurnResult, ToolCall
+    from unchain.runtime import build_runtime_loop
     from unchain.tools import Toolkit
 
     class QueueModelIO:
@@ -426,7 +427,7 @@ def test_kernel_tool_execution_path_uses_tool_invoke_capability_value():
     def capability_tool(value: int) -> CapabilityOutcome:
         return CapabilityOutcome(value={"ok": True, "value": value + 1})
 
-    result = KernelLoop(model_io=QueueModelIO()).run(
+    result = build_runtime_loop(model_io=QueueModelIO()).run(
         [{"role": "user", "content": "start"}],
         provider="openai",
         model="gpt-5",

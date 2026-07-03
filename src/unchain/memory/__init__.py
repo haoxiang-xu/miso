@@ -32,6 +32,7 @@ __all__ = [
     "SummaryGenerator",
     "SummaryTokenStrategy",
     "VectorStoreAdapter",
+    "build_default_memory_components",
     "build_memory_commit_event",
     "build_memory_delta",
     "build_memory_prepare_event",
@@ -43,6 +44,7 @@ __all__ = [
 ]
 
 _EXPORT_TO_MODULE = {
+    "build_default_memory_components": ".assembly",
     "LongTermMemoryConfig": ".config",
     "MemoryConfig": ".config",
     "MEMORY_EFFECT_CREATED_BY_PREFIX": ".effects",
