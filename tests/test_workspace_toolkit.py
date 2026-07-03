@@ -78,6 +78,35 @@ def test_workspace_backend_declares_workspace_api_explicitly():
     }.issubset(WorkspaceToolkitBackend.__dict__)
 
 
+def test_workspace_backend_owns_read_state_and_helpers(tmp_path: Path):
+    backend = WorkspaceToolkitBackend(workspace_root=tmp_path)
+    target = tmp_path / "notes.txt"
+    target.write_text("alpha\nbeta\n", encoding="utf-8")
+
+    result = backend.read(str(target))
+
+    assert result["content"] == "1\talpha\n2\tbeta"
+    assert "_read_snapshots" in backend.__dict__
+    assert backend._read_snapshots
+    assert "read" in WorkspaceToolkitBackend.__dict__
+    assert "_read_text_file" in WorkspaceToolkitBackend.__dict__
+    assert "_record_read_snapshot" in WorkspaceToolkitBackend.__dict__
+    assert "_resolve_absolute_path" in WorkspaceToolkitBackend.__dict__
+
+
+def test_workspace_read_keeps_overwrite_safe_during_backend_transition(tmp_path: Path):
+    toolkit = WorkspaceToolkit(workspace_root=tmp_path)
+    target = tmp_path / "notes.txt"
+    target.write_text("alpha\n", encoding="utf-8")
+
+    read_result = toolkit.execute("read", {"path": str(target)})
+    write_result = toolkit.execute("write", {"path": str(target), "content": "beta\n"})
+
+    assert read_result["truncated"] is False
+    assert write_result["operation"] == "update"
+    assert target.read_text(encoding="utf-8") == "beta\n"
+
+
 def test_workspace_toolkit_pins_file_context_in_session_store(tmp_path: Path):
     store = _MemorySessionStore()
     toolkit = WorkspaceToolkit(workspace_root=tmp_path)
