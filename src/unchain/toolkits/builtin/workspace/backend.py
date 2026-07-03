@@ -10,6 +10,10 @@ from ...base import BuiltinExecutionContext
 from ..core import CoreToolkit
 
 
+_ARTIFACT_DIFF_MAX_LINES = 1_000_000
+_ARTIFACT_DIFF_MAX_BYTES = 50_000_000
+
+
 @dataclass
 class _ReadSnapshot:
     path: str
@@ -185,7 +189,6 @@ class WorkspaceToolkitBackend:
 
         fully_read = not truncated
         self._record_read_snapshot(target, raw, fully_read=fully_read)
-        self._core._record_read_snapshot(target, raw, fully_read=fully_read)
 
         start_line = start_index + 1 if selected_lines else 0
         end_line = end_index if selected_lines else 0
@@ -199,8 +202,130 @@ class WorkspaceToolkitBackend:
             "file_kind": "text",
         }
 
+    def _check_snapshot_freshness(self, target: Path) -> tuple[str | None, _ReadSnapshot | None]:
+        snapshot = self._snapshot_for(target)
+        if snapshot is None:
+            return "existing files must be fully read before write or edit", None
+        if not snapshot.fully_read:
+            return "file was only partially read; reread the full file before write or edit", snapshot
+
+        stat_result = target.stat()
+        raw_bytes = target.read_bytes()
+        current_sha1 = hashlib.sha1(raw_bytes).hexdigest()
+        if (
+            snapshot.mtime_ns != int(stat_result.st_mtime_ns)
+            or snapshot.size != len(raw_bytes)
+            or snapshot.content_sha1 != current_sha1
+        ):
+            return "file changed since it was last read; reread the full file before write or edit", snapshot
+        return None, snapshot
+
+    def _file_diff_artifact_descriptor(
+        self,
+        *,
+        title: str,
+        path: str,
+        old_content: str,
+        new_content: str,
+        operation: str,
+    ) -> dict[str, Any] | None:
+        from ....tools._diff_helpers import build_code_diff_payload
+
+        file_payload = build_code_diff_payload(
+            path,
+            old_content,
+            new_content,
+            operation,
+            max_lines=_ARTIFACT_DIFF_MAX_LINES,
+            max_bytes=_ARTIFACT_DIFF_MAX_BYTES,
+        )
+        if file_payload is None or file_payload.get("truncated"):
+            return None
+        unified_diff = file_payload.get("unified_diff")
+        if not isinstance(unified_diff, str) or not unified_diff:
+            return None
+        file_entry = {
+            "path": path,
+            "operation": operation,
+            "sub_operation": file_payload.get("sub_operation", operation),
+            "unified_diff_full": unified_diff,
+            "unified_diff": unified_diff,
+            "truncated": False,
+            "total_lines": file_payload.get("total_lines", 0),
+            "displayed_lines": file_payload.get("displayed_lines", 0),
+        }
+        return {
+            "kind": "file_diff",
+            "title": title,
+            "files": [file_entry],
+        }
+
     def write(self, path: str, content: str) -> dict[str, Any]:
-        return self._core.write(path=path, content=content)
+        if not isinstance(content, str):
+            return {"error": "content must be a string", "path": path}
+
+        target, err = self._resolve_absolute_path(path)
+        if target is None:
+            return {"error": err, "path": path}
+
+        parent = target.parent
+        if not parent.exists():
+            return {"error": f"parent directory does not exist: {parent}", "path": str(target)}
+        if not parent.is_dir():
+            return {"error": f"parent path is not a directory: {parent}", "path": str(target)}
+
+        existed = target.exists()
+        old_raw = ""
+        if existed:
+            old_raw, load_error = self._read_text_file(target)
+            if load_error is not None:
+                return load_error
+            assert isinstance(old_raw, str)
+            freshness_error, _ = self._check_snapshot_freshness(target)
+            if freshness_error is not None:
+                return {"error": freshness_error, "path": str(target)}
+
+        target.write_text(content, encoding="utf-8")
+        self._record_read_snapshot(target, content, fully_read=True)
+        self._record_workspace_change(
+            target=target,
+            before_text=old_raw if existed else None,
+            after_text=content,
+            operation="modified" if existed else "created",
+            tool_name="write",
+        )
+
+        before_bytes = len(old_raw.encode("utf-8", errors="replace"))
+        after_bytes = len(content.encode("utf-8", errors="replace"))
+        operation = "edit" if existed else "create"
+        result = {
+            "path": str(target),
+            "operation": "update" if existed else "create",
+            "bytes_written": after_bytes,
+            "structured_patch": {
+                "type": "replace_file" if existed else "create_file",
+                "before_lines": self._total_lines(old_raw),
+                "after_lines": self._total_lines(content),
+                "before_bytes": before_bytes,
+                "after_bytes": after_bytes,
+            },
+            "original_file": {
+                "path": str(target),
+                "exists": existed,
+                "sha1": hashlib.sha1(old_raw.encode("utf-8", errors="replace")).hexdigest() if existed else "",
+                "total_lines": self._total_lines(old_raw),
+            },
+        }
+        artifact = self._file_diff_artifact_descriptor(
+            title=f"{'Edit' if existed else 'Create'} {target}",
+            path=str(target),
+            old_content=old_raw,
+            new_content=content,
+            operation=operation,
+        )
+        if artifact is not None:
+            result["_artifacts"] = [artifact]
+        return result
 
     def edit(
         self,
@@ -209,12 +334,75 @@ class WorkspaceToolkitBackend:
         new_string: str,
         replace_all: bool = False,
     ) -> dict[str, Any]:
-        return self._core.edit(
-            path=path,
-            old_string=old_string,
-            new_string=new_string,
-            replace_all=replace_all,
+        if not isinstance(old_string, str) or not old_string:
+            return {"error": "old_string must be a non-empty string", "path": path}
+        if not isinstance(new_string, str):
+            return {"error": "new_string must be a string", "path": path}
+
+        target, err = self._resolve_absolute_path(path)
+        if target is None:
+            return {"error": err, "path": path}
+
+        raw, load_error = self._read_text_file(target)
+        if load_error is not None:
+            return load_error
+        assert isinstance(raw, str)
+
+        freshness_error, snapshot = self._check_snapshot_freshness(target)
+        if freshness_error is not None:
+            return {"error": freshness_error, "path": str(target)}
+        match_count = raw.count(old_string)
+        if match_count == 0:
+            return {"error": "old_string was not found in the file", "path": str(target)}
+        if match_count > 1 and not replace_all:
+            return {
+                "error": "old_string matched more than once; set replace_all=true or provide a unique match",
+                "path": str(target),
+                "match_count": match_count,
+            }
+
+        replacement_count = match_count if replace_all else 1
+        updated = raw.replace(old_string, new_string, replacement_count)
+        first_match_index = raw.find(old_string)
+        first_match_line = raw.count("\n", 0, first_match_index) + 1 if first_match_index >= 0 else 0
+        target.write_text(updated, encoding="utf-8")
+        self._record_read_snapshot(target, updated, fully_read=True)
+        self._record_workspace_change(
+            target=target,
+            before_text=raw,
+            after_text=updated,
+            operation="modified",
+            tool_name="edit",
         )
+
+        result = {
+            "path": str(target),
+            "old_string": old_string,
+            "new_string": new_string,
+            "replace_all": bool(replace_all),
+            "replacement_count": replacement_count,
+            "structured_patch": {
+                "type": "string_replace",
+                "first_match_line": first_match_line,
+                "before_lines": self._total_lines(raw),
+                "after_lines": self._total_lines(updated),
+            },
+            "original_file": {
+                "path": str(target),
+                "sha1": snapshot.content_sha1 if snapshot is not None else "",
+                "total_lines": self._total_lines(raw),
+            },
+        }
+        artifact = self._file_diff_artifact_descriptor(
+            title=f"Edit {target}",
+            path=str(target),
+            old_content=raw,
+            new_content=updated,
+            operation="edit",
+        )
+        if artifact is not None:
+            result["_artifacts"] = [artifact]
+        return result
 
     def glob(self, pattern: str, path: str | None = None) -> dict[str, Any]:
         return self._core.glob(pattern=pattern, path=path)

@@ -94,7 +94,7 @@ def test_workspace_backend_owns_read_state_and_helpers(tmp_path: Path):
     assert "_resolve_absolute_path" in WorkspaceToolkitBackend.__dict__
 
 
-def test_workspace_read_keeps_overwrite_safe_during_backend_transition(tmp_path: Path):
+def test_workspace_read_keeps_overwrite_safe_in_backend_snapshot_flow(tmp_path: Path):
     toolkit = WorkspaceToolkit(workspace_root=tmp_path)
     target = tmp_path / "notes.txt"
     target.write_text("alpha\n", encoding="utf-8")
@@ -105,6 +105,30 @@ def test_workspace_read_keeps_overwrite_safe_during_backend_transition(tmp_path:
     assert read_result["truncated"] is False
     assert write_result["operation"] == "update"
     assert target.read_text(encoding="utf-8") == "beta\n"
+
+
+def test_workspace_backend_owns_write_edit_snapshot_flow(monkeypatch, tmp_path: Path):
+    backend = WorkspaceToolkitBackend(workspace_root=tmp_path)
+    target = tmp_path / "notes.txt"
+    target.write_text("alpha\nbeta\n", encoding="utf-8")
+
+    def fail_core_file_mutation(*args, **kwargs):
+        raise AssertionError("workspace backend should not depend on core file mutation state")
+
+    monkeypatch.setattr(backend._core, "_record_read_snapshot", fail_core_file_mutation)
+    monkeypatch.setattr(backend._core, "write", fail_core_file_mutation)
+    monkeypatch.setattr(backend._core, "edit", fail_core_file_mutation)
+
+    read_result = backend.read(str(target))
+    write_result = backend.write(str(target), "alpha\nBETA\n")
+    edit_result = backend.edit(str(target), "BETA", "gamma")
+
+    assert read_result["truncated"] is False
+    assert write_result["operation"] == "update"
+    assert edit_result["replacement_count"] == 1
+    assert target.read_text(encoding="utf-8") == "alpha\ngamma\n"
+    assert "_check_snapshot_freshness" in WorkspaceToolkitBackend.__dict__
+    assert "_file_diff_artifact_descriptor" in WorkspaceToolkitBackend.__dict__
 
 
 def test_workspace_toolkit_pins_file_context_in_session_store(tmp_path: Path):
