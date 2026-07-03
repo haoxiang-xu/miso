@@ -1,0 +1,27 @@
+[toolkit]
+id = "web_toolkit"
+name = "Web Toolkit"
+description = "Focused public web access toolkit."
+factory = "unchain.toolkits.builtin.web:WebToolkit"
+version = "1.0.0"
+readme = "README.md"
+icon = "globe"
+color = "#0f172a"
+backgroundcolor = "#dcfce7"
+tags = ["builtin", "web", "fetch"]
+
+[display]
+category = "builtin"
+order = 25
+hidden = false
+
+[compat]
+python = ">=3.9"
+legacy = ">=0"
+
+[[tools]]
+name = "web_fetch"
+title = "Web Fetch"
+description = "Fetch a public web page over HTTP(S), return raw page content or run a runtime-configured extraction model."
+observe = false
+requires_confirmation = true

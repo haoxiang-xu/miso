@@ -72,6 +72,33 @@ def test_toolkits_surface_exports_workspace_compatibility_toolkit(tmp_path):
     assert toolkit.tools["terminal_exec"].requires_confirmation is True
 
 
+def test_toolkits_surface_exports_focused_interaction_and_web_toolkits(tmp_path):
+    from unchain.toolkits import InteractionToolkit, WebToolkit
+
+    interaction_toolkit = InteractionToolkit(workspace_root=tmp_path)
+    web_toolkit = WebToolkit(workspace_root=tmp_path)
+
+    assert InteractionToolkit.__name__ == "InteractionToolkit"
+    assert WebToolkit.__name__ == "WebToolkit"
+    assert set(interaction_toolkit.tools) == {"ask_user_question"}
+    assert set(web_toolkit.tools) == {"web_fetch"}
+    assert web_toolkit.tools["web_fetch"].requires_confirmation is True
+
+
+def test_web_toolkit_does_not_construct_core_toolkit_bundle(monkeypatch, tmp_path):
+    import unchain.toolkits.builtin.web.web as web_module
+    from unchain.toolkits import WebToolkit
+
+    def fail_core_toolkit(*args, **kwargs):
+        raise AssertionError("WebToolkit should not construct the CoreToolkit bundle")
+
+    monkeypatch.setattr(web_module, "CoreToolkit", fail_core_toolkit, raising=False)
+
+    toolkit = WebToolkit(workspace_root=tmp_path)
+
+    assert set(toolkit.tools) == {"web_fetch"}
+
+
 def test_memory_surface_exports_pupu_runtime_dependencies():
     from unchain.memory import (
         JsonFileLongTermProfileStore,
