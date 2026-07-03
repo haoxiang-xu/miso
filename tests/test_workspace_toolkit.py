@@ -49,6 +49,19 @@ def test_workspace_toolkit_exposes_canonical_coding_tools(tmp_path: Path):
     assert toolkit.tools["shell"].requires_confirmation is True
 
 
+def test_workspace_toolkit_uses_workspace_backend_instead_of_core_toolkit(monkeypatch, tmp_path: Path):
+    import unchain.toolkits.builtin.workspace.workspace as workspace_module
+
+    def fail_core_toolkit(*args, **kwargs):
+        raise AssertionError("WorkspaceToolkit should construct its workspace backend, not CoreToolkit directly")
+
+    monkeypatch.setattr(workspace_module, "CoreToolkit", fail_core_toolkit, raising=False)
+
+    toolkit = WorkspaceToolkit(workspace_root=tmp_path)
+
+    assert type(toolkit._inner).__name__ == "WorkspaceToolkitBackend"
+
+
 def test_workspace_toolkit_pins_file_context_in_session_store(tmp_path: Path):
     store = _MemorySessionStore()
     toolkit = WorkspaceToolkit(workspace_root=tmp_path)

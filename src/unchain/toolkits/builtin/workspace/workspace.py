@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from ...base import BuiltinExecutionContext, BuiltinToolkit
-from ..core import CoreToolkit
+from .backend import WorkspaceToolkitBackend
 
 
 class WorkspaceToolkit(BuiltinToolkit):
@@ -18,7 +18,7 @@ class WorkspaceToolkit(BuiltinToolkit):
         workspace_roots: list[str | Path] | None = None,
     ) -> None:
         super().__init__(workspace_root=workspace_root, workspace_roots=workspace_roots)
-        self._inner = CoreToolkit(workspace_roots=self.workspace_roots)
+        self._inner = WorkspaceToolkitBackend(workspace_roots=self.workspace_roots)
         self._register_workspace_tools()
 
     def _register_workspace_tools(self) -> None:
