@@ -308,6 +308,14 @@ def test_core_toolkit_registers_expected_tools_and_confirmation_contract():
         assert toolkit.tools["lsp"].requires_confirmation is False
 
 
+def test_core_toolkit_composes_focused_interaction_and_web_toolkits():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = CoreToolkit(workspace_root=tmp)
+
+        assert toolkit.tools[ASK_USER_QUESTION_TOOL_NAME] is toolkit._interaction_toolkit.tools[ASK_USER_QUESTION_TOOL_NAME]
+        assert toolkit.tools["web_fetch"] is toolkit._web_toolkit.tools["web_fetch"]
+
+
 def test_code_toolkit_requires_full_read_before_mutating_existing_files():
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = CoreToolkit(workspace_root=tmp)
@@ -588,7 +596,7 @@ def test_code_toolkit_web_fetch_extract_uses_runtime_config(monkeypatch):
             seen["config"] = dict(extract_model_config)
             return "summary output"
 
-        monkeypatch.setattr("unchain.toolkits.builtin.core.core.run_extract_model", fake_extract)
+        monkeypatch.setattr("unchain.toolkits.builtin.web.web.run_extract_model", fake_extract)
 
         outcome = execute_confirmable_tool_call(
             toolkit=merged,

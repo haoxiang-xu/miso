@@ -11,12 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ....input.human_input import build_ask_user_question_tool
 from ...base import BuiltinToolkit
 from ....tools.models import ToolConfirmationPolicy, ToolExecutionContext, ToolHistoryOptimizationContext
+from ..interaction import InteractionToolkit
+from ..web import WebToolkit
 from .lsp_runtime import LSPRuntime, LSPRuntimeError
 from .shell_runtime import ShellRuntime
-from .web_fetch import WebFetchService, run_extract_model
+from .web_fetch import run_extract_model
 
 
 _ARTIFACT_DIFF_MAX_LINES = 1_000_000
@@ -75,9 +76,11 @@ class CoreToolkit(BuiltinToolkit):
     ) -> None:
         super().__init__(workspace_root=workspace_root, workspace_roots=workspace_roots)
         self._read_snapshots: dict[str, dict[str, _ReadSnapshot]] = {}
+        self._interaction_toolkit = InteractionToolkit(workspace_roots=self.workspace_roots)
+        self._web_toolkit = WebToolkit(workspace_roots=self.workspace_roots)
         self._lsp_runtime = LSPRuntime(self.workspace_roots)
         self._shell_runtime = ShellRuntime(self.workspace_roots)
-        self._web_fetch_service = WebFetchService()
+        self._web_fetch_service = self._web_toolkit._web_fetch_service
         self._register_tools()
 
     def ask_user_question(
@@ -96,7 +99,7 @@ class CoreToolkit(BuiltinToolkit):
         return {"error": "ask_user_question is a reserved runtime tool and cannot be executed directly"}
 
     def _register_tools(self) -> None:
-        self.register(build_ask_user_question_tool())
+        self.register(self._interaction_toolkit.tools["ask_user_question"])
         self.register(
             self.read,
             description="Read a UTF-8 text file by absolute path with line-numbered output and optional line slicing.",
@@ -130,11 +133,7 @@ class CoreToolkit(BuiltinToolkit):
             history_result_optimizer=self._compact_grep_result,
         )
         self.register(
-            self.web_fetch,
-            description="Fetch a public web page over HTTP(S), return raw page content or run a runtime-configured extraction model.",
-            requires_confirmation=True,
-            history_arguments_optimizer=self._compact_web_fetch_args,
-            history_result_optimizer=self._compact_web_fetch_result,
+            self._web_toolkit.tools["web_fetch"],
         )
         self.register(
             self.shell,
@@ -1178,6 +1177,8 @@ class CoreToolkit(BuiltinToolkit):
         return f"{op} {path} (+{plus} -{minus})"
 
     def shutdown(self) -> None:
+        self._interaction_toolkit.shutdown()
+        self._web_toolkit.shutdown()
         self._lsp_runtime.shutdown()
         self._shell_runtime.shutdown()
 
