@@ -15,6 +15,7 @@ from ...base import BuiltinToolkit
 from ....tools.models import ToolConfirmationPolicy, ToolExecutionContext, ToolHistoryOptimizationContext
 from ..interaction import InteractionToolkit
 from ..web import WebToolkit
+from .coding_backend import CoreCodingBackend
 from .lsp_runtime import LSPRuntime, LSPRuntimeError
 from .shell_runtime import ShellRuntime
 from .web_fetch import run_extract_model
@@ -76,6 +77,10 @@ class CoreToolkit(BuiltinToolkit):
     ) -> None:
         super().__init__(workspace_root=workspace_root, workspace_roots=workspace_roots)
         self._read_snapshots: dict[str, dict[str, _ReadSnapshot]] = {}
+        self._coding_backend = CoreCodingBackend(
+            workspace_roots=self.workspace_roots,
+            execution_context_provider=lambda: self.current_execution_context,
+        )
         self._interaction_toolkit = InteractionToolkit(workspace_roots=self.workspace_roots)
         self._web_toolkit = WebToolkit(workspace_roots=self.workspace_roots)
         self._lsp_runtime = LSPRuntime(self.workspace_roots)
@@ -354,37 +359,7 @@ class CoreToolkit(BuiltinToolkit):
             offset: Zero-based line offset to start reading from.
             limit: Maximum number of lines to return. Omit for the full file.
         """
-        target, err = self._resolve_absolute_path(path)
-        if target is None:
-            return {"error": err, "path": path}
-
-        raw, load_error = self._read_text_file(target)
-        if load_error is not None:
-            return load_error
-        assert isinstance(raw, str)
-
-        lines = self._split_lines(raw)
-        total_lines = len(lines)
-        resolved_offset = self._coerce_nonnegative_int(offset, 0)
-        resolved_limit = None if limit is None else self._coerce_nonnegative_int(limit, 0)
-        start_index = min(resolved_offset, total_lines)
-        end_index = total_lines if resolved_limit is None else min(total_lines, start_index + resolved_limit)
-        selected_lines = lines[start_index:end_index]
-        truncated = start_index > 0 or end_index < total_lines
-
-        self._record_read_snapshot(target, raw, fully_read=not truncated)
-
-        start_line = start_index + 1 if selected_lines else 0
-        end_line = end_index if selected_lines else 0
-        return {
-            "path": str(target),
-            "content": self._number_lines(selected_lines, start_line=max(1, start_line)),
-            "start_line": start_line,
-            "end_line": end_line,
-            "total_lines": total_lines,
-            "truncated": truncated,
-            "file_kind": "text",
-        }
+        return self._coding_backend.read(path=path, offset=offset, limit=limit)
 
     def write(self, path: str, content: str) -> dict[str, Any]:
         """Create or fully overwrite a UTF-8 text file by absolute path.
@@ -393,71 +368,7 @@ class CoreToolkit(BuiltinToolkit):
             path: Absolute path to the file inside the workspace roots.
             content: Full replacement content for the file.
         """
-        if not isinstance(content, str):
-            return {"error": "content must be a string", "path": path}
-
-        target, err = self._resolve_absolute_path(path)
-        if target is None:
-            return {"error": err, "path": path}
-
-        parent = target.parent
-        if not parent.exists():
-            return {"error": f"parent directory does not exist: {parent}", "path": str(target)}
-        if not parent.is_dir():
-            return {"error": f"parent path is not a directory: {parent}", "path": str(target)}
-
-        existed = target.exists()
-        old_raw = ""
-        if existed:
-            old_raw, load_error = self._read_text_file(target)
-            if load_error is not None:
-                return load_error
-            assert isinstance(old_raw, str)
-            freshness_error, _ = self._check_snapshot_freshness(target)
-            if freshness_error is not None:
-                return {"error": freshness_error, "path": str(target)}
-
-        target.write_text(content, encoding="utf-8")
-        self._record_read_snapshot(target, content, fully_read=True)
-        self._record_workspace_change(
-            target=target,
-            before_text=old_raw if existed else None,
-            after_text=content,
-            operation="modified" if existed else "created",
-            tool_name="write",
-        )
-
-        before_bytes = len(old_raw.encode("utf-8", errors="replace"))
-        after_bytes = len(content.encode("utf-8", errors="replace"))
-        operation = "edit" if existed else "create"
-        result = {
-            "path": str(target),
-            "operation": "update" if existed else "create",
-            "bytes_written": after_bytes,
-            "structured_patch": {
-                "type": "replace_file" if existed else "create_file",
-                "before_lines": self._total_lines(old_raw),
-                "after_lines": self._total_lines(content),
-                "before_bytes": before_bytes,
-                "after_bytes": after_bytes,
-            },
-            "original_file": {
-                "path": str(target),
-                "exists": existed,
-                "sha1": hashlib.sha1(old_raw.encode("utf-8", errors="replace")).hexdigest() if existed else "",
-                "total_lines": self._total_lines(old_raw),
-            },
-        }
-        artifact = self._file_diff_artifact_descriptor(
-            title=f"{'Edit' if existed else 'Create'} {target}",
-            path=str(target),
-            old_content=old_raw,
-            new_content=content,
-            operation=operation,
-        )
-        if artifact is not None:
-            result["_artifacts"] = [artifact]
-        return result
+        return self._coding_backend.write(path=path, content=content)
 
     def edit(
         self,
@@ -474,75 +385,12 @@ class CoreToolkit(BuiltinToolkit):
             new_string: Replacement string.
             replace_all: Replace every occurrence instead of requiring a unique match.
         """
-        if not isinstance(old_string, str) or not old_string:
-            return {"error": "old_string must be a non-empty string", "path": path}
-        if not isinstance(new_string, str):
-            return {"error": "new_string must be a string", "path": path}
-
-        target, err = self._resolve_absolute_path(path)
-        if target is None:
-            return {"error": err, "path": path}
-
-        raw, load_error = self._read_text_file(target)
-        if load_error is not None:
-            return load_error
-        assert isinstance(raw, str)
-
-        freshness_error, snapshot = self._check_snapshot_freshness(target)
-        if freshness_error is not None:
-            return {"error": freshness_error, "path": str(target)}
-        match_count = raw.count(old_string)
-        if match_count == 0:
-            return {"error": "old_string was not found in the file", "path": str(target)}
-        if match_count > 1 and not replace_all:
-            return {
-                "error": "old_string matched more than once; set replace_all=true or provide a unique match",
-                "path": str(target),
-                "match_count": match_count,
-            }
-
-        replacement_count = match_count if replace_all else 1
-        updated = raw.replace(old_string, new_string, replacement_count)
-        first_match_index = raw.find(old_string)
-        first_match_line = raw.count("\n", 0, first_match_index) + 1 if first_match_index >= 0 else 0
-        target.write_text(updated, encoding="utf-8")
-        self._record_read_snapshot(target, updated, fully_read=True)
-        self._record_workspace_change(
-            target=target,
-            before_text=raw,
-            after_text=updated,
-            operation="modified",
-            tool_name="edit",
+        return self._coding_backend.edit(
+            path=path,
+            old_string=old_string,
+            new_string=new_string,
+            replace_all=replace_all,
         )
-
-        result = {
-            "path": str(target),
-            "old_string": old_string,
-            "new_string": new_string,
-            "replace_all": bool(replace_all),
-            "replacement_count": replacement_count,
-            "structured_patch": {
-                "type": "string_replace",
-                "first_match_line": first_match_line,
-                "before_lines": self._total_lines(raw),
-                "after_lines": self._total_lines(updated),
-            },
-            "original_file": {
-                "path": str(target),
-                "sha1": snapshot.content_sha1 if snapshot is not None else "",
-                "total_lines": self._total_lines(raw),
-            },
-        }
-        artifact = self._file_diff_artifact_descriptor(
-            title=f"Edit {target}",
-            path=str(target),
-            old_content=raw,
-            new_content=updated,
-            operation="edit",
-        )
-        if artifact is not None:
-            result["_artifacts"] = [artifact]
-        return result
 
     def glob(self, pattern: str, path: str | None = None) -> dict[str, Any]:
         """List files matching a glob pattern inside the workspace.

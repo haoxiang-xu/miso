@@ -316,6 +316,46 @@ def test_core_toolkit_composes_focused_interaction_and_web_toolkits():
         assert toolkit.tools["web_fetch"] is toolkit._web_toolkit.tools["web_fetch"]
 
 
+def test_core_toolkit_uses_core_coding_backend_for_file_mutations(monkeypatch):
+    from unchain.toolkits.builtin.core.coding_backend import CoreCodingBackend
+
+    calls: list[str] = []
+    original_read = CoreCodingBackend.read
+    original_write = CoreCodingBackend.write
+    original_edit = CoreCodingBackend.edit
+
+    def tracked_read(self, *args, **kwargs):
+        calls.append("read")
+        return original_read(self, *args, **kwargs)
+
+    def tracked_write(self, *args, **kwargs):
+        calls.append("write")
+        return original_write(self, *args, **kwargs)
+
+    def tracked_edit(self, *args, **kwargs):
+        calls.append("edit")
+        return original_edit(self, *args, **kwargs)
+
+    monkeypatch.setattr(CoreCodingBackend, "read", tracked_read)
+    monkeypatch.setattr(CoreCodingBackend, "write", tracked_write)
+    monkeypatch.setattr(CoreCodingBackend, "edit", tracked_edit)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = CoreToolkit(workspace_root=tmp)
+        target = Path(tmp, "notes.txt").resolve()
+        target.write_text("alpha\nbeta\n", encoding="utf-8")
+
+        read_result = toolkit.read(str(target))
+        write_result = toolkit.write(str(target), "alpha\nBETA\n")
+        edit_result = toolkit.edit(str(target), "BETA", "gamma")
+
+    assert type(toolkit._coding_backend).__name__ == "CoreCodingBackend"
+    assert calls == ["read", "write", "edit"]
+    assert read_result["truncated"] is False
+    assert write_result["operation"] == "update"
+    assert edit_result["replacement_count"] == 1
+
+
 def test_code_toolkit_requires_full_read_before_mutating_existing_files():
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = CoreToolkit(workspace_root=tmp)

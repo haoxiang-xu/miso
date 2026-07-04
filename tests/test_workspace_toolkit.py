@@ -4,6 +4,7 @@ from pathlib import Path
 
 from unchain.tools import ToolExecutionContext
 from unchain.toolkits import WorkspaceToolkit
+from unchain.toolkits.builtin.core.coding_backend import CoreCodingBackend
 from unchain.toolkits.builtin.workspace.backend import WorkspaceToolkitBackend
 
 
@@ -50,32 +51,37 @@ def test_workspace_toolkit_exposes_canonical_coding_tools(tmp_path: Path):
     assert toolkit.tools["shell"].requires_confirmation is True
 
 
-def test_workspace_toolkit_uses_workspace_backend_instead_of_core_toolkit(monkeypatch, tmp_path: Path):
-    import unchain.toolkits.builtin.workspace.workspace as workspace_module
-
-    def fail_core_toolkit(*args, **kwargs):
-        raise AssertionError("WorkspaceToolkit should construct its workspace backend, not CoreToolkit directly")
-
-    monkeypatch.setattr(workspace_module, "CoreToolkit", fail_core_toolkit, raising=False)
-
+def test_workspace_toolkit_uses_legacy_backend_adapter(tmp_path: Path):
     toolkit = WorkspaceToolkit(workspace_root=tmp_path)
 
     assert type(toolkit._inner).__name__ == "WorkspaceToolkitBackend"
+    assert isinstance(toolkit._inner, CoreCodingBackend)
 
 
-def test_workspace_backend_declares_workspace_api_explicitly():
+def test_workspace_toolkit_wraps_core_coding_backend(monkeypatch, tmp_path: Path):
+    calls: list[str] = []
+    original_read = CoreCodingBackend.read
+
+    def tracked_read(self, *args, **kwargs):
+        calls.append("read")
+        return original_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(CoreCodingBackend, "read", tracked_read)
+
+    toolkit = WorkspaceToolkit(workspace_root=tmp_path)
+    target = tmp_path / "notes.txt"
+    target.write_text("alpha\n", encoding="utf-8")
+    result = toolkit.execute("read", {"path": str(target)})
+
+    assert isinstance(toolkit._inner, CoreCodingBackend)
+    assert calls == ["read"]
+    assert result["content"] == "1\talpha"
+
+
+def test_workspace_backend_is_legacy_adapter_over_core_coding_backend():
+    assert issubclass(WorkspaceToolkitBackend, CoreCodingBackend)
     assert "__getattr__" not in WorkspaceToolkitBackend.__dict__
-    assert {
-        "read",
-        "write",
-        "edit",
-        "glob",
-        "grep",
-        "shell",
-        "lsp",
-        "_resolve_workspace_path",
-        "_record_workspace_change",
-    }.issubset(WorkspaceToolkitBackend.__dict__)
+    assert {"glob", "grep", "shell", "lsp"}.issubset(WorkspaceToolkitBackend.__dict__)
 
 
 def test_workspace_backend_owns_read_state_and_helpers(tmp_path: Path):
@@ -88,10 +94,10 @@ def test_workspace_backend_owns_read_state_and_helpers(tmp_path: Path):
     assert result["content"] == "1\talpha\n2\tbeta"
     assert "_read_snapshots" in backend.__dict__
     assert backend._read_snapshots
-    assert "read" in WorkspaceToolkitBackend.__dict__
-    assert "_read_text_file" in WorkspaceToolkitBackend.__dict__
-    assert "_record_read_snapshot" in WorkspaceToolkitBackend.__dict__
-    assert "_resolve_absolute_path" in WorkspaceToolkitBackend.__dict__
+    assert "read" in CoreCodingBackend.__dict__
+    assert "_read_text_file" in CoreCodingBackend.__dict__
+    assert "_record_read_snapshot" in CoreCodingBackend.__dict__
+    assert "_resolve_absolute_path" in CoreCodingBackend.__dict__
 
 
 def test_workspace_read_keeps_overwrite_safe_in_backend_snapshot_flow(tmp_path: Path):
@@ -127,8 +133,8 @@ def test_workspace_backend_owns_write_edit_snapshot_flow(monkeypatch, tmp_path: 
     assert write_result["operation"] == "update"
     assert edit_result["replacement_count"] == 1
     assert target.read_text(encoding="utf-8") == "alpha\ngamma\n"
-    assert "_check_snapshot_freshness" in WorkspaceToolkitBackend.__dict__
-    assert "_file_diff_artifact_descriptor" in WorkspaceToolkitBackend.__dict__
+    assert "_check_snapshot_freshness" in CoreCodingBackend.__dict__
+    assert "_file_diff_artifact_descriptor" in CoreCodingBackend.__dict__
 
 
 def test_workspace_toolkit_pins_file_context_in_session_store(tmp_path: Path):

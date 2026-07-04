@@ -1,7 +1,7 @@
 [toolkit]
 id = "workspace_toolkit"
 name = "Workspace Toolkit"
-description = "Workspace and coding toolkit for file reads, guarded writes and edits, search, LSP code intelligence, shell execution, and pinned file context."
+description = "Legacy workspace wrapper for core coding tools, compatibility file names, shell execution, LSP code intelligence, and pinned file context."
 factory = "unchain.toolkits.builtin.workspace:WorkspaceToolkit"
 version = "1.0.0"
 readme = "README.md"
