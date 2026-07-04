@@ -316,6 +316,51 @@ def test_core_toolkit_composes_focused_interaction_and_web_toolkits():
         assert toolkit.tools["web_fetch"] is toolkit._web_toolkit.tools["web_fetch"]
 
 
+def test_core_toolkit_web_fetch_delegates_to_web_toolkit(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = CoreToolkit(workspace_root=tmp)
+        calls: list[dict[str, object]] = []
+
+        def tracked_web_fetch(
+            url: str,
+            mode: str = "raw",
+            prompt: str | None = None,
+            offset: int = 0,
+            max_chars: int = 20000,
+        ) -> dict[str, object]:
+            calls.append(
+                {
+                    "url": url,
+                    "mode": mode,
+                    "prompt": prompt,
+                    "offset": offset,
+                    "max_chars": max_chars,
+                }
+            )
+            return {"ok": True, "result": "delegated"}
+
+        monkeypatch.setattr(toolkit._web_toolkit, "web_fetch", tracked_web_fetch)
+
+        result = toolkit.web_fetch(
+            url="https://example.com/docs",
+            mode="invalid",
+            prompt="summarize",
+            offset=3,
+            max_chars=7,
+        )
+
+        assert result == {"ok": True, "result": "delegated"}
+        assert calls == [
+            {
+                "url": "https://example.com/docs",
+                "mode": "invalid",
+                "prompt": "summarize",
+                "offset": 3,
+                "max_chars": 7,
+            }
+        ]
+
+
 def test_core_toolkit_uses_core_coding_backend_for_coding_tools(monkeypatch):
     from unchain.toolkits.builtin.core.coding_backend import CoreCodingBackend
 
@@ -614,7 +659,7 @@ def test_code_toolkit_web_fetch_raw_uses_cache_and_paginates(monkeypatch):
                 "alpha beta gamma delta",
             )
 
-        monkeypatch.setattr(toolkit._web_fetch_service, "_request", fake_request)
+        monkeypatch.setattr(toolkit._web_toolkit._web_fetch_service, "_request", fake_request)
 
         first = toolkit.execute(
             "web_fetch",
@@ -642,7 +687,7 @@ def test_code_toolkit_web_fetch_extract_uses_runtime_config(monkeypatch):
         monkeypatch.setattr(web_fetch_module, "validate_public_url", lambda url: (url, None))
 
         monkeypatch.setattr(
-            toolkit._web_fetch_service,
+            toolkit._web_toolkit._web_fetch_service,
             "_request",
             lambda url: (
                 {
@@ -732,7 +777,7 @@ def test_code_toolkit_web_fetch_rejects_private_urls_and_requires_extract_config
 
         monkeypatch.setattr(web_fetch_module, "validate_public_url", lambda url: (url, None))
         monkeypatch.setattr(
-            toolkit._web_fetch_service,
+            toolkit._web_toolkit._web_fetch_service,
             "_request",
             lambda url: (
                 {
