@@ -194,6 +194,16 @@ def test_kernel_loop_delegates_run_invocation_preparation():
     assert "provider not in" not in state_source
 
 
+def test_kernel_loop_delegates_human_input_resume_invocation_preparation():
+    import unchain.kernel.loop as kernel_loop_module
+
+    source = inspect.getsource(kernel_loop_module.KernelLoop.resume_human_input)
+
+    assert "prepare_resume_run_invocation(" in source
+    assert "prepare_human_input_resume_plan(" not in source
+    assert "hydrate_human_input_resume_state(" not in source
+
+
 def test_kernel_loop_delegates_terminal_run_outcomes():
     import unchain.kernel.loop as kernel_loop_module
 

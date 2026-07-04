@@ -4,7 +4,6 @@ import copy
 import uuid
 from typing import Any
 
-from ..interaction.resume import hydrate_human_input_resume_state, prepare_human_input_resume_plan
 from ..providers.model_turn_runtime import apply_model_turn_result, fetch_model_turn
 from ..retry import RetryConfig
 from ..schemas import ResponseFormat
@@ -25,6 +24,7 @@ from .run_preparation import (
     infer_model,
     infer_provider,
     prepare_fresh_run_invocation,
+    prepare_resume_run_invocation,
     prepare_state_for_execution,
 )
 from .state import RunState
@@ -530,7 +530,7 @@ class KernelLoop:
         tool_runtime_plugins: list[Any] | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
     ) -> KernelRunResult:
-        plan = prepare_human_input_resume_plan(
+        plan = prepare_resume_run_invocation(
             conversation=conversation,
             continuation=continuation,
             payload=payload,
@@ -542,11 +542,8 @@ class KernelLoop:
             run_id=run_id,
             run_id_factory=lambda: str(uuid.uuid4()),
         )
-        state = RunState()
-        state.seed_messages(plan.conversation)
-        hydrate_human_input_resume_state(state, plan)
         self._dispatch_bootstrap(
-            state,
+            plan.state,
             payload=plan.payload,
             response_format=plan.response_format,
             callback=callback,
@@ -557,7 +554,7 @@ class KernelLoop:
             tool_runtime_config=tool_runtime_config,
         )
         self.dispatch_phase(
-            state,
+            plan.state,
             phase="on_resume",
             event={
                 "continuation": copy.deepcopy(continuation),
@@ -568,7 +565,7 @@ class KernelLoop:
             },
         )
         return self._run_state(
-            state,
+            plan.state,
             payload=plan.payload,
             response_format=plan.response_format,
             callback=callback,

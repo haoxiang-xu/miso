@@ -80,3 +80,32 @@ def test_prepare_fresh_run_invocation_rejects_unsupported_provider():
         assert "supports only provider" in str(exc)
     else:
         raise AssertionError("expected NotImplementedError")
+
+
+def test_prepare_resume_run_invocation_builds_state_and_preserves_plan_payload():
+    from unchain.kernel.run_preparation import prepare_resume_run_invocation
+
+    plan = prepare_resume_run_invocation(
+        conversation=[{"role": "user", "content": "hello"}],
+        continuation={
+            "provider": "openai",
+            "model": "gpt-test",
+            "payload": {"temperature": 0},
+            "response_format": None,
+            "max_iterations": 8,
+        },
+        payload={"temperature": 1},
+        response_format=None,
+        fallback_provider="openai",
+        fallback_model="gpt-test",
+        session_id="session-1",
+        memory_namespace="memory-1",
+        run_id="run-1",
+        run_id_factory=lambda: "generated",
+    )
+
+    assert plan.run_id == "run-1"
+    assert plan.payload == {"temperature": 1}
+    assert plan.state.provider_state.provider == "openai"
+    assert plan.state.provider_state.model == "gpt-test"
+    assert plan.max_iterations == 8
