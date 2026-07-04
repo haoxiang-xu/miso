@@ -14,13 +14,12 @@ from .harness import HarnessContext, RuntimeHarness, RuntimePhase
 from .lifecycle_events import (
     build_iteration_completed_payload,
     build_iteration_started_payload,
-    build_max_iterations_decision_payload,
     build_response_received_payload,
-    build_run_max_iterations_payload,
     build_run_started_payload,
 )
 from .model_io import ModelIO
 from .results import build_kernel_run_result
+from .run_limits import resolve_max_iterations_boundary
 from .run_outcomes import finish_completed_run, finish_max_iterations_run
 from .state import RunState
 from .types import KernelRunResult, ModelTurnResult
@@ -412,37 +411,24 @@ class KernelLoop:
         )
         effective_max = int(max_iterations)
         while True:
-            if int(state.iteration) >= effective_max:
-                if callable(on_max_iterations):
-                    self.emit_event(
-                        callback,
-                        "run_max_iterations",
-                        run_id,
-                        **build_run_max_iterations_payload(state),
-                    )
-                    mi_response = on_max_iterations(
-                        build_max_iterations_decision_payload(state, max_iterations=effective_max)
-                    )
-                    if isinstance(mi_response, dict) and mi_response.get("approved"):
-                        effective_max += max(1, int(mi_response.get("extra_iterations", effective_max)))
-                    else:
-                        return finish_max_iterations_run(
-                            state,
-                            callback=callback,
-                            run_id=run_id,
-                            emit_run_max_iterations=False,
-                            emit_event=self.emit_event,
-                            dispatch_run_finalizing=self._dispatch_run_finalizing,
-                        )
-                else:
-                    return finish_max_iterations_run(
-                        state,
-                        callback=callback,
-                        run_id=run_id,
-                        emit_run_max_iterations=True,
-                        emit_event=self.emit_event,
-                        dispatch_run_finalizing=self._dispatch_run_finalizing,
-                    )
+            boundary = resolve_max_iterations_boundary(
+                state,
+                effective_max=effective_max,
+                on_max_iterations=on_max_iterations,
+                callback=callback,
+                run_id=run_id,
+                emit_event=self.emit_event,
+            )
+            effective_max = boundary.effective_max
+            if boundary.should_finish:
+                return finish_max_iterations_run(
+                    state,
+                    callback=callback,
+                    run_id=run_id,
+                    emit_run_max_iterations=boundary.emit_run_max_iterations_on_finish,
+                    emit_event=self.emit_event,
+                    dispatch_run_finalizing=self._dispatch_run_finalizing,
+                )
 
             self.emit_event(
                 callback,
