@@ -16,7 +16,13 @@ from .effects import (
     build_human_input_requested_event,
     build_human_input_suspend_request,
 )
-from .resume import HumanInputResumeHarness, parse_human_input_request
+from .resume import (
+    HumanInputResumeHarness,
+    HumanInputResumePlan,
+    hydrate_human_input_resume_state,
+    parse_human_input_request,
+    prepare_human_input_resume_plan,
+)
 
 __all__ = [
     "ASK_USER_QUESTION_TOOL_NAME",
@@ -26,11 +32,14 @@ __all__ = [
     "HumanInputRequest",
     "HumanInputResponse",
     "HumanInputResumeHarness",
+    "HumanInputResumePlan",
     "INTERACTION_EFFECT_CREATED_BY",
     "build_ask_user_question_tool",
     "build_human_input_continuation",
     "build_human_input_requested_event",
     "build_human_input_suspend_request",
+    "hydrate_human_input_resume_state",
     "is_human_input_tool_name",
     "parse_human_input_request",
+    "prepare_human_input_resume_plan",
 ]

@@ -1,14 +1,44 @@
 from __future__ import annotations
 
 import copy
+import uuid
 from dataclasses import dataclass
+from typing import Any, Callable
 
 from ..input.human_input import ASK_USER_QUESTION_TOOL_NAME, HumanInputRequest, HumanInputResponse
 from ..kernel.delta import HarnessDelta
+from ..kernel.state import RunState
 from ..kernel.types import ToolCall
+from ..schemas import ResponseFormat
 from ..tools.base import BaseToolHarness, ToolContext
 from ..tools.messages import get_provider_message_builder
 from ..tools.types import ToolBatchState
+
+_SUPPORTED_HUMAN_INPUT_RESUME_PROVIDERS = {"openai", "anthropic", "ollama", "hyperspace"}
+
+
+@dataclass(frozen=True)
+class HumanInputResumePlan:
+    conversation: list[dict[str, Any]]
+    payload: dict[str, Any]
+    response_format: ResponseFormat | None
+    provider: str
+    model: str | None
+    session_id: str | None
+    memory_namespace: str | None
+    run_id: str
+    iteration: int
+    max_iterations: int
+    previous_response_id: str | None
+    use_previous_response_chain: bool
+    max_context_window_tokens: int
+    consumed_tokens: int
+    input_tokens: int
+    output_tokens: int
+    last_turn_tokens: int
+    last_turn_input_tokens: int
+    last_turn_output_tokens: int
+    workspace_change_state: dict[str, Any] | None
 
 
 def parse_human_input_request(tool_call: ToolCall) -> HumanInputRequest:
@@ -16,6 +46,115 @@ def parse_human_input_request(tool_call: ToolCall) -> HumanInputRequest:
         tool_call.arguments,
         request_id=tool_call.call_id,
     )
+
+
+def _deserialize_response_format(raw: dict[str, Any] | None) -> ResponseFormat | None:
+    if not isinstance(raw, dict):
+        return None
+    name = raw.get("name")
+    schema = raw.get("schema")
+    required = raw.get("required")
+    if not isinstance(name, str) or not isinstance(schema, dict):
+        return None
+    required_list = required if isinstance(required, list) else None
+    return ResponseFormat(name=name, schema=schema, required=required_list)
+
+
+def _optional_str(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _int_from_continuation(continuation: dict[str, Any], key: str, default: int = 0) -> int:
+    return int(continuation.get(key) or default)
+
+
+def prepare_human_input_resume_plan(
+    *,
+    conversation: list[dict[str, Any]],
+    continuation: dict[str, Any],
+    payload: dict[str, Any] | None = None,
+    response_format: ResponseFormat | None = None,
+    fallback_provider: str | None = None,
+    fallback_model: str | None = None,
+    session_id: str | None = None,
+    memory_namespace: str | None = None,
+    run_id: str | None = None,
+    run_id_factory: Callable[[], str] | None = None,
+) -> HumanInputResumePlan:
+    if not isinstance(conversation, list):
+        raise TypeError("conversation must be a list of provider-projected messages")
+    if not isinstance(continuation, dict):
+        raise TypeError("continuation must be a dict returned by KernelRunResult.continuation")
+
+    resolved_provider = str(continuation.get("provider") or fallback_provider or "")
+    if resolved_provider not in _SUPPORTED_HUMAN_INPUT_RESUME_PROVIDERS:
+        raise NotImplementedError(
+            "human input resume currently supports only provider in "
+            "{'openai', 'anthropic', 'ollama', 'hyperspace'}, "
+            f"got {resolved_provider!r}"
+        )
+
+    expected_session_id = continuation.get("session_id")
+    if isinstance(expected_session_id, str) and session_id is not None and session_id != expected_session_id:
+        raise ValueError("resume_human_input requires the same session_id as the suspended run")
+
+    resolved_run_id = str(run_id or continuation.get("run_id") or (run_id_factory or (lambda: str(uuid.uuid4())))())
+    resolved_workspace_change_state = continuation.get("workspace_change_state")
+
+    return HumanInputResumePlan(
+        conversation=copy.deepcopy(conversation),
+        payload=dict(payload) if payload is not None else copy.deepcopy(continuation.get("payload") or {}),
+        response_format=(
+            response_format
+            if response_format is not None
+            else _deserialize_response_format(continuation.get("response_format"))
+        ),
+        provider=resolved_provider,
+        model=_optional_str(continuation.get("model")) or fallback_model,
+        session_id=session_id if session_id is not None else _optional_str(expected_session_id),
+        memory_namespace=(
+            memory_namespace if memory_namespace is not None else _optional_str(continuation.get("memory_namespace"))
+        ),
+        run_id=resolved_run_id,
+        iteration=_int_from_continuation(continuation, "iteration"),
+        max_iterations=_int_from_continuation(continuation, "max_iterations", 6),
+        previous_response_id=_optional_str(continuation.get("previous_response_id")),
+        use_previous_response_chain=bool(continuation.get("use_openai_previous_response_chain", False)),
+        max_context_window_tokens=max(0, _int_from_continuation(continuation, "max_context_window_tokens")),
+        consumed_tokens=_int_from_continuation(continuation, "consumed_tokens"),
+        input_tokens=_int_from_continuation(continuation, "input_tokens"),
+        output_tokens=_int_from_continuation(continuation, "output_tokens"),
+        last_turn_tokens=_int_from_continuation(continuation, "last_turn_tokens"),
+        last_turn_input_tokens=_int_from_continuation(continuation, "last_turn_input_tokens"),
+        last_turn_output_tokens=_int_from_continuation(continuation, "last_turn_output_tokens"),
+        workspace_change_state=(
+            copy.deepcopy(resolved_workspace_change_state)
+            if isinstance(resolved_workspace_change_state, dict)
+            else None
+        ),
+    )
+
+
+def hydrate_human_input_resume_state(state: RunState, plan: HumanInputResumePlan) -> RunState:
+    state.provider_state.provider = plan.provider
+    state.provider_state.model = plan.model
+    state.provider_state.max_context_window_tokens = plan.max_context_window_tokens
+    state.session_state.session_id = plan.session_id
+    state.session_state.memory_namespace = plan.memory_namespace
+    state.iteration = plan.iteration
+    state.provider_state.previous_response_id = plan.previous_response_id
+    state.provider_state.use_previous_response_chain = plan.use_previous_response_chain
+    state.token_state.consumed_tokens = plan.consumed_tokens
+    state.token_state.input_tokens = plan.input_tokens
+    state.token_state.output_tokens = plan.output_tokens
+    state.token_state.last_turn_tokens = plan.last_turn_tokens
+    state.token_state.last_turn_input_tokens = plan.last_turn_input_tokens
+    state.token_state.last_turn_output_tokens = plan.last_turn_output_tokens
+    if plan.workspace_change_state is not None:
+        state.workspace_change_state = copy.deepcopy(plan.workspace_change_state)
+        state.component_bucket("workspace_changes")["state"] = copy.deepcopy(plan.workspace_change_state)
+    state.run_status = "running"
+    return state
 
 
 @dataclass
@@ -82,6 +221,9 @@ class HumanInputResumeHarness(BaseToolHarness):
 
 
 __all__ = [
+    "HumanInputResumePlan",
     "HumanInputResumeHarness",
+    "hydrate_human_input_resume_state",
     "parse_human_input_request",
+    "prepare_human_input_resume_plan",
 ]

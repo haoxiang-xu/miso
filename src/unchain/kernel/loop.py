@@ -4,6 +4,7 @@ import copy
 import uuid
 from typing import Any
 
+from ..interaction.resume import hydrate_human_input_resume_state, prepare_human_input_resume_plan
 from ..retry import RetryConfig, RetryContext, fetch_turn_with_retry
 from ..schemas import ResponseFormat
 from ..tools.toolkit import Toolkit
@@ -399,20 +400,6 @@ class KernelLoop:
                 return engine_model.strip()
         return None
 
-    def _deserialize_response_format(
-        self,
-        raw: dict[str, Any] | None,
-    ) -> ResponseFormat | None:
-        if not isinstance(raw, dict):
-            return None
-        name = raw.get("name")
-        schema = raw.get("schema")
-        required = raw.get("required")
-        if not isinstance(name, str) or not isinstance(schema, dict):
-            return None
-        required_list = required if isinstance(required, list) else None
-        return ResponseFormat(name=name, schema=schema, required=required_list)
-
     def _last_assistant_text(self, messages: list[dict[str, Any]]) -> str:
         for message in reversed(messages or []):
             if not isinstance(message, dict) or message.get("role") != "assistant":
@@ -738,63 +725,29 @@ class KernelLoop:
         tool_runtime_plugins: list[Any] | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
     ) -> KernelRunResult:
-        if not isinstance(conversation, list):
-            raise TypeError("conversation must be a list of provider-projected messages")
-        if not isinstance(continuation, dict):
-            raise TypeError("continuation must be a dict returned by KernelRunResult.continuation")
-        resolved_provider = str(continuation.get("provider") or self._infer_provider() or "")
-        if resolved_provider not in {"openai", "anthropic", "ollama", "hyperspace"}:
-            raise NotImplementedError(
-                "KernelLoop.resume_human_input currently supports only provider in "
-                "{'openai', 'anthropic', 'ollama', 'hyperspace'}, "
-                f"got {resolved_provider!r}"
-            )
-        expected_session_id = continuation.get("session_id")
-        if isinstance(expected_session_id, str) and session_id is not None and session_id != expected_session_id:
-            raise ValueError("resume_human_input requires the same session_id as the suspended run")
-        resolved_session_id = session_id if session_id is not None else expected_session_id
-        resolved_memory_namespace = (
-            memory_namespace if memory_namespace is not None else continuation.get("memory_namespace")
+        plan = prepare_human_input_resume_plan(
+            conversation=conversation,
+            continuation=continuation,
+            payload=payload,
+            response_format=response_format,
+            fallback_provider=self._infer_provider(),
+            fallback_model=self._infer_model(),
+            session_id=session_id,
+            memory_namespace=memory_namespace,
+            run_id=run_id,
+            run_id_factory=lambda: str(uuid.uuid4()),
         )
-        resolved_payload = dict(payload) if payload is not None else copy.deepcopy(continuation.get("payload") or {})
-        resolved_response_format = (
-            response_format
-            if response_format is not None
-            else self._deserialize_response_format(continuation.get("response_format"))
-        )
-        resolved_run_id = str(run_id or continuation.get("run_id") or uuid.uuid4())
-        state = self.seed_state(
-            conversation,
-            provider=resolved_provider,
-            model=continuation.get("model") or self._infer_model(),
-            session_id=resolved_session_id if isinstance(resolved_session_id, str) else None,
-            memory_namespace=resolved_memory_namespace if isinstance(resolved_memory_namespace, str) else None,
-            max_context_window_tokens=int(continuation.get("max_context_window_tokens") or 0),
-        )
-        state.iteration = int(continuation.get("iteration") or 0)
-        state.provider_state.previous_response_id = continuation.get("previous_response_id")
-        state.provider_state.use_previous_response_chain = bool(
-            continuation.get("use_openai_previous_response_chain", False)
-        )
-        state.token_state.consumed_tokens = int(continuation.get("consumed_tokens") or 0)
-        state.token_state.input_tokens = int(continuation.get("input_tokens") or 0)
-        state.token_state.output_tokens = int(continuation.get("output_tokens") or 0)
-        state.token_state.last_turn_tokens = int(continuation.get("last_turn_tokens") or 0)
-        state.token_state.last_turn_input_tokens = int(continuation.get("last_turn_input_tokens") or 0)
-        state.token_state.last_turn_output_tokens = int(continuation.get("last_turn_output_tokens") or 0)
-        workspace_change_state = continuation.get("workspace_change_state")
-        if isinstance(workspace_change_state, dict):
-            state.workspace_change_state = copy.deepcopy(workspace_change_state)
-            state.component_bucket("workspace_changes")["state"] = copy.deepcopy(workspace_change_state)
-        state.run_status = "running"
+        state = RunState()
+        state.seed_messages(plan.conversation)
+        hydrate_human_input_resume_state(state, plan)
         self._dispatch_bootstrap(
             state,
-            payload=resolved_payload,
-            response_format=resolved_response_format,
+            payload=plan.payload,
+            response_format=plan.response_format,
             callback=callback,
             verbose=verbose,
             toolkit=toolkit,
-            run_id=resolved_run_id,
+            run_id=plan.run_id,
             resume_mode=True,
             tool_runtime_config=tool_runtime_config,
         )
@@ -805,22 +758,22 @@ class KernelLoop:
                 "continuation": copy.deepcopy(continuation),
                 "response": copy.deepcopy(response),
                 "callback": callback,
-                "run_id": resolved_run_id,
+                "run_id": plan.run_id,
                 "loop": self,
             },
         )
         return self._run_state(
             state,
-            payload=resolved_payload,
-            response_format=resolved_response_format,
+            payload=plan.payload,
+            response_format=plan.response_format,
             callback=callback,
             verbose=verbose,
-            max_iterations=int(continuation.get("max_iterations") or 6),
+            max_iterations=plan.max_iterations,
             on_tool_confirm=on_tool_confirm,
             on_human_input=on_human_input,
             on_max_iterations=on_max_iterations,
             toolkit=toolkit,
-            run_id=resolved_run_id,
+            run_id=plan.run_id,
             skip_bootstrap=True,
             tool_runtime_plugins=tool_runtime_plugins,
             tool_runtime_config=tool_runtime_config,

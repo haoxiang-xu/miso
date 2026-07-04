@@ -121,6 +121,17 @@ def test_kernel_loop_does_not_own_human_input_continuation_building():
     assert "human_input_continuation" not in source
 
 
+def test_kernel_loop_does_not_own_human_input_resume_state_reconstruction():
+    import unchain.kernel.loop as kernel_loop_module
+
+    source = inspect.getsource(kernel_loop_module.KernelLoop.resume_human_input)
+
+    assert "_deserialize_response_format" not in source
+    assert "provider_state.previous_response_id" not in source
+    assert "token_state." not in source
+    assert "workspace_change_state" not in source
+
+
 def test_kernel_loop_run_does_not_auto_register_default_runtime_hooks():
     loop = KernelLoop(
         model_io=_QueueModelIO(
