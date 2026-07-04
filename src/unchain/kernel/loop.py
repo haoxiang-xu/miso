@@ -12,6 +12,7 @@ from ..tools.toolkit import Toolkit
 from .delta import HarnessDelta
 from .harness import HarnessContext, RuntimeHarness, RuntimePhase
 from .model_io import ModelIO
+from .results import build_kernel_run_result, build_legacy_run_bundle
 from .state import RunState
 from .types import KernelRunResult, ModelTurnResult
 
@@ -359,46 +360,11 @@ class KernelLoop:
                 return content.strip()
         return ""
 
-    def _build_result(self, state: RunState, *, status: str) -> KernelRunResult:
-        request = state.tool_batch_state.human_input_request
-        return KernelRunResult(
-            messages=copy.deepcopy(state.transcript),
-            status=status,
-            continuation=copy.deepcopy(state.last_continuation) if isinstance(state.last_continuation, dict) else None,
-            human_input_request=request.to_dict() if request is not None else None,
-            consumed_tokens=int(state.token_state.consumed_tokens or 0),
-            input_tokens=int(state.token_state.input_tokens or 0),
-            output_tokens=int(state.token_state.output_tokens or 0),
-            last_turn_tokens=int(state.token_state.last_turn_tokens or 0),
-            last_turn_input_tokens=int(state.token_state.last_turn_input_tokens or 0),
-            last_turn_output_tokens=int(state.token_state.last_turn_output_tokens or 0),
-            cache_read_input_tokens=int(state.token_state.cache_read_input_tokens or 0),
-            cache_creation_input_tokens=int(state.token_state.cache_creation_input_tokens or 0),
-            previous_response_id=state.provider_state.previous_response_id,
-            iteration=int(state.iteration),
-        )
+    def _build_result(self, state: RunState, *, status: str):
+        return build_kernel_run_result(state, status=status)
 
     def _build_legacy_bundle(self, state: RunState, *, status: str) -> dict[str, Any]:
-        max_ctx = max(0, int(state.provider_state.max_context_window_tokens or 0))
-        last_turn_tokens = int(state.token_state.last_turn_tokens or 0)
-        pct = (last_turn_tokens / max_ctx * 100.0) if max_ctx > 0 else 0.0
-        request = state.tool_batch_state.human_input_request
-        return {
-            "model": state.provider_state.model,
-            "consumed_tokens": int(state.token_state.consumed_tokens or 0),
-            "input_tokens": int(state.token_state.input_tokens or 0),
-            "output_tokens": int(state.token_state.output_tokens or 0),
-            "last_turn_tokens": last_turn_tokens,
-            "last_turn_input_tokens": int(state.token_state.last_turn_input_tokens or 0),
-            "last_turn_output_tokens": int(state.token_state.last_turn_output_tokens or 0),
-            "max_context_window_tokens": max_ctx,
-            "context_window_used_pct": round(pct, 2),
-            "status": status,
-            "human_input_request": request.to_dict() if request is not None else None,
-            "continuation": copy.deepcopy(state.last_continuation) if isinstance(state.last_continuation, dict) else None,
-            "previous_response_id": state.provider_state.previous_response_id,
-            "iteration": int(state.iteration),
-        }
+        return build_legacy_run_bundle(state, status=status)
 
     def _run_state(
         self,
