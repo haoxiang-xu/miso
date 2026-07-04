@@ -58,46 +58,35 @@ def test_toolkits_surface_exports_current_concrete_toolkits():
         assert not hasattr(toolkits, legacy_name)
 
 
-def test_workspace_compatibility_toolkit_stays_internal(tmp_path):
-    from unchain.toolkits.builtin.workspace.workspace import DevToolkit, WorkspaceToolkit
+def test_legacy_focused_toolkit_classes_are_removed():
+    import importlib
+    import sys
 
-    toolkit = WorkspaceToolkit(workspace_root=tmp_path)
+    import pytest
 
-    assert WorkspaceToolkit.__name__ == "WorkspaceToolkit"
-    assert DevToolkit.__name__ == "DevToolkit"
-    assert {
-        "read_file",
-        "write_file",
-        "delete_file",
-        "move_file",
-        "terminal_exec",
-        "pin_file_context",
-        "unpin_file_context",
-    }.issubset(toolkit.tools)
-    assert toolkit.tools["write_file"].requires_confirmation is True
-    assert toolkit.tools["delete_file"].requires_confirmation is True
-    assert toolkit.tools["move_file"].requires_confirmation is True
-    assert toolkit.tools["terminal_exec"].requires_confirmation is True
-    for toolkit_cls in (WorkspaceToolkit, DevToolkit):
-        assert toolkit_cls.__unchain_public_builtin__ is False
-        assert toolkit_cls.__unchain_legacy_compat__ is True
+    removed_modules = (
+        "unchain.toolkits.builtin.interaction.interaction",
+        "unchain.toolkits.builtin.web.web",
+        "unchain.toolkits.builtin.workspace.backend",
+        "unchain.toolkits.builtin.workspace.workspace",
+    )
+    removed_exports = (
+        ("unchain.toolkits.builtin.interaction", "InteractionToolkit"),
+        ("unchain.toolkits.builtin.web", "WebToolkit"),
+        ("unchain.toolkits.builtin.workspace", "DevToolkit"),
+        ("unchain.toolkits.builtin.workspace", "WorkspaceToolkit"),
+    )
 
+    for module_name in (*removed_modules, *(package_name for package_name, _ in removed_exports)):
+        sys.modules.pop(module_name, None)
 
-def test_focused_interaction_and_web_toolkits_stay_internal(tmp_path):
-    from unchain.toolkits.builtin.interaction import InteractionToolkit
-    from unchain.toolkits.builtin.web import WebToolkit
+    for module_name in removed_modules:
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(module_name)
 
-    interaction_toolkit = InteractionToolkit(workspace_root=tmp_path)
-    web_toolkit = WebToolkit(workspace_root=tmp_path)
-
-    assert InteractionToolkit.__name__ == "InteractionToolkit"
-    assert WebToolkit.__name__ == "WebToolkit"
-    assert set(interaction_toolkit.tools) == {"ask_user_question"}
-    assert set(web_toolkit.tools) == {"web_fetch"}
-    assert web_toolkit.tools["web_fetch"].requires_confirmation is True
-    for toolkit_cls in (InteractionToolkit, WebToolkit):
-        assert toolkit_cls.__unchain_public_builtin__ is False
-        assert toolkit_cls.__unchain_legacy_compat__ is True
+    for package_name, class_name in removed_exports:
+        package = importlib.import_module(package_name)
+        assert not hasattr(package, class_name)
 
 
 def test_legacy_git_and_external_api_toolkits_stay_internal_compat():
@@ -163,20 +152,6 @@ def test_completion_policy_reference_docs_state_opt_in_runtime_boundary():
         text = (docs_root / relative_path).read_text(encoding="utf-8")
         assert "completion_policy" in text, f"completion_policy missing from {relative_path}"
         assert "PoliciesModule" in text, f"PoliciesModule missing from {relative_path}"
-
-
-def test_web_toolkit_does_not_construct_core_toolkit_bundle(monkeypatch, tmp_path):
-    import unchain.toolkits.builtin.web.web as web_module
-    from unchain.toolkits.builtin.web import WebToolkit
-
-    def fail_core_toolkit(*args, **kwargs):
-        raise AssertionError("WebToolkit should not construct the CoreToolkit bundle")
-
-    monkeypatch.setattr(web_module, "CoreToolkit", fail_core_toolkit, raising=False)
-
-    toolkit = WebToolkit(workspace_root=tmp_path)
-
-    assert set(toolkit.tools) == {"web_fetch"}
 
 
 def test_memory_surface_exports_pupu_runtime_dependencies():

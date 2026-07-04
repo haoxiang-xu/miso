@@ -2,12 +2,10 @@
 
 `CoreToolkit` is the default coding-agent toolkit. It bundles the basic tools a Codex- or Claude Code-style agent expects: precise file reads, guarded writes, string edits, globbing, grep-style search, public web fetch, cross-platform shell execution, LSP-powered code intelligence, and structured user questions.
 
-Core owns the public coding-agent capability surface directly. Focused legacy
-wrapper modules stay internal:
-
-- `InteractionToolkit` remains as an internal compatibility wrapper for structured user questions.
-- `WebToolkit` remains as an internal compatibility wrapper for public web fetch and extraction.
-- `WorkspaceToolkit` is a legacy wrapper around core coding behavior and older workspace-specific tool names.
+Core owns the public coding-agent capability surface directly. The former
+focused wrappers for interaction, web fetch, and workspace-specific tool names
+have been absorbed by Core. Legacy toolkit ids should be normalized to `core` by
+host applications rather than imported as Python toolkit classes.
 
 ## What this README is for
 
