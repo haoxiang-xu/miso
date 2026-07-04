@@ -78,6 +78,9 @@ def test_workspace_compatibility_toolkit_stays_internal(tmp_path):
     assert toolkit.tools["delete_file"].requires_confirmation is True
     assert toolkit.tools["move_file"].requires_confirmation is True
     assert toolkit.tools["terminal_exec"].requires_confirmation is True
+    for toolkit_cls in (WorkspaceToolkit, DevToolkit):
+        assert toolkit_cls.__unchain_public_builtin__ is False
+        assert toolkit_cls.__unchain_legacy_compat__ is True
 
 
 def test_focused_interaction_and_web_toolkits_stay_internal(tmp_path):
@@ -92,6 +95,9 @@ def test_focused_interaction_and_web_toolkits_stay_internal(tmp_path):
     assert set(interaction_toolkit.tools) == {"ask_user_question"}
     assert set(web_toolkit.tools) == {"web_fetch"}
     assert web_toolkit.tools["web_fetch"].requires_confirmation is True
+    for toolkit_cls in (InteractionToolkit, WebToolkit):
+        assert toolkit_cls.__unchain_public_builtin__ is False
+        assert toolkit_cls.__unchain_legacy_compat__ is True
 
 
 def test_legacy_git_and_external_api_toolkits_stay_internal_compat():

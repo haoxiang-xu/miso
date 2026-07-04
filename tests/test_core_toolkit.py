@@ -10,6 +10,7 @@ from unchain.kernel.types import ToolCall
 from unchain.tools import ToolExecutionContext, Toolkit, execute_confirmable_tool_call
 from unchain.input import ASK_USER_QUESTION_TOOL_NAME
 from unchain.toolkits import CoreToolkit
+import unchain.toolkits.builtin.core.core as core_module
 from unchain.toolkits.builtin.core.lsp_runtime import LSPServerSpec
 from unchain.toolkits.builtin.core import web_fetch as web_fetch_module
 from unchain.toolkits.builtin.core.shell_runtime import ShellRuntime
@@ -308,15 +309,23 @@ def test_core_toolkit_registers_expected_tools_and_confirmation_contract():
         assert toolkit.tools["lsp"].requires_confirmation is False
 
 
-def test_core_toolkit_composes_focused_interaction_and_web_toolkits():
+def test_core_toolkit_registers_interaction_and_web_without_focused_toolkit_wrappers(monkeypatch):
+    def fail_focused_toolkit(*args, **kwargs):
+        raise AssertionError("CoreToolkit should not construct focused toolkit wrappers")
+
+    monkeypatch.setattr(core_module, "InteractionToolkit", fail_focused_toolkit, raising=False)
+    monkeypatch.setattr(core_module, "WebToolkit", fail_focused_toolkit, raising=False)
+
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = CoreToolkit(workspace_root=tmp)
 
-        assert toolkit.tools[ASK_USER_QUESTION_TOOL_NAME] is toolkit._interaction_toolkit.tools[ASK_USER_QUESTION_TOOL_NAME]
-        assert toolkit.tools["web_fetch"] is toolkit._web_toolkit.tools["web_fetch"]
+        assert ASK_USER_QUESTION_TOOL_NAME in toolkit.tools
+        assert "web_fetch" in toolkit.tools
+        assert not hasattr(toolkit, "_interaction_toolkit")
+        assert not hasattr(toolkit, "_web_toolkit")
 
 
-def test_core_toolkit_web_fetch_delegates_to_web_toolkit(monkeypatch):
+def test_core_toolkit_web_fetch_uses_core_web_fetch_service(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = CoreToolkit(workspace_root=tmp)
         calls: list[dict[str, object]] = []
@@ -334,12 +343,12 @@ def test_core_toolkit_web_fetch_delegates_to_web_toolkit(monkeypatch):
                     "mode": mode,
                     "prompt": prompt,
                     "offset": offset,
-                    "max_chars": max_chars,
+                "max_chars": max_chars,
                 }
             )
             return {"ok": True, "result": "delegated"}
 
-        monkeypatch.setattr(toolkit._web_toolkit, "web_fetch", tracked_web_fetch)
+        monkeypatch.setattr(toolkit, "_fetch_public_web_content", tracked_web_fetch)
 
         result = toolkit.web_fetch(
             url="https://example.com/docs",
@@ -659,7 +668,7 @@ def test_code_toolkit_web_fetch_raw_uses_cache_and_paginates(monkeypatch):
                 "alpha beta gamma delta",
             )
 
-        monkeypatch.setattr(toolkit._web_toolkit._web_fetch_service, "_request", fake_request)
+        monkeypatch.setattr(toolkit._web_fetch_service, "_request", fake_request)
 
         first = toolkit.execute(
             "web_fetch",
@@ -687,7 +696,7 @@ def test_code_toolkit_web_fetch_extract_uses_runtime_config(monkeypatch):
         monkeypatch.setattr(web_fetch_module, "validate_public_url", lambda url: (url, None))
 
         monkeypatch.setattr(
-            toolkit._web_toolkit._web_fetch_service,
+            toolkit._web_fetch_service,
             "_request",
             lambda url: (
                 {
@@ -721,7 +730,7 @@ def test_code_toolkit_web_fetch_extract_uses_runtime_config(monkeypatch):
             seen["config"] = dict(extract_model_config)
             return "summary output"
 
-        monkeypatch.setattr("unchain.toolkits.builtin.web.web.run_extract_model", fake_extract)
+        monkeypatch.setattr(core_module, "run_extract_model", fake_extract)
 
         outcome = execute_confirmable_tool_call(
             toolkit=merged,
@@ -777,7 +786,7 @@ def test_code_toolkit_web_fetch_rejects_private_urls_and_requires_extract_config
 
         monkeypatch.setattr(web_fetch_module, "validate_public_url", lambda url: (url, None))
         monkeypatch.setattr(
-            toolkit._web_toolkit._web_fetch_service,
+            toolkit._web_fetch_service,
             "_request",
             lambda url: (
                 {

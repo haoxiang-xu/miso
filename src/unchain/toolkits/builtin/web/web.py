@@ -12,6 +12,9 @@ from ..core.web_fetch import WebFetchService, run_extract_model
 class WebToolkit(BuiltinToolkit):
     """Focused public web access toolkit."""
 
+    __unchain_public_builtin__ = False
+    __unchain_legacy_compat__ = True
+
     def __init__(
         self,
         *,

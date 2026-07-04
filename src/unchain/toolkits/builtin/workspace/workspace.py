@@ -11,6 +11,9 @@ from .backend import WorkspaceToolkitBackend
 class WorkspaceToolkit(BuiltinToolkit):
     """Workspace and coding toolkit with legacy compatibility tool names."""
 
+    __unchain_public_builtin__ = False
+    __unchain_legacy_compat__ = True
+
     def __init__(
         self,
         *,

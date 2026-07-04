@@ -9,6 +9,9 @@ from ...base import BuiltinToolkit
 class InteractionToolkit(BuiltinToolkit):
     """Focused human interaction toolkit."""
 
+    __unchain_public_builtin__ = False
+    __unchain_legacy_compat__ = True
+
     def __init__(
         self,
         *,
