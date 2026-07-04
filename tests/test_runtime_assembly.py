@@ -132,6 +132,23 @@ def test_kernel_loop_does_not_own_human_input_resume_state_reconstruction():
     assert "workspace_change_state" not in source
 
 
+def test_kernel_loop_does_not_own_model_turn_request_or_token_accounting():
+    import unchain.kernel.loop as kernel_loop_module
+
+    fetch_source = inspect.getsource(kernel_loop_module.KernelLoop.fetch_model_turn)
+    apply_source = inspect.getsource(kernel_loop_module.KernelLoop.apply_model_turn)
+
+    assert "ModelTurnRequest" not in fetch_source
+    assert "RetryContext" not in fetch_source
+    assert "fetch_turn_with_retry" not in fetch_source
+    assert "state.next_model_input" not in fetch_source
+    assert "previous_response_id" not in fetch_source
+
+    assert "token_state" not in apply_source
+    assert "previous_response_id" not in apply_source
+    assert "next_model_input" not in apply_source
+
+
 def test_kernel_loop_run_does_not_auto_register_default_runtime_hooks():
     loop = KernelLoop(
         model_io=_QueueModelIO(

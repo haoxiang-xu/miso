@@ -5,12 +5,13 @@ import uuid
 from typing import Any
 
 from ..interaction.resume import hydrate_human_input_resume_state, prepare_human_input_resume_plan
-from ..retry import RetryConfig, RetryContext, fetch_turn_with_retry
+from ..providers.model_turn_runtime import apply_model_turn_result, fetch_model_turn
+from ..retry import RetryConfig
 from ..schemas import ResponseFormat
 from ..tools.toolkit import Toolkit
 from .delta import HarnessDelta
 from .harness import HarnessContext, RuntimeHarness, RuntimePhase
-from .model_io import ModelIO, ModelTurnRequest
+from .model_io import ModelIO
 from .state import RunState
 from .types import KernelRunResult, ModelTurnResult
 
@@ -132,36 +133,18 @@ class KernelLoop:
         response_format: Any = None,
         openai_text_format: dict[str, Any] | None = None,
     ):
-        if self._model_io is None:
-            raise RuntimeError("KernelLoop.model_io is not configured")
-        request_messages = (
-            copy.deepcopy(state.next_model_input)
-            if isinstance(state.next_model_input, list)
-            else state.latest_messages()
-        )
-        request = ModelTurnRequest(
-            messages=request_messages,
-            payload=dict(payload or {}),
-            response_format=response_format,
+        return fetch_model_turn(
+            model_io=self._model_io,
+            retry_config=self._retry_config,
+            state=state,
+            payload=payload,
+            toolkit=toolkit,
             callback=callback,
             verbose=verbose,
             run_id=run_id,
-            iteration=state.iteration,
-            toolkit=toolkit if toolkit is not None else Toolkit(),
             emit_stream=emit_stream,
-            previous_response_id=state.provider_state.previous_response_id,
+            response_format=response_format,
             openai_text_format=openai_text_format,
-        )
-        ctx = RetryContext(
-            run_id=run_id,
-            iteration=state.iteration,
-            is_background=(run_id == "observe"),
-        )
-        return fetch_turn_with_retry(
-            model_io=self._model_io,
-            request=request,
-            config=self._retry_config,
-            context=ctx,
         )
 
     def apply_model_turn(
@@ -171,40 +154,7 @@ class KernelLoop:
         *,
         created_by: str = "kernel.model_turn",
     ) -> RunState:
-        state.apply_delta(
-            HarnessDelta.append(
-                created_by=created_by,
-                messages=turn.assistant_messages,
-                state_updates={
-                    "transcript_append": turn.assistant_messages,
-                    "pending_tool_calls": list(turn.tool_calls),
-                    "last_model_turn": turn,
-                    "provider_state": {
-                        "previous_response_id": turn.response_id,
-                    },
-                    "next_model_input": None,
-                    "run_status": "running",
-                    "token_state": {
-                        "consumed_tokens": state.token_state.consumed_tokens + int(turn.consumed_tokens or 0),
-                        "input_tokens": state.token_state.input_tokens + int(turn.input_tokens or 0),
-                        "output_tokens": state.token_state.output_tokens + int(turn.output_tokens or 0),
-                        "cache_read_input_tokens": state.token_state.cache_read_input_tokens + int(turn.cache_read_input_tokens or 0),
-                        "cache_creation_input_tokens": state.token_state.cache_creation_input_tokens + int(turn.cache_creation_input_tokens or 0),
-                        "last_turn_tokens": int(turn.consumed_tokens or 0),
-                        "last_turn_input_tokens": int(turn.input_tokens or 0),
-                        "last_turn_output_tokens": int(turn.output_tokens or 0),
-                        "last_turn_cache_read_input_tokens": int(turn.cache_read_input_tokens or 0),
-                        "last_turn_cache_creation_input_tokens": int(turn.cache_creation_input_tokens or 0),
-                    },
-                },
-                trace={
-                    "response_id": turn.response_id,
-                    "assistant_message_count": len(turn.assistant_messages),
-                    "tool_call_count": len(turn.tool_calls),
-                },
-            )
-        )
-        return state
+        return apply_model_turn_result(state, turn, created_by=created_by)
 
     def step_once(
         self,
