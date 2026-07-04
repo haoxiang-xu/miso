@@ -6,17 +6,12 @@ from typing import Any
 
 from ..retry import RetryConfig, RetryContext, fetch_turn_with_retry
 from ..schemas import ResponseFormat
-from ..tools.observation import (
-    OBSERVATION_MAX_OUTPUT_TOKENS,
-    OBSERVATION_RECENT_MESSAGES,
-    OBSERVATION_SYSTEM_PROMPT,
-)
 from ..tools.toolkit import Toolkit
 from .delta import HarnessDelta
 from .harness import HarnessContext, RuntimeHarness, RuntimePhase
 from .model_io import ModelIO, ModelTurnRequest
 from .state import RunState
-from .types import KernelRunResult, ModelTurnResult, TokenUsage
+from .types import KernelRunResult, ModelTurnResult
 
 
 class KernelLoop:
@@ -250,6 +245,7 @@ class KernelLoop:
             "max_iterations": max_iterations,
             "supports_tools": True,
             "loop": self,
+            "model_io": self._model_io,
             "tool_runtime_plugins": list(tool_runtime_plugins or []),
             "tool_runtime_config": copy.deepcopy(tool_runtime_config or {}),
         }
@@ -494,79 +490,6 @@ class KernelLoop:
             if isinstance(content, str) and content.strip():
                 return content.strip()
         return ""
-
-    def observe_tool_batch(
-        self,
-        *,
-        full_messages: list[dict[str, Any]],
-        tool_messages: list[dict[str, Any]],
-        payload: dict[str, Any],
-        callback: Any = None,
-        iteration: int = 0,
-        provider: str | None = None,
-    ) -> tuple[str, TokenUsage]:
-        if self._model_io is None:
-            return "", TokenUsage()
-        observe_messages = [
-            {"role": "system", "content": OBSERVATION_SYSTEM_PROMPT},
-            *copy.deepcopy(list(full_messages or [])[-OBSERVATION_RECENT_MESSAGES:]),
-            *copy.deepcopy(tool_messages),
-            {
-                "role": "user",
-                "content": "Review the LAST tool result above and provide one brief actionable observation.",
-            },
-        ]
-        observe_payload = self._build_observation_payload(
-            payload or {},
-            provider=provider or self._infer_provider(),
-        )
-        try:
-            turn = self._model_io.fetch_turn(
-                ModelTurnRequest(
-                    messages=observe_messages,
-                    payload=observe_payload,
-                    response_format=None,
-                    callback=None,
-                    verbose=False,
-                    run_id="observe",
-                    iteration=iteration,
-                    toolkit=Toolkit(),
-                    emit_stream=False,
-                    previous_response_id=None,
-                )
-            )
-        except Exception:
-            return "", TokenUsage()
-        observation = (turn.final_text or self._last_assistant_text(turn.assistant_messages)).strip()
-        return observation, TokenUsage(
-            consumed_tokens=int(turn.consumed_tokens or 0),
-            input_tokens=int(turn.input_tokens or 0),
-            output_tokens=int(turn.output_tokens or 0),
-        )
-
-    def _build_observation_payload(
-        self,
-        payload: dict[str, Any],
-        *,
-        provider: str | None,
-    ) -> dict[str, Any]:
-        observe_payload = dict(payload or {})
-        observe_payload["temperature"] = 0.2
-        normalized_provider = str(provider or "").strip().lower()
-        if normalized_provider == "anthropic":
-            observe_payload["max_tokens"] = OBSERVATION_MAX_OUTPUT_TOKENS
-            observe_payload.pop("max_output_tokens", None)
-            observe_payload.pop("num_predict", None)
-            return observe_payload
-        if normalized_provider == "ollama":
-            observe_payload["num_predict"] = OBSERVATION_MAX_OUTPUT_TOKENS
-            observe_payload.pop("max_output_tokens", None)
-            observe_payload.pop("max_tokens", None)
-            return observe_payload
-        observe_payload["max_output_tokens"] = OBSERVATION_MAX_OUTPUT_TOKENS
-        observe_payload.pop("max_tokens", None)
-        observe_payload.pop("num_predict", None)
-        return observe_payload
 
     def _build_result(self, state: RunState, *, status: str) -> KernelRunResult:
         request = state.tool_batch_state.human_input_request

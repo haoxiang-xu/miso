@@ -63,6 +63,10 @@ class ToolContext:
         return self.raw_event.get("loop")
 
     @property
+    def model_io(self) -> Any:
+        return self.raw_event.get("model_io")
+
+    @property
     def tool_runtime_plugins(self) -> list[ToolRuntimePlugin]:
         plugins = self.raw_event.get("tool_runtime_plugins")
         if not isinstance(plugins, list):

@@ -872,7 +872,9 @@ def test_kernel_resume_human_input_ollama_appends_tool_result_and_uses_full_tran
     assert len(request.messages) > 1
 
 
-def test_kernel_observe_tool_batch_uses_anthropic_payload_keys():
+def test_tool_observation_runner_uses_anthropic_payload_keys():
+    from unchain.tools.observation import ToolObservationRunner
+
     model_io = _QueueModelIO([
         ModelTurnResult(
             assistant_messages=[{"role": "assistant", "content": "looks fine"}],
@@ -880,9 +882,8 @@ def test_kernel_observe_tool_batch_uses_anthropic_payload_keys():
             final_text="looks fine",
         ),
     ])
-    loop = build_runtime_loop(model_io=model_io)
 
-    observation, usage = loop.observe_tool_batch(
+    observation, usage = ToolObservationRunner(model_io=model_io).observe_tool_batch(
         full_messages=[{"role": "user", "content": "observe"}],
         tool_messages=[{"role": "user", "content": '{"topic":"x","ok":true}'}],
         payload={},
@@ -898,7 +899,9 @@ def test_kernel_observe_tool_batch_uses_anthropic_payload_keys():
     assert "num_predict" not in observe_request.payload
 
 
-def test_kernel_observe_tool_batch_uses_ollama_payload_keys():
+def test_tool_observation_runner_infers_provider_from_model_io():
+    from unchain.tools.observation import ToolObservationRunner
+
     model_io = _QueueModelIO([
         ModelTurnResult(
             assistant_messages=[{"role": "assistant", "content": "looks fine"}],
@@ -906,9 +909,32 @@ def test_kernel_observe_tool_batch_uses_ollama_payload_keys():
             final_text="looks fine",
         ),
     ])
-    loop = build_runtime_loop(model_io=model_io)
+    model_io.provider = "anthropic"
 
-    observation, usage = loop.observe_tool_batch(
+    ToolObservationRunner(model_io=model_io).observe_tool_batch(
+        full_messages=[{"role": "user", "content": "observe"}],
+        tool_messages=[{"role": "user", "content": '{"topic":"x","ok":true}'}],
+        payload={},
+        iteration=1,
+    )
+
+    observe_request = model_io.requests[0]
+    assert observe_request.payload["max_tokens"] > 0
+    assert "max_output_tokens" not in observe_request.payload
+
+
+def test_tool_observation_runner_uses_ollama_payload_keys():
+    from unchain.tools.observation import ToolObservationRunner
+
+    model_io = _QueueModelIO([
+        ModelTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "looks fine"}],
+            tool_calls=[],
+            final_text="looks fine",
+        ),
+    ])
+
+    observation, usage = ToolObservationRunner(model_io=model_io).observe_tool_batch(
         full_messages=[{"role": "user", "content": "observe"}],
         tool_messages=[{"role": "tool", "content": '{"topic":"x","ok":true}'}],
         payload={},

@@ -30,7 +30,7 @@ from .confirmation import execute_confirmable_tool_call
 from .human_input import parse_human_input_request
 from .messages import get_provider_message_builder
 from .models import ToolExecutionContext
-from .observation import inject_observation, observation_token_state
+from .observation import ToolObservationRunner, inject_observation, observation_token_state
 from .runtime import run_tool_runtime_plugins
 from .types import ToolBatchState
 
@@ -664,16 +664,15 @@ class ToolExecutionHarness(BaseToolHarness):
         token_state = {}
         if batch_state.should_observe and result_messages:
             observation = ""
-            observe_usage = None
-            if context.loop is not None and hasattr(context.loop, "observe_tool_batch"):
-                observation, observe_usage = context.loop.observe_tool_batch(
-                    full_messages=context.state.transcript,
-                    tool_messages=result_messages,
-                    payload=payload,
-                    callback=context.callback,
-                    iteration=context.iteration,
-                    provider=context.provider,
-                )
+            observation, observe_usage = ToolObservationRunner(
+                model_io=context.model_io,
+            ).observe_tool_batch(
+                full_messages=context.state.transcript,
+                tool_messages=result_messages,
+                payload=payload,
+                iteration=context.iteration,
+                provider=context.provider,
+            )
             token_state = observation_token_state(
                 consumed_tokens=context.state.token_state.consumed_tokens,
                 input_tokens=context.state.token_state.input_tokens,

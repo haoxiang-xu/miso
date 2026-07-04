@@ -26,7 +26,7 @@ Non-goals (handled elsewhere / deferred)
     specific work and a separate plan.
   - Retry budget across many requests (circuit breaker).
   - Model fallback (Opus → Sonnet on repeated 529).
-  - ``observe_tool_batch`` is intentionally bypassed: it has its own
+  - ``ToolObservationRunner.observe_tool_batch`` is intentionally bypassed: it has its own
     swallow-on-error semantics for background observations.
 
 Public API

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import copy
 import json
+from dataclasses import dataclass
+from typing import Any
 
+from ..kernel.model_io import ModelTurnRequest
 from ..kernel.types import TokenUsage
+from .toolkit import Toolkit
 
 
 OBSERVATION_SYSTEM_PROMPT = """
@@ -25,6 +30,107 @@ Rules:
 
 OBSERVATION_RECENT_MESSAGES = 6
 OBSERVATION_MAX_OUTPUT_TOKENS = 512
+
+
+def _last_assistant_text(messages: list[dict[str, Any]]) -> str:
+    for message in reversed(messages or []):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+    return ""
+
+
+def build_observation_payload(
+    payload: dict[str, Any],
+    *,
+    provider: str | None,
+) -> dict[str, Any]:
+    observe_payload = dict(payload or {})
+    observe_payload["temperature"] = 0.2
+    normalized_provider = str(provider or "").strip().lower()
+    if normalized_provider == "anthropic":
+        observe_payload["max_tokens"] = OBSERVATION_MAX_OUTPUT_TOKENS
+        observe_payload.pop("max_output_tokens", None)
+        observe_payload.pop("num_predict", None)
+        return observe_payload
+    if normalized_provider == "ollama":
+        observe_payload["num_predict"] = OBSERVATION_MAX_OUTPUT_TOKENS
+        observe_payload.pop("max_output_tokens", None)
+        observe_payload.pop("max_tokens", None)
+        return observe_payload
+    observe_payload["max_output_tokens"] = OBSERVATION_MAX_OUTPUT_TOKENS
+    observe_payload.pop("max_tokens", None)
+    observe_payload.pop("num_predict", None)
+    return observe_payload
+
+
+def _infer_provider(model_io: Any) -> str | None:
+    provider = getattr(model_io, "provider", None)
+    if isinstance(provider, str) and provider.strip():
+        return provider.strip()
+    if hasattr(model_io, "engine"):
+        engine = getattr(model_io, "engine", None)
+        engine_provider = getattr(engine, "provider", None)
+        if isinstance(engine_provider, str) and engine_provider.strip():
+            return engine_provider.strip()
+    if model_io is not None and model_io.__class__.__name__ == "OpenAIModelIO":
+        return "openai"
+    return None
+
+
+@dataclass(frozen=True)
+class ToolObservationRunner:
+    model_io: Any = None
+
+    def observe_tool_batch(
+        self,
+        *,
+        full_messages: list[dict[str, Any]],
+        tool_messages: list[dict[str, Any]],
+        payload: dict[str, Any],
+        iteration: int = 0,
+        provider: str | None = None,
+    ) -> tuple[str, TokenUsage]:
+        if self.model_io is None:
+            return "", TokenUsage()
+        observe_messages = [
+            {"role": "system", "content": OBSERVATION_SYSTEM_PROMPT},
+            *copy.deepcopy(list(full_messages or [])[-OBSERVATION_RECENT_MESSAGES:]),
+            *copy.deepcopy(tool_messages),
+            {
+                "role": "user",
+                "content": "Review the LAST tool result above and provide one brief actionable observation.",
+            },
+        ]
+        observe_payload = build_observation_payload(
+            payload or {},
+            provider=provider or _infer_provider(self.model_io),
+        )
+        try:
+            turn = self.model_io.fetch_turn(
+                ModelTurnRequest(
+                    messages=observe_messages,
+                    payload=observe_payload,
+                    response_format=None,
+                    callback=None,
+                    verbose=False,
+                    run_id="observe",
+                    iteration=iteration,
+                    toolkit=Toolkit(),
+                    emit_stream=False,
+                    previous_response_id=None,
+                )
+            )
+        except Exception:
+            return "", TokenUsage()
+        observation = (turn.final_text or _last_assistant_text(turn.assistant_messages)).strip()
+        return observation, TokenUsage(
+            consumed_tokens=int(turn.consumed_tokens or 0),
+            input_tokens=int(turn.input_tokens or 0),
+            output_tokens=int(turn.output_tokens or 0),
+        )
 
 
 def inject_observation(tool_message: dict, observation: str) -> None:

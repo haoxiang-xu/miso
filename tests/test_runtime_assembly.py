@@ -101,6 +101,17 @@ def test_kernel_loop_does_not_own_workspace_change_artifact_emission():
     assert "_emit_workspace_change_set_artifact" not in source
 
 
+def test_kernel_loop_does_not_own_tool_observation_runtime():
+    import unchain.kernel.loop as kernel_loop_module
+
+    module_source = inspect.getsource(kernel_loop_module)
+    source = inspect.getsource(kernel_loop_module.KernelLoop)
+
+    assert "OBSERVATION_" not in module_source
+    assert "observe_tool_batch" not in source
+    assert "_build_observation_payload" not in source
+
+
 def test_kernel_loop_run_does_not_auto_register_default_runtime_hooks():
     loop = KernelLoop(
         model_io=_QueueModelIO(

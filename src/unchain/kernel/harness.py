@@ -38,6 +38,7 @@ _PASSTHROUGH_EVENT_KEYS = frozenset({
     "on_max_iterations",
     "tool_runtime_plugins",
     "emit_stream",
+    "model_io",
 })
 
 
