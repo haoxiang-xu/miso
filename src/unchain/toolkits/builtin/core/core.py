@@ -11,7 +11,7 @@ from ...base import BuiltinToolkit
 from ....input.human_input import build_ask_user_question_tool
 from ....tools.models import ToolConfirmationPolicy, ToolExecutionContext, ToolHistoryOptimizationContext
 from .coding_backend import CoreCodingBackend
-from .web_fetch import WebFetchService, run_extract_model
+from .web_backend import CoreWebBackend
 
 
 _ARTIFACT_DIFF_MAX_LINES = 1_000_000
@@ -55,7 +55,9 @@ class CoreToolkit(BuiltinToolkit):
             workspace_roots=self.workspace_roots,
             execution_context_provider=lambda: self.current_execution_context,
         )
-        self._web_fetch_service = WebFetchService()
+        self._web_backend = CoreWebBackend(
+            runtime_config_provider=self._tool_runtime_config_for,
+        )
         self._register_tools()
 
     def ask_user_question(
@@ -395,83 +397,13 @@ class CoreToolkit(BuiltinToolkit):
             offset: Zero-based character offset for `raw` mode pagination.
             max_chars: Maximum characters to return in `raw` mode. Capped at 50,000.
         """
-        return self._fetch_public_web_content(
+        return self._web_backend.fetch(
             url=url,
             mode=mode,
             prompt=prompt,
             offset=offset,
             max_chars=max_chars,
         )
-
-    def _fetch_public_web_content(
-        self,
-        url: str,
-        mode: str = "raw",
-        prompt: str | None = None,
-        offset: int = 0,
-        max_chars: int = 20000,
-    ) -> dict[str, Any]:
-        resolved_mode = str(mode or "raw").strip().lower()
-        if resolved_mode not in {"raw", "extract"}:
-            return {"ok": False, "url": url, "error": "mode must be one of: raw, extract"}
-
-        page_result, page_content = self._web_fetch_service.fetch(url)
-        result = dict(page_result)
-        result["mode"] = resolved_mode
-        if not result.get("ok"):
-            return result
-        if not isinstance(page_content, str):
-            result["ok"] = False
-            result["error"] = "web page content could not be processed"
-            return result
-
-        if resolved_mode == "extract":
-            if not isinstance(prompt, str) or not prompt.strip():
-                result["ok"] = False
-                result["error"] = "prompt is required when mode=extract"
-                return result
-            tool_config = self._tool_runtime_config_for("web_fetch")
-            extract_model = tool_config.get("extract_model")
-            if not isinstance(extract_model, dict):
-                result["ok"] = False
-                result["error"] = (
-                    "web_fetch extract mode requires runtime config at "
-                    "tool_runtime_config['web_fetch']['extract_model']"
-                )
-                return result
-            try:
-                extract_output = run_extract_model(
-                    url=str(result.get("final_url") or result.get("url") or url),
-                    content=page_content,
-                    prompt=prompt,
-                    extract_model_config=extract_model,
-                )
-            except Exception as exc:
-                result["ok"] = False
-                result["error"] = f"extract failed: {type(exc).__name__}: {exc}"
-                return result
-            result["result"] = extract_output
-            result["returned_chars"] = len(extract_output)
-            result["truncated"] = False
-            result["next_offset"] = None
-            return result
-
-        offset_value = self._coerce_nonnegative_int(offset, 0)
-        try:
-            limit_value = max(1, min(50_000, int(max_chars)))
-        except (TypeError, ValueError):
-            limit_value = 20_000
-        chunk = page_content[offset_value : offset_value + limit_value]
-        next_offset = (
-            offset_value + len(chunk)
-            if offset_value + len(chunk) < len(page_content)
-            else None
-        )
-        result["result"] = chunk
-        result["returned_chars"] = len(chunk)
-        result["truncated"] = next_offset is not None
-        result["next_offset"] = next_offset
-        return result
 
     def _tool_runtime_config_for(self, tool_name: str) -> dict[str, Any]:
         context = self.current_execution_context
@@ -480,14 +412,6 @@ class CoreToolkit(BuiltinToolkit):
             return {}
         tool_config = config.get(tool_name)
         return dict(tool_config) if isinstance(tool_config, dict) else {}
-
-    @staticmethod
-    def _coerce_nonnegative_int(value: Any, default: int) -> int:
-        try:
-            coerced = int(value)
-        except (TypeError, ValueError):
-            return default
-        return max(0, coerced)
 
     def lsp(
         self,
@@ -826,44 +750,10 @@ class CoreToolkit(BuiltinToolkit):
         return compacted
 
     def _compact_web_fetch_args(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
-        if not isinstance(payload, dict):
-            return payload
-        prompt = payload.get("prompt")
-        compacted = {
-            "url": payload.get("url"),
-            "mode": payload.get("mode", "raw"),
-            "offset": payload.get("offset"),
-            "max_chars": payload.get("max_chars"),
-            "compacted": True,
-        }
-        if isinstance(prompt, str) and prompt:
-            compacted["prompt"] = (
-                self._preview_text(prompt, context.preview_chars)
-                if len(prompt) > context.max_chars
-                else prompt
-            )
-            if len(prompt) > context.max_chars and context.include_hash:
-                compacted["prompt_digest"] = hashlib.sha1(
-                    prompt.encode("utf-8", errors="replace")
-                ).hexdigest()
-        return compacted
+        return self._web_backend.compact_args(payload, context)
 
     def _compact_web_fetch_result(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
-        if not isinstance(payload, dict):
-            return payload
-        result_text = payload.get("result")
-        if not isinstance(result_text, str):
-            return payload
-        if len(result_text) <= context.max_chars:
-            return payload
-        compacted = dict(payload)
-        compacted["result"] = self._preview_text(result_text, context.preview_chars)
-        compacted["compacted"] = True
-        if context.include_hash:
-            compacted["digest"] = hashlib.sha1(
-                result_text.encode("utf-8", errors="replace")
-            ).hexdigest()
-        return compacted
+        return self._web_backend.compact_result(payload, context)
 
     def _compact_shell_args(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
         if not isinstance(payload, dict):

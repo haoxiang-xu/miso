@@ -325,7 +325,7 @@ def test_core_toolkit_registers_interaction_and_web_without_focused_toolkit_wrap
         assert not hasattr(toolkit, "_web_toolkit")
 
 
-def test_core_toolkit_web_fetch_uses_core_web_fetch_service(monkeypatch):
+def test_core_toolkit_web_fetch_delegates_to_core_web_backend(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = CoreToolkit(workspace_root=tmp)
         calls: list[dict[str, object]] = []
@@ -348,7 +348,7 @@ def test_core_toolkit_web_fetch_uses_core_web_fetch_service(monkeypatch):
             )
             return {"ok": True, "result": "delegated"}
 
-        monkeypatch.setattr(toolkit, "_fetch_public_web_content", tracked_web_fetch)
+        monkeypatch.setattr(toolkit._web_backend, "fetch", tracked_web_fetch)
 
         result = toolkit.web_fetch(
             url="https://example.com/docs",
@@ -359,6 +359,8 @@ def test_core_toolkit_web_fetch_uses_core_web_fetch_service(monkeypatch):
         )
 
         assert result == {"ok": True, "result": "delegated"}
+        assert not hasattr(toolkit, "_web_toolkit")
+        assert not hasattr(toolkit, "_web_fetch_service")
         assert calls == [
             {
                 "url": "https://example.com/docs",
@@ -668,7 +670,7 @@ def test_code_toolkit_web_fetch_raw_uses_cache_and_paginates(monkeypatch):
                 "alpha beta gamma delta",
             )
 
-        monkeypatch.setattr(toolkit._web_fetch_service, "_request", fake_request)
+        monkeypatch.setattr(toolkit._web_backend.web_fetch_service, "_request", fake_request)
 
         first = toolkit.execute(
             "web_fetch",
@@ -696,7 +698,7 @@ def test_code_toolkit_web_fetch_extract_uses_runtime_config(monkeypatch):
         monkeypatch.setattr(web_fetch_module, "validate_public_url", lambda url: (url, None))
 
         monkeypatch.setattr(
-            toolkit._web_fetch_service,
+            toolkit._web_backend.web_fetch_service,
             "_request",
             lambda url: (
                 {
@@ -730,7 +732,7 @@ def test_code_toolkit_web_fetch_extract_uses_runtime_config(monkeypatch):
             seen["config"] = dict(extract_model_config)
             return "summary output"
 
-        monkeypatch.setattr(core_module, "run_extract_model", fake_extract)
+        monkeypatch.setattr(toolkit._web_backend, "_extract_model_runner", fake_extract)
 
         outcome = execute_confirmable_tool_call(
             toolkit=merged,
@@ -786,7 +788,7 @@ def test_code_toolkit_web_fetch_rejects_private_urls_and_requires_extract_config
 
         monkeypatch.setattr(web_fetch_module, "validate_public_url", lambda url: (url, None))
         monkeypatch.setattr(
-            toolkit._web_fetch_service,
+            toolkit._web_backend.web_fetch_service,
             "_request",
             lambda url: (
                 {
