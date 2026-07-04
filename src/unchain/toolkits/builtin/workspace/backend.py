@@ -31,33 +31,6 @@ class WorkspaceToolkitBackend(CoreCodingBackend):
     def shutdown(self) -> None:
         self._core.shutdown()
 
-    def glob(self, pattern: str, path: str | None = None) -> dict[str, Any]:
-        return self._core.glob(pattern=pattern, path=path)
-
-    def grep(
-        self,
-        pattern: str,
-        path: str | None = None,
-        glob: str | None = None,
-        output_mode: str = "content",
-        context: int = 0,
-        head_limit: int = 50,
-        offset: int = 0,
-        case_sensitive: bool = True,
-        multiline: bool = False,
-    ) -> dict[str, Any]:
-        return self._core.grep(
-            pattern=pattern,
-            path=path,
-            glob=glob,
-            output_mode=output_mode,
-            context=context,
-            head_limit=head_limit,
-            offset=offset,
-            case_sensitive=case_sensitive,
-            multiline=multiline,
-        )
-
     def shell(
         self,
         action: str,

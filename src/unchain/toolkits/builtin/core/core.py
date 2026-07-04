@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import json
 import mimetypes
-import os
-import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,23 +34,6 @@ class _ReadSnapshot:
 class CoreToolkit(BuiltinToolkit):
     """Core builtin toolkit for coding, shell, web fetch, LSP, and structured user questions."""
 
-    _SKIP_DIR_NAMES: set[str] = {
-        ".git",
-        ".hg",
-        ".svn",
-        "node_modules",
-        "__pycache__",
-        ".pytest_cache",
-        ".mypy_cache",
-        ".ruff_cache",
-        ".next",
-        ".nuxt",
-        ".venv",
-        "venv",
-        "dist",
-        "build",
-        "coverage",
-    }
     _IMAGE_SUFFIXES: set[str] = {
         ".png",
         ".jpg",
@@ -66,7 +46,6 @@ class CoreToolkit(BuiltinToolkit):
         ".avif",
     }
     _PDF_SUFFIXES: set[str] = {".pdf"}
-    _MAX_GLOB_RESULTS = 200
     _LSP_RESULT_CHAR_LIMIT = 100_000
 
     def __init__(
@@ -278,26 +257,6 @@ class CoreToolkit(BuiltinToolkit):
             return "file changed since it was last read; reread the full file before write or edit", snapshot
         return None, snapshot
 
-    def _iter_candidate_files(self, base: Path) -> list[Path]:
-        if base.is_file():
-            return [base]
-
-        results: list[Path] = []
-        for current_root, dirnames, filenames in os.walk(base):
-            dirnames[:] = [name for name in dirnames if name not in self._SKIP_DIR_NAMES]
-            root_path = Path(current_root)
-            for filename in filenames:
-                results.append(root_path / filename)
-        return results
-
-    def _relative_path(self, target: Path) -> str:
-        for root in self.workspace_roots:
-            try:
-                return str(target.relative_to(root))
-            except ValueError:
-                continue
-        return str(target)
-
     def _build_result_digest(self, payload: Any) -> str:
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         return hashlib.sha1(encoded.encode("utf-8", errors="replace")).hexdigest()
@@ -399,40 +358,7 @@ class CoreToolkit(BuiltinToolkit):
             pattern: Glob pattern relative to the base path, for example `**/*.py`.
             path: Optional absolute base directory or file path. Defaults to the first workspace root.
         """
-        if not isinstance(pattern, str) or not pattern.strip():
-            return {"error": "pattern is required"}
-
-        base = self.workspace_root if path is None else self._resolve_absolute_path(path)[0]
-        if base is None:
-            _, err = self._resolve_absolute_path(path or "")
-            return {"error": err or "invalid path", "path": path or ""}
-
-        if not base.exists():
-            return {"error": f"path not found: {base}", "path": str(base)}
-
-        matches: list[Path] = []
-        if base.is_file():
-            relative = self._relative_path(base)
-            if fnmatch.fnmatch(relative, pattern) or fnmatch.fnmatch(base.name, pattern):
-                matches.append(base)
-        else:
-            for candidate in base.glob(pattern):
-                if candidate.is_file() and not any(part in self._SKIP_DIR_NAMES for part in candidate.parts):
-                    matches.append(candidate.resolve())
-
-        unique_matches = sorted(
-            {match.resolve() for match in matches},
-            key=lambda item: (-item.stat().st_mtime_ns, str(item)),
-        )
-        truncated = len(unique_matches) > self._MAX_GLOB_RESULTS
-        limited_matches = unique_matches[: self._MAX_GLOB_RESULTS]
-        return {
-            "pattern": pattern,
-            "path": str(base.resolve()),
-            "matches": [str(match) for match in limited_matches],
-            "match_count": len(unique_matches),
-            "truncated": truncated,
-        }
+        return self._coding_backend.glob(pattern=pattern, path=path)
 
     def grep(
         self,
@@ -459,110 +385,17 @@ class CoreToolkit(BuiltinToolkit):
             case_sensitive: When false, search using case-insensitive regex.
             multiline: When true, allow regex matches to span newlines.
         """
-        if not isinstance(pattern, str) or not pattern:
-            return {"error": "pattern is required"}
-        if output_mode not in {"content", "files_with_matches", "count"}:
-            return {"error": "output_mode must be one of: content, files_with_matches, count"}
-
-        base = self.workspace_root if path is None else self._resolve_absolute_path(path)[0]
-        if base is None:
-            _, err = self._resolve_absolute_path(path or "")
-            return {"error": err or "invalid path", "path": path or ""}
-        if not base.exists():
-            return {"error": f"path not found: {base}", "path": str(base)}
-
-        context_lines = self._coerce_nonnegative_int(context, 0)
-        limit_value = max(1, self._coerce_nonnegative_int(head_limit, 50))
-        offset_value = self._coerce_nonnegative_int(offset, 0)
-
-        flags = re.MULTILINE
-        if not case_sensitive:
-            flags |= re.IGNORECASE
-        if multiline:
-            flags |= re.DOTALL
-        try:
-            compiled = re.compile(pattern, flags)
-        except re.error as exc:
-            return {"error": f"invalid regex: {exc}"}
-
-        matches: list[dict[str, Any]] = []
-        files_with_matches: list[str] = []
-        scanned_files = 0
-
-        for candidate in self._iter_candidate_files(base.resolve()):
-            if glob and not fnmatch.fnmatch(self._relative_path(candidate), glob):
-                continue
-            raw, load_error = self._read_text_file(candidate)
-            if load_error is not None:
-                continue
-            assert isinstance(raw, str)
-            scanned_files += 1
-            relative_path = self._relative_path(candidate)
-            lines = raw.splitlines()
-            file_match_count = 0
-
-            for match in compiled.finditer(raw):
-                file_match_count += 1
-                line_number = raw.count("\n", 0, match.start()) + 1 if raw else 0
-                line_text = lines[line_number - 1] if 0 < line_number <= len(lines) else ""
-                before_start = max(0, line_number - 1 - context_lines)
-                after_end = min(len(lines), line_number + context_lines)
-                matches.append(
-                    {
-                        "path": str(candidate),
-                        "relative_path": relative_path,
-                        "line": line_number,
-                        "match": match.group(0),
-                        "line_text": line_text,
-                        "context_before": lines[before_start : max(0, line_number - 1)],
-                        "context_after": lines[line_number:after_end],
-                    }
-                )
-
-            if file_match_count > 0:
-                files_with_matches.append(str(candidate))
-
-        unique_files = sorted(set(files_with_matches))
-        if output_mode == "count":
-            return {
-                "pattern": pattern,
-                "path": str(base.resolve()),
-                "output_mode": output_mode,
-                "match_count": len(matches),
-                "files_with_matches": len(unique_files),
-                "scanned_files": scanned_files,
-                "applied_offset": 0,
-                "applied_limit": 0,
-                "truncated": False,
-            }
-
-        if output_mode == "files_with_matches":
-            paged_files = unique_files[offset_value : offset_value + limit_value]
-            return {
-                "pattern": pattern,
-                "path": str(base.resolve()),
-                "output_mode": output_mode,
-                "files": paged_files,
-                "total_files": len(unique_files),
-                "scanned_files": scanned_files,
-                "applied_offset": offset_value,
-                "applied_limit": limit_value,
-                "truncated": offset_value + len(paged_files) < len(unique_files),
-            }
-
-        paged_matches = matches[offset_value : offset_value + limit_value]
-        return {
-            "pattern": pattern,
-            "path": str(base.resolve()),
-            "output_mode": output_mode,
-            "matches": paged_matches,
-            "match_count": len(matches),
-            "files_with_matches": len(unique_files),
-            "scanned_files": scanned_files,
-            "applied_offset": offset_value,
-            "applied_limit": limit_value,
-            "truncated": offset_value + len(paged_matches) < len(matches),
-        }
+        return self._coding_backend.grep(
+            pattern=pattern,
+            path=path,
+            glob=glob,
+            output_mode=output_mode,
+            context=context,
+            head_limit=head_limit,
+            offset=offset,
+            case_sensitive=case_sensitive,
+            multiline=multiline,
+        )
 
     def web_fetch(
         self,

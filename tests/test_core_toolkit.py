@@ -316,13 +316,15 @@ def test_core_toolkit_composes_focused_interaction_and_web_toolkits():
         assert toolkit.tools["web_fetch"] is toolkit._web_toolkit.tools["web_fetch"]
 
 
-def test_core_toolkit_uses_core_coding_backend_for_file_mutations(monkeypatch):
+def test_core_toolkit_uses_core_coding_backend_for_file_and_search_tools(monkeypatch):
     from unchain.toolkits.builtin.core.coding_backend import CoreCodingBackend
 
     calls: list[str] = []
     original_read = CoreCodingBackend.read
     original_write = CoreCodingBackend.write
     original_edit = CoreCodingBackend.edit
+    original_glob = CoreCodingBackend.glob
+    original_grep = CoreCodingBackend.grep
 
     def tracked_read(self, *args, **kwargs):
         calls.append("read")
@@ -336,9 +338,19 @@ def test_core_toolkit_uses_core_coding_backend_for_file_mutations(monkeypatch):
         calls.append("edit")
         return original_edit(self, *args, **kwargs)
 
+    def tracked_glob(self, *args, **kwargs):
+        calls.append("glob")
+        return original_glob(self, *args, **kwargs)
+
+    def tracked_grep(self, *args, **kwargs):
+        calls.append("grep")
+        return original_grep(self, *args, **kwargs)
+
     monkeypatch.setattr(CoreCodingBackend, "read", tracked_read)
     monkeypatch.setattr(CoreCodingBackend, "write", tracked_write)
     monkeypatch.setattr(CoreCodingBackend, "edit", tracked_edit)
+    monkeypatch.setattr(CoreCodingBackend, "glob", tracked_glob)
+    monkeypatch.setattr(CoreCodingBackend, "grep", tracked_grep)
 
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = CoreToolkit(workspace_root=tmp)
@@ -348,12 +360,16 @@ def test_core_toolkit_uses_core_coding_backend_for_file_mutations(monkeypatch):
         read_result = toolkit.read(str(target))
         write_result = toolkit.write(str(target), "alpha\nBETA\n")
         edit_result = toolkit.edit(str(target), "BETA", "gamma")
+        glob_result = toolkit.glob("*.txt", path=str(Path(tmp).resolve()))
+        grep_result = toolkit.grep("gamma", path=str(Path(tmp).resolve()))
 
     assert type(toolkit._coding_backend).__name__ == "CoreCodingBackend"
-    assert calls == ["read", "write", "edit"]
+    assert calls == ["read", "write", "edit", "glob", "grep"]
     assert read_result["truncated"] is False
     assert write_result["operation"] == "update"
     assert edit_result["replacement_count"] == 1
+    assert glob_result["match_count"] == 1
+    assert grep_result["match_count"] == 1
 
 
 def test_code_toolkit_requires_full_read_before_mutating_existing_files():
