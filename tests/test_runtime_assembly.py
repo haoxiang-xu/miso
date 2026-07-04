@@ -181,6 +181,19 @@ def test_kernel_loop_delegates_max_iteration_boundary_decisions():
     assert "build_max_iterations_decision_payload" not in source
 
 
+def test_kernel_loop_delegates_run_invocation_preparation():
+    import unchain.kernel.loop as kernel_loop_module
+
+    run_source = inspect.getsource(kernel_loop_module.KernelLoop.run)
+    state_source = inspect.getsource(kernel_loop_module.KernelLoop._run_state)
+
+    assert "prepare_fresh_run_invocation(" in run_source
+    assert "previous_response_id" not in state_source
+    assert "use_previous_response_chain" not in run_source
+    assert "_merged_payload" not in run_source
+    assert "provider not in" not in state_source
+
+
 def test_kernel_loop_delegates_terminal_run_outcomes():
     import unchain.kernel.loop as kernel_loop_module
 

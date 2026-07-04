@@ -21,6 +21,12 @@ from .model_io import ModelIO
 from .results import build_kernel_run_result
 from .run_limits import resolve_max_iterations_boundary
 from .run_outcomes import finish_completed_run, finish_max_iterations_run
+from .run_preparation import (
+    infer_model,
+    infer_provider,
+    prepare_fresh_run_invocation,
+    prepare_state_for_execution,
+)
 from .state import RunState
 from .types import KernelRunResult, ModelTurnResult
 
@@ -332,32 +338,10 @@ class KernelLoop:
         callback(event)
 
     def _infer_provider(self) -> str | None:
-        if self._model_io is None:
-            return None
-        provider = getattr(self._model_io, "provider", None)
-        if isinstance(provider, str) and provider.strip():
-            return provider.strip()
-        if hasattr(self._model_io, "engine"):
-            engine = getattr(self._model_io, "engine", None)
-            engine_provider = getattr(engine, "provider", None)
-            if isinstance(engine_provider, str) and engine_provider.strip():
-                return engine_provider.strip()
-        if self._model_io.__class__.__name__ == "OpenAIModelIO":
-            return "openai"
-        return None
+        return infer_provider(self._model_io)
 
     def _infer_model(self) -> str | None:
-        if self._model_io is None:
-            return None
-        model = getattr(self._model_io, "model", None)
-        if isinstance(model, str) and model.strip():
-            return model.strip()
-        if hasattr(self._model_io, "engine"):
-            engine = getattr(self._model_io, "engine", None)
-            engine_model = getattr(engine, "model", None)
-            if isinstance(engine_model, str) and engine_model.strip():
-                return engine_model.strip()
-        return None
+        return infer_model(self._model_io)
 
     def _run_state(
         self,
@@ -379,16 +363,7 @@ class KernelLoop:
     ) -> KernelRunResult:
         if self._model_io is None:
             raise RuntimeError("KernelLoop.model_io is not configured")
-        provider = str(state.provider_state.provider or self._infer_provider() or "")
-        if provider not in {"openai", "anthropic", "ollama", "hyperspace"}:
-            raise NotImplementedError(
-                "KernelLoop.run currently supports only provider in "
-                "{'openai', 'anthropic', 'ollama', 'hyperspace'}, "
-                f"got {provider!r}"
-            )
-        state.provider_state.provider = provider
-        if not state.provider_state.model:
-            state.provider_state.model = self._infer_model()
+        prepare_state_for_execution(state, model_io=self._model_io)
         run_id = str(run_id or uuid.uuid4())
         runtime_toolkit = toolkit if toolkit is not None else Toolkit()
         if not skip_bootstrap:
@@ -506,32 +481,22 @@ class KernelLoop:
         tool_runtime_plugins: list[Any] | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
     ) -> KernelRunResult:
-        resolved_payload = dict(payload or {})
-        resolved_provider = provider or self._infer_provider() or "openai"
-        resolved_model = model or self._infer_model()
-        resolved_run_id = str(run_id or uuid.uuid4())
-        state = self.seed_state(
-            messages,
-            provider=resolved_provider,
-            model=resolved_model,
+        plan = prepare_fresh_run_invocation(
+            messages=messages,
+            payload=payload,
+            model_io=self._model_io,
+            provider=provider,
+            model=model,
+            previous_response_id=previous_response_id,
             session_id=session_id,
             memory_namespace=memory_namespace,
             max_context_window_tokens=max_context_window_tokens,
+            run_id=run_id,
+            run_id_factory=lambda: str(uuid.uuid4()),
         )
-        effective_store = resolved_payload.get("store")
-        if effective_store is None and self._model_io is not None:
-            try:
-                merged = self._model_io._merged_payload(resolved_payload)
-                effective_store = merged.get("store")
-            except Exception:
-                pass
-        use_previous_response_chain = resolved_provider == "openai" and effective_store is not False
-        state.provider_state.previous_response_id = previous_response_id
-        state.provider_state.use_previous_response_chain = use_previous_response_chain
-        state.run_status = "running"
         return self._run_state(
-            state,
-            payload=resolved_payload,
+            plan.state,
+            payload=plan.payload,
             response_format=response_format,
             callback=callback,
             verbose=verbose,
@@ -540,7 +505,7 @@ class KernelLoop:
             on_human_input=on_human_input,
             on_max_iterations=on_max_iterations,
             toolkit=toolkit,
-            run_id=resolved_run_id,
+            run_id=plan.run_id,
             tool_runtime_plugins=tool_runtime_plugins,
             tool_runtime_config=tool_runtime_config,
         )
