@@ -4,8 +4,6 @@ import copy
 import uuid
 from typing import Any
 
-from ..memory.assembly import build_default_memory_components
-from ..memory.runtime import KernelMemoryRuntime
 from ..retry import RetryConfig, RetryContext, fetch_turn_with_retry
 from ..schemas import ResponseFormat
 from ..artifacts import upsert_artifacts
@@ -49,17 +47,6 @@ class KernelLoop:
 
     def register_context_optimizer(self, optimizer: RuntimeHarness) -> None:
         self.register_harness(optimizer)
-
-    def register_memory_harness(self, memory_harness: RuntimeHarness) -> None:
-        self.register_harness(memory_harness)
-
-    def attach_memory(self, memory_runtime: KernelMemoryRuntime) -> None:
-        existing_names = {harness.name for harness in self._harnesses}
-        for component in build_default_memory_components(memory_runtime):
-            if component.name in existing_names:
-                continue
-            self.register_harness(component)
-            existing_names.add(component.name)
 
     @property
     def model_io(self) -> ModelIO | None:

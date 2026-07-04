@@ -6,7 +6,7 @@ from unchain.kernel import BaseRuntimeHarness, KernelLoop, ModelTurnResult
 from unchain.memory import KernelMemoryRuntime
 from unchain.kernel.types import ToolCall as KernelToolCall
 from unchain.memory import InMemorySessionStore, LongTermMemoryConfig, MemoryConfig, MemoryManager
-from unchain.runtime import build_runtime_loop
+from unchain.runtime import attach_memory_runtime_components, build_runtime_loop
 from unchain.tools import Toolkit
 
 
@@ -159,7 +159,7 @@ def test_memory_bootstrap_merges_history_and_restores_summary():
     )
     runtime = KernelMemoryRuntime.from_config(store=store)
     loop = KernelLoop()
-    loop.attach_memory(runtime)
+    attach_memory_runtime_components(loop, runtime)
 
     state = loop.seed_state(
         [{"role": "user", "content": "new user"}],
@@ -189,7 +189,7 @@ def test_memory_bootstrap_resume_mode_does_not_duplicate_history():
     store.save(session_id, {"messages": history, "summary": "persisted summary"})
     runtime = KernelMemoryRuntime.from_config(store=store)
     loop = KernelLoop()
-    loop.attach_memory(runtime)
+    attach_memory_runtime_components(loop, runtime)
 
     conversation = history + [
         {
@@ -229,7 +229,7 @@ def test_memory_bootstrap_resume_mode_does_not_duplicate_history():
     assert state.optimizer_state["llm_summary"]["summary"] == "persisted summary"
 
 
-def test_attach_memory_registers_default_stack_and_restores_history_across_runs():
+def test_runtime_memory_components_register_default_stack_and_restore_history_across_runs():
     store = InMemorySessionStore()
     runtime = KernelMemoryRuntime.from_config(store=store)
 
@@ -244,7 +244,7 @@ def test_attach_memory_registers_default_stack_and_restores_history_across_runs(
         ]
     )
     first_loop = KernelLoop(model_io=first_model_io)
-    first_loop.attach_memory(runtime)
+    attach_memory_runtime_components(first_loop, runtime)
 
     expected_harnesses = {
         "tool_history_compaction",
@@ -280,7 +280,7 @@ def test_attach_memory_registers_default_stack_and_restores_history_across_runs(
         ]
     )
     second_loop = KernelLoop(model_io=second_model_io)
-    second_loop.attach_memory(runtime)
+    attach_memory_runtime_components(second_loop, runtime)
 
     second_result = second_loop.run(
         [{"role": "user", "content": "what next"}],
@@ -313,7 +313,7 @@ def test_short_term_recall_memory_harness_injects_recall_messages():
         store=InMemorySessionStore(),
     )
     loop = KernelLoop()
-    loop.attach_memory(runtime)
+    attach_memory_runtime_components(loop, runtime)
     original = [{"role": "user", "content": "new question"}]
     state = loop.seed_state(copy.deepcopy(original), session_id="short-term-session")
 
@@ -365,7 +365,7 @@ def test_long_term_recall_injects_profile_and_query_hint_memories():
         store=InMemorySessionStore(),
     )
     loop = KernelLoop()
-    loop.attach_memory(runtime)
+    attach_memory_runtime_components(loop, runtime)
     state = loop.seed_state(
         [{"role": "user", "content": "Before that, how to fix auth?"}],
         session_id="long-term-session",
@@ -422,7 +422,7 @@ def test_long_term_recall_skips_profile_when_tools_supported_and_respects_query_
         store=InMemorySessionStore(),
     )
     loop = KernelLoop()
-    loop.attach_memory(runtime)
+    attach_memory_runtime_components(loop, runtime)
     state = loop.seed_state(
         [{"role": "user", "content": "Tell me the answer plainly."}],
         session_id="long-term-tools",
@@ -475,7 +475,7 @@ def test_memory_commit_persists_summary_and_advances_index_cursors():
     )
     runtime = KernelMemoryRuntime.from_memory_manager(manager)
     loop = KernelLoop()
-    loop.attach_memory(runtime)
+    attach_memory_runtime_components(loop, runtime)
     state = loop.seed_state(
         [
             {"role": "user", "content": "user message"},
@@ -530,7 +530,7 @@ def test_memory_commit_does_not_advance_cursors_when_indexing_fails():
     )
     runtime = KernelMemoryRuntime.from_memory_manager(manager)
     loop = KernelLoop()
-    loop.attach_memory(runtime)
+    attach_memory_runtime_components(loop, runtime)
     state = loop.seed_state(
         [
             {"role": "user", "content": "user message"},
@@ -611,7 +611,7 @@ def test_memory_suspend_skips_commit_and_resume_does_not_duplicate_history():
         ]
     )
     suspend_loop = build_runtime_loop(model_io=ask_model_io)
-    suspend_loop.attach_memory(runtime)
+    attach_memory_runtime_components(suspend_loop, runtime)
 
     suspended = suspend_loop.run(
         [{"role": "user", "content": "pick a stack"}],
@@ -636,7 +636,7 @@ def test_memory_suspend_skips_commit_and_resume_does_not_duplicate_history():
         ]
     )
     resume_loop = build_runtime_loop(model_io=resume_model_io)
-    resume_loop.attach_memory(runtime)
+    attach_memory_runtime_components(resume_loop, runtime)
 
     resumed = resume_loop.resume_human_input(
         conversation=suspended.messages,

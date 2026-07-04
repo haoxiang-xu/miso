@@ -54,6 +54,22 @@ def test_runtime_assembly_builds_kernel_loop_with_default_hooks():
     }.issubset({harness.name for harness in loop.harnesses})
 
 
+def test_runtime_assembly_builds_kernel_loop_with_memory_runtime_components():
+    from unchain.memory import KernelMemoryRuntime
+    from unchain.runtime import build_runtime_loop
+
+    loop = build_runtime_loop(memory_runtime=KernelMemoryRuntime.from_config())
+    names = {harness.name for harness in loop.harnesses}
+
+    assert {
+        "memory_bootstrap",
+        "memory_short_term_recall",
+        "memory_commit",
+        "memory_prepare_event",
+        "memory_commit_event",
+    }.issubset(names)
+
+
 def test_kernel_loop_does_not_own_default_runtime_assembly():
     import unchain.kernel.loop as kernel_loop_module
 

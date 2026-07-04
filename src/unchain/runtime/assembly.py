@@ -6,6 +6,7 @@ from ..interaction import HumanInputResumeHarness
 from ..kernel.harness import RuntimeHarness
 from ..kernel.loop import KernelLoop
 from ..kernel.model_io import ModelIO
+from ..memory import KernelMemoryRuntime
 from ..retry import RetryConfig
 from ..tools import ToolExecutionHarness, ToolPromptHarness
 
@@ -27,10 +28,20 @@ def attach_default_runtime_components(loop: KernelLoop) -> None:
         existing_names.add(component.name)
 
 
+def attach_memory_runtime_components(loop: KernelLoop, memory_runtime: KernelMemoryRuntime) -> None:
+    existing_names = {harness.name for harness in loop.harnesses}
+    for component in memory_runtime.build_default_components():
+        if component.name in existing_names:
+            continue
+        loop.register_harness(component)
+        existing_names.add(component.name)
+
+
 def build_runtime_loop(
     *,
     harnesses: list[RuntimeHarness] | None = None,
     model_io: ModelIO | None = None,
+    memory_runtime: KernelMemoryRuntime | None = None,
     retry_config: RetryConfig | None = None,
     **kwargs: Any,
 ) -> KernelLoop:
@@ -41,11 +52,14 @@ def build_runtime_loop(
         **kwargs,
     )
     attach_default_runtime_components(loop)
+    if memory_runtime is not None:
+        attach_memory_runtime_components(loop, memory_runtime)
     return loop
 
 
 __all__ = [
     "attach_default_runtime_components",
+    "attach_memory_runtime_components",
     "build_default_runtime_components",
     "build_runtime_loop",
 ]

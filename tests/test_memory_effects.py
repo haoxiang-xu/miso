@@ -108,8 +108,13 @@ def test_kernel_loop_does_not_directly_emit_memory_prepare_or_commit_events():
 
 def test_kernel_loop_does_not_own_memory_component_assembly():
     from unchain.kernel.loop import KernelLoop
+    import unchain.kernel.loop as kernel_loop_module
 
     source = inspect.getsource(KernelLoop)
+    module_source = inspect.getsource(kernel_loop_module)
 
     assert "_memory_runtime" not in source
     assert "_ensure_memory_components" not in source
+    assert "attach_memory" not in source
+    assert "build_default_memory_components" not in module_source
+    assert "KernelMemoryRuntime" not in module_source

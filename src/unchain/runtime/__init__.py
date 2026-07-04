@@ -1,5 +1,6 @@
 from .assembly import (
     attach_default_runtime_components,
+    attach_memory_runtime_components,
     build_default_runtime_components,
     build_runtime_loop,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "CompletionRunOnce",
     "CompletionValidator",
     "attach_default_runtime_components",
+    "attach_memory_runtime_components",
     "build_default_runtime_components",
     "build_runtime_loop",
     "load_default_payloads",

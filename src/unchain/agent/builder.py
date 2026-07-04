@@ -12,7 +12,11 @@ from ..kernel.loop import KernelLoop
 from ..kernel.model_io import ModelIO
 from ..kernel.types import KernelRunResult
 from ..schemas import ResponseFormat
-from ..runtime import CompletionPolicy, CompletionPolicyRunner, build_runtime_loop
+from ..runtime import (
+    CompletionPolicy,
+    CompletionPolicyRunner,
+    build_runtime_loop,
+)
 from ..tools import Tool, Toolkit
 from ..tools.exposure import ToolExposureRuntime, ToolOptimizerConfig
 from .model_io import ModelIOFactoryRegistry
@@ -386,9 +390,8 @@ class AgentBuilder:
         loop = build_runtime_loop(
             harnesses=self.harnesses,
             model_io=self._resolve_model_io(),
+            memory_runtime=self.memory_runtime,
         )
-        if self.memory_runtime is not None:
-            loop.attach_memory(self.memory_runtime)
         return PreparedAgent(
             loop=loop,
             toolkit=self.toolkit,
