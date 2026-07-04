@@ -343,7 +343,7 @@ def test_core_toolkit_web_fetch_uses_core_web_fetch_service(monkeypatch):
                     "mode": mode,
                     "prompt": prompt,
                     "offset": offset,
-                "max_chars": max_chars,
+                    "max_chars": max_chars,
                 }
             )
             return {"ok": True, "result": "delegated"}
