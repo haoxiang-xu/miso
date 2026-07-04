@@ -12,17 +12,16 @@ from ..tools.toolkit import Toolkit
 from .delta import HarnessDelta
 from .harness import HarnessContext, RuntimeHarness, RuntimePhase
 from .lifecycle_events import (
-    build_final_message_payload,
     build_iteration_completed_payload,
     build_iteration_started_payload,
     build_max_iterations_decision_payload,
     build_response_received_payload,
-    build_run_completed_payload,
     build_run_max_iterations_payload,
     build_run_started_payload,
 )
 from .model_io import ModelIO
 from .results import build_kernel_run_result
+from .run_outcomes import finish_completed_run, finish_max_iterations_run
 from .state import RunState
 from .types import KernelRunResult, ModelTurnResult
 
@@ -427,31 +426,23 @@ class KernelLoop:
                     if isinstance(mi_response, dict) and mi_response.get("approved"):
                         effective_max += max(1, int(mi_response.get("extra_iterations", effective_max)))
                     else:
-                        state.run_status = "max_iterations"
-                        self._dispatch_run_finalizing(
+                        return finish_max_iterations_run(
                             state,
                             callback=callback,
                             run_id=run_id,
-                            iteration=int(state.iteration),
-                            status="max_iterations",
+                            emit_run_max_iterations=False,
+                            emit_event=self.emit_event,
+                            dispatch_run_finalizing=self._dispatch_run_finalizing,
                         )
-                        return build_kernel_run_result(state, status="max_iterations")
                 else:
-                    state.run_status = "max_iterations"
-                    self._dispatch_run_finalizing(
+                    return finish_max_iterations_run(
                         state,
                         callback=callback,
                         run_id=run_id,
-                        iteration=int(state.iteration),
-                        status="max_iterations",
+                        emit_run_max_iterations=True,
+                        emit_event=self.emit_event,
+                        dispatch_run_finalizing=self._dispatch_run_finalizing,
                     )
-                    self.emit_event(
-                        callback,
-                        "run_max_iterations",
-                        run_id,
-                        **build_run_max_iterations_payload(state),
-                    )
-                    return build_kernel_run_result(state, status="max_iterations")
 
             self.emit_event(
                 callback,
@@ -483,26 +474,13 @@ class KernelLoop:
             if state.run_status == "awaiting_human_input":
                 return build_kernel_run_result(state, status="awaiting_human_input")
             if state.run_status == "completed":
-                self.emit_event(
-                    callback,
-                    "final_message",
-                    run_id,
-                    **build_final_message_payload(state),
-                )
-                self._dispatch_run_finalizing(
+                return finish_completed_run(
                     state,
                     callback=callback,
                     run_id=run_id,
-                    iteration=max(0, int(state.iteration) - 1),
-                    status="completed",
+                    emit_event=self.emit_event,
+                    dispatch_run_finalizing=self._dispatch_run_finalizing,
                 )
-                self.emit_event(
-                    callback,
-                    "run_completed",
-                    run_id,
-                    **build_run_completed_payload(state, status="completed"),
-                )
-                return build_kernel_run_result(state, status="completed")
             if turn.tool_calls:
                 self.emit_event(
                     callback,
@@ -511,26 +489,13 @@ class KernelLoop:
                     **build_iteration_completed_payload(state, has_tool_calls=True),
                 )
                 continue
-            self.emit_event(
-                callback,
-                "final_message",
-                run_id,
-                **build_final_message_payload(state),
-            )
-            self._dispatch_run_finalizing(
+            return finish_completed_run(
                 state,
                 callback=callback,
                 run_id=run_id,
-                iteration=max(0, int(state.iteration) - 1),
-                status="completed",
+                emit_event=self.emit_event,
+                dispatch_run_finalizing=self._dispatch_run_finalizing,
             )
-            self.emit_event(
-                callback,
-                "run_completed",
-                run_id,
-                **build_run_completed_payload(state, status="completed"),
-            )
-            return build_kernel_run_result(state, status="completed")
 
     def run(
         self,

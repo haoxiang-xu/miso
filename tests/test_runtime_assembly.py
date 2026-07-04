@@ -169,10 +169,22 @@ def test_kernel_loop_delegates_run_lifecycle_event_payloads():
     assert "build_iteration_started_payload" in source
     assert "build_response_received_payload" in source
     assert "build_iteration_completed_payload" in source
-    assert "build_final_message_payload" in source
-    assert "build_run_completed_payload" in source
     assert "build_legacy_run_bundle(" not in source
     assert "_last_assistant_text" not in source
+
+
+def test_kernel_loop_delegates_terminal_run_outcomes():
+    import unchain.kernel.loop as kernel_loop_module
+
+    source = inspect.getsource(kernel_loop_module.KernelLoop._run_state)
+
+    assert "finish_completed_run(" in source
+    assert "finish_max_iterations_run(" in source
+    assert '"final_message"' not in source
+    assert '"run_completed"' not in source
+    assert "_dispatch_run_finalizing(" not in source
+    assert "build_final_message_payload" not in source
+    assert "build_run_completed_payload" not in source
 
 
 def test_kernel_loop_run_does_not_auto_register_default_runtime_hooks():
