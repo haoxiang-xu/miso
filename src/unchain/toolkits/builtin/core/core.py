@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
-import mimetypes
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -14,34 +10,8 @@ from .coding_backend import CoreCodingBackend
 from .web_backend import CoreWebBackend
 
 
-_ARTIFACT_DIFF_MAX_LINES = 1_000_000
-_ARTIFACT_DIFF_MAX_BYTES = 50_000_000
-
-
-@dataclass
-class _ReadSnapshot:
-    path: str
-    content_sha1: str
-    size: int
-    mtime_ns: int
-    fully_read: bool
-
-
 class CoreToolkit(BuiltinToolkit):
     """Core builtin toolkit for coding, shell, web fetch, LSP, and structured user questions."""
-
-    _IMAGE_SUFFIXES: set[str] = {
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".gif",
-        ".bmp",
-        ".webp",
-        ".ico",
-        ".tiff",
-        ".avif",
-    }
-    _PDF_SUFFIXES: set[str] = {".pdf"}
 
     def __init__(
         self,
@@ -50,7 +20,6 @@ class CoreToolkit(BuiltinToolkit):
         workspace_roots: list[str | Path] | None = None,
     ) -> None:
         super().__init__(workspace_root=workspace_root, workspace_roots=workspace_roots)
-        self._read_snapshots: dict[str, dict[str, _ReadSnapshot]] = {}
         self._coding_backend = CoreCodingBackend(
             workspace_roots=self.workspace_roots,
             execution_context_provider=lambda: self.current_execution_context,
@@ -131,167 +100,6 @@ class CoreToolkit(BuiltinToolkit):
             history_arguments_optimizer=self._compact_lsp_args,
             history_result_optimizer=self._compact_lsp_result,
         )
-
-    def _session_key(self) -> str:
-        context = self.current_execution_context
-        session_id = str(getattr(context, "session_id", "") or "").strip()
-        if session_id:
-            return session_id
-        run_id = str(getattr(context, "run_id", "") or "").strip()
-        if run_id:
-            return f"run:{run_id}"
-        return "__default__"
-
-    def _session_snapshots(self) -> dict[str, _ReadSnapshot]:
-        return self._read_snapshots.setdefault(self._session_key(), {})
-
-    def _resolve_absolute_path(self, path: str) -> tuple[Path | None, str | None]:
-        if not isinstance(path, str) or not path.strip():
-            return None, "path is required"
-        raw_path = Path(path)
-        if not raw_path.is_absolute():
-            return None, "path must be an absolute path"
-        try:
-            return self._resolve_workspace_path(path), None
-        except Exception as exc:
-            return None, str(exc)
-
-    def _read_text_file(self, target: Path) -> tuple[str | None, dict[str, Any] | None]:
-        if not target.exists():
-            return None, {"error": f"file not found: {target}"}
-        if not target.is_file():
-            return None, {"error": f"not a file: {target}"}
-        raw_bytes = target.read_bytes()
-        file_kind = self._detect_file_kind(target, raw_bytes)
-        if file_kind != "text":
-            return None, {
-                "error": f"{file_kind} files are not supported by this tool",
-                "path": str(target),
-                "file_kind": file_kind,
-                "skipped": True,
-            }
-        return raw_bytes.decode("utf-8", errors="replace"), None
-
-    def _detect_file_kind(self, target: Path, raw_bytes: bytes) -> str:
-        suffix = target.suffix.lower()
-        if suffix in self._PDF_SUFFIXES:
-            return "pdf"
-        if suffix in self._IMAGE_SUFFIXES:
-            return "image"
-        mime_type, _ = mimetypes.guess_type(str(target))
-        if isinstance(mime_type, str) and mime_type.startswith("image/") and suffix != ".svg":
-            return "image"
-        if b"\x00" in raw_bytes[:8192]:
-            return "binary"
-        return "text"
-
-    def _split_lines(self, raw: str) -> list[str]:
-        return raw.splitlines()
-
-    def _total_lines(self, raw: str) -> int:
-        return len(self._split_lines(raw))
-
-    def _preview_text(self, text: str, chars: int = 160) -> str:
-        if len(text) <= chars * 2:
-            return text
-        return f"{text[:chars]}\n... <omitted {len(text) - chars * 2} chars> ...\n{text[-chars:]}"
-
-    def _number_lines(self, lines: list[str], *, start_line: int) -> str:
-        if not lines:
-            return ""
-        return "\n".join(f"{line_no}\t{line}" for line_no, line in enumerate(lines, start=start_line))
-
-    def _snapshot_for(self, target: Path) -> _ReadSnapshot | None:
-        return self._session_snapshots().get(str(target))
-
-    def _record_read_snapshot(self, target: Path, raw: str, *, fully_read: bool) -> None:
-        encoded = raw.encode("utf-8", errors="replace")
-        stat_result = target.stat()
-        content_sha1 = hashlib.sha1(encoded).hexdigest()
-        existing = self._snapshot_for(target)
-        resolved_fully_read = fully_read or bool(
-            existing is not None
-            and existing.fully_read
-            and existing.content_sha1 == content_sha1
-        )
-        self._session_snapshots()[str(target)] = _ReadSnapshot(
-            path=str(target),
-            content_sha1=content_sha1,
-            size=len(encoded),
-            mtime_ns=int(stat_result.st_mtime_ns),
-            fully_read=resolved_fully_read,
-        )
-
-    def _check_snapshot_freshness(self, target: Path) -> tuple[str | None, _ReadSnapshot | None]:
-        snapshot = self._snapshot_for(target)
-        if snapshot is None:
-            return "existing files must be fully read before write or edit", None
-        if not snapshot.fully_read:
-            return "file was only partially read; reread the full file before write or edit", snapshot
-
-        stat_result = target.stat()
-        raw_bytes = target.read_bytes()
-        current_sha1 = hashlib.sha1(raw_bytes).hexdigest()
-        if (
-            snapshot.mtime_ns != int(stat_result.st_mtime_ns)
-            or snapshot.size != len(raw_bytes)
-            or snapshot.content_sha1 != current_sha1
-        ):
-            return "file changed since it was last read; reread the full file before write or edit", snapshot
-        return None, snapshot
-
-    def _build_result_digest(self, payload: Any) -> str:
-        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        return hashlib.sha1(encoded.encode("utf-8", errors="replace")).hexdigest()
-
-    def _file_diff_artifact_descriptor(
-        self,
-        *,
-        title: str,
-        path: str,
-        old_content: str,
-        new_content: str,
-        operation: str,
-    ) -> dict[str, Any] | None:
-        from ....tools._diff_helpers import build_code_diff_payload
-
-        file_payload = build_code_diff_payload(
-            path,
-            old_content,
-            new_content,
-            operation,
-            max_lines=_ARTIFACT_DIFF_MAX_LINES,
-            max_bytes=_ARTIFACT_DIFF_MAX_BYTES,
-        )
-        if file_payload is None or file_payload.get("truncated"):
-            return None
-        unified_diff = file_payload.get("unified_diff")
-        if not isinstance(unified_diff, str) or not unified_diff:
-            return None
-        file_entry = {
-            "path": path,
-            "operation": operation,
-            "sub_operation": file_payload.get("sub_operation", operation),
-            "unified_diff_full": unified_diff,
-            "unified_diff": unified_diff,
-            "truncated": False,
-            "total_lines": file_payload.get("total_lines", 0),
-            "displayed_lines": file_payload.get("displayed_lines", 0),
-        }
-        return {
-            "kind": "file_diff",
-            "title": title,
-            "files": [file_entry],
-        }
-
-    def _workspace_root_for_target(self, target: Path) -> Path | None:
-        for root in self.workspace_roots:
-            try:
-                target.relative_to(root)
-                return root
-            except ValueError:
-                continue
-        return None
 
     def read(self, path: str, offset: int = 0, limit: int | None = None) -> dict[str, Any]:
         """Read a UTF-8 text file by absolute path with optional line slicing.
@@ -479,275 +287,43 @@ class CoreToolkit(BuiltinToolkit):
     ) -> ToolConfirmationPolicy:
         return self._coding_backend._resolve_shell_confirmation(arguments, execution_context)
 
-    def _record_workspace_change(
-        self,
-        *,
-        target: Path,
-        before_text: str | None,
-        after_text: str | None,
-        operation: str,
-        tool_name: str,
-    ) -> None:
-        context = self.current_execution_context
-        tracker = getattr(context, "workspace_changes", None) if context is not None else None
-        if tracker is None or not hasattr(tracker, "record_text_file_change"):
-            return
-        call_id = str(getattr(context, "call_id", "") or "")
-        turn_id = str(getattr(context, "turn_id", "") or "")
-        tracker.record_text_file_change(
-            str(target),
-            before_text,
-            after_text,
-            operation=operation,
-            tool_name=tool_name,
-            call_id=call_id,
-            turn_id=turn_id,
-        )
-
     def _resolve_write_confirmation(
         self,
         arguments: dict[str, Any],
         execution_context: ToolExecutionContext | None,
     ) -> ToolConfirmationPolicy:
-        """Build a code_diff confirmation policy for the `write` tool.
-
-        Falls back to a plain confirmation policy when the target is
-        binary, oversized, unreadable, or the path cannot be resolved.
-        """
-        from ....tools._diff_helpers import build_code_diff_payload
-
-        path_arg = arguments.get("path")
-        new_content = arguments.get("content", "")
-        if not isinstance(path_arg, str) or not path_arg or not isinstance(new_content, str):
-            return ToolConfirmationPolicy(requires_confirmation=True)
-
-        target, err = self._resolve_absolute_path(path_arg)
-        if target is None or err is not None:
-            return ToolConfirmationPolicy(requires_confirmation=True)
-
-        existed = target.exists() and target.is_file()
-        if existed:
-            old_raw, load_error = self._read_text_file(target)
-            if old_raw is None or load_error is not None:
-                return ToolConfirmationPolicy(requires_confirmation=True)
-        else:
-            old_raw = ""
-
-        operation = "edit" if existed else "create"
-        file_payload = build_code_diff_payload(
-            str(target), old_raw, new_content, operation
-        )
-        if file_payload is None:
-            return ToolConfirmationPolicy(requires_confirmation=True)
-
-        title = f"{'Edit' if existed else 'Create'} {target}"
-        interact_config = {
-            "title": title,
-            "operation": operation,
-            "path": str(target),
-            "unified_diff": file_payload["unified_diff"],
-            "truncated": file_payload["truncated"],
-            "total_lines": file_payload["total_lines"],
-            "displayed_lines": file_payload["displayed_lines"],
-            "fallback_description": self._describe_code_diff(file_payload, str(target)),
-        }
-        return ToolConfirmationPolicy(
-            requires_confirmation=True,
-            description=title,
-            interact_type="code_diff",
-            interact_config=interact_config,
-        )
+        return self._coding_backend._resolve_write_confirmation(arguments, execution_context)
 
     def _resolve_edit_confirmation(
         self,
         arguments: dict[str, Any],
         execution_context: ToolExecutionContext | None,
     ) -> ToolConfirmationPolicy:
-        """Build a code_diff confirmation policy for the `edit` tool.
-
-        Simulates the string-replace in memory to produce a diff without
-        mutating disk. Falls back to a plain confirmation policy when the
-        target is missing, binary, or the old_string is not found.
-        """
-        from ....tools._diff_helpers import build_code_diff_payload
-
-        path_arg = arguments.get("path")
-        old_string = arguments.get("old_string")
-        new_string = arguments.get("new_string", "")
-        replace_all = bool(arguments.get("replace_all", False))
-
-        if (
-            not isinstance(path_arg, str) or not path_arg
-            or not isinstance(old_string, str)
-            or not isinstance(new_string, str)
-        ):
-            return ToolConfirmationPolicy(requires_confirmation=True)
-
-        target, err = self._resolve_absolute_path(path_arg)
-        if target is None or err is not None:
-            return ToolConfirmationPolicy(requires_confirmation=True)
-        if not (target.exists() and target.is_file()):
-            return ToolConfirmationPolicy(requires_confirmation=True)
-
-        old_raw, load_error = self._read_text_file(target)
-        if old_raw is None or load_error is not None:
-            return ToolConfirmationPolicy(requires_confirmation=True)
-
-        match_count = old_raw.count(old_string)
-        if match_count == 0:
-            return ToolConfirmationPolicy(requires_confirmation=True)
-        if match_count > 1 and not replace_all:
-            return ToolConfirmationPolicy(requires_confirmation=True)
-
-        replacement_count = match_count if replace_all else 1
-        new_raw = old_raw.replace(old_string, new_string, replacement_count)
-
-        file_payload = build_code_diff_payload(
-            str(target), old_raw, new_raw, "edit"
-        )
-        if file_payload is None:
-            return ToolConfirmationPolicy(requires_confirmation=True)
-
-        title = f"Edit {target}"
-        interact_config = {
-            "title": title,
-            "operation": "edit",
-            "path": str(target),
-            "unified_diff": file_payload["unified_diff"],
-            "truncated": file_payload["truncated"],
-            "total_lines": file_payload["total_lines"],
-            "displayed_lines": file_payload["displayed_lines"],
-            "fallback_description": self._describe_code_diff(file_payload, str(target)),
-        }
-        return ToolConfirmationPolicy(
-            requires_confirmation=True,
-            description=title,
-            interact_type="code_diff",
-            interact_config=interact_config,
-        )
-
-    @staticmethod
-    def _describe_code_diff(file_payload: dict, path: str) -> str:
-        diff = file_payload.get("unified_diff", "") or ""
-        plus = sum(
-            1 for line in diff.split("\n")
-            if line.startswith("+") and not line.startswith("+++")
-        )
-        minus = sum(
-            1 for line in diff.split("\n")
-            if line.startswith("-") and not line.startswith("---")
-        )
-        op = file_payload.get("sub_operation", "edit")
-        return f"{op} {path} (+{plus} -{minus})"
+        return self._coding_backend._resolve_edit_confirmation(arguments, execution_context)
 
     def shutdown(self) -> None:
         self._coding_backend.shutdown()
 
     def _compact_read_args(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
-        if not isinstance(payload, dict):
-            return payload
-        return {
-            "path": payload.get("path"),
-            "offset": payload.get("offset"),
-            "limit": payload.get("limit"),
-            "compacted": True,
-        }
+        return self._coding_backend.compact_read_args(payload, context)
 
     def _compact_read_result(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
-        if not isinstance(payload, dict):
-            return payload
-        content = payload.get("content")
-        if not isinstance(content, str) or len(content) <= context.max_chars:
-            return payload
-        compacted = dict(payload)
-        compacted["content"] = self._preview_text(content, context.preview_chars)
-        compacted["compacted"] = True
-        if context.include_hash:
-            compacted["digest"] = hashlib.sha1(content.encode("utf-8", errors="replace")).hexdigest()
-        return compacted
+        return self._coding_backend.compact_read_result(payload, context)
 
     def _compact_write_args(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
-        if not isinstance(payload, dict):
-            return payload
-        content = payload.get("content")
-        compacted = {"path": payload.get("path"), "compacted": True}
-        if isinstance(content, str) and len(content) > context.max_chars:
-            compacted["content"] = {
-                "chars": len(content),
-                "preview": self._preview_text(content, context.preview_chars),
-                "digest": hashlib.sha1(content.encode("utf-8", errors="replace")).hexdigest()
-                if context.include_hash
-                else "",
-            }
-        else:
-            compacted["content"] = content
-        return compacted
+        return self._coding_backend.compact_write_args(payload, context)
 
     def _compact_edit_args(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
-        if not isinstance(payload, dict):
-            return payload
-
-        def _compact_string(value: Any) -> Any:
-            if not isinstance(value, str) or len(value) <= context.max_chars:
-                return value
-            compacted_value = {
-                "chars": len(value),
-                "preview": self._preview_text(value, context.preview_chars),
-            }
-            if context.include_hash:
-                compacted_value["digest"] = hashlib.sha1(value.encode("utf-8", errors="replace")).hexdigest()
-            return compacted_value
-
-        return {
-            "path": payload.get("path"),
-            "old_string": _compact_string(payload.get("old_string")),
-            "new_string": _compact_string(payload.get("new_string")),
-            "replace_all": payload.get("replace_all", False),
-            "compacted": True,
-        }
+        return self._coding_backend.compact_edit_args(payload, context)
 
     def _compact_mutation_result(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
-        if not isinstance(payload, dict):
-            return payload
-        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        if len(encoded) <= context.max_chars:
-            return payload
-        compacted = {
-            key: value
-            for key, value in payload.items()
-            if key not in {"old_string", "new_string", "original_file"}
-        }
-        compacted["compacted"] = True
-        if context.include_hash:
-            compacted["digest"] = hashlib.sha1(encoded.encode("utf-8", errors="replace")).hexdigest()
-        return compacted
+        return self._coding_backend.compact_mutation_result(payload, context)
 
     def _compact_glob_result(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
-        if not isinstance(payload, dict):
-            return payload
-        matches = payload.get("matches")
-        if not isinstance(matches, list) or len(matches) <= 20:
-            return payload
-        compacted = dict(payload)
-        compacted["matches"] = matches[:20]
-        compacted["compacted"] = True
-        if context.include_hash:
-            compacted["digest"] = self._build_result_digest(payload)
-        return compacted
+        return self._coding_backend.compact_glob_result(payload, context)
 
     def _compact_grep_result(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
-        if not isinstance(payload, dict):
-            return payload
-        compacted = dict(payload)
-        if isinstance(compacted.get("matches"), list) and len(compacted["matches"]) > 8:
-            compacted["matches"] = compacted["matches"][:8]
-            compacted["compacted"] = True
-        if isinstance(compacted.get("files"), list) and len(compacted["files"]) > 20:
-            compacted["files"] = compacted["files"][:20]
-            compacted["compacted"] = True
-        if compacted.get("compacted") and context.include_hash:
-            compacted["digest"] = self._build_result_digest(payload)
-        return compacted
+        return self._coding_backend.compact_grep_result(payload, context)
 
     def _compact_web_fetch_args(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
         return self._web_backend.compact_args(payload, context)
@@ -756,76 +332,16 @@ class CoreToolkit(BuiltinToolkit):
         return self._web_backend.compact_result(payload, context)
 
     def _compact_shell_args(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
-        if not isinstance(payload, dict):
-            return payload
-        compacted = {
-            "action": payload.get("action"),
-            "cwd": payload.get("cwd"),
-            "timeout_ms": payload.get("timeout_ms"),
-            "run_in_background": payload.get("run_in_background"),
-            "max_output_chars": payload.get("max_output_chars"),
-            "yield_time_ms": payload.get("yield_time_ms"),
-            "task_id": payload.get("task_id"),
-            "compacted": True,
-        }
-        command = payload.get("command")
-        if isinstance(command, str):
-            compacted["command"] = (
-                self._preview_text(command, context.preview_chars)
-                if len(command) > context.max_chars
-                else command
-            )
-            if len(command) > context.max_chars and context.include_hash:
-                compacted["command_digest"] = hashlib.sha1(command.encode("utf-8", errors="replace")).hexdigest()
-        return compacted
+        return self._coding_backend.compact_shell_args(payload, context)
 
     def _compact_shell_result(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
-        if not isinstance(payload, dict):
-            return payload
-        compacted = dict(payload)
-        did_compact = False
-        for key in ("stdout", "stderr"):
-            value = compacted.get(key)
-            if isinstance(value, str) and len(value) > context.max_chars:
-                compacted[key] = self._preview_text(value, context.preview_chars)
-                digest_key = f"{key}_digest"
-                if context.include_hash:
-                    compacted[digest_key] = hashlib.sha1(value.encode("utf-8", errors="replace")).hexdigest()
-                did_compact = True
-        if did_compact:
-            compacted["compacted"] = True
-        return compacted
+        return self._coding_backend.compact_shell_result(payload, context)
 
     def _compact_lsp_args(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
-        if not isinstance(payload, dict):
-            return payload
-        compacted = {
-            "operation": payload.get("operation"),
-            "file_path": payload.get("file_path"),
-            "line": payload.get("line"),
-            "character": payload.get("character"),
-            "query": payload.get("query"),
-            "compacted": True,
-        }
-        query = payload.get("query")
-        if isinstance(query, str) and len(query) > context.max_chars:
-            compacted["query"] = self._preview_text(query, context.preview_chars)
-            if context.include_hash:
-                compacted["query_digest"] = hashlib.sha1(query.encode("utf-8", errors="replace")).hexdigest()
-        return compacted
+        return self._coding_backend.compact_lsp_args(payload, context)
 
     def _compact_lsp_result(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
-        if not isinstance(payload, dict):
-            return payload
-        result_text = payload.get("result")
-        if not isinstance(result_text, str) or len(result_text) <= context.max_chars:
-            return payload
-        compacted = dict(payload)
-        compacted["result"] = self._preview_text(result_text, context.preview_chars)
-        compacted["compacted"] = True
-        if context.include_hash:
-            compacted["digest"] = hashlib.sha1(result_text.encode("utf-8", errors="replace")).hexdigest()
-        return compacted
+        return self._coding_backend.compact_lsp_result(payload, context)
 
 
 __all__ = ["CoreToolkit"]

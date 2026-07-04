@@ -7,7 +7,13 @@ import time
 from pathlib import Path
 
 from unchain.kernel.types import ToolCall
-from unchain.tools import ToolExecutionContext, Toolkit, execute_confirmable_tool_call
+from unchain.tools import (
+    ToolConfirmationPolicy,
+    ToolExecutionContext,
+    ToolHistoryOptimizationContext,
+    Toolkit,
+    execute_confirmable_tool_call,
+)
 from unchain.input import ASK_USER_QUESTION_TOOL_NAME
 from unchain.toolkits import CoreToolkit
 import unchain.toolkits.builtin.core.core as core_module
@@ -450,6 +456,83 @@ def test_core_toolkit_uses_core_coding_backend_for_coding_tools(monkeypatch):
     assert shell_result["error"] == "action must be one of: run, poll, kill"
     assert confirmation.requires_confirmation is False
     assert "operation must be one of" in lsp_result["error"]
+
+
+def test_core_toolkit_delegates_coding_confirmations_and_history_to_backend(monkeypatch):
+    from unchain.toolkits.builtin.core.coding_backend import CoreCodingBackend
+
+    calls: list[str] = []
+
+    def tracked_write_confirmation(self, *args, **kwargs):
+        calls.append("write_confirmation")
+        return ToolConfirmationPolicy(requires_confirmation=True, description="write")
+
+    def tracked_edit_confirmation(self, *args, **kwargs):
+        calls.append("edit_confirmation")
+        return ToolConfirmationPolicy(requires_confirmation=True, description="edit")
+
+    def make_optimizer(name: str):
+        def tracked_optimizer(self, payload, context):
+            calls.append(name)
+            return {"optimizer": name, "payload": payload}
+
+        return tracked_optimizer
+
+    monkeypatch.setattr(CoreCodingBackend, "_resolve_write_confirmation", tracked_write_confirmation)
+    monkeypatch.setattr(CoreCodingBackend, "_resolve_edit_confirmation", tracked_edit_confirmation)
+    monkeypatch.setattr(CoreCodingBackend, "compact_read_args", make_optimizer("read_args"))
+    monkeypatch.setattr(CoreCodingBackend, "compact_read_result", make_optimizer("read_result"))
+    monkeypatch.setattr(CoreCodingBackend, "compact_write_args", make_optimizer("write_args"))
+    monkeypatch.setattr(CoreCodingBackend, "compact_edit_args", make_optimizer("edit_args"))
+    monkeypatch.setattr(CoreCodingBackend, "compact_mutation_result", make_optimizer("mutation_result"))
+    monkeypatch.setattr(CoreCodingBackend, "compact_glob_result", make_optimizer("glob_result"))
+    monkeypatch.setattr(CoreCodingBackend, "compact_grep_result", make_optimizer("grep_result"))
+    monkeypatch.setattr(CoreCodingBackend, "compact_shell_args", make_optimizer("shell_args"))
+    monkeypatch.setattr(CoreCodingBackend, "compact_shell_result", make_optimizer("shell_result"))
+    monkeypatch.setattr(CoreCodingBackend, "compact_lsp_args", make_optimizer("lsp_args"))
+    monkeypatch.setattr(CoreCodingBackend, "compact_lsp_result", make_optimizer("lsp_result"))
+
+    context = ToolHistoryOptimizationContext(
+        tool_name="read",
+        call_id="call",
+        kind="arguments",
+        provider="openai",
+        session_id="session",
+        latest_messages=[],
+        max_chars=10,
+        preview_chars=4,
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = CoreToolkit(workspace_root=tmp)
+        assert toolkit._resolve_write_confirmation({}, None).description == "write"
+        assert toolkit._resolve_edit_confirmation({}, None).description == "edit"
+        assert toolkit._compact_read_args({"path": "x"}, context)["optimizer"] == "read_args"
+        assert toolkit._compact_read_result({"content": "x"}, context)["optimizer"] == "read_result"
+        assert toolkit._compact_write_args({"content": "x"}, context)["optimizer"] == "write_args"
+        assert toolkit._compact_edit_args({"old_string": "x"}, context)["optimizer"] == "edit_args"
+        assert toolkit._compact_mutation_result({"path": "x"}, context)["optimizer"] == "mutation_result"
+        assert toolkit._compact_glob_result({"matches": []}, context)["optimizer"] == "glob_result"
+        assert toolkit._compact_grep_result({"matches": []}, context)["optimizer"] == "grep_result"
+        assert toolkit._compact_shell_args({"command": "pwd"}, context)["optimizer"] == "shell_args"
+        assert toolkit._compact_shell_result({"stdout": "x"}, context)["optimizer"] == "shell_result"
+        assert toolkit._compact_lsp_args({"query": "x"}, context)["optimizer"] == "lsp_args"
+        assert toolkit._compact_lsp_result({"result": "x"}, context)["optimizer"] == "lsp_result"
+
+    assert calls == [
+        "write_confirmation",
+        "edit_confirmation",
+        "read_args",
+        "read_result",
+        "write_args",
+        "edit_args",
+        "mutation_result",
+        "glob_result",
+        "grep_result",
+        "shell_args",
+        "shell_result",
+        "lsp_args",
+        "lsp_result",
+    ]
 
 
 def test_code_toolkit_requires_full_read_before_mutating_existing_files():
