@@ -990,13 +990,19 @@ def test_code_toolkit_shell_background_poll_returns_incremental_output():
         task_id = started["task_id"]
         time.sleep(0.1)
         first_poll = toolkit.execute("shell", {"action": "poll", "task_id": task_id})
-        time.sleep(0.4)
-        second_poll = toolkit.execute("shell", {"action": "poll", "task_id": task_id})
+        polls = [first_poll]
+        deadline = time.monotonic() + 3.0
+        while not polls[-1]["completed"] and time.monotonic() < deadline:
+            time.sleep(0.05)
+            polls.append(toolkit.execute("shell", {"action": "poll", "task_id": task_id}))
 
-        assert "alpha" in (first_poll["stdout"] + second_poll["stdout"])
-        assert "beta" in second_poll["stdout"]
-        assert second_poll["status"] in {"completed", "timed_out"}
-        assert second_poll["completed"] is True
+        stdout = "".join(str(poll.get("stdout") or "") for poll in polls)
+        final_poll = polls[-1]
+
+        assert "alpha" in stdout
+        assert "beta" in stdout
+        assert final_poll["status"] in {"completed", "timed_out"}
+        assert final_poll["completed"] is True
 
 
 def test_shell_runtime_detect_executor_prefers_pwsh_and_env_shell(monkeypatch):

@@ -17,6 +17,7 @@ from .payloads import (
     load_default_payloads,
     load_model_capabilities,
 )
+from .workspace_artifacts import WorkspaceChangeArtifactHarness
 
 __all__ = [
     "DEFAULT_PAYLOADS_RESOURCE",
@@ -26,6 +27,7 @@ __all__ = [
     "CompletionPolicyRunner",
     "CompletionRunOnce",
     "CompletionValidator",
+    "WorkspaceChangeArtifactHarness",
     "attach_default_runtime_components",
     "attach_memory_runtime_components",
     "build_default_runtime_components",

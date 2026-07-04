@@ -17,6 +17,7 @@ RuntimePhase = Literal[
     "before_commit",
     "on_suspend",
     "on_resume",
+    "run_finalizing",
 ]
 
 

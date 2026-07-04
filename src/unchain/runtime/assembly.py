@@ -9,6 +9,7 @@ from ..kernel.model_io import ModelIO
 from ..memory import KernelMemoryRuntime
 from ..retry import RetryConfig
 from ..tools import ToolExecutionHarness, ToolPromptHarness
+from .workspace_artifacts import WorkspaceChangeArtifactHarness
 
 
 def build_default_runtime_components() -> list[RuntimeHarness]:
@@ -16,6 +17,7 @@ def build_default_runtime_components() -> list[RuntimeHarness]:
         ToolPromptHarness(),
         ToolExecutionHarness(),
         HumanInputResumeHarness(),
+        WorkspaceChangeArtifactHarness(),
     ]
 
 

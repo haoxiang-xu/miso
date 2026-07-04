@@ -31,6 +31,15 @@ def test_runtime_assembly_builds_default_tool_and_interaction_hooks():
     }.issubset(names)
 
 
+def test_runtime_assembly_builds_workspace_change_artifact_hook():
+    from unchain.runtime import build_default_runtime_components
+
+    components = build_default_runtime_components()
+    names = {component.name for component in components}
+
+    assert "workspace_change_artifacts" in names
+
+
 def test_runtime_assembly_builds_kernel_loop_with_default_hooks():
     from unchain.runtime import build_runtime_loop
 
@@ -79,6 +88,17 @@ def test_kernel_loop_does_not_own_default_runtime_assembly():
     assert "ToolExecutionHarness" not in source
     assert "HumanInputResumeHarness" not in source
     assert "_ensure_runtime_harnesses" not in source
+
+
+def test_kernel_loop_does_not_own_workspace_change_artifact_emission():
+    import unchain.kernel.loop as kernel_loop_module
+
+    module_source = inspect.getsource(kernel_loop_module)
+    source = inspect.getsource(kernel_loop_module.KernelLoop)
+
+    assert "WorkspaceChangeTracker" not in module_source
+    assert "upsert_artifacts" not in module_source
+    assert "_emit_workspace_change_set_artifact" not in source
 
 
 def test_kernel_loop_run_does_not_auto_register_default_runtime_hooks():

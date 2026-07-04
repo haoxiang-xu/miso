@@ -6,13 +6,11 @@ from typing import Any
 
 from ..retry import RetryConfig, RetryContext, fetch_turn_with_retry
 from ..schemas import ResponseFormat
-from ..artifacts import upsert_artifacts
 from ..tools.observation import (
     OBSERVATION_MAX_OUTPUT_TOKENS,
     OBSERVATION_RECENT_MESSAGES,
     OBSERVATION_SYSTEM_PROMPT,
 )
-from ..workspace_changes import WorkspaceChangeTracker
 from ..tools.toolkit import Toolkit
 from .delta import HarnessDelta
 from .harness import HarnessContext, RuntimeHarness, RuntimePhase
@@ -108,11 +106,16 @@ class KernelLoop:
 
             def emit_structured_event(op):
                 payload = op.payload if isinstance(op.payload, dict) else {}
+                raw_iteration = (event or {}).get("iteration", state.iteration)
+                try:
+                    iteration = int(raw_iteration)
+                except (TypeError, ValueError):
+                    iteration = int(state.iteration)
                 self.emit_event(
                     (event or {}).get("callback"),
                     op.type,
                     str((event or {}).get("run_id") or "kernel"),
-                    iteration=int(state.iteration),
+                    iteration=iteration,
                     **copy.deepcopy(payload),
                 )
 
@@ -332,6 +335,27 @@ class KernelLoop:
             },
         )
 
+    def _dispatch_run_finalizing(
+        self,
+        state: RunState,
+        *,
+        callback: Any,
+        run_id: str,
+        iteration: int,
+        status: str,
+    ) -> None:
+        self.dispatch_phase(
+            state,
+            phase="run_finalizing",
+            event={
+                "callback": callback,
+                "run_id": run_id,
+                "iteration": int(iteration),
+                "status": status,
+                "loop": self,
+            },
+        )
+
     def emit_event(
         self,
         callback: Any,
@@ -350,44 +374,6 @@ class KernelLoop:
         }
         event.update(copy.deepcopy(extra))
         callback(event)
-
-    def _emit_workspace_change_set_artifact(
-        self,
-        state: RunState,
-        *,
-        callback: Any,
-        run_id: str,
-        iteration: int,
-    ) -> None:
-        if not isinstance(state.workspace_change_state, dict) or not state.workspace_change_state:
-            return
-        tracker = WorkspaceChangeTracker.from_state(
-            state.workspace_change_state,
-            run_id=run_id,
-            workspace_roots=[],
-        )
-        artifact = tracker.to_artifact()
-        if artifact is None:
-            return
-        artifact_id = str(artifact.get("artifact_id") or "")
-        if not artifact_id:
-            return
-        existing_ids = {
-            item.get("artifact_id")
-            for item in state.artifacts
-            if isinstance(item, dict) and isinstance(item.get("artifact_id"), str)
-        }
-        self.emit_event(
-            callback,
-            "artifact_updated" if artifact_id in existing_ids else "artifact_created",
-            run_id,
-            iteration=iteration,
-            tool_name="workspace_change_tracker",
-            call_id="",
-            artifact_id=artifact_id,
-            artifact=copy.deepcopy(artifact),
-        )
-        state.artifacts = upsert_artifacts(state.artifacts, [artifact])
 
     def _infer_provider(self) -> str | None:
         if self._model_io is None:
@@ -695,20 +681,22 @@ class KernelLoop:
                         effective_max += max(1, int(mi_response.get("extra_iterations", effective_max)))
                     else:
                         state.run_status = "max_iterations"
-                        self._emit_workspace_change_set_artifact(
+                        self._dispatch_run_finalizing(
                             state,
                             callback=callback,
                             run_id=run_id,
                             iteration=int(state.iteration),
+                            status="max_iterations",
                         )
                         return self._build_result(state, status="max_iterations")
                 else:
                     state.run_status = "max_iterations"
-                    self._emit_workspace_change_set_artifact(
+                    self._dispatch_run_finalizing(
                         state,
                         callback=callback,
                         run_id=run_id,
                         iteration=int(state.iteration),
+                        status="max_iterations",
                     )
                     self.emit_event(
                         callback,
@@ -764,11 +752,12 @@ class KernelLoop:
                     iteration=max(0, int(state.iteration) - 1),
                     content=final_text,
                 )
-                self._emit_workspace_change_set_artifact(
+                self._dispatch_run_finalizing(
                     state,
                     callback=callback,
                     run_id=run_id,
                     iteration=max(0, int(state.iteration) - 1),
+                    status="completed",
                 )
                 self.emit_event(
                     callback,
@@ -796,11 +785,12 @@ class KernelLoop:
                 iteration=max(0, int(state.iteration) - 1),
                 content=final_text,
             )
-            self._emit_workspace_change_set_artifact(
+            self._dispatch_run_finalizing(
                 state,
                 callback=callback,
                 run_id=run_id,
                 iteration=max(0, int(state.iteration) - 1),
+                status="completed",
             )
             self.emit_event(
                 callback,
