@@ -11,8 +11,18 @@ from ..schemas import ResponseFormat
 from ..tools.toolkit import Toolkit
 from .delta import HarnessDelta
 from .harness import HarnessContext, RuntimeHarness, RuntimePhase
+from .lifecycle_events import (
+    build_final_message_payload,
+    build_iteration_completed_payload,
+    build_iteration_started_payload,
+    build_max_iterations_decision_payload,
+    build_response_received_payload,
+    build_run_completed_payload,
+    build_run_max_iterations_payload,
+    build_run_started_payload,
+)
 from .model_io import ModelIO
-from .results import build_kernel_run_result, build_legacy_run_bundle
+from .results import build_kernel_run_result
 from .state import RunState
 from .types import KernelRunResult, ModelTurnResult
 
@@ -351,15 +361,6 @@ class KernelLoop:
                 return engine_model.strip()
         return None
 
-    def _last_assistant_text(self, messages: list[dict[str, Any]]) -> str:
-        for message in reversed(messages or []):
-            if not isinstance(message, dict) or message.get("role") != "assistant":
-                continue
-            content = message.get("content")
-            if isinstance(content, str) and content.strip():
-                return content.strip()
-        return ""
-
     def _run_state(
         self,
         state: RunState,
@@ -408,9 +409,7 @@ class KernelLoop:
             callback,
             "run_started",
             run_id,
-            iteration=int(state.iteration),
-            provider=state.provider_state.provider,
-            model=state.provider_state.model,
+            **build_run_started_payload(state),
         )
         effective_max = int(max_iterations)
         while True:
@@ -420,14 +419,11 @@ class KernelLoop:
                         callback,
                         "run_max_iterations",
                         run_id,
-                        iteration=int(state.iteration),
-                        bundle=build_legacy_run_bundle(state, status="max_iterations"),
+                        **build_run_max_iterations_payload(state),
                     )
-                    mi_response = on_max_iterations({
-                        "iteration": int(state.iteration),
-                        "max_iterations": effective_max,
-                        "consumed_tokens": int(state.token_state.consumed_tokens),
-                    })
+                    mi_response = on_max_iterations(
+                        build_max_iterations_decision_payload(state, max_iterations=effective_max)
+                    )
                     if isinstance(mi_response, dict) and mi_response.get("approved"):
                         effective_max += max(1, int(mi_response.get("extra_iterations", effective_max)))
                     else:
@@ -453,8 +449,7 @@ class KernelLoop:
                         callback,
                         "run_max_iterations",
                         run_id,
-                        iteration=int(state.iteration),
-                        bundle=build_legacy_run_bundle(state, status="max_iterations"),
+                        **build_run_max_iterations_payload(state),
                     )
                     return build_kernel_run_result(state, status="max_iterations")
 
@@ -462,7 +457,7 @@ class KernelLoop:
                 callback,
                 "iteration_started",
                 run_id,
-                iteration=int(state.iteration),
+                **build_iteration_started_payload(state),
             )
             turn = self.step_once(
                 state,
@@ -483,25 +478,16 @@ class KernelLoop:
                 callback,
                 "response_received",
                 run_id,
-                iteration=max(0, int(state.iteration) - 1),
-                response_id=turn.response_id,
-                has_tool_calls=bool(turn.tool_calls),
-                status=state.run_status,
-                bundle=build_legacy_run_bundle(
-                    state,
-                    status="running" if turn.tool_calls else "completed",
-                ),
+                **build_response_received_payload(state, turn),
             )
             if state.run_status == "awaiting_human_input":
                 return build_kernel_run_result(state, status="awaiting_human_input")
             if state.run_status == "completed":
-                final_text = self._last_assistant_text(state.transcript)
                 self.emit_event(
                     callback,
                     "final_message",
                     run_id,
-                    iteration=max(0, int(state.iteration) - 1),
-                    content=final_text,
+                    **build_final_message_payload(state),
                 )
                 self._dispatch_run_finalizing(
                     state,
@@ -514,9 +500,7 @@ class KernelLoop:
                     callback,
                     "run_completed",
                     run_id,
-                    iteration=max(0, int(state.iteration) - 1),
-                    status="completed",
-                    bundle=build_legacy_run_bundle(state, status="completed"),
+                    **build_run_completed_payload(state, status="completed"),
                 )
                 return build_kernel_run_result(state, status="completed")
             if turn.tool_calls:
@@ -524,17 +508,14 @@ class KernelLoop:
                     callback,
                     "iteration_completed",
                     run_id,
-                    iteration=max(0, int(state.iteration) - 1),
-                    has_tool_calls=True,
+                    **build_iteration_completed_payload(state, has_tool_calls=True),
                 )
                 continue
-            final_text = self._last_assistant_text(state.transcript)
             self.emit_event(
                 callback,
                 "final_message",
                 run_id,
-                iteration=max(0, int(state.iteration) - 1),
-                content=final_text,
+                **build_final_message_payload(state),
             )
             self._dispatch_run_finalizing(
                 state,
@@ -547,9 +528,7 @@ class KernelLoop:
                 callback,
                 "run_completed",
                 run_id,
-                iteration=max(0, int(state.iteration) - 1),
-                status="completed",
-                bundle=build_legacy_run_bundle(state, status="completed"),
+                **build_run_completed_payload(state, status="completed"),
             )
             return build_kernel_run_result(state, status="completed")
 

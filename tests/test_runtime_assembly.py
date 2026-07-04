@@ -158,6 +158,23 @@ def test_kernel_loop_does_not_own_run_result_or_legacy_bundle_assembly():
     assert "_build_legacy_bundle" not in source
 
 
+def test_kernel_loop_delegates_run_lifecycle_event_payloads():
+    import unchain.kernel.loop as kernel_loop_module
+
+    source = inspect.getsource(kernel_loop_module.KernelLoop._run_state)
+
+    assert "build_run_started_payload" in source
+    assert "build_run_max_iterations_payload" in source
+    assert "build_max_iterations_decision_payload" in source
+    assert "build_iteration_started_payload" in source
+    assert "build_response_received_payload" in source
+    assert "build_iteration_completed_payload" in source
+    assert "build_final_message_payload" in source
+    assert "build_run_completed_payload" in source
+    assert "build_legacy_run_bundle(" not in source
+    assert "_last_assistant_text" not in source
+
+
 def test_kernel_loop_run_does_not_auto_register_default_runtime_hooks():
     loop = KernelLoop(
         model_io=_QueueModelIO(
