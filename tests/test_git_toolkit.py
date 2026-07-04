@@ -536,13 +536,12 @@ def test_parse_diff_empty() -> None:
 # ════════════════════════════════════════════════════════════════════════════
 
 
-def test_git_toolkit_registry() -> None:
+def test_git_toolkit_is_not_listed_as_public_builtin() -> None:
     from unchain.tools import ToolkitRegistry
 
     registry = ToolkitRegistry()
     toolkit_ids = {item["id"] for item in registry.list_toolkits(include_tools=False)}
-    assert "git" in toolkit_ids
-    assert registry.require("git").to_summary()["tool_count"] == 5
+    assert "git" not in toolkit_ids
 
 
 def test_git_toolkit_importable_from_unchain_toolkits() -> None:

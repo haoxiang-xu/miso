@@ -25,6 +25,7 @@ from .toolkit import Toolkit as RuntimeToolkit
 _ICON_SUFFIXES = {".svg", ".png"}
 _ENTRY_POINT_GROUPS = ("unchain.toolkits", "unchain.toolkits")
 _ARTIFACT_FALLBACK_RENDERERS = {"markdown", "text", "table", "kv", "log", "link", "json"}
+_PUBLIC_BUILTIN_TOOLKIT_DIRS = {"agent_reach", "core", "plan"}
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -702,6 +703,8 @@ class ToolkitRegistry:
     def _discover_builtin_toolkits(self) -> None:
         builtin_root = Path(__file__).resolve().parents[1] / "toolkits" / "builtin"
         for manifest_path in sorted(builtin_root.rglob("toolkit.toml")):
+            if manifest_path.parent.name not in _PUBLIC_BUILTIN_TOOLKIT_DIRS:
+                continue
             self._register_descriptor(
                 self._load_descriptor(
                     manifest_path=manifest_path,
