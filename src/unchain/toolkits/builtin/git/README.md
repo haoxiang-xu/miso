@@ -21,4 +21,5 @@ Local Git workflow tools for status inspection, diff viewing, staging, unstaging
 
 ## Usage note
 
-Load `GitToolkit` for the registered `git_*` tools. `ExternalAPIToolkit` keeps legacy Git helper methods for compatibility, but it no longer registers those helpers as toolkit tools.
+`GitToolkit` is legacy internal compatibility code. It no longer ships a public
+builtin registry manifest; prefer MCP/local Git integrations for new agents.

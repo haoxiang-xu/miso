@@ -4,7 +4,7 @@ Builtin and MCP toolkit implementations, including workspace-safe base helpers.
 
 | Metric | Value |
 | --- | --- |
-| Classes | 6 |
+| Classes | 4 |
 | Dataclasses | 2 |
 | Protocols | 0 |
 | Internal-only types | 2 |
@@ -15,8 +15,6 @@ Builtin and MCP toolkit implementations, including workspace-safe base helpers.
 | --- | --- | --- | --- |
 | `BuiltinToolkit` | `src/unchain/toolkits/base.py:10` | subpackage | class |
 | `CoreToolkit` | `src/unchain/toolkits/builtin/core/core.py:30` | subpackage | class |
-| `ExternalAPIToolkit` | `src/unchain/toolkits/builtin/external_api/external_api.py:12` | subpackage | class |
-| `GitToolkit` | `src/unchain/toolkits/builtin/git/git.py:14` | subpackage | class |
 | `PlanToolkit` | `src/unchain/toolkits/builtin/plan/plan.py:192` | subpackage | class |
 | `MCPToolkit` | `src/unchain/toolkits/mcp.py:62` | subpackage | class |
 
@@ -78,8 +76,6 @@ Public method `pop_execution_context` exposed by `BuiltinToolkit`.
 ### Collaboration and related types
 
 - `CoreToolkit`
-- `ExternalAPIToolkit`
-- `GitToolkit`
 - `PlanToolkit`
 
 ### Minimal usage example
@@ -143,8 +139,6 @@ All nine tools are registered eagerly during `__init__` and validated against `t
 ### Collaboration and related types
 
 - `BuiltinToolkit`
-- `ExternalAPIToolkit`
-- `GitToolkit`
 - `PlanToolkit`
 - `MCPToolkit`
 
@@ -160,48 +154,6 @@ agent = Agent(
     instructions="You are a coding assistant.",
     modules=(ToolsModule(tools=(CoreToolkit(workspace_root="."),)),),
 )
-```
-
-### `src/unchain/toolkits/builtin/git/git.py`
-
-Workspace-scoped Git toolkit for status, diff, stage, unstage, and commit workflows.
-
-## GitToolkit
-
-Builtin toolkit registering five fixed-argv Git tools. Path arguments are validated against workspace roots and mutating operations are confirmation-gated.
-
-| Item | Details |
-| --- | --- |
-| Source | `src/unchain/toolkits/builtin/git/git.py:14` |
-| Module role | Builtin Git workflow toolkit with workspace-scoped path validation. |
-| Inheritance | `BuiltinToolkit` |
-| Exposure | Exported from `unchain.toolkits`. |
-| Kind | Class; public-facing. |
-
-### Constructor surface
-
-- `__init__(self, *, workspace_root: str | Path | None = None, workspace_roots: list[str | Path] | None = None) -> None`
-
-`workspace_root` is the single-root convenience form; `workspace_roots` accepts multiple allowed roots. Git repository roots and path arguments must resolve inside those roots.
-
-### Registered tools
-
-| Tool | Signature | Confirmation | Notes |
-| --- | --- | --- | --- |
-| `git_status` | `git_status(cwd=".", include_untracked=True, max_output_chars=20000)` | no | Returns branch/status output plus a structured file summary. |
-| `git_diff` | `git_diff(cwd=".", staged=False, paths=None, context_lines=3, max_output_chars=50000)` | no | Returns unified worktree or staged diff output plus per-file addition/deletion counts. |
-| `git_stage` | `git_stage(paths, cwd=".", max_output_chars=20000)` | yes | Stages specific validated file paths. |
-| `git_unstage` | `git_unstage(paths, cwd=".", max_output_chars=20000)` | yes | Removes specific validated file paths from the staging area. |
-| `git_commit` | `git_commit(message, cwd=".", max_output_chars=20000)` | yes | Commits already-staged content only, with code-diff confirmation preview. |
-
-### Minimal usage example
-
-```python
-from unchain.toolkits.builtin.git import GitToolkit
-
-git = GitToolkit(workspace_root=".")
-status = git.git_status()
-diff = git.git_diff(staged=True)
 ```
 
 ### `src/unchain/toolkits/builtin/plan/plan.py`
@@ -256,80 +208,6 @@ plans.plan_update(
     steps=[{"step": "Add lifecycle tests", "status": "in_progress"}],
 )
 finalized = plans.plan_finalize(created["plan_id"])
-```
-
-### `src/unchain/toolkits/builtin/external_api/external_api.py`
-
-Outbound HTTP toolkit with simple GET/POST helpers.
-
-## ExternalAPIToolkit
-
-Implementation class used by outbound http toolkit with simple get/post helpers.
-
-| Item | Details |
-| --- | --- |
-| Source | `src/unchain/toolkits/builtin/external_api/external_api.py:12` |
-| Module role | Outbound HTTP toolkit with simple GET/POST helpers. |
-| Inheritance | `BuiltinToolkit` |
-| Exposure | Exported from its subpackage `__init__`. |
-| Kind | Class; public-facing or package-visible. |
-
-### Constructor surface
-
-The constructor is the primary place where this class defines required inputs and validation.
-
-- `__init__(self, *, workspace_root: str | Path | None=None)`
-
-### Public methods
-
-#### `__init__(self, *, workspace_root: str | Path | None=None)`
-
-Initializes the instance and validates/coerces construction-time inputs where the class enforces them.
-
-- Category: Constructor
-- Declared at: `src/unchain/toolkits/builtin/external_api/external_api.py:15`
-- Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
-- Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
-
-#### `http_get(self, url: str, headers: dict[str, str] | None=None, timeout_seconds: int=30, max_response_chars: int=50000)`
-
-Send a GET request to an external API endpoint.
-
-- Category: Method
-- Declared at: `src/unchain/toolkits/builtin/external_api/external_api.py:29`
-- Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
-- Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
-- Notes: :param url: Full URL to send the GET request to.
-:param headers: Optional dictionary of HTTP headers to include.
-:param timeout_seconds: Maximum seconds to wait for response.
-:param max_response_chars: Maximum response body chars to return.
-
-#### `http_post(self, url: str, body: str | dict[str, Any], headers: dict[str, str] | None=None, timeout_seconds: int=30, max_response_chars: int=50000)`
-
-Send a POST request to an external API endpoint.
-
-- Category: Method
-- Declared at: `src/unchain/toolkits/builtin/external_api/external_api.py:90`
-- Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
-- Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
-- Notes: :param url: Full URL to send the POST request to.
-:param body: Request body as string or dict (dict will be JSON-encoded).
-:param headers: Optional dictionary of HTTP headers to include.
-:param timeout_seconds: Maximum seconds to wait for response.
-:param max_response_chars: Maximum response body chars to return.
-
-### Collaboration and related types
-
-- `BuiltinToolkit`
-- `CoreToolkit`
-- `GitToolkit`
-- `PlanToolkit`
-
-### Minimal usage example
-
-```python
-obj = ExternalAPIToolkit(...)
-obj.http_get(...)
 ```
 
 ### `src/unchain/toolkits/mcp.py`
@@ -406,7 +284,6 @@ Execute a tool on the MCP server.
 
 - `BuiltinToolkit`
 - `CoreToolkit`
-- `ExternalAPIToolkit`
 
 ### Minimal usage example
 

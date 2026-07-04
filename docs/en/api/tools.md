@@ -334,7 +334,7 @@ agent = Agent(
     instructions="Use tool_search before assuming a capability is missing.",
     modules=(
         ToolDiscoveryModule(
-            config=ToolDiscoveryConfig(managed_toolkit_ids=("code", "external_api")),
+            config=ToolDiscoveryConfig(managed_toolkit_ids=("core", "plan")),
         ),
     ),
 )

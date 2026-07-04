@@ -18,7 +18,8 @@ This chapter is the implementation guide for adding or maintaining builtin toolk
 - `Toolkit`
 - `ToolkitRegistry`
 - `CoreToolkit`
-- `ExternalAPIToolkit`
+- `PlanToolkit`
+- `AgentReachToolkit`
 - `MCPToolkit`
 
 ## Execution and state flow

@@ -14,6 +14,9 @@ _COMMIT_DIFF_MAX_CHARS = 50_000
 class GitToolkit(BuiltinToolkit):
     """Local Git workflow toolkit with fixed argv templates and workspace-scoped path validation."""
 
+    __unchain_public_builtin__ = False
+    __unchain_legacy_compat__ = True
+
     def __init__(
         self,
         *,

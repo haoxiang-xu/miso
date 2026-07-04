@@ -139,8 +139,8 @@ Toolkit catalog and per-tool deferred discovery are wired through modules, not r
 from unchain.tools import ToolkitCatalogRuntime, ToolkitCatalogConfig
 catalog = ToolkitCatalogRuntime(
     config=ToolkitCatalogConfig(
-        managed_toolkit_ids=("code", "external_api"),
-        always_active_toolkit_ids=("code",),
+        managed_toolkit_ids=("core", "plan"),
+        always_active_toolkit_ids=("core",),
     ),
     eager_toolkits=[],
 )
@@ -152,7 +152,7 @@ from unchain.tools import ToolDiscoveryConfig
 agent = Agent(
     name="...",
     modules=(ToolDiscoveryModule(
-        config=ToolDiscoveryConfig(managed_toolkit_ids=("code", "external_api")),
+        config=ToolDiscoveryConfig(managed_toolkit_ids=("core", "plan")),
     ),),
 )
 ```

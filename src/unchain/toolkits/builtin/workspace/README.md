@@ -1,7 +1,8 @@
 # Workspace Toolkit
 
 `WorkspaceToolkit` is a legacy wrapper for older workspace-oriented consumers.
-New coding agents should use `CoreToolkit` as the default bundled surface.
+It no longer ships a public builtin registry manifest. New coding agents should
+use `CoreToolkit` as the default bundled surface.
 
 It keeps canonical coding tools such as `read`, `write`, `edit`, `glob`,
 `grep`, `shell`, and `lsp`, while keeping stable compatibility names such as

@@ -2,7 +2,7 @@
 
 `CoreToolkit` is the default coding-agent toolkit. It bundles the basic tools a Codex- or Claude Code-style agent expects: precise file reads, guarded writes, string edits, globbing, grep-style search, public web fetch, cross-platform shell execution, LSP-powered code intelligence, and structured user questions.
 
-Focused surfaces remain available for narrower runtimes:
+Focused implementation modules stay internal:
 
 - `InteractionToolkit` for structured user questions.
 - `WebToolkit` for public web fetch and extraction.

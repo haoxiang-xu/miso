@@ -305,7 +305,7 @@ The `ToolkitRegistry` discovers toolkits from three sources:
 | **Local**   | Directories in `ToolRegistryConfig.local_roots` | When configured                         |
 | **Plugins** | `entry_points(group="unchain.toolkits")`           | When installed packages declare them    |
 
-Builtins currently include `core`, `external_api`, `git`, and `plan`. The `plan` toolkit is workspace-backed: structured draft/finalized plan state is written to `plans/<plan_id>.json`, readable Markdown is written to `plans/<plan_id>.md`, and `plan_finalize` is gated behind the normal confirmation flow. It does not enforce a read-only Plan Mode, and `workspace_root` is required for plan tools.
+Public builtins currently include `core`, `plan`, and `agent_reach`. Legacy focused implementations such as workspace, web, interaction, external API, and git are internal compatibility code or should be provided through MCP/local toolkits rather than public builtin manifests. The `plan` toolkit is workspace-backed: structured draft/finalized plan state is written to `plans/<plan_id>.json`, readable Markdown is written to `plans/<plan_id>.md`, and `plan_finalize` is gated behind the normal confirmation flow. It does not enforce a read-only Plan Mode, and `workspace_root` is required for plan tools.
 
 For interactive planning, load `CoreToolkit` with `PlanToolkit`. Use `plan_start` / `plan_update` / `plan_read` to maintain the plan, `CoreToolkit.ask_user_question` when a key ambiguity needs a user decision, and `plan_finalize` only after the plan is decision-complete.
 
@@ -340,8 +340,8 @@ from unchain.tools import ToolkitCatalogRuntime, ToolkitCatalogConfig
 
 catalog = ToolkitCatalogRuntime(
     config=ToolkitCatalogConfig(
-        managed_toolkit_ids=("code", "external_api"),
-        always_active_toolkit_ids=("code",),
+        managed_toolkit_ids=("core", "plan"),
+        always_active_toolkit_ids=("core",),
     ),
     eager_toolkits=[],
 )
@@ -378,7 +378,7 @@ agent = Agent(
     instructions="Use tool_search before assuming a capability is missing.",
     modules=(
         ToolDiscoveryModule(
-            config=ToolDiscoveryConfig(managed_toolkit_ids=("code", "external_api")),
+            config=ToolDiscoveryConfig(managed_toolkit_ids=("core", "plan")),
         ),
     ),
 )

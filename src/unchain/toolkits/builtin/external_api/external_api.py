@@ -13,6 +13,9 @@ from ...base import BuiltinToolkit
 class ExternalAPIToolkit(BuiltinToolkit):
     """Toolkit for calling external HTTP APIs."""
 
+    __unchain_public_builtin__ = False
+    __unchain_legacy_compat__ = True
+
     def __init__(self, *, workspace_root: str | Path | None = None):
         super().__init__(workspace_root=workspace_root)
         self._register_api_tools()

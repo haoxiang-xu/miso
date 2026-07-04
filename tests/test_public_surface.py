@@ -94,6 +94,40 @@ def test_focused_interaction_and_web_toolkits_stay_internal(tmp_path):
     assert web_toolkit.tools["web_fetch"].requires_confirmation is True
 
 
+def test_legacy_git_and_external_api_toolkits_stay_internal_compat():
+    from unchain.toolkits.builtin.external_api import ExternalAPIToolkit
+    from unchain.toolkits.builtin.git import GitToolkit
+
+    for toolkit_cls in (ExternalAPIToolkit, GitToolkit):
+        assert toolkit_cls.__unchain_public_builtin__ is False
+        assert toolkit_cls.__unchain_legacy_compat__ is True
+
+
+def test_public_toolkit_reference_docs_exclude_legacy_compat_toolkits():
+    from pathlib import Path
+
+    docs_root = Path(__file__).resolve().parents[1] / "docs"
+    public_reference_docs = (
+        "en/api/toolkits.md",
+        "zh-CN/api/toolkits.md",
+        "en/appendix/class-index.md",
+        "zh-CN/appendix/class-index.md",
+        "en/appendix/export-index.md",
+        "zh-CN/appendix/export-index.md",
+    )
+    legacy_terms = (
+        "GitToolkit",
+        "ExternalAPIToolkit",
+        "src/unchain/toolkits/builtin/git",
+        "src/unchain/toolkits/builtin/external_api",
+    )
+
+    for relative_path in public_reference_docs:
+        text = (docs_root / relative_path).read_text(encoding="utf-8")
+        for term in legacy_terms:
+            assert term not in text, f"{term!r} leaked into {relative_path}"
+
+
 def test_web_toolkit_does_not_construct_core_toolkit_bundle(monkeypatch, tmp_path):
     import unchain.toolkits.builtin.web.web as web_module
     from unchain.toolkits.builtin.web import WebToolkit

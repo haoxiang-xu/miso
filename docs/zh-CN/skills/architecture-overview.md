@@ -105,7 +105,7 @@ src/unchain/
 ├── toolkits/            # Builtin + MCP toolkits
 │   ├── base.py          #   BuiltinToolkit — workspace-safe 基类
 │   ├── mcp.py           #   MCPToolkit — MCP server bridge
-│   └── builtin/         #   CoreToolkit, ExternalAPIToolkit, GitToolkit, PlanToolkit
+│   └── builtin/         #   CoreToolkit, PlanToolkit, AgentReachToolkit
 ├── memory/              # 两层记忆
 │   ├── manager.py       #   MemoryManager — 调度 store + strategy
 │   ├── runtime.py       #   KernelMemoryRuntime — kernel 端 facade

@@ -134,6 +134,16 @@ def test_builtin_registry_lists_expected_toolkits_and_tools():
     assert registry.require("plan").to_summary()["tool_count"] == 5
 
 
+def test_only_public_builtin_toolkits_ship_registry_manifests():
+    builtin_root = Path(__file__).resolve().parents[1] / "src" / "unchain" / "toolkits" / "builtin"
+    manifest_dirs = {
+        manifest_path.parent.name
+        for manifest_path in builtin_root.rglob("toolkit.toml")
+    }
+
+    assert manifest_dirs == {"agent_reach", "core", "plan"}
+
+
 def test_registry_instantiated_agent_reach_tools_include_emoji_icon_metadata():
     registry = ToolkitRegistry()
 

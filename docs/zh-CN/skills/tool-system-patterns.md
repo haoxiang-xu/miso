@@ -305,7 +305,7 @@ agent = Agent(
 | **Local**   | `ToolRegistryConfig.local_roots` 中的目录       | 配置时                                  |
 | **Plugins** | `entry_points(group="unchain.toolkits")`           | 已安装包声明时                          |
 
-当前内置 toolkit 包括 `core`、`external_api`、`git` 和 `plan`。`plan` toolkit 只使用 workspace 存储：结构化 draft/finalized plan state 写入 `plans/<plan_id>.json`，用户可读 Markdown 写入 `plans/<plan_id>.md`，并且 `plan_finalize` 走标准确认流程。它不会强制只读 Plan Mode；plan tools 需要提供 `workspace_root`。
+当前公开内置 toolkit 包括 `core`、`plan` 和 `agent_reach`。workspace、web、interaction、external API、git 等旧聚焦实现属于内部兼容代码，或应通过 MCP/local toolkit 提供，而不是公开 builtin manifest。`plan` toolkit 只使用 workspace 存储：结构化 draft/finalized plan state 写入 `plans/<plan_id>.json`，用户可读 Markdown 写入 `plans/<plan_id>.md`，并且 `plan_finalize` 走标准确认流程。它不会强制只读 Plan Mode；plan tools 需要提供 `workspace_root`。
 
 交互式规划推荐同时加载 `CoreToolkit` 与 `PlanToolkit`。用 `plan_start` / `plan_update` / `plan_read` 维护计划；遇到会实质改变计划的关键歧义时，用 `CoreToolkit.ask_user_question` 让用户决策；只有计划已经 decision-complete 时才调用 `plan_finalize`。
 
@@ -340,8 +340,8 @@ from unchain.tools import ToolkitCatalogRuntime, ToolkitCatalogConfig
 
 catalog = ToolkitCatalogRuntime(
     config=ToolkitCatalogConfig(
-        managed_toolkit_ids=("code", "external_api"),
-        always_active_toolkit_ids=("code",),
+        managed_toolkit_ids=("core", "plan"),
+        always_active_toolkit_ids=("core",),
     ),
     eager_toolkits=[],
 )
@@ -378,7 +378,7 @@ agent = Agent(
     instructions="缺能力时先调用 tool_search，不要假设没有。",
     modules=(
         ToolDiscoveryModule(
-            config=ToolDiscoveryConfig(managed_toolkit_ids=("code", "external_api")),
+            config=ToolDiscoveryConfig(managed_toolkit_ids=("core", "plan")),
         ),
     ),
 )

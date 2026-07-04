@@ -18,7 +18,8 @@
 - `Toolkit`
 - `ToolkitRegistry`
 - `CoreToolkit`
-- `ExternalAPIToolkit`
+- `PlanToolkit`
+- `AgentReachToolkit`
 - `MCPToolkit`
 
 ## 执行流与状态流
