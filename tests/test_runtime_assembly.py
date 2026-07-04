@@ -90,6 +90,31 @@ def test_kernel_loop_does_not_own_default_runtime_assembly():
     assert "_ensure_runtime_harnesses" not in source
 
 
+def test_kernel_loop_does_not_import_default_runtime_feature_hooks():
+    import unchain.kernel.loop as kernel_loop_module
+
+    source = inspect.getsource(kernel_loop_module)
+
+    assert "ToolPromptHarness" not in source
+    assert "ToolExecutionHarness" not in source
+    assert "HumanInputResumeHarness" not in source
+    assert "WorkspaceChangeArtifactHarness" not in source
+    assert "KernelMemoryRuntime" not in source
+
+
+def test_runtime_assembly_owns_default_feature_hooks():
+    from unchain.runtime.assembly import build_default_runtime_components
+
+    names = [component.name for component in build_default_runtime_components()]
+
+    assert names == [
+        "tool_prompt",
+        "tool_execution",
+        "human_input_resume",
+        "workspace_change_artifacts",
+    ]
+
+
 def test_kernel_loop_does_not_own_workspace_change_artifact_emission():
     import unchain.kernel.loop as kernel_loop_module
 
