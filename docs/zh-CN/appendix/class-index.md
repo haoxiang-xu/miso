@@ -39,6 +39,7 @@
 ## [Toolkit 实现参考](../api/toolkits.md)
 
 - `BuiltinToolkit` -> `src/unchain/toolkits/base.py:14` (subpackage, class)
+- `AgentReachToolkit` -> `src/unchain/toolkits/builtin/agent_reach/agent_reach.py:13` (subpackage, class)
 - `CoreToolkit` -> `src/unchain/toolkits/builtin/core/core.py:30` (subpackage, class)
 - `_PlanStep` -> `src/unchain/toolkits/builtin/plan/plan.py:30` (internal, dataclass)
 - `_PlanState` -> `src/unchain/toolkits/builtin/plan/plan.py:59` (internal, dataclass)

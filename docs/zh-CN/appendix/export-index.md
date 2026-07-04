@@ -114,6 +114,7 @@
 | 名称 | 源码 | 参考 |
 | --- | --- | --- |
 | `BuiltinToolkit` | `src/unchain/toolkits/base.py:14` | `../api/toolkits.md#builtintoolkit` |
+| `AgentReachToolkit` | `src/unchain/toolkits/builtin/agent_reach/agent_reach.py:13` | `../api/toolkits.md#agentreachtoolkit` |
 | `CoreToolkit` | `src/unchain/toolkits/builtin/core/core.py:30` | `../api/toolkits.md#coretoolkit` |
 | `PlanToolkit` | `src/unchain/toolkits/builtin/plan/plan.py:192` | `../api/toolkits.md#plantoolkit` |
 | `MCPToolkit` | `src/unchain/toolkits/mcp.py:62` | `../api/toolkits.md#mcptoolkit` |

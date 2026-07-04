@@ -4,7 +4,7 @@ Builtin and MCP toolkit implementations, including workspace-safe base helpers.
 
 | Metric | Value |
 | --- | --- |
-| Classes | 4 |
+| Classes | 5 |
 | Dataclasses | 2 |
 | Protocols | 0 |
 | Internal-only types | 2 |
@@ -14,6 +14,7 @@ Builtin and MCP toolkit implementations, including workspace-safe base helpers.
 | Class | Source | Exposure | Kind |
 | --- | --- | --- | --- |
 | `BuiltinToolkit` | `src/unchain/toolkits/base.py:10` | subpackage | class |
+| `AgentReachToolkit` | `src/unchain/toolkits/builtin/agent_reach/agent_reach.py:13` | subpackage | class |
 | `CoreToolkit` | `src/unchain/toolkits/builtin/core/core.py:30` | subpackage | class |
 | `PlanToolkit` | `src/unchain/toolkits/builtin/plan/plan.py:192` | subpackage | class |
 | `MCPToolkit` | `src/unchain/toolkits/mcp.py:62` | subpackage | class |
@@ -209,6 +210,28 @@ plans.plan_update(
 )
 finalized = plans.plan_finalize(created["plan_id"])
 ```
+
+### `src/unchain/toolkits/builtin/agent_reach/agent_reach.py`
+
+Agent Reach toolkit for read-only web and media metadata helpers.
+
+## AgentReachToolkit
+
+Read-only toolkit wrapping Agent-Reach status, web page reading, and YouTube metadata helpers.
+
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/toolkits/builtin/agent_reach/agent_reach.py:13` |
+| Module role | Read-only Agent-Reach helper toolkit. |
+| Inheritance | `Toolkit` |
+| Exposure | Exported from `unchain.toolkits`. |
+| Kind | Class; public-facing. |
+
+### Registered tools
+
+- `agent_reach_status`
+- `agent_reach_read_web`
+- `agent_reach_youtube_metadata`
 
 ### `src/unchain/toolkits/mcp.py`
 

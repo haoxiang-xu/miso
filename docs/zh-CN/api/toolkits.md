@@ -4,7 +4,7 @@
 
 | 指标 | 值 |
 | --- | --- |
-| 类数量 | 4 |
+| 类数量 | 5 |
 | Dataclass | 2 |
 | 协议 | 0 |
 | 仅内部类型 | 2 |
@@ -14,6 +14,7 @@
 | 类 | 源码 | 导出 | 类型 |
 | --- | --- | --- | --- |
 | `BuiltinToolkit` | `src/unchain/toolkits/base.py:10` | subpackage | class |
+| `AgentReachToolkit` | `src/unchain/toolkits/builtin/agent_reach/agent_reach.py:13` | subpackage | class |
 | `CoreToolkit` | `src/unchain/toolkits/builtin/core/core.py:30` | subpackage | class |
 | `PlanToolkit` | `src/unchain/toolkits/builtin/plan/plan.py:192` | subpackage | class |
 | `MCPToolkit` | `src/unchain/toolkits/mcp.py:62` | subpackage | class |
@@ -209,6 +210,28 @@ plans.plan_update(
 )
 finalized = plans.plan_finalize(created["plan_id"])
 ```
+
+### `src/unchain/toolkits/builtin/agent_reach/agent_reach.py`
+
+Agent Reach toolkit，提供只读网页与媒体元数据辅助工具。
+
+## AgentReachToolkit
+
+只读 toolkit，封装 Agent-Reach 状态检查、网页读取和 YouTube 元数据辅助能力。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/toolkits/builtin/agent_reach/agent_reach.py:13` |
+| 模块职责 | 只读 Agent-Reach helper toolkit。 |
+| 继承/协议 | `Toolkit` |
+| 导出状态 | 从 `unchain.toolkits` 导出。 |
+| 对象类型 | 类；公开。 |
+
+### 注册的工具
+
+- `agent_reach_status`
+- `agent_reach_read_web`
+- `agent_reach_youtube_metadata`
 
 ### `src/unchain/toolkits/mcp.py`
 

@@ -85,7 +85,10 @@ def test_legacy_focused_toolkit_classes_are_removed():
             importlib.import_module(module_name)
 
     for package_name, class_name in removed_exports:
-        package = importlib.import_module(package_name)
+        try:
+            package = importlib.import_module(package_name)
+        except ModuleNotFoundError:
+            continue
         assert not hasattr(package, class_name)
 
 
@@ -112,7 +115,10 @@ def test_legacy_git_and_external_api_toolkit_classes_are_removed():
             importlib.import_module(module_name)
 
     for package_name, class_name in removed_exports:
-        package = importlib.import_module(package_name)
+        try:
+            package = importlib.import_module(package_name)
+        except ModuleNotFoundError:
+            continue
         assert not hasattr(package, class_name)
 
 
@@ -143,6 +149,31 @@ def test_public_toolkit_reference_docs_exclude_legacy_compat_toolkits():
         text = docs_path.read_text(encoding="utf-8")
         for term in legacy_terms:
             assert term not in text, f"{term!r} leaked into {relative_path}"
+
+
+def test_public_toolkit_reference_docs_include_all_current_public_toolkits():
+    from pathlib import Path
+
+    docs_root = Path(__file__).resolve().parents[1] / "docs"
+    reference_docs = (
+        "en/api/toolkits.md",
+        "zh-CN/api/toolkits.md",
+        "en/appendix/class-index.md",
+        "zh-CN/appendix/class-index.md",
+        "en/appendix/export-index.md",
+        "zh-CN/appendix/export-index.md",
+    )
+    current_terms = (
+        "CoreToolkit",
+        "PlanToolkit",
+        "AgentReachToolkit",
+        "MCPToolkit",
+    )
+
+    for relative_path in reference_docs:
+        text = (docs_root / relative_path).read_text(encoding="utf-8")
+        for term in current_terms:
+            assert term in text, f"{term!r} missing from {relative_path}"
 
 
 def test_completion_policy_reference_docs_state_opt_in_runtime_boundary():
