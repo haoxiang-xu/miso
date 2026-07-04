@@ -360,12 +360,6 @@ class KernelLoop:
                 return content.strip()
         return ""
 
-    def _build_result(self, state: RunState, *, status: str):
-        return build_kernel_run_result(state, status=status)
-
-    def _build_legacy_bundle(self, state: RunState, *, status: str) -> dict[str, Any]:
-        return build_legacy_run_bundle(state, status=status)
-
     def _run_state(
         self,
         state: RunState,
@@ -427,7 +421,7 @@ class KernelLoop:
                         "run_max_iterations",
                         run_id,
                         iteration=int(state.iteration),
-                        bundle=self._build_legacy_bundle(state, status="max_iterations"),
+                        bundle=build_legacy_run_bundle(state, status="max_iterations"),
                     )
                     mi_response = on_max_iterations({
                         "iteration": int(state.iteration),
@@ -445,7 +439,7 @@ class KernelLoop:
                             iteration=int(state.iteration),
                             status="max_iterations",
                         )
-                        return self._build_result(state, status="max_iterations")
+                        return build_kernel_run_result(state, status="max_iterations")
                 else:
                     state.run_status = "max_iterations"
                     self._dispatch_run_finalizing(
@@ -460,9 +454,9 @@ class KernelLoop:
                         "run_max_iterations",
                         run_id,
                         iteration=int(state.iteration),
-                        bundle=self._build_legacy_bundle(state, status="max_iterations"),
+                        bundle=build_legacy_run_bundle(state, status="max_iterations"),
                     )
-                    return self._build_result(state, status="max_iterations")
+                    return build_kernel_run_result(state, status="max_iterations")
 
             self.emit_event(
                 callback,
@@ -493,13 +487,13 @@ class KernelLoop:
                 response_id=turn.response_id,
                 has_tool_calls=bool(turn.tool_calls),
                 status=state.run_status,
-                bundle=self._build_legacy_bundle(
+                bundle=build_legacy_run_bundle(
                     state,
                     status="running" if turn.tool_calls else "completed",
                 ),
             )
             if state.run_status == "awaiting_human_input":
-                return self._build_result(state, status="awaiting_human_input")
+                return build_kernel_run_result(state, status="awaiting_human_input")
             if state.run_status == "completed":
                 final_text = self._last_assistant_text(state.transcript)
                 self.emit_event(
@@ -522,9 +516,9 @@ class KernelLoop:
                     run_id,
                     iteration=max(0, int(state.iteration) - 1),
                     status="completed",
-                    bundle=self._build_legacy_bundle(state, status="completed"),
+                    bundle=build_legacy_run_bundle(state, status="completed"),
                 )
-                return self._build_result(state, status="completed")
+                return build_kernel_run_result(state, status="completed")
             if turn.tool_calls:
                 self.emit_event(
                     callback,
@@ -555,9 +549,9 @@ class KernelLoop:
                 run_id,
                 iteration=max(0, int(state.iteration) - 1),
                 status="completed",
-                bundle=self._build_legacy_bundle(state, status="completed"),
+                bundle=build_legacy_run_bundle(state, status="completed"),
             )
-            return self._build_result(state, status="completed")
+            return build_kernel_run_result(state, status="completed")
 
     def run(
         self,

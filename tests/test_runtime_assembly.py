@@ -152,18 +152,10 @@ def test_kernel_loop_does_not_own_model_turn_request_or_token_accounting():
 def test_kernel_loop_does_not_own_run_result_or_legacy_bundle_assembly():
     import unchain.kernel.loop as kernel_loop_module
 
-    result_source = inspect.getsource(kernel_loop_module.KernelLoop._build_result)
-    bundle_source = inspect.getsource(kernel_loop_module.KernelLoop._build_legacy_bundle)
+    source = inspect.getsource(kernel_loop_module.KernelLoop)
 
-    assert "KernelRunResult" not in result_source
-    assert "token_state" not in result_source
-    assert "previous_response_id" not in result_source
-    assert "human_input_request" not in result_source
-
-    assert "token_state" not in bundle_source
-    assert "context_window_used_pct" not in bundle_source
-    assert "previous_response_id" not in bundle_source
-    assert "human_input_request" not in bundle_source
+    assert "_build_result" not in source
+    assert "_build_legacy_bundle" not in source
 
 
 def test_kernel_loop_run_does_not_auto_register_default_runtime_hooks():
