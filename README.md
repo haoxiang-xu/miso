@@ -313,7 +313,7 @@ from unchain.tools import (
 from unchain.providers import OpenAIModelIO, AnthropicModelIO, OllamaModelIO
 
 # Toolkits
-from unchain.toolkits import CoreToolkit, ExternalAPIToolkit, MCPToolkit
+from unchain.toolkits import AgentReachToolkit, CoreToolkit, MCPToolkit, PlanToolkit
 
 # Memory
 from unchain.memory import MemoryConfig, MemoryManager, KernelMemoryRuntime

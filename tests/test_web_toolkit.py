@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from unchain.tools import ToolExecutionContext
-from unchain.toolkits import WebToolkit
 from unchain.toolkits.builtin.core import web_fetch as web_fetch_module
+from unchain.toolkits.builtin.web import WebToolkit
 
 
 def _web_fetch_success_payload(url: str, *, content_type: str = "text/plain") -> dict[str, object]:

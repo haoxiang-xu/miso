@@ -197,7 +197,7 @@ Builtin toolkit registering five fixed-argv Git tools. Path arguments are valida
 ### Minimal usage example
 
 ```python
-from unchain.toolkits import GitToolkit
+from unchain.toolkits.builtin.git import GitToolkit
 
 git = GitToolkit(workspace_root=".")
 status = git.git_status()

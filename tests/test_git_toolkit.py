@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from unchain.toolkits import GitToolkit
+from unchain.toolkits.builtin.git import GitToolkit
 from unchain.tools.models import ToolConfirmationPolicy
 from unchain.toolkits.builtin.git.git import _parse_staged_diff_files
 
@@ -544,7 +544,7 @@ def test_git_toolkit_is_not_listed_as_public_builtin() -> None:
     assert "git" not in toolkit_ids
 
 
-def test_git_toolkit_importable_from_unchain_toolkits() -> None:
-    from unchain.toolkits import GitToolkit as GT  # noqa: F401
+def test_git_toolkit_stays_importable_from_internal_builtin_path() -> None:
+    from unchain.toolkits.builtin.git import GitToolkit as GT
 
     assert GT is GitToolkit

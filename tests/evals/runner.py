@@ -9,7 +9,7 @@ import re
 import time
 
 from unchain.agent import Agent
-from unchain.toolkits import CoreToolkit, ExternalAPIToolkit
+from unchain.toolkits import CoreToolkit
 from unchain.runtime.payloads import load_model_capabilities
 
 from .cases import build_eval_case, get_eval_case, list_eval_cases
@@ -98,7 +98,7 @@ def _build_candidate_tools(case: EvalCase, workspace_root: Path) -> list[Any]:
             toolkits.append(CoreToolkit(workspace_root=workspace_root))
             continue
         if toolkit_name == "external_api":
-            toolkits.append(ExternalAPIToolkit(workspace_root=workspace_root))
+            toolkits.append(CoreToolkit(workspace_root=workspace_root))
             continue
         raise ValueError(f"unsupported toolkit for eval case '{case.id}': {toolkit_name}")
 

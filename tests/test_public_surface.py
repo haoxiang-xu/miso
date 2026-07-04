@@ -33,25 +33,33 @@ def test_tools_surface_exports_runtime_contracts():
 
 
 def test_toolkits_surface_exports_current_concrete_toolkits():
-    from unchain.toolkits import (
-        AgentReachToolkit,
-        CoreToolkit,
-        ExternalAPIToolkit,
-        GitToolkit,
-        MCPToolkit,
-        PlanToolkit,
-    )
+    import unchain.toolkits as toolkits
+    from unchain.toolkits import AgentReachToolkit, CoreToolkit, MCPToolkit, PlanToolkit
 
     assert CoreToolkit.__name__ == "CoreToolkit"
-    assert GitToolkit.__name__ == "GitToolkit"
     assert PlanToolkit.__name__ == "PlanToolkit"
-    assert ExternalAPIToolkit.__name__ == "ExternalAPIToolkit"
     assert AgentReachToolkit.__name__ == "AgentReachToolkit"
     assert MCPToolkit.__name__ == "MCPToolkit"
+    assert sorted(toolkits.__all__) == [
+        "AgentReachToolkit",
+        "BuiltinToolkit",
+        "CoreToolkit",
+        "MCPToolkit",
+        "PlanToolkit",
+    ]
+    for legacy_name in (
+        "DevToolkit",
+        "ExternalAPIToolkit",
+        "GitToolkit",
+        "InteractionToolkit",
+        "WebToolkit",
+        "WorkspaceToolkit",
+    ):
+        assert not hasattr(toolkits, legacy_name)
 
 
-def test_toolkits_surface_exports_workspace_compatibility_toolkit(tmp_path):
-    from unchain.toolkits import DevToolkit, WorkspaceToolkit
+def test_workspace_compatibility_toolkit_stays_internal(tmp_path):
+    from unchain.toolkits.builtin.workspace.workspace import DevToolkit, WorkspaceToolkit
 
     toolkit = WorkspaceToolkit(workspace_root=tmp_path)
 
@@ -72,8 +80,9 @@ def test_toolkits_surface_exports_workspace_compatibility_toolkit(tmp_path):
     assert toolkit.tools["terminal_exec"].requires_confirmation is True
 
 
-def test_toolkits_surface_exports_focused_interaction_and_web_toolkits(tmp_path):
-    from unchain.toolkits import InteractionToolkit, WebToolkit
+def test_focused_interaction_and_web_toolkits_stay_internal(tmp_path):
+    from unchain.toolkits.builtin.interaction import InteractionToolkit
+    from unchain.toolkits.builtin.web import WebToolkit
 
     interaction_toolkit = InteractionToolkit(workspace_root=tmp_path)
     web_toolkit = WebToolkit(workspace_root=tmp_path)
@@ -87,7 +96,7 @@ def test_toolkits_surface_exports_focused_interaction_and_web_toolkits(tmp_path)
 
 def test_web_toolkit_does_not_construct_core_toolkit_bundle(monkeypatch, tmp_path):
     import unchain.toolkits.builtin.web.web as web_module
-    from unchain.toolkits import WebToolkit
+    from unchain.toolkits.builtin.web import WebToolkit
 
     def fail_core_toolkit(*args, **kwargs):
         raise AssertionError("WebToolkit should not construct the CoreToolkit bundle")

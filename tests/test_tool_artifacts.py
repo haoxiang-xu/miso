@@ -12,7 +12,8 @@ from unchain.kernel import ModelTurnResult
 from unchain.kernel.types import ToolCall as KernelToolCall
 from unchain.runtime import build_runtime_loop
 from unchain.toolkits.base import BuiltinToolkit
-from unchain.toolkits import CoreToolkit, GitToolkit, PlanToolkit
+from unchain.toolkits import CoreToolkit, PlanToolkit
+from unchain.toolkits.builtin.git import GitToolkit
 from unchain.tools._diff_helpers import build_code_diff_payload
 from unchain.tools import Toolkit
 

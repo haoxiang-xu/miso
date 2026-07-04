@@ -197,7 +197,7 @@ agent = Agent(
 ### 最小调用示例
 
 ```python
-from unchain.toolkits import GitToolkit
+from unchain.toolkits.builtin.git import GitToolkit
 
 git = GitToolkit(workspace_root=".")
 status = git.git_status()
