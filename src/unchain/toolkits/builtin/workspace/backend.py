@@ -32,22 +32,6 @@ class WorkspaceToolkitBackend(CoreCodingBackend):
         super().shutdown()
         self._core.shutdown()
 
-    def lsp(
-        self,
-        operation: str,
-        file_path: str,
-        line: int | None = None,
-        character: int | None = None,
-        query: str = "",
-    ) -> dict[str, Any]:
-        return self._core.lsp(
-            operation=operation,
-            file_path=file_path,
-            line=line,
-            character=character,
-            query=query,
-        )
-
     def _resolve_write_confirmation(self, arguments: dict[str, Any], execution_context: Any) -> Any:
         return self._core._resolve_write_confirmation(arguments, execution_context)
 

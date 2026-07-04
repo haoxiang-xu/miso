@@ -316,7 +316,7 @@ def test_core_toolkit_composes_focused_interaction_and_web_toolkits():
         assert toolkit.tools["web_fetch"] is toolkit._web_toolkit.tools["web_fetch"]
 
 
-def test_core_toolkit_uses_core_coding_backend_for_file_search_and_shell_tools(monkeypatch):
+def test_core_toolkit_uses_core_coding_backend_for_coding_tools(monkeypatch):
     from unchain.toolkits.builtin.core.coding_backend import CoreCodingBackend
 
     calls: list[str] = []
@@ -327,6 +327,7 @@ def test_core_toolkit_uses_core_coding_backend_for_file_search_and_shell_tools(m
     original_grep = CoreCodingBackend.grep
     original_shell = CoreCodingBackend.shell
     original_shell_confirmation = CoreCodingBackend._resolve_shell_confirmation
+    original_lsp = CoreCodingBackend.lsp
 
     def tracked_read(self, *args, **kwargs):
         calls.append("read")
@@ -356,6 +357,10 @@ def test_core_toolkit_uses_core_coding_backend_for_file_search_and_shell_tools(m
         calls.append("shell_confirmation")
         return original_shell_confirmation(self, *args, **kwargs)
 
+    def tracked_lsp(self, *args, **kwargs):
+        calls.append("lsp")
+        return original_lsp(self, *args, **kwargs)
+
     monkeypatch.setattr(CoreCodingBackend, "read", tracked_read)
     monkeypatch.setattr(CoreCodingBackend, "write", tracked_write)
     monkeypatch.setattr(CoreCodingBackend, "edit", tracked_edit)
@@ -363,6 +368,7 @@ def test_core_toolkit_uses_core_coding_backend_for_file_search_and_shell_tools(m
     monkeypatch.setattr(CoreCodingBackend, "grep", tracked_grep)
     monkeypatch.setattr(CoreCodingBackend, "shell", tracked_shell)
     monkeypatch.setattr(CoreCodingBackend, "_resolve_shell_confirmation", tracked_shell_confirmation)
+    monkeypatch.setattr(CoreCodingBackend, "lsp", tracked_lsp)
 
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = CoreToolkit(workspace_root=tmp)
@@ -376,9 +382,10 @@ def test_core_toolkit_uses_core_coding_backend_for_file_search_and_shell_tools(m
         grep_result = toolkit.grep("gamma", path=str(Path(tmp).resolve()))
         shell_result = toolkit.shell(action="invalid")
         confirmation = toolkit._resolve_shell_confirmation({"action": "poll"}, None)
+        lsp_result = toolkit.lsp(operation="rename", file_path=str(target))
 
     assert type(toolkit._coding_backend).__name__ == "CoreCodingBackend"
-    assert calls == ["read", "write", "edit", "glob", "grep", "shell", "shell_confirmation"]
+    assert calls == ["read", "write", "edit", "glob", "grep", "shell", "shell_confirmation", "lsp"]
     assert read_result["truncated"] is False
     assert write_result["operation"] == "update"
     assert edit_result["replacement_count"] == 1
@@ -386,6 +393,7 @@ def test_core_toolkit_uses_core_coding_backend_for_file_search_and_shell_tools(m
     assert grep_result["match_count"] == 1
     assert shell_result["error"] == "action must be one of: run, poll, kill"
     assert confirmation.requires_confirmation is False
+    assert "operation must be one of" in lsp_result["error"]
 
 
 def test_code_toolkit_requires_full_read_before_mutating_existing_files():
@@ -971,12 +979,12 @@ def test_code_toolkit_lsp_python_operations_use_fake_server(monkeypatch):
         (root / "ignored.py").write_text("ignored\n", encoding="utf-8")
 
         monkeypatch.setattr(
-            toolkit._lsp_runtime,
+            toolkit._coding_backend._lsp_runtime,
             "_server_spec_for_language",
             lambda language: LSPServerSpec(language=language, server_name="fake-lsp", command=[sys.executable, "-u", str(script)]),
         )
         monkeypatch.setattr(
-            toolkit._lsp_runtime,
+            toolkit._coding_backend._lsp_runtime,
             "_gitignored_paths",
             lambda paths, *, root: {path for path in paths if path.name == "ignored.py"},
         )
@@ -1031,7 +1039,7 @@ def test_code_toolkit_lsp_typescript_symbols_reuse_session_and_shutdown(monkeypa
         (root / "util.ts").write_text("export function helper() {}\n", encoding="utf-8")
 
         monkeypatch.setattr(
-            toolkit._lsp_runtime,
+            toolkit._coding_backend._lsp_runtime,
             "_server_spec_for_language",
             lambda language: LSPServerSpec(language=language, server_name="fake-lsp", command=[sys.executable, "-u", str(script)]),
         )
@@ -1047,7 +1055,7 @@ def test_code_toolkit_lsp_typescript_symbols_reuse_session_and_shutdown(monkeypa
         assert "Document symbols:" in first["result"]
         assert "Demo (Class)" in first["result"]
 
-        session_before = next(iter(toolkit._lsp_runtime._sessions.values()))
+        session_before = next(iter(toolkit._coding_backend._lsp_runtime._sessions.values()))
         second = toolkit.execute(
             "lsp",
             {
@@ -1056,7 +1064,7 @@ def test_code_toolkit_lsp_typescript_symbols_reuse_session_and_shutdown(monkeypa
                 "query": "Demo",
             },
         )
-        session_after = next(iter(toolkit._lsp_runtime._sessions.values()))
+        session_after = next(iter(toolkit._coding_backend._lsp_runtime._sessions.values()))
 
         assert second["ok"] is True
         assert second["result_count"] == 2
@@ -1090,7 +1098,7 @@ def test_code_toolkit_lsp_validates_paths_and_missing_servers(monkeypatch):
             {"operation": "documentSymbol", "file_path": str(unsupported)},
         )
 
-        monkeypatch.setattr(toolkit._lsp_runtime, "_server_spec_for_language", lambda language: None)
+        monkeypatch.setattr(toolkit._coding_backend._lsp_runtime, "_server_spec_for_language", lambda language: None)
         missing_server = toolkit.execute(
             "lsp",
             {"operation": "documentSymbol", "file_path": str(target)},

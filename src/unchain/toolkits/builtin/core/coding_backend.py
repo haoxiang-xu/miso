@@ -13,6 +13,7 @@ from typing import Any
 
 from ...base import BuiltinExecutionContext
 from ....tools.models import ToolConfirmationPolicy
+from .lsp_runtime import LSPRuntime, LSPRuntimeError
 from .shell_runtime import ShellRuntime
 
 
@@ -62,6 +63,7 @@ class CoreCodingBackend:
     }
     _PDF_SUFFIXES: set[str] = {".pdf"}
     _MAX_GLOB_RESULTS = 200
+    _LSP_RESULT_CHAR_LIMIT = 100_000
 
     def __init__(
         self,
@@ -80,6 +82,7 @@ class CoreCodingBackend:
         self._execution_context_provider = execution_context_provider
         self._execution_context_stack: list[BuiltinExecutionContext] = []
         self._read_snapshots: dict[str, dict[str, _ReadSnapshot]] = {}
+        self._lsp_runtime = LSPRuntime(self.workspace_roots)
         self._shell_runtime = ShellRuntime(self.workspace_roots)
 
     @property
@@ -98,6 +101,7 @@ class CoreCodingBackend:
             self._execution_context_stack.pop()
 
     def shutdown(self) -> None:
+        self._lsp_runtime.shutdown()
         self._shell_runtime.shutdown()
 
     def _session_key(self) -> str:
@@ -685,6 +689,136 @@ class CoreCodingBackend:
         if self._shell_runtime.is_low_risk_command(command, shell_family):
             return ToolConfirmationPolicy(requires_confirmation=False)
         return ToolConfirmationPolicy(requires_confirmation=True)
+
+    def lsp(
+        self,
+        operation: str,
+        file_path: str,
+        line: int | None = None,
+        character: int | None = None,
+        query: str = "",
+    ) -> dict[str, Any]:
+        resolved_operation = str(operation or "").strip()
+        allowed_operations = {
+            "goToDefinition",
+            "findReferences",
+            "hover",
+            "documentSymbol",
+            "workspaceSymbol",
+        }
+        if resolved_operation not in allowed_operations:
+            return {
+                "ok": False,
+                "operation": resolved_operation,
+                "file_path": str(file_path or ""),
+                "result": "",
+                "result_count": 0,
+                "file_count": 0,
+                "language": "",
+                "server": "",
+                "error": (
+                    "operation must be one of: goToDefinition, findReferences, hover, "
+                    "documentSymbol, workspaceSymbol"
+                ),
+            }
+
+        target, err = self._resolve_absolute_path(file_path)
+        if target is None:
+            return {
+                "ok": False,
+                "operation": resolved_operation,
+                "file_path": str(file_path or ""),
+                "result": "",
+                "result_count": 0,
+                "file_count": 0,
+                "language": "",
+                "server": "",
+                "error": err or "invalid file path",
+            }
+        if not target.exists():
+            return {
+                "ok": False,
+                "operation": resolved_operation,
+                "file_path": str(target),
+                "result": "",
+                "result_count": 0,
+                "file_count": 0,
+                "language": "",
+                "server": "",
+                "error": f"file not found: {target}",
+            }
+        if not target.is_file():
+            return {
+                "ok": False,
+                "operation": resolved_operation,
+                "file_path": str(target),
+                "result": "",
+                "result_count": 0,
+                "file_count": 0,
+                "language": "",
+                "server": "",
+                "error": f"not a file: {target}",
+            }
+
+        if resolved_operation in {"goToDefinition", "findReferences", "hover"}:
+            line_value = self._coerce_nonnegative_int(line, 0)
+            character_value = self._coerce_nonnegative_int(character, 0)
+            if line_value <= 0 or character_value <= 0:
+                return {
+                    "ok": False,
+                    "operation": resolved_operation,
+                    "file_path": str(target),
+                    "result": "",
+                    "result_count": 0,
+                    "file_count": 0,
+                    "language": "",
+                    "server": "",
+                    "error": "line and character are required positive integers for this operation",
+                }
+        else:
+            line_value = None
+            character_value = None
+
+        try:
+            result = self._lsp_runtime.execute(
+                file_path=target,
+                operation=resolved_operation,
+                line=line_value,
+                character=character_value,
+                query=str(query or ""),
+            )
+        except LSPRuntimeError as exc:
+            return {
+                "ok": False,
+                "operation": resolved_operation,
+                "file_path": str(target),
+                "result": "",
+                "result_count": 0,
+                "file_count": 0,
+                "language": "",
+                "server": "",
+                "error": str(exc),
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "operation": resolved_operation,
+                "file_path": str(target),
+                "result": "",
+                "result_count": 0,
+                "file_count": 0,
+                "language": "",
+                "server": "",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+        result_text = result.get("result")
+        if isinstance(result_text, str) and len(result_text) > self._LSP_RESULT_CHAR_LIMIT:
+            result["result"] = result_text[: self._LSP_RESULT_CHAR_LIMIT]
+            result["truncated"] = True
+        else:
+            result["truncated"] = False
+        return result
 
     def _record_workspace_change(
         self,

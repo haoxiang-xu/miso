@@ -81,8 +81,8 @@ def test_workspace_toolkit_wraps_core_coding_backend(monkeypatch, tmp_path: Path
 def test_workspace_backend_is_legacy_adapter_over_core_coding_backend():
     assert issubclass(WorkspaceToolkitBackend, CoreCodingBackend)
     assert "__getattr__" not in WorkspaceToolkitBackend.__dict__
-    assert {"glob", "grep", "shell"}.issubset(CoreCodingBackend.__dict__)
-    assert {"lsp"}.issubset(WorkspaceToolkitBackend.__dict__)
+    assert {"glob", "grep", "shell", "lsp"}.issubset(CoreCodingBackend.__dict__)
+    assert "lsp" not in WorkspaceToolkitBackend.__dict__
 
 
 def test_workspace_backend_owns_read_state_and_helpers(tmp_path: Path):

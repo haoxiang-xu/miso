@@ -12,7 +12,6 @@ from ....tools.models import ToolConfirmationPolicy, ToolExecutionContext, ToolH
 from ..interaction import InteractionToolkit
 from ..web import WebToolkit
 from .coding_backend import CoreCodingBackend
-from .lsp_runtime import LSPRuntime, LSPRuntimeError
 from .web_fetch import run_extract_model
 
 
@@ -44,8 +43,6 @@ class CoreToolkit(BuiltinToolkit):
         ".avif",
     }
     _PDF_SUFFIXES: set[str] = {".pdf"}
-    _LSP_RESULT_CHAR_LIMIT = 100_000
-
     def __init__(
         self,
         *,
@@ -60,7 +57,6 @@ class CoreToolkit(BuiltinToolkit):
         )
         self._interaction_toolkit = InteractionToolkit(workspace_roots=self.workspace_roots)
         self._web_toolkit = WebToolkit(workspace_roots=self.workspace_roots)
-        self._lsp_runtime = LSPRuntime(self.workspace_roots)
         self._web_fetch_service = self._web_toolkit._web_fetch_service
         self._register_tools()
 
@@ -486,127 +482,13 @@ class CoreToolkit(BuiltinToolkit):
             character: One-based character offset for cursor-based operations.
             query: Optional workspace symbol query used only when `operation="workspaceSymbol"`.
         """
-        resolved_operation = str(operation or "").strip()
-        allowed_operations = {
-            "goToDefinition",
-            "findReferences",
-            "hover",
-            "documentSymbol",
-            "workspaceSymbol",
-        }
-        if resolved_operation not in allowed_operations:
-            return {
-                "ok": False,
-                "operation": resolved_operation,
-                "file_path": str(file_path or ""),
-                "result": "",
-                "result_count": 0,
-                "file_count": 0,
-                "language": "",
-                "server": "",
-                "error": (
-                    "operation must be one of: goToDefinition, findReferences, hover, "
-                    "documentSymbol, workspaceSymbol"
-                ),
-            }
-
-        target, err = self._resolve_absolute_path(file_path)
-        if target is None:
-            return {
-                "ok": False,
-                "operation": resolved_operation,
-                "file_path": str(file_path or ""),
-                "result": "",
-                "result_count": 0,
-                "file_count": 0,
-                "language": "",
-                "server": "",
-                "error": err or "invalid file path",
-            }
-        if not target.exists():
-            return {
-                "ok": False,
-                "operation": resolved_operation,
-                "file_path": str(target),
-                "result": "",
-                "result_count": 0,
-                "file_count": 0,
-                "language": "",
-                "server": "",
-                "error": f"file not found: {target}",
-            }
-        if not target.is_file():
-            return {
-                "ok": False,
-                "operation": resolved_operation,
-                "file_path": str(target),
-                "result": "",
-                "result_count": 0,
-                "file_count": 0,
-                "language": "",
-                "server": "",
-                "error": f"not a file: {target}",
-            }
-
-        if resolved_operation in {"goToDefinition", "findReferences", "hover"}:
-            line_value = self._coerce_nonnegative_int(line, 0)
-            character_value = self._coerce_nonnegative_int(character, 0)
-            if line_value <= 0 or character_value <= 0:
-                return {
-                    "ok": False,
-                    "operation": resolved_operation,
-                    "file_path": str(target),
-                    "result": "",
-                    "result_count": 0,
-                    "file_count": 0,
-                    "language": "",
-                    "server": "",
-                    "error": "line and character are required positive integers for this operation",
-                }
-        else:
-            line_value = None
-            character_value = None
-
-        try:
-            result = self._lsp_runtime.execute(
-                file_path=target,
-                operation=resolved_operation,
-                line=line_value,
-                character=character_value,
-                query=str(query or ""),
-            )
-        except LSPRuntimeError as exc:
-            return {
-                "ok": False,
-                "operation": resolved_operation,
-                "file_path": str(target),
-                "result": "",
-                "result_count": 0,
-                "file_count": 0,
-                "language": "",
-                "server": "",
-                "error": str(exc),
-            }
-        except Exception as exc:
-            return {
-                "ok": False,
-                "operation": resolved_operation,
-                "file_path": str(target),
-                "result": "",
-                "result_count": 0,
-                "file_count": 0,
-                "language": "",
-                "server": "",
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-
-        result_text = result.get("result")
-        if isinstance(result_text, str) and len(result_text) > self._LSP_RESULT_CHAR_LIMIT:
-            result["result"] = result_text[: self._LSP_RESULT_CHAR_LIMIT]
-            result["truncated"] = True
-        else:
-            result["truncated"] = False
-        return result
+        return self._coding_backend.lsp(
+            operation=operation,
+            file_path=file_path,
+            line=line,
+            character=character,
+            query=query,
+        )
 
     def shell(
         self,
@@ -813,7 +695,6 @@ class CoreToolkit(BuiltinToolkit):
     def shutdown(self) -> None:
         self._interaction_toolkit.shutdown()
         self._web_toolkit.shutdown()
-        self._lsp_runtime.shutdown()
         self._coding_backend.shutdown()
 
     def _compact_read_args(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
