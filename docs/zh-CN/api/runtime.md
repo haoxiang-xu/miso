@@ -4,8 +4,8 @@
 
 | 指标 | 值 |
 | --- | --- |
-| 类数量 | 2 |
-| Dataclass | 5 |
+| 类数量 | 3 |
+| Dataclass | 7 |
 | 协议 | 1 |
 | 仅内部类型 | 0 |
 
@@ -20,6 +20,9 @@
 | `ModelTurnRequest` | `src/unchain/providers/base.py` | subpackage | dataclass (frozen) |
 | `ModelIO` | `src/unchain/providers/base.py` | subpackage | protocol |
 | `KernelLoop` | `src/unchain/kernel/loop.py` | subpackage | class |
+| `CompletionEvaluation` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
+| `CompletionPolicy` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
+| `CompletionPolicyRunner` | `src/unchain/runtime/completion.py` | subpackage | dataclass |
 
 ### `src/unchain/kernel/types.py`
 
@@ -124,6 +127,75 @@ Frozen dataclass，由 `Agent.run()` 和 `PreparedAgent.run()` 返回，包含�
 | `cache_creation_input_tokens` | `int` | 默认值：`0`。 |
 | `previous_response_id` | `str \| None` | 默认值：`None`。 |
 | `iteration` | `int` | 默认值：`0`。 |
+
+### `src/unchain/runtime/completion.py`
+
+显式启用的 completion policy runtime。Completion policy 不是
+`KernelLoop` 内置的自循环；只有 agent 显式配置
+`PoliciesModule(completion_policy=...)` 时才会运行。
+
+## CompletionEvaluation
+
+Completion validator 返回的 frozen dataclass。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/runtime/completion.py` |
+| 继承/协议 | `-` |
+| 导出状态 | 通过 `unchain.runtime` 导出，并从 `unchain.agent` 重新导出。 |
+| 对象类型 | Dataclass (frozen)。 |
+
+### 字段
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `complete` | `bool` | 结果是否满足 validator。 |
+| `feedback` | `str` | 不完整时追加为新 user message 的修复提示。 |
+| `reason` | `str` | 可选诊断原因，会随 evaluation 事件发出。 |
+
+## CompletionPolicy
+
+配置有界 completion repair 的 frozen dataclass。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/runtime/completion.py` |
+| 继承/协议 | `-` |
+| 导出状态 | 通过 `unchain.runtime` 导出，并从 `unchain.agent` 重新导出。 |
+| 对象类型 | Dataclass (frozen)。 |
+
+### 字段
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `validator` | `CompletionValidator` | 必填 callback；返回 `CompletionEvaluation`、`bool` 或 dict。 |
+| `max_repair_turns` | `int` | 默认值：`1`。 |
+| `repair_max_iterations` | `int \| None` | repair run 的可选 max-iteration 覆盖。 |
+| `max_total_tokens` | `int \| None` | 可选总 token 预算。 |
+| `max_elapsed_seconds` | `float \| None` | 可选 wall-time 预算。 |
+| `stop_on_no_progress` | `bool` | 默认值：`True`。 |
+
+## CompletionPolicyRunner
+
+Runtime policy runner，会评估 completed result，并可通过传入的 `run_once`
+callback 执行有界 repair turn。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/runtime/completion.py` |
+| 继承/协议 | `-` |
+| 导出状态 | 通过 `unchain.runtime` 导出。 |
+| 对象类型 | Dataclass。 |
+
+### 显式启用边界
+
+- `policy=None` 会原样返回 `KernelRunResult`。
+- 非 completed run 会原样返回。
+- repair 次数受 policy 字段约束，并通过配置的 callback 发出
+  `completion_policy_evaluated`、`completion_policy_retry` 和
+  `completion_policy_exhausted` 事件。
+- Agent 用户通过 `PoliciesModule(completion_policy=...)` 启用；kernel loop
+  不硬编码 completion repair 行为。
 
 ### `src/unchain/providers/base.py`
 

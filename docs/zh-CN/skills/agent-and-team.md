@@ -36,6 +36,7 @@
 - Module 组合：`modules=(...)`。
 - 允许列表过滤：`allowed_tools=(...)` 限定合并后的 toolkit。
 - `Agent.run()` 的 per-call 覆盖：`max_iterations`、`payload`、`callback`、`on_tool_confirm`、`on_human_input`、`on_max_iterations`、`session_id`、`memory_namespace`、`tool_runtime_config`。
+- Completion policy 通过 `PoliciesModule(completion_policy=...)` 显式启用。不配置时，`PreparedAgent` 返回第一次 completed 的 `KernelRunResult`；kernel loop 不会隐藏执行 repair turn。
 
 ## 常见陷阱
 
@@ -87,6 +88,38 @@ agent = Agent(
 ```
 
 `ToolsModule` 的 `tools` 字段接受 `Toolkit`、`Tool` 或 callable 的混合 —— `AgentBuilder.build()` 时全部合并为一个 `Toolkit`。
+
+## Completion Policy
+
+只有当 agent 需要验证 completed answer 并执行有界 repair turn 时才使用
+`CompletionPolicy`。这个 policy 住在 `unchain.runtime`，并从 `unchain.agent`
+重新导出；它不是默认 kernel 行为。
+
+```python
+from unchain.agent import CompletionEvaluation, CompletionPolicy, PoliciesModule
+
+def validate(result):
+    content = str(result.messages[-1].get("content") or "")
+    if "acceptance criteria" in content:
+        return CompletionEvaluation(complete=True)
+    return CompletionEvaluation(
+        complete=False,
+        feedback="Revise the answer and include acceptance criteria.",
+    )
+
+agent = Agent(
+    name="reviewer",
+    modules=(
+        PoliciesModule(
+            completion_policy=CompletionPolicy(
+                validator=validate,
+                max_repair_turns=1,
+                repair_max_iterations=4,
+            ),
+        ),
+    ),
+)
+```
 
 ## 运行
 

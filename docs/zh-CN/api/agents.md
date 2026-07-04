@@ -16,6 +16,8 @@
 | `AgentSpec` | `src/unchain/agent/spec.py` | subpackage | dataclass (frozen) |
 | `AgentState` | `src/unchain/agent/spec.py` | subpackage | dataclass |
 | `Agent` | `src/unchain/agent/agent.py` | top-level | class |
+| `CompletionEvaluation` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
+| `CompletionPolicy` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
 | `AgentCallContext` | `src/unchain/agent/builder.py` | subpackage | dataclass |
 | `PreparedAgent` | `src/unchain/agent/builder.py` | subpackage | dataclass |
 | `AgentBuilder` | `src/unchain/agent/builder.py` | subpackage | dataclass |
@@ -310,7 +312,8 @@ Dataclass，捕获传给 `Agent.run()` 或 `Agent.resume_human_input()` 的每�
 
 ## PoliciesModule
 
-设置默认 payload、响应格式、最大迭代数、上下文窗口 token 数和工具确认回调。
+设置默认 payload、响应格式、最大迭代数、上下文窗口 token 数、工具确认回调，
+以及可选 completion policy。
 
 | 项目 | 细节 |
 | --- | --- |
@@ -327,7 +330,35 @@ Dataclass，捕获传给 `Agent.run()` 或 `Agent.resume_human_input()` 的每�
 | `max_iterations` | `int \| None` | 默认值：`None`。 |
 | `max_context_window_tokens` | `int \| None` | 默认值：`None`。 |
 | `on_tool_confirm` | `Callable[..., Any] \| None` | 默认值：`None`。 |
+| `completion_policy` | `CompletionPolicy \| None` | 默认值：`None`；显式启用的有界 repair policy。 |
 | `name` | `str` | 默认值：`"policies"`。 |
+
+### Completion policy
+
+`completion_policy` 是显式启用能力。为 `None` 时，`PreparedAgent` 会直接返回
+第一次 completed 的 `KernelRunResult`，不会额外 validation 或 repair turn。传入
+policy 后，`PreparedAgent` 在 kernel run 完成后委托给 `CompletionPolicyRunner`；
+kernel loop 本身仍然是有界 run loop。
+
+```python
+from unchain.agent import CompletionEvaluation, CompletionPolicy, PoliciesModule
+
+def validate(result):
+    final_text = str(result.messages[-1].get("content") or "")
+    if "acceptance criteria" in final_text:
+        return CompletionEvaluation(complete=True)
+    return CompletionEvaluation(
+        complete=False,
+        feedback="Revise the answer and include acceptance criteria.",
+    )
+
+PoliciesModule(
+    completion_policy=CompletionPolicy(
+        validator=validate,
+        max_repair_turns=1,
+    )
+)
+```
 
 ## OptimizersModule
 

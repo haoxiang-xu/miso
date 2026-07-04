@@ -16,6 +16,8 @@ Modular agent composition via the `Agent` class, `AgentBuilder` pipeline, immuta
 | `AgentSpec` | `src/unchain/agent/spec.py` | subpackage | dataclass (frozen) |
 | `AgentState` | `src/unchain/agent/spec.py` | subpackage | dataclass |
 | `Agent` | `src/unchain/agent/agent.py` | top-level | class |
+| `CompletionEvaluation` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
+| `CompletionPolicy` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
 | `AgentCallContext` | `src/unchain/agent/builder.py` | subpackage | dataclass |
 | `PreparedAgent` | `src/unchain/agent/builder.py` | subpackage | dataclass |
 | `AgentBuilder` | `src/unchain/agent/builder.py` | subpackage | dataclass |
@@ -310,7 +312,8 @@ Attaches memory to the builder. Accepts `KernelMemoryRuntime`, `MemoryManager`, 
 
 ## PoliciesModule
 
-Sets default payload, response format, max iterations, context window tokens, and tool confirmation callback.
+Sets default payload, response format, max iterations, context window tokens,
+tool confirmation callback, and optional completion policy.
 
 | Item | Details |
 | --- | --- |
@@ -327,7 +330,35 @@ Sets default payload, response format, max iterations, context window tokens, an
 | `max_iterations` | `int \| None` | Default: `None`. |
 | `max_context_window_tokens` | `int \| None` | Default: `None`. |
 | `on_tool_confirm` | `Callable[..., Any] \| None` | Default: `None`. |
+| `completion_policy` | `CompletionPolicy \| None` | Default: `None`; opt-in bounded repair policy. |
 | `name` | `str` | Default: `"policies"`. |
+
+### Completion policy
+
+`completion_policy` is opt-in. When it is `None`, `PreparedAgent` returns the
+first completed `KernelRunResult` without extra validation or repair turns. When
+provided, `PreparedAgent` delegates to `CompletionPolicyRunner` after the kernel
+run completes; the kernel loop itself remains a bounded run loop.
+
+```python
+from unchain.agent import CompletionEvaluation, CompletionPolicy, PoliciesModule
+
+def validate(result):
+    final_text = str(result.messages[-1].get("content") or "")
+    if "acceptance criteria" in final_text:
+        return CompletionEvaluation(complete=True)
+    return CompletionEvaluation(
+        complete=False,
+        feedback="Revise the answer and include acceptance criteria.",
+    )
+
+PoliciesModule(
+    completion_policy=CompletionPolicy(
+        validator=validate,
+        max_repair_turns=1,
+    )
+)
+```
 
 ## OptimizersModule
 

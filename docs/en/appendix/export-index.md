@@ -22,6 +22,9 @@ Exports declared by package `__init__` files and where to read their reference.
 | `AgentSpec` | `src/unchain/agent/spec.py:8` | non-class export |
 | `AgentState` | `src/unchain/agent/spec.py:19` | non-class export |
 | `BaseAgentModule` | `src/unchain/agent/modules/base.py:18` | non-class export |
+| `CompletionEvaluation` | `src/unchain/runtime/completion.py:13` | `../api/runtime.md#completionevaluation` |
+| `CompletionPolicy` | `src/unchain/runtime/completion.py:24` | `../api/runtime.md#completionpolicy` |
+| `CompletionValidator` | `src/unchain/runtime/completion.py:19` | non-class export |
 | `MemoryModule` | `src/unchain/agent/modules/memory.py:12` | non-class export |
 | `ModelIOFactoryRegistry` | `src/unchain/agent/model_io.py:10` | non-class export |
 | `OptimizersModule` | `src/unchain/agent/modules/optimizers.py:9` | non-class export |
@@ -78,6 +81,11 @@ Exports declared by package `__init__` files and where to read their reference.
 | --- | --- | --- |
 | `DEFAULT_PAYLOADS_RESOURCE` | `-` | non-class export |
 | `MODEL_CAPABILITIES_RESOURCE` | `-` | non-class export |
+| `CompletionEvaluation` | `src/unchain/runtime/completion.py:13` | `../api/runtime.md#completionevaluation` |
+| `CompletionPolicy` | `src/unchain/runtime/completion.py:24` | `../api/runtime.md#completionpolicy` |
+| `CompletionPolicyRunner` | `src/unchain/runtime/completion.py:47` | `../api/runtime.md#completionpolicyrunner` |
+| `CompletionRunOnce` | `src/unchain/runtime/completion.py:20` | non-class export |
+| `CompletionValidator` | `src/unchain/runtime/completion.py:19` | non-class export |
 | `load_default_payloads` | `-` | non-class export |
 | `load_model_capabilities` | `-` | non-class export |
 

@@ -22,6 +22,9 @@
 | `AgentSpec` | `src/unchain/agent/spec.py:8` | 非 class 导出 |
 | `AgentState` | `src/unchain/agent/spec.py:19` | 非 class 导出 |
 | `BaseAgentModule` | `src/unchain/agent/modules/base.py:18` | 非 class 导出 |
+| `CompletionEvaluation` | `src/unchain/runtime/completion.py:13` | `../api/runtime.md#completionevaluation` |
+| `CompletionPolicy` | `src/unchain/runtime/completion.py:24` | `../api/runtime.md#completionpolicy` |
+| `CompletionValidator` | `src/unchain/runtime/completion.py:19` | 非 class 导出 |
 | `MemoryModule` | `src/unchain/agent/modules/memory.py:12` | 非 class 导出 |
 | `ModelIOFactoryRegistry` | `src/unchain/agent/model_io.py:10` | 非 class 导出 |
 | `OptimizersModule` | `src/unchain/agent/modules/optimizers.py:9` | 非 class 导出 |
@@ -78,6 +81,11 @@
 | --- | --- | --- |
 | `DEFAULT_PAYLOADS_RESOURCE` | `-` | 非 class 导出 |
 | `MODEL_CAPABILITIES_RESOURCE` | `-` | 非 class 导出 |
+| `CompletionEvaluation` | `src/unchain/runtime/completion.py:13` | `../api/runtime.md#completionevaluation` |
+| `CompletionPolicy` | `src/unchain/runtime/completion.py:24` | `../api/runtime.md#completionpolicy` |
+| `CompletionPolicyRunner` | `src/unchain/runtime/completion.py:47` | `../api/runtime.md#completionpolicyrunner` |
+| `CompletionRunOnce` | `src/unchain/runtime/completion.py:20` | 非 class 导出 |
+| `CompletionValidator` | `src/unchain/runtime/completion.py:19` | 非 class 导出 |
 | `load_default_payloads` | `-` | 非 class 导出 |
 | `load_model_capabilities` | `-` | 非 class 导出 |
 

@@ -12,6 +12,9 @@
 - `TokenUsage` -> `src/unchain/kernel/types.py:15` (internal, dataclass)
 - `ModelTurnResult` -> `src/unchain/kernel/types.py:22` (subpackage, dataclass)
 - `KernelRunResult` -> `src/unchain/kernel/types.py:36` (subpackage, dataclass)
+- `CompletionEvaluation` -> `src/unchain/runtime/completion.py:13` (subpackage, dataclass)
+- `CompletionPolicy` -> `src/unchain/runtime/completion.py:24` (subpackage, dataclass)
+- `CompletionPolicyRunner` -> `src/unchain/runtime/completion.py:47` (subpackage, dataclass)
 - `ToolExecutionOutcome` -> `src/unchain/tools/confirmation.py:21` (subpackage, dataclass)
 
 ## [工具系统 API 参考](../api/tools.md)

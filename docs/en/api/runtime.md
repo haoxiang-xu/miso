@@ -4,8 +4,8 @@ Core execution types: kernel loop, provider abstraction (`ModelIO`), model turn 
 
 | Metric | Value |
 | --- | --- |
-| Classes | 2 |
-| Dataclasses | 5 |
+| Classes | 3 |
+| Dataclasses | 7 |
 | Protocols | 1 |
 | Internal-only types | 0 |
 
@@ -20,6 +20,9 @@ Core execution types: kernel loop, provider abstraction (`ModelIO`), model turn 
 | `ModelTurnRequest` | `src/unchain/providers/base.py` | subpackage | dataclass (frozen) |
 | `ModelIO` | `src/unchain/providers/base.py` | subpackage | protocol |
 | `KernelLoop` | `src/unchain/kernel/loop.py` | subpackage | class |
+| `CompletionEvaluation` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
+| `CompletionPolicy` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
+| `CompletionPolicyRunner` | `src/unchain/runtime/completion.py` | subpackage | dataclass |
 
 ### `src/unchain/kernel/types.py`
 
@@ -124,6 +127,75 @@ Frozen dataclass returned by `Agent.run()` and `PreparedAgent.run()` with the fi
 | `cache_creation_input_tokens` | `int` | Default: `0`. |
 | `previous_response_id` | `str \| None` | Default: `None`. |
 | `iteration` | `int` | Default: `0`. |
+
+### `src/unchain/runtime/completion.py`
+
+An opt-in completion policy runtime. Completion policy is not part of the
+`KernelLoop` self-loop; it runs only when an agent is explicitly configured with
+`PoliciesModule(completion_policy=...)`.
+
+## CompletionEvaluation
+
+Frozen dataclass returned by a completion validator.
+
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/runtime/completion.py` |
+| Inheritance | `-` |
+| Exposure | Exported from `unchain.runtime` and re-exported from `unchain.agent`. |
+| Kind | Dataclass (frozen). |
+
+### Fields
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `complete` | `bool` | Whether the result satisfies the validator. |
+| `feedback` | `str` | Repair prompt appended as a new user message when incomplete. |
+| `reason` | `str` | Optional diagnostic reason emitted with evaluation events. |
+
+## CompletionPolicy
+
+Frozen dataclass configuring bounded completion repair.
+
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/runtime/completion.py` |
+| Inheritance | `-` |
+| Exposure | Exported from `unchain.runtime` and re-exported from `unchain.agent`. |
+| Kind | Dataclass (frozen). |
+
+### Fields
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `validator` | `CompletionValidator` | Required callback; returns `CompletionEvaluation`, `bool`, or a dict. |
+| `max_repair_turns` | `int` | Default: `1`. |
+| `repair_max_iterations` | `int \| None` | Optional max-iteration override for repair runs. |
+| `max_total_tokens` | `int \| None` | Optional aggregate token budget. |
+| `max_elapsed_seconds` | `float \| None` | Optional wall-time budget. |
+| `stop_on_no_progress` | `bool` | Default: `True`. |
+
+## CompletionPolicyRunner
+
+Runtime policy runner that evaluates a completed result and may perform bounded
+repair turns through the provided `run_once` callback.
+
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/runtime/completion.py` |
+| Inheritance | `-` |
+| Exposure | Exported from `unchain.runtime`. |
+| Kind | Dataclass. |
+
+### opt-in boundary
+
+- `policy=None` returns the original `KernelRunResult` unchanged.
+- Non-completed runs are returned unchanged.
+- Repair attempts are capped by policy fields and emit
+  `completion_policy_evaluated`, `completion_policy_retry`, and
+  `completion_policy_exhausted` events through the configured callback.
+- Agent users enable this through `PoliciesModule(completion_policy=...)`; the
+  kernel loop never hard-codes completion repair behavior.
 
 ### `src/unchain/providers/base.py`
 

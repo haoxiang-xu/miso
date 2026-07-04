@@ -106,8 +106,9 @@ def test_legacy_git_and_external_api_toolkits_stay_internal_compat():
 def test_public_toolkit_reference_docs_exclude_legacy_compat_toolkits():
     from pathlib import Path
 
-    docs_root = Path(__file__).resolve().parents[1] / "docs"
+    repo_root = Path(__file__).resolve().parents[1]
     public_reference_docs = (
+        "README.md",
         "en/api/toolkits.md",
         "zh-CN/api/toolkits.md",
         "en/appendix/class-index.md",
@@ -123,9 +124,39 @@ def test_public_toolkit_reference_docs_exclude_legacy_compat_toolkits():
     )
 
     for relative_path in public_reference_docs:
-        text = (docs_root / relative_path).read_text(encoding="utf-8")
+        docs_path = repo_root / relative_path
+        if not docs_path.exists():
+            docs_path = repo_root / "docs" / relative_path
+        text = docs_path.read_text(encoding="utf-8")
         for term in legacy_terms:
             assert term not in text, f"{term!r} leaked into {relative_path}"
+
+
+def test_completion_policy_reference_docs_state_opt_in_runtime_boundary():
+    from pathlib import Path
+
+    docs_root = Path(__file__).resolve().parents[1] / "docs"
+    runtime_docs = (
+        "en/api/runtime.md",
+        "zh-CN/api/runtime.md",
+    )
+    agent_docs = (
+        "en/api/agents.md",
+        "zh-CN/api/agents.md",
+        "en/skills/agent-and-team.md",
+        "zh-CN/skills/agent-and-team.md",
+    )
+
+    for relative_path in runtime_docs:
+        text = (docs_root / relative_path).read_text(encoding="utf-8")
+        assert "CompletionPolicy" in text, f"CompletionPolicy missing from {relative_path}"
+        assert "CompletionPolicyRunner" in text, f"CompletionPolicyRunner missing from {relative_path}"
+        assert "opt-in" in text or "显式启用" in text, f"opt-in boundary missing from {relative_path}"
+
+    for relative_path in agent_docs:
+        text = (docs_root / relative_path).read_text(encoding="utf-8")
+        assert "completion_policy" in text, f"completion_policy missing from {relative_path}"
+        assert "PoliciesModule" in text, f"PoliciesModule missing from {relative_path}"
 
 
 def test_web_toolkit_does_not_construct_core_toolkit_bundle(monkeypatch, tmp_path):

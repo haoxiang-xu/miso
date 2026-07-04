@@ -36,6 +36,7 @@ This chapter documents the high-level orchestration surface: how a single `Agent
 - Module composition: `modules=(...)`.
 - Allow-list filter: `allowed_tools=(...)` to restrict the merged toolkit.
 - Per-call overrides on `Agent.run()`: `max_iterations`, `payload`, `callback`, `on_tool_confirm`, `on_human_input`, `on_max_iterations`, `session_id`, `memory_namespace`, `tool_runtime_config`.
+- Completion policy is opt-in through `PoliciesModule(completion_policy=...)`. Without it, `PreparedAgent` returns the first completed `KernelRunResult`; the kernel loop does not perform hidden repair turns.
 
 ## Common gotchas
 
@@ -87,6 +88,38 @@ agent = Agent(
 ```
 
 The `tools` field of `ToolsModule` accepts a mix of `Toolkit`, `Tool`, or callables — they all get merged into one `Toolkit` during `AgentBuilder.build()`.
+
+## Completion Policy
+
+Use `CompletionPolicy` only when the agent should validate a completed answer
+and run bounded repair turns. The policy lives in `unchain.runtime` and is
+re-exported from `unchain.agent`; it is not a default kernel behavior.
+
+```python
+from unchain.agent import CompletionEvaluation, CompletionPolicy, PoliciesModule
+
+def validate(result):
+    content = str(result.messages[-1].get("content") or "")
+    if "acceptance criteria" in content:
+        return CompletionEvaluation(complete=True)
+    return CompletionEvaluation(
+        complete=False,
+        feedback="Revise the answer and include acceptance criteria.",
+    )
+
+agent = Agent(
+    name="reviewer",
+    modules=(
+        PoliciesModule(
+            completion_policy=CompletionPolicy(
+                validator=validate,
+                max_repair_turns=1,
+                repair_max_iterations=4,
+            ),
+        ),
+    ),
+)
+```
 
 ## Running
 
