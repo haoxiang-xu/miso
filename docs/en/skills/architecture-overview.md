@@ -10,18 +10,19 @@ This chapter explains how the package is layered, which modules are foundational
 
 - `unchain.tools` stays foundational and dependency-light.
 - `unchain.toolkits` depends on `tools` and the input/workspace primitives.
-- `unchain.kernel` defines the execution loop, runtime harness protocol, and shared types; it depends on `tools` (for the `Toolkit` it hands to providers) but not on memory or providers directly.
-- `unchain.providers` implements `ModelIO` against vendor SDKs; the kernel only sees the protocol.
-- `unchain.memory`, `unchain.optimizers`, `unchain.subagents`, `unchain.retry` are independent harness/runtime layers that plug into the kernel through the harness protocol.
-- `unchain.agent` is the orchestration layer: it composes modules, builds a `PreparedAgent`, and delegates to `KernelLoop`.
+- `unchain.kernel` defines the run loop, runtime hook protocol, delta application, and shared types; it depends on `tools` (for the `Toolkit` it hands to providers) but not on memory or providers directly.
+- `unchain.providers` implements `ModelAdapter` against vendor SDKs; the kernel only sees the adapter protocol. `ModelIO` remains a compatibility alias.
+- `unchain.memory`, `unchain.optimizers`, `unchain.subagents`, `unchain.retry` are independent hook/runtime layers that plug into the kernel through the hook protocol.
+- `unchain.agent` is the orchestration layer: it composes modules, builds a `PreparedAgent`, and delegates to the run loop (`KernelLoop` internally).
 
 ## Core objects
 
 - `Agent` as the public orchestration entry point.
 - `AgentBuilder` and `PreparedAgent` for the build → run pipeline.
-- `KernelLoop` as the execution engine.
-- `RuntimeHarness` (and `RuntimePhase`) as the extension surface.
-- `ModelIO` as the provider boundary.
+- `RunLoop` as the execution concept. The concrete class is still `KernelLoop`.
+- `RuntimeHook` (and `RuntimePhase`) as the extension surface. `RuntimeHarness` remains a compatibility alias.
+- `ModelAdapter` as the provider boundary. `ModelIO` remains a compatibility alias.
+- `RunDelta` context operations as the only shared state/context mutation path.
 - `Tool`, `Toolkit`, `ToolkitRegistry`, `ToolkitCatalogRuntime`, `ToolDiscoveryRuntime` as the tool layer.
 - `MemoryManager` and `KernelMemoryRuntime` as the memory layer.
 
@@ -29,7 +30,7 @@ This chapter explains how the package is layered, which modules are foundational
 
 - User code constructs `Agent(name=..., modules=(...))`.
 - `Agent.run()` builds an `AgentCallContext`, asks each module to `configure(builder)` on a fresh `AgentBuilder`, calls `builder.build()` to get a `PreparedAgent`, then calls `prepared.run()`.
-- `PreparedAgent.run()` enters `KernelLoop.run()`, which dispatches harness phases, fetches one model turn via `ModelIO.fetch_turn()`, executes tools, and commits memory until the loop completes or suspends.
+- `PreparedAgent.run()` enters `KernelLoop.run()`, which dispatches hook phases, fetches one model turn via `ModelAdapter.fetch_turn()`, executes tools, and commits memory until the loop completes or suspends.
 - Suspension yields a `KernelRunResult` with a continuation payload that `Agent.resume_human_input()` re-enters on the next call.
 
 ## Configuration surface
@@ -40,16 +41,16 @@ This chapter explains how the package is layered, which modules are foundational
 
 ## Extension points
 
-- Implement `ModelIO` to add providers (under `providers/`).
-- Implement `RuntimeHarness` to add per-phase behavior (memory commit, optimization, retry, subagents).
+- Implement `ModelAdapter` to add providers (under `providers/`).
+- Implement `RuntimeHook` to add per-phase behavior (memory commit, optimization, retry, subagents).
 - Add builtin or plugin toolkits through `toolkit.toml` manifests.
 - Swap memory stores/adapters without changing the orchestration API.
 
 ## Common gotchas
 
 - The top-level public API is intentionally tiny: only `Agent`. Everything else lives in subpackages.
-- A fresh `KernelLoop` is built per `Agent.run()`; module state lives in `AgentState`, not on the loop.
-- Provider calls go through `ModelIO` implementations under `providers/`; the old provider compatibility layer has been removed.
+- A fresh run loop (`KernelLoop`) is built per `Agent.run()`; module state lives in `AgentState`, not on the loop.
+- Provider calls go through `ModelAdapter` implementations under `providers/`; the old provider compatibility layer has been removed.
 
 ## Related class references
 
@@ -75,17 +76,17 @@ src/unchain/
 │   ├── agent.py         #   Agent — user-facing class
 │   ├── builder.py       #   AgentCallContext, AgentBuilder, PreparedAgent
 │   ├── spec.py          #   AgentSpec (frozen), AgentState
-│   ├── model_io.py      #   ModelIOFactoryRegistry
+│   ├── model_io.py      #   ModelIOFactoryRegistry compatibility registry
 │   └── modules/         #   ToolsModule, MemoryModule, PoliciesModule,
 │                        #   OptimizersModule, SubagentModule, ToolDiscoveryModule
 ├── kernel/              # Execution engine
-│   ├── loop.py          #   KernelLoop — main step-once loop
-│   ├── harness.py       #   RuntimeHarness protocol + RuntimePhase + HarnessContext
+│   ├── loop.py          #   KernelLoop — concrete run-loop implementation
+│   ├── harness.py       #   RuntimeHook/RuntimeHarness protocol + RuntimePhase + HarnessContext
 │   ├── state.py         #   RunState — mutable per-run state
 │   ├── types.py         #   ToolCall, TokenUsage, ModelTurnResult, KernelRunResult
-│   └── model_io.py      #   ModelIO protocol + ModelTurnRequest
-├── providers/           # ModelIO adapters
-│   ├── base.py          #   ModelIO protocol + ModelTurnRequest
+│   └── model_io.py      #   ModelAdapter/ModelIO protocol + ModelTurnRequest
+├── providers/           # ModelAdapter implementations
+│   ├── base.py          #   ModelAdapter/ModelIO protocol + ModelTurnRequest
 │   ├── native.py        #   shared native adapter substrate
 │   ├── model_io.py      #   legacy compatibility shim
 │   ├── openai.py        #   OpenAIModelIO
@@ -100,8 +101,8 @@ src/unchain/
 │   ├── registry.py      #   ToolkitRegistry — discovers toolkits from 3 sources
 │   ├── catalog.py       #   ToolkitCatalogRuntime — toolkit-level lazy activation
 │   ├── discovery.py     #   ToolDiscoveryRuntime — per-tool deferred load
-│   ├── execution.py     #   ToolExecutionHarness — runs tools, handles confirm/observe
-│   └── prompting.py     #   ToolPromptHarness — prompt-side tool spec rendering
+│   ├── execution.py     #   ToolExecutionHook/ToolExecutionHarness — confirm/observe
+│   └── prompting.py     #   ToolPromptHook/ToolPromptHarness — tool spec rendering
 ├── toolkits/            # Builtin + MCP toolkits
 │   ├── base.py          #   BuiltinToolkit — workspace-safe base
 │   ├── mcp.py           #   MCPToolkit — MCP server bridge
@@ -109,7 +110,8 @@ src/unchain/
 ├── memory/              # Two-tier memory
 │   ├── manager.py       #   MemoryManager — orchestrates stores + strategies
 │   ├── runtime.py       #   KernelMemoryRuntime — kernel-side facade
-│   ├── short_term.py    #   Short-term context strategies
+│   ├── effects.py       #   RunDelta helpers for memory state/context effects
+│   ├── short_term.py    #   Short-term recall hook
 │   ├── long_term.py     #   LongTermExtractor, profile stores
 │   ├── qdrant.py        #   Qdrant vector adapter
 │   └── tool_history.py  #   Tool call history compaction
@@ -139,16 +141,16 @@ The dependency direction flows **downward** — upper layers import from lower l
 ```text
 Layer 0  (public API)         unchain                → exports Agent
 Layer 1  (orchestration)      unchain.agent          → imports kernel, tools, toolkits, memory, optimizers, subagents
-Layer 2  (engine)             unchain.kernel         → imports tools (for Toolkit), defines harness/state/types
+Layer 2  (engine)             unchain.kernel         → imports tools (for Toolkit), defines hooks/state/types
 Layer 2' (provider adapters)  unchain.providers      → imports tools, kernel.types
 Layer 3  (tool system)        unchain.tools          → no internal unchain deps (foundation)
 Layer 3  (toolkit impls)      unchain.toolkits       → imports tools, input, workspace primitives
-Layer 3  (memory)             unchain.memory         → imports tools (for tool_history), kernel (for harness)
-Layer 3  (optimizers/...)     unchain.optimizers / .subagents / .retry → import kernel (for harness), tools
+Layer 3  (memory)             unchain.memory         → imports tools (for tool_history), kernel (for hooks)
+Layer 3  (optimizers/...)     unchain.optimizers / .subagents / .retry → import kernel (for hooks), tools
 Layer 4  (primitives)         unchain.input, .character, .schemas, .types
 ```
 
-**Rule**: `unchain.tools` is the foundation — it has zero internal dependencies. The kernel depends only on it. Everything else either implements a kernel protocol (harness, ModelIO) or composes modules at the agent layer.
+**Rule**: `unchain.tools` is the foundation — it has zero internal dependencies. The kernel depends only on it. Everything else either implements a kernel protocol (`RuntimeHook`, `ModelAdapter`) or composes modules at the agent layer.
 
 ## Data Flow: Request → Response
 
@@ -160,7 +162,7 @@ Agent.run(messages, payload, ..., on_tool_confirm, ...)
   │  1. Normalize messages (str → list[dict]).
   │  2. Build AgentCallContext capturing per-call options.
   │  3. _prepare(): each module configures a fresh AgentBuilder.
-  │  4. builder.build() → PreparedAgent (KernelLoop + merged Toolkit + harnesses).
+  │  4. builder.build() → PreparedAgent (KernelLoop + merged Toolkit + hooks).
   │  5. prepared.run() → KernelLoop.run().
   │
   ▼
@@ -170,10 +172,10 @@ KernelLoop.run(messages, ...)
   │    step_once():
   │      ┌─ dispatch_phase("bootstrap")            ─ harness setup
   │      ├─ dispatch_phase("before_model")         ─ optimizers / context prep
-  │      ├─ ModelIO.fetch_turn(ModelTurnRequest)   ─ provider call
+  │      ├─ ModelAdapter.fetch_turn(ModelTurnRequest) ─ provider call
   │      ├─ dispatch_phase("after_model")          ─ post-model hooks
   │      ├─ dispatch_phase("on_tool_call")         ─ confirmation gate
-  │      ├─ ToolExecutionHarness runs tool calls
+  │      ├─ ToolExecutionHook runs tool calls
   │      ├─ dispatch_phase("after_tool_batch")     ─ observation injection
   │      ├─ dispatch_phase("before_commit")        ─ memory commit hook
   │      └─ memory.commit_messages()
@@ -198,7 +200,7 @@ The kernel dispatches harness work across eight ordered phases:
 | Phase | When | Typical use |
 | --- | --- | --- |
 | `bootstrap` | Before the first iteration. | Initialize per-run resources, attach state to `RunState`. |
-| `before_model` | Before each `ModelIO.fetch_turn()`. | Context window pruning, tool history compaction, retry setup. |
+| `before_model` | Before each `ModelAdapter.fetch_turn()`. | Context window pruning, tool history compaction, retry setup. |
 | `after_model` | After each model turn returns. | Token accounting, response inspection, custom logging. |
 | `on_tool_call` | Before tool execution. | Confirmation gating, argument rewriting, permission checks. |
 | `after_tool_batch` | After all tool calls in a turn complete. | Observation turn injection, tool result post-processing. |
@@ -216,9 +218,9 @@ The kernel dispatches harness work across eight ordered phases:
 | `ToolkitCatalogRuntime`    | `ToolkitRegistry`, `Toolkit`                   | Agent (via `ToolsModule`)       |
 | `ToolDiscoveryRuntime`     | `ToolkitRegistry`, `Toolkit`                   | Agent (via `ToolDiscoveryModule`) |
 | `MemoryManager`            | session/vector stores, context strategies      | `KernelMemoryRuntime`           |
-| `KernelMemoryRuntime`      | `MemoryManager`, harness protocol              | KernelLoop (via `MemoryModule`) |
-| `ModelIO` (protocol)       | provider SDKs (lazy)                           | `KernelLoop`                    |
-| `KernelLoop`               | `ModelIO`, harnesses, `Toolkit`                | `PreparedAgent`                 |
+| `KernelMemoryRuntime`      | `MemoryManager`, hook protocol                 | KernelLoop (via `MemoryModule`) |
+| `ModelAdapter` (protocol)  | provider SDKs (lazy)                           | `KernelLoop`                    |
+| `KernelLoop`               | `ModelAdapter`, hooks, `Toolkit`               | `PreparedAgent`                 |
 | `PreparedAgent`            | `KernelLoop`, `Toolkit`, defaults              | `Agent`                         |
 | `AgentBuilder`             | modules, `KernelLoop`                          | `PreparedAgent`                 |
 | `Agent`                    | modules, `AgentBuilder`                        | User code                       |
@@ -237,7 +239,7 @@ The kernel dispatches harness work across eight ordered phases:
 
 6. **Memory is optional and layered** — Short-term context strategies and long-term vector-backed profiles are independently configurable, both through `MemoryModule`.
 
-7. **Provider-agnostic core** — `KernelLoop` only knows the `ModelIO` protocol. Provider-specific projection happens inside each `ModelIO` implementation.
+7. **Provider-agnostic core** — `KernelLoop` only knows the `ModelAdapter` protocol. Provider-specific projection happens inside each adapter implementation.
 
 ## Related Skills
 

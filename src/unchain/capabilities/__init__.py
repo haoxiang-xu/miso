@@ -24,6 +24,15 @@ class InsertMessagesOp:
 
 
 @dataclass(frozen=True)
+class ReplaceMessagesOp:
+    target: ContextTarget
+    messages: list[dict[str, Any]]
+    start: int = 0
+    end: int | None = None
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class PatchMessageOp:
     target: ContextTarget
     selector: Any
@@ -42,6 +51,13 @@ class DeleteMessagesOp:
 class SetRuntimeStateOp:
     path: tuple[str, ...]
     value: Any
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class MergeRuntimeStateOp:
+    path: tuple[str, ...]
+    value: dict[str, Any]
     reason: str = ""
 
 
@@ -75,9 +91,11 @@ class RequestSuspendOp:
 
 ContextOp = (
     InsertMessagesOp
+    | ReplaceMessagesOp
     | PatchMessageOp
     | DeleteMessagesOp
     | SetRuntimeStateOp
+    | MergeRuntimeStateOp
     | CreateArtifactOp
     | EmitEventOp
     | RequestSuspendOp
@@ -207,8 +225,10 @@ __all__ = [
     "DeleteMessagesOp",
     "EmitEventOp",
     "InsertMessagesOp",
+    "MergeRuntimeStateOp",
     "PatchMessageOp",
     "PassiveCapability",
+    "ReplaceMessagesOp",
     "RequestSuspendOp",
     "RunContext",
     "RunDelta",

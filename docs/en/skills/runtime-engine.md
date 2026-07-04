@@ -4,20 +4,22 @@ Canonical English skill chapter for the `runtime-engine` topic.
 
 ## Role and boundaries
 
-This chapter explains the `KernelLoop` engine, the `RuntimeHarness` extension protocol, the `ModelIO` provider boundary, the canonical run-result types, and suspension/resume semantics.
+This chapter explains the run loop (`KernelLoop` internally), the `RuntimeHook` extension protocol, the `ModelAdapter` provider boundary, the canonical run-result types, and suspension/resume semantics.
 
 ## Dependency view
 
-- `KernelLoop` coordinates harness phases, model turns, tool execution, and run-result assembly.
-- `ModelIO` is the protocol that providers (OpenAI, Anthropic, Ollama, Gemini) satisfy. The kernel never imports a vendor SDK directly.
-- `RuntimeHarness` is the per-phase extension surface. Memory, optimizers, retry, subagents, tool execution, and tool prompting are all implemented as harnesses.
+- `KernelLoop` coordinates hook phases, model turns, tool execution, and run-result assembly.
+- `ModelAdapter` is the protocol that providers (OpenAI, Anthropic, Ollama, Gemini) satisfy. `ModelIO` remains a compatibility alias. The kernel never imports a vendor SDK directly.
+- `RuntimeHook` is the per-phase extension surface. `RuntimeHarness` remains a compatibility alias. Memory, optimizers, retry, subagents, tool execution, and tool prompting are all implemented as hooks.
 - `RunState` is the mutable per-run scratch space; `KernelRunResult` is the immutable return.
+- `RunDelta` is the structured effect envelope used by hooks and active tools to modify model context, conversation state, runtime state, artifacts, events, or suspension.
 
 ## Core objects
 
 - `KernelLoop`
-- `RuntimeHarness` / `RuntimePhase` / `HarnessContext`
-- `ModelIO` / `ModelTurnRequest`
+- `RuntimeHook` / `RuntimePhase` / `HarnessContext`
+- `ModelAdapter` / `ModelTurnRequest`
+- `RunDelta`
 - `ToolCall` / `ModelTurnResult` / `TokenUsage` / `KernelRunResult`
 
 ## Execution and state flow
@@ -30,16 +32,16 @@ This chapter explains the `KernelLoop` engine, the `RuntimeHarness` extension pr
 
 ## Configuration surface
 
-- Provider/model selection happens at `ModelIO` construction.
+- Provider/model selection happens at `ModelAdapter` construction.
 - Per-run options come through the kernel's `run()` arguments (max iterations, response format, callbacks, payload defaults).
-- Harness composition is done at `AgentBuilder` time when running through `Agent`; standalone kernel users register harnesses by hand.
+- Hook composition is done at `AgentBuilder` time when running through `Agent`; standalone kernel users register hooks by hand.
 
 ## Common gotchas
 
 - Observation turns count toward the iteration budget.
 - Callbacks run synchronously inside the loop; offload long work.
 - Provider SDK imports are lazy; missing SDK fails when `fetch_turn()` runs, not at import.
-- Provider calls go through `ModelIO` implementations; the old provider runtime compatibility layer has been removed.
+- Provider calls go through `ModelAdapter` implementations; the old provider runtime compatibility layer has been removed.
 
 ## Related class references
 
@@ -78,24 +80,24 @@ For day-to-day use, prefer `Agent.run()`. Direct `KernelLoop` use is only needed
 ## Current Execution Flow
 
 1. `run()` normalizes incoming messages, validates modality support against model capabilities, and builds a `RunState` for this iteration.
-2. The loop dispatches harnesses across the eight phases (see `architecture-overview.md` for the full list) before and after each model turn.
-3. `ModelIO.fetch_turn(request)` returns a `ModelTurnResult` containing assistant messages, tool calls, and token counts.
-4. If the model emitted tool calls, `ToolExecutionHarness` runs them. Confirmation-gated tools cause the loop to return early with `status="awaiting_human_input"`.
+2. The loop dispatches hooks across the eight phases (see `architecture-overview.md` for the full list) before and after each model turn.
+3. `ModelAdapter.fetch_turn(request)` returns a `ModelTurnResult` containing assistant messages, tool calls, and token counts.
+4. If the model emitted tool calls, `ToolExecutionHook` runs them. Confirmation-gated tools cause the loop to return early with `status="awaiting_human_input"`.
 5. Tools marked with `observe=True` trigger an additional observation turn during `after_tool_batch`.
 6. When a turn no longer produces tool calls, the loop applies any structured-output parsing, commits memory, and returns a `KernelRunResult`.
 
 ## Design Notes
 
-- Memory is integrated as a harness pair (bootstrap/before-model recall + before-commit write). Runs without memory simply omit the `MemoryModule`.
-- Retry is a wrapper around `ModelIO.fetch_turn()` (see `unchain.retry`) and never retries content that has already been streamed downstream.
-- Provider-specific projection (canonical messages → SDK shape) lives entirely inside each `ModelIO` implementation, so the kernel stays vendor-agnostic.
+- Memory is integrated as hook components (bootstrap/before-model recall + before-commit write). Runs without memory simply omit the `MemoryModule`.
+- Retry is a wrapper around `ModelAdapter.fetch_turn()` (see `unchain.retry`) and never retries content that has already been streamed downstream.
+- Provider-specific projection (canonical messages → SDK shape) lives entirely inside each model adapter implementation, so the kernel stays vendor-agnostic.
 
 ## Provider Abstraction
 
-Providers implement `ModelIO`:
+Providers implement `ModelAdapter` (`ModelIO` compatibility alias):
 
 ```python
-class ModelIO(Protocol):
+class ModelAdapter(Protocol):
     provider: str
     def fetch_turn(self, request: ModelTurnRequest) -> ModelTurnResult: ...
 ```
@@ -128,15 +130,15 @@ Model capabilities are declared in JSON resource files under `src/unchain/runtim
 ### Adding a New Provider
 
 1. Create `src/unchain/providers/my_provider.py`.
-2. Implement a `ModelIO` subclass with `fetch_turn()`.
+2. Implement a `ModelAdapter` subclass with `fetch_turn()`.
 3. Add capabilities and default payloads under `src/unchain/runtime/resources/`.
 4. Either pass an instance directly to `Agent(model_io_factory=...)` or register a factory in `ModelIOFactoryRegistry`.
 
-The provider module is **lazy-loaded** — its SDK is only imported when the model IO is actually constructed.
+The provider module is **lazy-loaded** — its SDK is only imported when the model adapter is actually constructed.
 
 ## Callback Events
 
-Harnesses and the loop emit events through the `callback` passed into `Agent.run()` / `KernelLoop.run()`. This powers UI streaming, logging, and observability.
+Hooks and the loop emit events through the `callback` passed into `Agent.run()` / `KernelLoop.run()`. This powers UI streaming, logging, and observability.
 
 ```python
 def my_callback(event: dict) -> None:

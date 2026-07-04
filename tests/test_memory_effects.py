@@ -4,8 +4,7 @@ import inspect
 
 
 def test_memory_surface_exports_effect_helpers():
-    from unchain.capabilities import EmitEventOp
-    from unchain.kernel import HarnessDelta
+    from unchain.capabilities import EmitEventOp, MergeRuntimeStateOp, RunDelta
     from unchain.memory import (
         build_memory_commit_event,
         build_memory_delta,
@@ -35,11 +34,16 @@ def test_memory_surface_exports_effect_helpers():
     assert commit_event.type == "memory_commit"
     assert commit_event.reason == "memory.commit"
     assert commit_event.payload == {"summary_persisted": True}
-    assert isinstance(delta, HarnessDelta)
+    assert isinstance(delta, RunDelta)
     assert delta.created_by == "memory.test"
-    assert delta.state_updates == {
-        "memory_prepare_info": {"short_term_recall_count": 2},
-    }
+    assert delta.state_updates == {}
+    assert delta.context_ops == (
+        MergeRuntimeStateOp(
+            path=("memory_prepare_info",),
+            value={"short_term_recall_count": 2},
+            reason="memory.state.merge",
+        ),
+    )
     assert delta.trace == {"source": "test"}
 
 
@@ -78,6 +82,36 @@ def test_memory_delta_helper_preserves_run_state_memory_merge_behavior():
         "bootstrap": True,
         "short_term_recall_count": 2,
     }
+
+
+def test_memory_delta_helper_converts_message_ops_to_structured_model_context_ops():
+    from unchain.capabilities import ContextTarget, ReplaceMessagesOp, RunDelta
+    from unchain.kernel.delta import ReplaceSpanOp
+    from unchain.memory import build_memory_delta
+
+    delta = build_memory_delta(
+        created_by="memory.recall",
+        base_version_id="v1",
+        ops=(
+            ReplaceSpanOp(
+                start=0,
+                end=2,
+                messages=[{"role": "system", "content": "memory"}],
+            ),
+        ),
+    )
+
+    assert isinstance(delta, RunDelta)
+    assert delta.ops == ()
+    assert delta.context_ops == (
+        ReplaceMessagesOp(
+            target=ContextTarget.MODEL_CONTEXT,
+            start=0,
+            end=2,
+            messages=[{"role": "system", "content": "memory"}],
+            reason="memory.model_context.replace",
+        ),
+    )
 
 
 def test_memory_surface_exports_event_harnesses_and_default_runtime_registers_them():

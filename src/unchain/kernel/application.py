@@ -10,7 +10,9 @@ from ..capabilities import (
     DeleteMessagesOp,
     EmitEventOp,
     InsertMessagesOp,
+    MergeRuntimeStateOp,
     PatchMessageOp,
+    ReplaceMessagesOp,
     RequestSuspendOp,
     RunDelta,
     SetRuntimeStateOp,
@@ -44,8 +46,14 @@ def apply_run_delta(
         if isinstance(op, InsertMessagesOp):
             version_id = _apply_insert_messages_op(state, delta, op)
             continue
+        if isinstance(op, ReplaceMessagesOp):
+            version_id = _apply_replace_messages_op(state, delta, op)
+            continue
         if isinstance(op, SetRuntimeStateOp):
             _apply_runtime_state_op(state, op)
+            continue
+        if isinstance(op, MergeRuntimeStateOp):
+            _apply_merge_runtime_state_op(state, op)
             continue
         if isinstance(op, CreateArtifactOp):
             _apply_create_artifact_op(state, delta, op, emit_event=emit_event)
@@ -184,6 +192,29 @@ def _commit_messages_for_target(
     return version.version_id
 
 
+def _apply_replace_messages_op(
+    state: RunState,
+    delta: RunDelta,
+    op: ReplaceMessagesOp,
+) -> str:
+    working_messages = _messages_for_target(state, op.target, type(op).__name__)
+    start = max(0, min(int(op.start), len(working_messages)))
+    end = len(working_messages) if op.end is None else int(op.end)
+    if end < 0:
+        end += len(working_messages)
+    end = max(start, min(end, len(working_messages)))
+    working_messages[start:end] = _deepcopy_messages(op.messages)
+
+    return _commit_messages_for_target(
+        state,
+        delta,
+        op.target,
+        working_messages,
+        op_type=type(op).__name__,
+        reason=op.reason,
+    )
+
+
 def _resolve_message_indices(messages: list[dict], selector) -> list[int]:
     if isinstance(selector, int):
         return [_normalize_message_index(selector, len(messages))]
@@ -263,6 +294,55 @@ def _apply_runtime_state_op(state: RunState, op: SetRuntimeStateOp) -> None:
     _set_nested_value(bucket, path[1:], value)
 
 
+def _apply_merge_runtime_state_op(state: RunState, op: MergeRuntimeStateOp) -> None:
+    path = tuple(str(part) for part in op.path if str(part))
+    if not path:
+        raise ValueError("MergeRuntimeStateOp.path must not be empty")
+
+    value = copy.deepcopy(op.value) if isinstance(op.value, dict) else {}
+    if not value:
+        return
+
+    head = path[0]
+    if len(path) == 1 and head == "memory_state":
+        state.memory_state.update(value)
+        state.component_bucket("memory")["state"] = copy.deepcopy(state.memory_state)
+        return
+    if len(path) == 1 and head == "memory_prepare_info":
+        state.memory_prepare_info.update(value)
+        state.component_bucket("memory")["prepare_info"] = copy.deepcopy(state.memory_prepare_info)
+        return
+    if len(path) == 1 and head == "memory_commit_info":
+        state.memory_commit_info.update(value)
+        state.component_bucket("memory")["commit_info"] = copy.deepcopy(state.memory_commit_info)
+        return
+    if len(path) == 1 and head == "optimizer_state":
+        for optimizer_name, optimizer_value in value.items():
+            if not isinstance(optimizer_name, str):
+                continue
+            if isinstance(optimizer_value, dict):
+                state.optimizer_state[optimizer_name] = copy.deepcopy(optimizer_value)
+            else:
+                state.optimizer_state[optimizer_name] = {"value": copy.deepcopy(optimizer_value)}
+        state.component_state["optimizers"] = copy.deepcopy(state.optimizer_state)
+        return
+
+    if hasattr(state, head):
+        root = getattr(state, head)
+        if isinstance(root, dict):
+            _merge_nested_value(root, path[1:], value)
+            return
+
+    bucket = state.component_bucket(head)
+    if len(path) == 1:
+        if isinstance(bucket.get("value"), dict):
+            bucket["value"].update(value)
+        else:
+            bucket["value"] = value
+        return
+    _merge_nested_value(bucket, path[1:], value)
+
+
 def _apply_create_artifact_op(
     state: RunState,
     delta: RunDelta,
@@ -333,3 +413,21 @@ def _set_nested_value(root: dict, path: tuple[str, ...], value) -> None:
             cursor[key] = child
         cursor = child
     cursor[path[-1]] = value
+
+
+def _merge_nested_value(root: dict, path: tuple[str, ...], value: dict) -> None:
+    if not path:
+        root.update(copy.deepcopy(value))
+        return
+    cursor = root
+    for key in path[:-1]:
+        child = cursor.get(key)
+        if not isinstance(child, dict):
+            child = {}
+            cursor[key] = child
+        cursor = child
+    leaf = cursor.get(path[-1])
+    if isinstance(leaf, dict):
+        leaf.update(copy.deepcopy(value))
+    else:
+        cursor[path[-1]] = copy.deepcopy(value)

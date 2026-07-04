@@ -3,8 +3,15 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from ..capabilities import EmitEventOp
-from ..kernel.delta import HarnessDelta, MessageListOp
+from ..capabilities import (
+    ContextOp,
+    ContextTarget,
+    EmitEventOp,
+    MergeRuntimeStateOp,
+    ReplaceMessagesOp,
+    RunDelta,
+)
+from ..kernel.delta import MessageListOp, ReplaceSpanOp
 
 
 MEMORY_EFFECT_CREATED_BY_PREFIX = "memory."
@@ -22,15 +29,61 @@ def build_memory_delta(
     base_version_id: str | None = None,
     rebase_to_latest: bool = True,
     ops: tuple[MessageListOp, ...] = (),
-) -> HarnessDelta:
-    return HarnessDelta(
+) -> RunDelta:
+    context_ops = (
+        *_message_ops_to_context_ops(ops),
+        *_state_updates_to_context_ops(state_updates),
+    )
+    return RunDelta(
         created_by=created_by,
         base_version_id=base_version_id,
         rebase_to_latest=rebase_to_latest,
-        ops=tuple(ops or ()),
-        state_updates=_copy_dict(state_updates),
+        context_ops=context_ops,
         trace=_copy_dict(trace),
     )
+
+
+def _message_ops_to_context_ops(ops: tuple[MessageListOp, ...]) -> tuple[ContextOp, ...]:
+    context_ops: list[ContextOp] = []
+    for op in tuple(ops or ()):
+        if isinstance(op, ReplaceSpanOp):
+            context_ops.append(
+                ReplaceMessagesOp(
+                    target=ContextTarget.MODEL_CONTEXT,
+                    start=op.start,
+                    end=op.end,
+                    messages=copy.deepcopy(op.messages),
+                    reason="memory.model_context.replace",
+                )
+            )
+            continue
+        raise TypeError(f"unsupported memory message op: {type(op).__name__}")
+    return tuple(context_ops)
+
+
+def _state_updates_to_context_ops(updates: dict[str, Any] | None) -> tuple[ContextOp, ...]:
+    context_ops: list[ContextOp] = []
+    for key, value in _copy_dict(updates).items():
+        if key == "transcript":
+            context_ops.append(
+                ReplaceMessagesOp(
+                    target=ContextTarget.CONVERSATION,
+                    messages=copy.deepcopy(value) if isinstance(value, list) else [],
+                    reason="memory.conversation.replace",
+                )
+            )
+            continue
+        if key in {"memory_state", "memory_prepare_info", "memory_commit_info", "optimizer_state"}:
+            context_ops.append(
+                MergeRuntimeStateOp(
+                    path=(key,),
+                    value=_copy_dict(value),
+                    reason="memory.state.merge",
+                )
+            )
+            continue
+        raise TypeError(f"unsupported memory state update: {key}")
+    return tuple(context_ops)
 
 
 def memory_state_update(memory_state: dict[str, Any]) -> dict[str, Any]:
