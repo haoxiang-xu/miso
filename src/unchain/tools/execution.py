@@ -16,6 +16,7 @@ from ..artifacts import (
 from ..input.human_input import HumanInputResponse, is_human_input_tool_name
 from ..interaction import (
     INTERACTION_EFFECT_CREATED_BY,
+    build_human_input_continuation,
     build_human_input_requested_event,
     build_human_input_suspend_request,
 )
@@ -624,26 +625,20 @@ class ToolExecutionHarness(BaseToolHarness):
         batch_state = context.state.tool_batch_state.copy()
 
         if batch_state.awaiting_human_input and batch_state.human_input_request is not None:
-            continuation = None
-            if context.loop is not None and hasattr(context.loop, "build_human_input_continuation"):
-                continuation = context.loop.build_human_input_continuation(
-                    request=batch_state.human_input_request,
-                    payload=payload,
-                    response_format=response_format,
-                    next_iteration=context.iteration + 1,
-                    max_iterations=int(context.event.get("max_iterations") or 0),
-                    state=context.state,
-                    run_id=context.run_id,
-                )
+            continuation = build_human_input_continuation(
+                request=batch_state.human_input_request,
+                payload=payload,
+                response_format=response_format,
+                next_iteration=context.iteration + 1,
+                max_iterations=int(context.event.get("max_iterations") or 0),
+                state=context.state,
+                run_id=context.run_id,
+            )
             suspend_ops = (
-                (
-                    build_human_input_suspend_request(
-                        batch_state.human_input_request,
-                        continuation=continuation,
-                    ),
-                )
-                if isinstance(continuation, dict)
-                else ()
+                build_human_input_suspend_request(
+                    batch_state.human_input_request,
+                    continuation=continuation,
+                ),
             )
             return CapabilityOutcome(
                 delta=RunDelta(

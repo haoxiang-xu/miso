@@ -112,6 +112,15 @@ def test_kernel_loop_does_not_own_tool_observation_runtime():
     assert "_build_observation_payload" not in source
 
 
+def test_kernel_loop_does_not_own_human_input_continuation_building():
+    import unchain.kernel.loop as kernel_loop_module
+
+    source = inspect.getsource(kernel_loop_module.KernelLoop)
+
+    assert "build_human_input_continuation" not in source
+    assert "human_input_continuation" not in source
+
+
 def test_kernel_loop_run_does_not_auto_register_default_runtime_hooks():
     loop = KernelLoop(
         model_io=_QueueModelIO(

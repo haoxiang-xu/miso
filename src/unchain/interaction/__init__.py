@@ -12,6 +12,7 @@ from .human_input import (
 )
 from .effects import (
     INTERACTION_EFFECT_CREATED_BY,
+    build_human_input_continuation,
     build_human_input_requested_event,
     build_human_input_suspend_request,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "HumanInputResumeHarness",
     "INTERACTION_EFFECT_CREATED_BY",
     "build_ask_user_question_tool",
+    "build_human_input_continuation",
     "build_human_input_requested_event",
     "build_human_input_suspend_request",
     "is_human_input_tool_name",

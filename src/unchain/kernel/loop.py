@@ -399,18 +399,6 @@ class KernelLoop:
                 return engine_model.strip()
         return None
 
-    def _serialize_response_format(
-        self,
-        response_format: ResponseFormat | None,
-    ) -> dict[str, Any] | None:
-        if response_format is None:
-            return None
-        return {
-            "name": response_format.name,
-            "schema": copy.deepcopy(response_format.schema),
-            "required": list(response_format.required),
-        }
-
     def _deserialize_response_format(
         self,
         raw: dict[str, Any] | None,
@@ -424,63 +412,6 @@ class KernelLoop:
             return None
         required_list = required if isinstance(required, list) else None
         return ResponseFormat(name=name, schema=schema, required=required_list)
-
-    @staticmethod
-    def _ensure_json_safe(obj: Any) -> Any:
-        if obj is None or isinstance(obj, (str, int, float, bool)):
-            return obj
-        if isinstance(obj, dict):
-            return {
-                k: KernelLoop._ensure_json_safe(v)
-                for k, v in obj.items()
-                if isinstance(k, str) and isinstance(v, (str, int, float, bool, type(None), dict, list, tuple))
-            }
-        if isinstance(obj, (list, tuple)):
-            return [
-                KernelLoop._ensure_json_safe(item)
-                for item in obj
-                if isinstance(item, (str, int, float, bool, type(None), dict, list, tuple))
-            ]
-        return str(obj)
-
-    def build_human_input_continuation(
-        self,
-        *,
-        request: Any,
-        payload: dict[str, Any],
-        response_format: ResponseFormat | None,
-        next_iteration: int,
-        max_iterations: int,
-        state: RunState,
-        run_id: str | None = None,
-    ) -> dict[str, Any]:
-        return {
-            "type": "human_input_continuation",
-            "kind": getattr(request, "kind", None),
-            "run_id": run_id,
-            "provider": state.provider_state.provider,
-            "model": state.provider_state.model,
-            "request_id": getattr(request, "request_id", None),
-            "call_id": getattr(request, "request_id", None),
-            "request": request.to_dict(),
-            "payload": self._ensure_json_safe(copy.deepcopy(payload)),
-            "response_format": self._ensure_json_safe(self._serialize_response_format(response_format)),
-            "context_version_id": state.latest_version_id,
-            "iteration": int(next_iteration),
-            "max_iterations": int(max_iterations),
-            "previous_response_id": state.provider_state.previous_response_id,
-            "use_openai_previous_response_chain": bool(state.provider_state.use_previous_response_chain),
-            "session_id": state.session_state.session_id,
-            "memory_namespace": state.session_state.memory_namespace,
-            "max_context_window_tokens": int(state.provider_state.max_context_window_tokens or 0),
-            "consumed_tokens": int(state.token_state.consumed_tokens or 0),
-            "input_tokens": int(state.token_state.input_tokens or 0),
-            "output_tokens": int(state.token_state.output_tokens or 0),
-            "last_turn_tokens": int(state.token_state.last_turn_tokens or 0),
-            "last_turn_input_tokens": int(state.token_state.last_turn_input_tokens or 0),
-            "last_turn_output_tokens": int(state.token_state.last_turn_output_tokens or 0),
-            "workspace_change_state": copy.deepcopy(state.workspace_change_state),
-        }
 
     def _last_assistant_text(self, messages: list[dict[str, Any]]) -> str:
         for message in reversed(messages or []):
