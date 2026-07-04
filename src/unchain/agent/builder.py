@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import copy
 import logging
-import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -13,10 +12,9 @@ from ..kernel.loop import KernelLoop
 from ..kernel.model_io import ModelIO
 from ..kernel.types import KernelRunResult
 from ..schemas import ResponseFormat
-from ..runtime import build_runtime_loop
+from ..runtime import CompletionPolicy, CompletionPolicyRunner, build_runtime_loop
 from ..tools import Tool, Toolkit
 from ..tools.exposure import ToolExposureRuntime, ToolOptimizerConfig
-from .completion import CompletionPolicy
 from .model_io import ModelIOFactoryRegistry
 from .spec import AgentSpec, AgentState
 
@@ -104,17 +102,6 @@ class PreparedAgent:
                 current = next_result
         return current
 
-    def _emit_completion_policy_event(self, event_type: str, **payload: Any) -> None:
-        callback = self.call_context.callback
-        if not callable(callback):
-            return
-        event = {
-            "type": event_type,
-            "run_id": str(self.call_context.run_id or "agent"),
-            **copy.deepcopy(payload),
-        }
-        callback(event)
-
     def _prepare_tool_exposure(
         self,
         *,
@@ -184,104 +171,13 @@ class PreparedAgent:
             tool_runtime_config=copy.deepcopy(self.call_context.tool_runtime_config or {}),
         )
 
-    @staticmethod
-    def _final_assistant_text(result: KernelRunResult) -> str:
-        for message in reversed(result.messages):
-            if not isinstance(message, dict) or message.get("role") != "assistant":
-                continue
-            content = message.get("content")
-            if isinstance(content, str):
-                return content
-        return ""
-
-    def _completion_incomplete_result(self, result: KernelRunResult, *, reason: str) -> KernelRunResult:
-        self._emit_completion_policy_event(
-            "completion_policy_exhausted",
-            reason=reason,
-            iteration=int(result.iteration),
+    def _completion_policy_runner(self) -> CompletionPolicyRunner:
+        return CompletionPolicyRunner(
+            policy=self.completion_policy,
+            run_once=self._run_once,
+            event_callback=self.call_context.callback,
+            run_id=str(self.call_context.run_id or "agent"),
         )
-        return replace(result, status="completion_incomplete")
-
-    def _apply_completion_policy(
-        self,
-        result: KernelRunResult,
-        *,
-        payload: dict[str, Any] | None,
-        max_iterations: int,
-    ) -> KernelRunResult:
-        policy = self.completion_policy
-        if policy is None or result.status != "completed":
-            return result
-
-        started_at = time.monotonic()
-        repairs_completed = 0
-        current = result
-        previous_final_text = ""
-        total_tokens = int(current.consumed_tokens or 0)
-
-        while True:
-            evaluation = policy.evaluate(current)
-            final_text = self._final_assistant_text(current)
-            self._emit_completion_policy_event(
-                "completion_policy_evaluated",
-                complete=bool(evaluation.complete),
-                feedback=evaluation.feedback,
-                reason=evaluation.reason,
-                repair_attempt=repairs_completed,
-            )
-            if evaluation.complete:
-                return current
-            if repairs_completed >= max(0, int(policy.max_repair_turns)):
-                return self._completion_incomplete_result(
-                    current,
-                    reason="repair_budget_exhausted",
-                )
-            if policy.max_total_tokens is not None and total_tokens >= int(policy.max_total_tokens):
-                return self._completion_incomplete_result(
-                    current,
-                    reason="token_budget_exhausted",
-                )
-            if (
-                policy.max_elapsed_seconds is not None
-                and time.monotonic() - started_at >= float(policy.max_elapsed_seconds)
-            ):
-                return self._completion_incomplete_result(
-                    current,
-                    reason="time_budget_exhausted",
-                )
-            if (
-                repairs_completed > 0
-                and policy.stop_on_no_progress
-                and final_text == previous_final_text
-            ):
-                return self._completion_incomplete_result(
-                    current,
-                    reason="no_progress",
-                )
-
-            feedback = str(evaluation.feedback or "").strip()
-            if not feedback:
-                return self._completion_incomplete_result(
-                    current,
-                    reason="missing_repair_feedback",
-                )
-
-            repairs_completed += 1
-            previous_final_text = final_text
-            self._emit_completion_policy_event(
-                "completion_policy_retry",
-                feedback=feedback,
-                repair_attempt=repairs_completed,
-            )
-            repair_messages = copy.deepcopy(current.messages)
-            repair_messages.append({"role": "user", "content": feedback})
-            current = self._run_once(
-                messages=repair_messages,
-                payload=payload,
-                previous_response_id=current.previous_response_id,
-                max_iterations=max(1, int(policy.repair_max_iterations or max_iterations)),
-            )
-            total_tokens += int(current.consumed_tokens or 0)
 
     def run(self) -> KernelRunResult:
         messages = copy.deepcopy(self.call_context.input_messages or [])
@@ -292,7 +188,7 @@ class PreparedAgent:
             max_iterations=self._resolved_max_iterations(),
             previous_response_id=self.call_context.previous_response_id,
         )
-        result = self._apply_completion_policy(
+        result = self._completion_policy_runner().apply(
             result,
             payload=payload,
             max_iterations=self._resolved_max_iterations(),

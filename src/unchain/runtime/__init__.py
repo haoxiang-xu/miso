@@ -3,6 +3,13 @@ from .assembly import (
     build_default_runtime_components,
     build_runtime_loop,
 )
+from .completion import (
+    CompletionEvaluation,
+    CompletionPolicy,
+    CompletionPolicyRunner,
+    CompletionRunOnce,
+    CompletionValidator,
+)
 from .payloads import (
     DEFAULT_PAYLOADS_RESOURCE,
     MODEL_CAPABILITIES_RESOURCE,
@@ -13,6 +20,11 @@ from .payloads import (
 __all__ = [
     "DEFAULT_PAYLOADS_RESOURCE",
     "MODEL_CAPABILITIES_RESOURCE",
+    "CompletionEvaluation",
+    "CompletionPolicy",
+    "CompletionPolicyRunner",
+    "CompletionRunOnce",
+    "CompletionValidator",
     "attach_default_runtime_components",
     "build_default_runtime_components",
     "build_runtime_loop",

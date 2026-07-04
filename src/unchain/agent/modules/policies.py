@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ...schemas import ResponseFormat
-from ..completion import CompletionPolicy
+from ...runtime import CompletionPolicy
 from .base import BaseAgentModule
 
 
