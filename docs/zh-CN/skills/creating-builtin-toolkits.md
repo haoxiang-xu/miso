@@ -241,7 +241,7 @@ return {"error": f"file not found: {target}"}
 return "some string"
 ```
 
-**说明**: 项目中没有统一强制的 `"ok"` key 约定。有的 toolkit 使用 `{"ok": True, ...}` (ExternalAPI)，有的不用 (Workspace)。在单个 toolkit 内选定一种模式并保持一致。
+**说明**: 项目中没有统一强制的 `"ok"` key 约定。在单个 toolkit 内选定一种返回结构并保持一致。
 
 ### 错误处理模式
 

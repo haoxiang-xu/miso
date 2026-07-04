@@ -89,13 +89,31 @@ def test_legacy_focused_toolkit_classes_are_removed():
         assert not hasattr(package, class_name)
 
 
-def test_legacy_git_and_external_api_toolkits_stay_internal_compat():
-    from unchain.toolkits.builtin.external_api import ExternalAPIToolkit
-    from unchain.toolkits.builtin.git import GitToolkit
+def test_legacy_git_and_external_api_toolkit_classes_are_removed():
+    import importlib
+    import sys
 
-    for toolkit_cls in (ExternalAPIToolkit, GitToolkit):
-        assert toolkit_cls.__unchain_public_builtin__ is False
-        assert toolkit_cls.__unchain_legacy_compat__ is True
+    import pytest
+
+    removed_modules = (
+        "unchain.toolkits.builtin.external_api.external_api",
+        "unchain.toolkits.builtin.git.git",
+    )
+    removed_exports = (
+        ("unchain.toolkits.builtin.external_api", "ExternalAPIToolkit"),
+        ("unchain.toolkits.builtin.git", "GitToolkit"),
+    )
+
+    for module_name in (*removed_modules, *(package_name for package_name, _ in removed_exports)):
+        sys.modules.pop(module_name, None)
+
+    for module_name in removed_modules:
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(module_name)
+
+    for package_name, class_name in removed_exports:
+        package = importlib.import_module(package_name)
+        assert not hasattr(package, class_name)
 
 
 def test_public_toolkit_reference_docs_exclude_legacy_compat_toolkits():
