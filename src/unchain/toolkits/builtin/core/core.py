@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,7 +13,6 @@ from ..interaction import InteractionToolkit
 from ..web import WebToolkit
 from .coding_backend import CoreCodingBackend
 from .lsp_runtime import LSPRuntime, LSPRuntimeError
-from .shell_runtime import ShellRuntime
 from .web_fetch import run_extract_model
 
 
@@ -63,7 +61,6 @@ class CoreToolkit(BuiltinToolkit):
         self._interaction_toolkit = InteractionToolkit(workspace_roots=self.workspace_roots)
         self._web_toolkit = WebToolkit(workspace_roots=self.workspace_roots)
         self._lsp_runtime = LSPRuntime(self.workspace_roots)
-        self._shell_runtime = ShellRuntime(self.workspace_roots)
         self._web_fetch_service = self._web_toolkit._web_fetch_service
         self._register_tools()
 
@@ -634,67 +631,23 @@ class CoreToolkit(BuiltinToolkit):
             yield_time_ms: Small delay before returning a background task so early output can accumulate.
             task_id: Background task id used by `poll` and `kill`.
         """
-        resolved_action = str(action or "").strip().lower()
-        if resolved_action not in {"run", "poll", "kill"}:
-            return {
-                "ok": False,
-                "action": resolved_action or str(action or ""),
-                "status": "error",
-                "shell_family": "",
-                "platform": sys.platform,
-                "cwd": "",
-                "task_id": str(task_id or ""),
-                "error": "action must be one of: run, poll, kill",
-            }
-
-        session_key = self._session_key()
-        if resolved_action == "run":
-            return self._shell_runtime.run(
-                session_key=session_key,
-                command=command,
-                cwd=cwd,
-                timeout_ms=timeout_ms,
-                run_in_background=run_in_background,
-                max_output_chars=max_output_chars,
-                yield_time_ms=yield_time_ms,
-            )
-        if not isinstance(task_id, str) or not task_id.strip():
-            return {
-                "ok": False,
-                "action": resolved_action,
-                "status": "error",
-                "shell_family": "",
-                "platform": sys.platform,
-                "cwd": "",
-                "task_id": str(task_id or ""),
-                "error": "task_id is required",
-            }
-        if resolved_action == "poll":
-            return self._shell_runtime.poll(task_id=task_id, max_output_chars=max_output_chars)
-        return self._shell_runtime.kill(task_id=task_id, max_output_chars=max_output_chars)
+        return self._coding_backend.shell(
+            action=action,
+            command=command,
+            cwd=cwd,
+            timeout_ms=timeout_ms,
+            run_in_background=run_in_background,
+            max_output_chars=max_output_chars,
+            yield_time_ms=yield_time_ms,
+            task_id=task_id,
+        )
 
     def _resolve_shell_confirmation(
         self,
         arguments: dict[str, Any],
         execution_context: ToolExecutionContext | None,
     ) -> ToolConfirmationPolicy:
-        action = str(arguments.get("action") or "").strip().lower()
-        if action in {"poll", "kill"}:
-            return ToolConfirmationPolicy(requires_confirmation=False)
-        if action != "run":
-            return ToolConfirmationPolicy(requires_confirmation=False)
-
-        if bool(arguments.get("run_in_background")):
-            return ToolConfirmationPolicy(requires_confirmation=True)
-
-        command = arguments.get("command")
-        if not isinstance(command, str) or not command.strip():
-            return ToolConfirmationPolicy(requires_confirmation=False)
-
-        shell_family = self._shell_runtime.detect_executor().family
-        if self._shell_runtime.is_low_risk_command(command, shell_family):
-            return ToolConfirmationPolicy(requires_confirmation=False)
-        return ToolConfirmationPolicy(requires_confirmation=True)
+        return self._coding_backend._resolve_shell_confirmation(arguments, execution_context)
 
     def _record_workspace_change(
         self,
@@ -861,7 +814,7 @@ class CoreToolkit(BuiltinToolkit):
         self._interaction_toolkit.shutdown()
         self._web_toolkit.shutdown()
         self._lsp_runtime.shutdown()
-        self._shell_runtime.shutdown()
+        self._coding_backend.shutdown()
 
     def _compact_read_args(self, payload: Any, context: ToolHistoryOptimizationContext) -> Any:
         if not isinstance(payload, dict):

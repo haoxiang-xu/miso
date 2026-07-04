@@ -5,12 +5,15 @@ import hashlib
 import mimetypes
 import os
 import re
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ...base import BuiltinExecutionContext
+from ....tools.models import ToolConfirmationPolicy
+from .shell_runtime import ShellRuntime
 
 
 _ARTIFACT_DIFF_MAX_LINES = 1_000_000
@@ -77,6 +80,7 @@ class CoreCodingBackend:
         self._execution_context_provider = execution_context_provider
         self._execution_context_stack: list[BuiltinExecutionContext] = []
         self._read_snapshots: dict[str, dict[str, _ReadSnapshot]] = {}
+        self._shell_runtime = ShellRuntime(self.workspace_roots)
 
     @property
     def current_execution_context(self) -> BuiltinExecutionContext | None:
@@ -94,7 +98,7 @@ class CoreCodingBackend:
             self._execution_context_stack.pop()
 
     def shutdown(self) -> None:
-        return None
+        self._shell_runtime.shutdown()
 
     def _session_key(self) -> str:
         context = self.current_execution_context
@@ -608,6 +612,79 @@ class CoreCodingBackend:
             "applied_limit": limit_value,
             "truncated": offset_value + len(paged_matches) < len(matches),
         }
+
+    def shell(
+        self,
+        action: str,
+        command: str = "",
+        cwd: str | None = None,
+        timeout_ms: int = 120000,
+        run_in_background: bool = False,
+        max_output_chars: int = 20000,
+        yield_time_ms: int = 300,
+        task_id: str = "",
+    ) -> dict[str, Any]:
+        resolved_action = str(action or "").strip().lower()
+        if resolved_action not in {"run", "poll", "kill"}:
+            return {
+                "ok": False,
+                "action": resolved_action or str(action or ""),
+                "status": "error",
+                "shell_family": "",
+                "platform": sys.platform,
+                "cwd": "",
+                "task_id": str(task_id or ""),
+                "error": "action must be one of: run, poll, kill",
+            }
+
+        session_key = self._session_key()
+        if resolved_action == "run":
+            return self._shell_runtime.run(
+                session_key=session_key,
+                command=command,
+                cwd=cwd,
+                timeout_ms=timeout_ms,
+                run_in_background=run_in_background,
+                max_output_chars=max_output_chars,
+                yield_time_ms=yield_time_ms,
+            )
+        if not isinstance(task_id, str) or not task_id.strip():
+            return {
+                "ok": False,
+                "action": resolved_action,
+                "status": "error",
+                "shell_family": "",
+                "platform": sys.platform,
+                "cwd": "",
+                "task_id": str(task_id or ""),
+                "error": "task_id is required",
+            }
+        if resolved_action == "poll":
+            return self._shell_runtime.poll(task_id=task_id, max_output_chars=max_output_chars)
+        return self._shell_runtime.kill(task_id=task_id, max_output_chars=max_output_chars)
+
+    def _resolve_shell_confirmation(
+        self,
+        arguments: dict[str, Any],
+        execution_context: BuiltinExecutionContext | None,
+    ) -> ToolConfirmationPolicy:
+        action = str(arguments.get("action") or "").strip().lower()
+        if action in {"poll", "kill"}:
+            return ToolConfirmationPolicy(requires_confirmation=False)
+        if action != "run":
+            return ToolConfirmationPolicy(requires_confirmation=False)
+
+        if bool(arguments.get("run_in_background")):
+            return ToolConfirmationPolicy(requires_confirmation=True)
+
+        command = arguments.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return ToolConfirmationPolicy(requires_confirmation=False)
+
+        shell_family = self._shell_runtime.detect_executor().family
+        if self._shell_runtime.is_low_risk_command(command, shell_family):
+            return ToolConfirmationPolicy(requires_confirmation=False)
+        return ToolConfirmationPolicy(requires_confirmation=True)
 
     def _record_workspace_change(
         self,

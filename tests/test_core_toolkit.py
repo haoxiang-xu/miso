@@ -316,7 +316,7 @@ def test_core_toolkit_composes_focused_interaction_and_web_toolkits():
         assert toolkit.tools["web_fetch"] is toolkit._web_toolkit.tools["web_fetch"]
 
 
-def test_core_toolkit_uses_core_coding_backend_for_file_and_search_tools(monkeypatch):
+def test_core_toolkit_uses_core_coding_backend_for_file_search_and_shell_tools(monkeypatch):
     from unchain.toolkits.builtin.core.coding_backend import CoreCodingBackend
 
     calls: list[str] = []
@@ -325,6 +325,8 @@ def test_core_toolkit_uses_core_coding_backend_for_file_and_search_tools(monkeyp
     original_edit = CoreCodingBackend.edit
     original_glob = CoreCodingBackend.glob
     original_grep = CoreCodingBackend.grep
+    original_shell = CoreCodingBackend.shell
+    original_shell_confirmation = CoreCodingBackend._resolve_shell_confirmation
 
     def tracked_read(self, *args, **kwargs):
         calls.append("read")
@@ -346,11 +348,21 @@ def test_core_toolkit_uses_core_coding_backend_for_file_and_search_tools(monkeyp
         calls.append("grep")
         return original_grep(self, *args, **kwargs)
 
+    def tracked_shell(self, *args, **kwargs):
+        calls.append("shell")
+        return original_shell(self, *args, **kwargs)
+
+    def tracked_shell_confirmation(self, *args, **kwargs):
+        calls.append("shell_confirmation")
+        return original_shell_confirmation(self, *args, **kwargs)
+
     monkeypatch.setattr(CoreCodingBackend, "read", tracked_read)
     monkeypatch.setattr(CoreCodingBackend, "write", tracked_write)
     monkeypatch.setattr(CoreCodingBackend, "edit", tracked_edit)
     monkeypatch.setattr(CoreCodingBackend, "glob", tracked_glob)
     monkeypatch.setattr(CoreCodingBackend, "grep", tracked_grep)
+    monkeypatch.setattr(CoreCodingBackend, "shell", tracked_shell)
+    monkeypatch.setattr(CoreCodingBackend, "_resolve_shell_confirmation", tracked_shell_confirmation)
 
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = CoreToolkit(workspace_root=tmp)
@@ -362,14 +374,18 @@ def test_core_toolkit_uses_core_coding_backend_for_file_and_search_tools(monkeyp
         edit_result = toolkit.edit(str(target), "BETA", "gamma")
         glob_result = toolkit.glob("*.txt", path=str(Path(tmp).resolve()))
         grep_result = toolkit.grep("gamma", path=str(Path(tmp).resolve()))
+        shell_result = toolkit.shell(action="invalid")
+        confirmation = toolkit._resolve_shell_confirmation({"action": "poll"}, None)
 
     assert type(toolkit._coding_backend).__name__ == "CoreCodingBackend"
-    assert calls == ["read", "write", "edit", "glob", "grep"]
+    assert calls == ["read", "write", "edit", "glob", "grep", "shell", "shell_confirmation"]
     assert read_result["truncated"] is False
     assert write_result["operation"] == "update"
     assert edit_result["replacement_count"] == 1
     assert glob_result["match_count"] == 1
     assert grep_result["match_count"] == 1
+    assert shell_result["error"] == "action must be one of: run, poll, kill"
+    assert confirmation.requires_confirmation is False
 
 
 def test_code_toolkit_requires_full_read_before_mutating_existing_files():

@@ -29,29 +29,8 @@ class WorkspaceToolkitBackend(CoreCodingBackend):
         self._core.pop_execution_context()
 
     def shutdown(self) -> None:
+        super().shutdown()
         self._core.shutdown()
-
-    def shell(
-        self,
-        action: str,
-        command: str = "",
-        cwd: str | None = None,
-        timeout_ms: int = 120000,
-        run_in_background: bool = False,
-        max_output_chars: int = 20000,
-        yield_time_ms: int = 300,
-        task_id: str = "",
-    ) -> dict[str, Any]:
-        return self._core.shell(
-            action=action,
-            command=command,
-            cwd=cwd,
-            timeout_ms=timeout_ms,
-            run_in_background=run_in_background,
-            max_output_chars=max_output_chars,
-            yield_time_ms=yield_time_ms,
-            task_id=task_id,
-        )
 
     def lsp(
         self,
@@ -74,9 +53,6 @@ class WorkspaceToolkitBackend(CoreCodingBackend):
 
     def _resolve_edit_confirmation(self, arguments: dict[str, Any], execution_context: Any) -> Any:
         return self._core._resolve_edit_confirmation(arguments, execution_context)
-
-    def _resolve_shell_confirmation(self, arguments: dict[str, Any], execution_context: Any) -> Any:
-        return self._core._resolve_shell_confirmation(arguments, execution_context)
 
     def _compact_read_args(self, payload: Any, context: Any) -> Any:
         return self._core._compact_read_args(payload, context)
