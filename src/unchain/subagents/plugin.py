@@ -97,15 +97,16 @@ def _extract_return_to_parent_payload(messages: list[dict[str, Any]]) -> dict[st
             for block in reversed(content):
                 if not isinstance(block, dict):
                     continue
-                text = block.get("text")
-                if not isinstance(text, str) or not text.strip():
-                    continue
-                try:
-                    parsed = json.loads(text)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(parsed, dict) and parsed.get("mode") == "return_to_parent":
-                    return copy.deepcopy(parsed)
+                for key in ("text", "content"):
+                    text = block.get(key)
+                    if not isinstance(text, str) or not text.strip():
+                        continue
+                    try:
+                        parsed = json.loads(text)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(parsed, dict) and parsed.get("mode") == "return_to_parent":
+                        return copy.deepcopy(parsed)
     return None
 
 
@@ -1405,7 +1406,23 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 "summary": child_result.summary or child_result.output,
                 "result": child_result.output,
             }
+        clarification_request = copy.deepcopy(child_result.clarification_request)
+        if clarification_request is not None:
+            return_payload.setdefault("clarification_request", copy.deepcopy(clarification_request))
         result_state = self._merge_result_subagent_state(running_state, child_result)
+        if clarification_request is not None:
+            result_state = result_state.merged(
+                {
+                    "blocked_clarifications": [
+                        {
+                            "subagent_id": child_id,
+                            "mode": "return_handoff",
+                            "lineage": lineage,
+                            "request": copy.deepcopy(clarification_request),
+                        }
+                    ]
+                }
+            )
         result_state.return_handoff_stack = [
             item
             for item in result_state.return_handoff_stack
@@ -1413,6 +1430,19 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         ]
         status = str(return_payload.get("status") or child_result.status)
         summary = str(return_payload.get("summary") or child_result.summary or child_result.output)
+        if clarification_request is not None:
+            self._emit_subagent_event(
+                context,
+                "subagent_clarification_requested",
+                subagent_id=child_id,
+                parent_id=parent_id,
+                mode="return_handoff",
+                template=template_name,
+                lineage=lineage,
+                child_run_id=child_run_id,
+                request_id=clarification_request.get("request_id"),
+                clarification_request=copy.deepcopy(clarification_request),
+            )
         self._emit_subagent_event(
             context,
             "subagent_return_handoff_completed",
@@ -1434,6 +1464,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 "lineage": list(lineage),
                 "return": copy.deepcopy(return_payload),
                 "summary": summary,
+                "clarification_request": copy.deepcopy(clarification_request),
             },
             state_updates={"subagent_state": result_state},
         )

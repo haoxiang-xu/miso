@@ -46,6 +46,25 @@ def _text_turn(text: str) -> ModelTurnResult:
     )
 
 
+def _content_block_turn(payload: dict) -> ModelTurnResult:
+    return ModelTurnResult(
+        assistant_messages=[
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "content": json.dumps(payload),
+                    }
+                ],
+            },
+            {"role": "assistant", "content": "fallback final text"},
+        ],
+        tool_calls=[],
+        final_text="fallback final text",
+    )
+
+
 def _board_write_turn(*, call_id: str, title: str, tag: str) -> ModelTurnResult:
     return _openai_tool_turn(
         call_id=call_id,
@@ -1846,6 +1865,139 @@ def test_return_handoff_returns_control_to_parent():
     assert result.messages[-1]["content"] == "parent resumed"
     assert any(event["type"] == "subagent_return_handoff_started" for event in events)
     assert any(event["type"] == "subagent_return_handoff_completed" for event in events)
+
+
+def test_return_handoff_extracts_return_payload_from_content_block():
+    child = Agent(
+        name="specialist",
+        provider="openai",
+        modules=(SubagentModule(),),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _content_block_turn(
+                    {
+                        "mode": "return_to_parent",
+                        "status": "completed",
+                        "summary": "content block summary",
+                        "result": "content block result",
+                    }
+                )
+            ],
+        ),
+    )
+
+    def _after_return_handoff(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["mode"] == "return_handoff"
+        assert payload["status"] == "completed"
+        assert payload["return"]["summary"] == "content block summary"
+        assert payload["return"]["result"] == "content block result"
+        assert payload["summary"] == "content block summary"
+        return _text_turn("parent resumed")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="specialist",
+                        description="Temporary specialist",
+                        agent=child,
+                        allowed_modes=("handoff", "delegate"),
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="call_return_handoff_content_block",
+                    name="return_handoff_to_subagent",
+                    arguments={
+                        "target": "specialist",
+                        "reason": "Needs temporary expertise",
+                    },
+                ),
+                _after_return_handoff,
+            ],
+        ),
+    )
+
+    result = parent.run("Need temporary help", max_iterations=2)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "parent resumed"
+
+
+def test_return_handoff_preserves_child_clarification_request_for_parent():
+    clarification_args = {
+        "title": "Need more detail",
+        "question": "Which environment?",
+        "selection_mode": "single",
+        "options": [{"label": "Prod", "value": "prod"}, {"label": "Staging", "value": "staging"}],
+    }
+    child = Agent(
+        name="clarifier",
+        provider="openai",
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [_openai_tool_turn(call_id="child_call", name="ask_user_question", arguments=clarification_args)],
+        ),
+    )
+    events = []
+    plugin = SubagentToolPlugin(
+        parent_agent=SimpleNamespace(name="manager"),
+        templates=(
+            SubagentTemplate(
+                name="clarifier",
+                description="Clarification specialist",
+                agent=child,
+                allowed_modes=("handoff", "delegate"),
+            ),
+        ),
+        policy=SubagentPolicy(),
+        executor=SubagentExecutor(),
+    )
+    context = SimpleNamespace(
+        state=SimpleNamespace(
+            subagent_state=SubagentState(
+                root_agent_id="manager",
+                active_agent_id="manager",
+                active_lineage=["manager"],
+            )
+        ),
+        loop=RecordingLoop(),
+        callback=events.append,
+        run_id="root-run",
+        session_id="root-session",
+        memory_namespace="root-ns",
+        iteration=1,
+        event={"max_iterations": 3},
+        latest_messages=lambda: [{"role": "user", "content": "Need a clarifier"}],
+    )
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_return_handoff_clarification",
+            name="return_handoff_to_subagent",
+            arguments={"target": "clarifier", "reason": "Ask for missing context"},
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result["mode"] == "return_handoff"
+    assert outcome.tool_result["status"] == "needs_clarification"
+    assert outcome.tool_result["clarification_request"]["question"] == "Which environment?"
+    updated_state = outcome.state_updates["subagent_state"]
+    assert updated_state.blocked_clarifications[0]["subagent_id"] == "manager.clarifier.1"
+    assert updated_state.blocked_clarifications[0]["mode"] == "return_handoff"
+    assert updated_state.blocked_clarifications[0]["request"]["question"] == "Which environment?"
+    assert all(event["type"] != "human_input_requested" for event in events)
 
 
 def test_return_to_parent_requires_summary():
