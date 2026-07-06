@@ -112,6 +112,25 @@ def test_subagent_state_merge_preserves_spawn_stats_for_partial_blackboard_delta
     assert merged.blackboards["default"][0]["item_id"] == "item-1"
 
 
+def test_subagent_state_merge_preserves_spawn_stats_for_partial_subagent_state_delta():
+    state = SubagentState(root_agent_id="root", active_agent_id="root")
+    state.spawn_stats = {"delegate": 3, "handoff": 2, "worker": 5}
+    update = SubagentState()
+    update.blackboards["default"] = [
+        {
+            "item_id": "item-1",
+            "board_id": "default",
+            "kind": "finding",
+            "title": "Parser bug",
+        }
+    ]
+
+    merged = state.merged(update)
+
+    assert merged.spawn_stats == {"delegate": 3, "handoff": 2, "worker": 5}
+    assert merged.blackboards["default"][0]["item_id"] == "item-1"
+
+
 def test_subagent_state_merge_applies_explicit_spawn_stats_update():
     state = SubagentState(root_agent_id="root", active_agent_id="root")
     state.spawn_stats = {"delegate": 3, "handoff": 2, "worker": 5}

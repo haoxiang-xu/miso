@@ -160,7 +160,12 @@ class SubagentState:
         return state
 
     def merged(self, raw: Any) -> "SubagentState":
-        raw_spawn_stats = raw.spawn_stats if isinstance(raw, SubagentState) else None
+        default_spawn_stats = SubagentState().spawn_stats
+        raw_spawn_stats = (
+            raw.spawn_stats
+            if isinstance(raw, SubagentState) and raw.spawn_stats != default_spawn_stats
+            else None
+        )
         if isinstance(raw, dict):
             raw_spawn_stats = raw.get("spawn_stats") if "spawn_stats" in raw else None
         update = SubagentState.from_raw(raw)
