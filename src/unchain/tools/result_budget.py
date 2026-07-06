@@ -504,7 +504,6 @@ class ToolResultBudgetController:
         }
         optimizer_error_count = 0
         optimizer_attempted: set[int] = set()
-        latest_context_messages = copy.deepcopy(latest_messages) if latest_messages is not None else []
 
         def optimizer_payload(index: int) -> tuple[Any | None, bool]:
             nonlocal optimizer_error_count
@@ -520,18 +519,18 @@ class ToolResultBudgetController:
             optimizer = getattr(tool_obj, "history_result_optimizer", None)
             if not callable(optimizer):
                 return None, False
-            context = ToolHistoryOptimizationContext(
-                tool_name=record.tool_name,
-                call_id=record.call_id,
-                kind="result",
-                provider=normalized_provider,
-                session_id=session_id,
-                latest_messages=copy.deepcopy(latest_context_messages),
-                max_chars=max_result_chars,
-                preview_chars=max(1, int(self.config.preview_chars)),
-                include_hash=True,
-            )
             try:
+                context = ToolHistoryOptimizationContext(
+                    tool_name=record.tool_name,
+                    call_id=record.call_id,
+                    kind="result",
+                    provider=normalized_provider,
+                    session_id=session_id,
+                    latest_messages=copy.deepcopy(latest_messages) if latest_messages is not None else [],
+                    max_chars=max_result_chars,
+                    preview_chars=max(1, int(self.config.preview_chars)),
+                    include_hash=True,
+                )
                 return optimizer(copy.deepcopy(record.payload), context), True
             except Exception:
                 optimizer_error_count += 1

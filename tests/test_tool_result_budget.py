@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import queue
 from typing import Any
 
 from unchain.kernel.types import ToolCall
@@ -287,6 +288,29 @@ def test_budget_controller_preserves_small_result_exactly():
         tool_calls=[call],
         result_messages=[message],
         session_id="session-a",
+    )
+
+    assert outcome.messages == [message]
+    assert outcome.stats.compacted_count == 0
+    assert outcome.stats.saved_chars == 0
+
+
+def test_budget_controller_does_not_copy_latest_messages_for_small_result_without_optimizer():
+    call = _call()
+    message = _message("openai", call, {"value": 2})
+
+    outcome = ToolResultBudgetController().budget_messages(
+        provider="openai",
+        toolkit=Toolkit(),
+        tool_calls=[call],
+        result_messages=[message],
+        session_id="session-a",
+        latest_messages=[
+            {
+                "role": "assistant",
+                "content": queue.SimpleQueue(),
+            }
+        ],
     )
 
     assert outcome.messages == [message]
