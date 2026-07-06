@@ -71,6 +71,44 @@ def _last_assistant_text(messages: list[dict[str, Any]]) -> str:
     return ""
 
 
+def _extract_return_to_parent_payload(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for message in reversed(messages or []):
+        if not isinstance(message, dict):
+            continue
+
+        output = message.get("output")
+        if isinstance(output, str) and output.strip():
+            try:
+                parsed = json.loads(output)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict) and parsed.get("mode") == "return_to_parent":
+                return copy.deepcopy(parsed)
+
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict) and parsed.get("mode") == "return_to_parent":
+                return copy.deepcopy(parsed)
+        if isinstance(content, list):
+            for block in reversed(content):
+                if not isinstance(block, dict):
+                    continue
+                text = block.get("text")
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                try:
+                    parsed = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict) and parsed.get("mode") == "return_to_parent":
+                    return copy.deepcopy(parsed)
+    return None
+
+
 def _matches_runtime_tool_call(raw: dict[str, Any], *, call_id: str, tool_name: str) -> bool:
     raw_call_id = str(raw.get("id") or raw.get("call_id") or raw.get("tool_use_id") or "")
     raw_name = str(raw.get("name") or "")
@@ -205,6 +243,10 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 return self._write_agent_board(tool_call=tool_call, context=context)
             if tool_call.name == "read_agent_board":
                 return self._read_agent_board(tool_call=tool_call, context=context)
+            if tool_call.name == "return_handoff_to_subagent":
+                return self._return_handoff_to_subagent(tool_call=tool_call, context=context)
+            if tool_call.name == "return_to_parent":
+                return self._return_to_parent(tool_call=tool_call, context=context)
             return ToolRuntimeOutcome(handled=False)
         except Exception as exc:
             return ToolRuntimeOutcome(
@@ -1214,6 +1256,186 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 "items": items,
                 "count": len(items),
             },
+        )
+
+    def _return_to_parent(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:
+        del context
+        args = _parse_arguments(tool_call.arguments)
+        summary = str(args.get("summary") or "").strip()
+        result = str(args.get("result") or "").strip()
+        status = str(args.get("status") or "completed").strip() or "completed"
+        if not summary:
+            return ToolRuntimeOutcome(handled=True, tool_result={"error": "return_to_parent requires summary"})
+        return ToolRuntimeOutcome(
+            handled=True,
+            tool_result={
+                "mode": "return_to_parent",
+                "status": status,
+                "summary": summary,
+                "result": result,
+            },
+        )
+
+    def _return_handoff_to_subagent(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:
+        if not self.policy.allow_return_handoff:
+            return ToolRuntimeOutcome(handled=True, tool_result={"error": "return handoff is disabled by policy"})
+
+        args = _parse_arguments(tool_call.arguments)
+        target = str(args.get("target") or "").strip()
+        reason = str(args.get("reason") or "").strip()
+        expected_return = str(args.get("expected_return") or "").strip()
+        carry_context = bool(args.get("carry_context", True))
+        if not target:
+            return ToolRuntimeOutcome(handled=True, tool_result={"error": "return_handoff_to_subagent requires target"})
+
+        state = self._ensure_state(context)
+        parent_id = state.active_agent_id or self.parent_agent.name
+        child_id, lineage, next_state = self._next_subagent_identity(state=state, target=target, mode="handoff")
+        template = self._resolve_template(target, mode="handoff")
+        if template is None and self.policy.handoff_requires_template:
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={"error": "return_handoff_to_subagent requires a registered template"},
+            )
+        child, memory_policy, template_name = self._build_subagent(
+            template=template,
+            child_id=child_id,
+            lineage=lineage,
+            mode="handoff",
+            target=target,
+            task=reason or "Temporarily take over this segment and return to the parent.",
+            instructions="Return control to the parent when your segment is complete.",
+            expected_output=expected_return or "Return a concise summary and result to the parent.",
+        )
+        session_id = f"{context.session_id or context.run_id}:{child_id}"
+        memory_namespace = f"{context.memory_namespace or context.session_id or context.run_id}:{child_id}"
+        child_run_id = self._build_child_run_id(
+            session_id=context.session_id or context.run_id,
+            child_id=child_id,
+        )
+        frame = {
+            "frame_id": child_run_id,
+            "parent_agent_id": parent_id,
+            "child_agent_id": child_id,
+            "thread_id": child_id,
+            "target": target,
+            "template_name": template_name,
+            "lineage": list(lineage),
+        }
+        running_state = next_state.merged({"return_handoff_stack": [frame]})
+        self._emit_subagent_event(
+            context,
+            "subagent_return_handoff_started",
+            subagent_id=child_id,
+            parent_id=parent_id,
+            mode="return_handoff",
+            template=template_name,
+            lineage=lineage,
+            child_run_id=child_run_id,
+        )
+
+        sanitized_messages = _sanitize_handoff_messages(context.latest_messages(), tool_call=tool_call)
+        input_messages: str | list[dict[str, Any]]
+        if carry_context:
+            input_messages = sanitized_messages
+        else:
+            input_messages = reason or "Continue this segment."
+
+        try:
+            child_result = self._run_child(
+                agent=child,
+                mode="return_handoff",
+                child_id=child_id,
+                lineage=lineage,
+                template_name=template_name,
+                session_id=session_id,
+                memory_namespace=memory_namespace if memory_policy == "scoped_persistent" else "",
+                input_messages=input_messages,
+                max_iterations=int(context.event.get("max_iterations") or 6),
+                child_run_id=child_run_id,
+                callback=context.callback,
+                on_tool_confirm=context.event.get("on_tool_confirm"),
+                on_human_input=context.event.get("on_human_input"),
+                on_max_iterations=context.event.get("on_max_iterations"),
+            )
+        except Exception as exc:
+            failed_state = self._merge_child_exception_subagent_state(running_state, exc)
+            failed_state.return_handoff_stack = [
+                item
+                for item in failed_state.return_handoff_stack
+                if not (isinstance(item, dict) and item.get("frame_id") == child_run_id)
+            ]
+            self._emit_subagent_event(
+                context,
+                "subagent_return_handoff_completed",
+                subagent_id=child_id,
+                parent_id=parent_id,
+                mode="return_handoff",
+                template=template_name,
+                lineage=lineage,
+                child_run_id=child_run_id,
+                status="failed",
+                error=str(exc),
+            )
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={
+                    "mode": "return_handoff",
+                    "status": "failed",
+                    "agent_name": child.name,
+                    "template_name": template_name,
+                    "lineage": list(lineage),
+                    "return": {
+                        "mode": "return_to_parent",
+                        "status": "failed",
+                        "summary": str(exc),
+                        "result": "",
+                    },
+                    "summary": str(exc),
+                    "error": str(exc),
+                },
+                state_updates={"subagent_state": failed_state},
+            )
+
+        return_payload = _extract_return_to_parent_payload(child_result.messages)
+        if return_payload is None:
+            return_payload = {
+                "mode": "return_to_parent",
+                "status": child_result.status,
+                "summary": child_result.summary or child_result.output,
+                "result": child_result.output,
+            }
+        result_state = self._merge_result_subagent_state(running_state, child_result)
+        result_state.return_handoff_stack = [
+            item
+            for item in result_state.return_handoff_stack
+            if not (isinstance(item, dict) and item.get("frame_id") == child_run_id)
+        ]
+        status = str(return_payload.get("status") or child_result.status)
+        summary = str(return_payload.get("summary") or child_result.summary or child_result.output)
+        self._emit_subagent_event(
+            context,
+            "subagent_return_handoff_completed",
+            subagent_id=child_id,
+            parent_id=parent_id,
+            mode="return_handoff",
+            template=template_name,
+            lineage=lineage,
+            child_run_id=child_run_id,
+            status=status,
+        )
+        return ToolRuntimeOutcome(
+            handled=True,
+            tool_result={
+                "mode": "return_handoff",
+                "status": status,
+                "agent_name": child.name,
+                "template_name": template_name,
+                "lineage": list(lineage),
+                "return": copy.deepcopy(return_payload),
+                "summary": summary,
+            },
+            state_updates={"subagent_state": result_state},
         )
 
     def _delegate(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:

@@ -1774,3 +1774,131 @@ def test_spawn_agent_thread_preserves_child_clarification_request_for_parent():
     assert clarification_event["request_id"]
     assert clarification_event["clarification_request"]["question"] == "Which environment?"
     assert all(event["type"] != "human_input_requested" for event in events)
+
+
+def test_return_handoff_returns_control_to_parent():
+    child = Agent(
+        name="specialist",
+        provider="openai",
+        modules=(SubagentModule(),),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="child_return",
+                    name="return_to_parent",
+                    arguments={
+                        "summary": "specialist summary",
+                        "result": "specialist detailed result",
+                        "status": "completed",
+                    },
+                ),
+                _text_turn("specialist final text"),
+            ],
+        ),
+    )
+
+    def _after_return_handoff(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["mode"] == "return_handoff"
+        assert payload["status"] == "completed"
+        assert payload["return"]["mode"] == "return_to_parent"
+        assert payload["return"]["summary"] == "specialist summary"
+        assert payload["return"]["result"] == "specialist detailed result"
+        return _text_turn("parent resumed")
+
+    events = []
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="specialist",
+                        description="Temporary specialist",
+                        agent=child,
+                        allowed_modes=("handoff", "delegate"),
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="call_1",
+                    name="return_handoff_to_subagent",
+                    arguments={
+                        "target": "specialist",
+                        "reason": "Needs temporary expertise",
+                        "carry_context": True,
+                    },
+                ),
+                _after_return_handoff,
+            ],
+        ),
+    )
+
+    result = parent.run("Need temporary help", max_iterations=2, callback=events.append)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "parent resumed"
+    assert any(event["type"] == "subagent_return_handoff_started" for event in events)
+    assert any(event["type"] == "subagent_return_handoff_completed" for event in events)
+
+
+def test_return_to_parent_requires_summary():
+    plugin = _wait_plugin()
+    context = _plugin_context_with_threads({})
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_return",
+            name="return_to_parent",
+            arguments={"summary": "   ", "result": "details"},
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result == {"error": "return_to_parent requires summary"}
+
+
+def test_return_handoff_rejects_missing_target():
+    plugin = _wait_plugin()
+    context = _plugin_context_with_threads({})
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_return_handoff",
+            name="return_handoff_to_subagent",
+            arguments={"target": "   ", "reason": "Needs temporary expertise"},
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result == {"error": "return_handoff_to_subagent requires target"}
+
+
+def test_return_handoff_respects_disabled_policy():
+    plugin = SubagentToolPlugin(
+        parent_agent=SimpleNamespace(name="manager"),
+        templates=(),
+        policy=SubagentPolicy(allow_return_handoff=False),
+        executor=SubagentExecutor(),
+    )
+    context = _plugin_context_with_threads({})
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_return_handoff",
+            name="return_handoff_to_subagent",
+            arguments={"target": "specialist", "reason": "Needs temporary expertise"},
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result == {"error": "return handoff is disabled by policy"}
