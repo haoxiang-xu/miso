@@ -78,6 +78,100 @@ def test_kernel_run_executes_openai_tool_and_continues_with_previous_response_ch
     assert tool_message in model_io.requests[1].messages
 
 
+def test_kernel_run_budgets_large_tool_result_before_next_openai_turn():
+    model_io = _QueueModelIO([
+        ModelTurnResult(
+            assistant_messages=[
+                {
+                    "type": "function_call",
+                    "call_id": "call_large",
+                    "name": "large_tool",
+                    "arguments": "{}",
+                }
+            ],
+            tool_calls=[KernelToolCall(call_id="call_large", name="large_tool", arguments={})],
+            response_id="resp_1",
+        ),
+        ModelTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "done"}],
+            tool_calls=[],
+            final_text="done",
+            response_id="resp_2",
+        ),
+    ])
+    toolkit = Toolkit()
+    toolkit.register(lambda: {"blob": "X" * 1000}, name="large_tool")
+    loop = build_runtime_loop(model_io=model_io)
+
+    result = loop.run(
+        [{"role": "user", "content": "start"}],
+        provider="openai",
+        model="gpt-4.1",
+        toolkit=toolkit,
+        max_iterations=3,
+        tool_runtime_config={
+            "tool_result_budget": {
+                "max_result_chars": 180,
+                "max_batch_chars": 1000,
+                "preview_chars": 24,
+                "min_chars_to_budget": 40,
+            }
+        },
+    )
+
+    assert result.status == "completed"
+    tool_message = next(message for message in result.messages if message.get("type") == "function_call_output")
+    payload = json.loads(tool_message["output"])
+    assert payload["compacted"] is True
+    assert payload["reason"] == "tool_result_budget"
+    assert payload["tool_name"] == "large_tool"
+    assert payload["call_id"] == "call_large"
+    assert payload["original_chars"] > payload["budgeted_chars"]
+    assert model_io.requests[1].previous_response_id == "resp_1"
+    assert model_io.requests[1].messages == [tool_message]
+
+
+def test_kernel_run_leaves_small_tool_result_unchanged_by_default_budget():
+    model_io = _QueueModelIO([
+        ModelTurnResult(
+            assistant_messages=[
+                {
+                    "type": "function_call",
+                    "call_id": "call_small",
+                    "name": "small_tool",
+                    "arguments": "{}",
+                }
+            ],
+            tool_calls=[KernelToolCall(call_id="call_small", name="small_tool", arguments={})],
+            response_id="resp_1",
+        ),
+        ModelTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "done"}],
+            tool_calls=[],
+            final_text="done",
+            response_id="resp_2",
+        ),
+    ])
+    toolkit = Toolkit()
+    toolkit.register(lambda: {"value": 2}, name="small_tool")
+    loop = build_runtime_loop(model_io=model_io)
+
+    result = loop.run(
+        [{"role": "user", "content": "start"}],
+        provider="openai",
+        model="gpt-4.1",
+        toolkit=toolkit,
+        max_iterations=3,
+        tool_runtime_config={"tool_result_budget": {}},
+    )
+
+    assert result.status == "completed"
+    tool_message = next(message for message in result.messages if message.get("type") == "function_call_output")
+    assert tool_message["call_id"] == "call_small"
+    assert json.loads(tool_message["output"]) == {"value": 2}
+    assert model_io.requests[1].messages == [tool_message]
+
+
 def test_kernel_run_sanitizes_non_deepcopyable_tool_result_values():
     model_io = _QueueModelIO([
         ModelTurnResult(
