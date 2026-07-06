@@ -53,6 +53,12 @@ def _parse_arguments(arguments: dict[str, Any] | str | None) -> dict[str, Any]:
     return {}
 
 
+def _string_array_tuple(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(item) for item in value if isinstance(item, str))
+
+
 def _last_assistant_text(messages: list[dict[str, Any]]) -> str:
     for message in reversed(messages or []):
         if not isinstance(message, dict) or message.get("role") != "assistant":
@@ -193,6 +199,10 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 return self._wait_agent_messages(tool_call=tool_call, context=context)
             if tool_call.name == "close_agent_thread":
                 return self._close_agent_thread(tool_call=tool_call, context=context)
+            if tool_call.name == "write_agent_board":
+                return self._write_agent_board(tool_call=tool_call, context=context)
+            if tool_call.name == "read_agent_board":
+                return self._read_agent_board(tool_call=tool_call, context=context)
             return ToolRuntimeOutcome(handled=False)
         except Exception as exc:
             return ToolRuntimeOutcome(
@@ -930,6 +940,116 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             handled=True,
             tool_result={"mode": "agent_thread_close", "status": "closed", "thread": thread},
             state_updates={"subagent_state": closed_state},
+        )
+
+    def _write_agent_board(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:
+        args = _parse_arguments(tool_call.arguments)
+        kind = str(args.get("kind") or "").strip()
+        title = str(args.get("title") or "").strip()
+        content = str(args.get("content") or "").strip()
+        if not kind:
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={"tool": "write_agent_board", "error": "write_agent_board requires kind"},
+            )
+        if not title:
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={"tool": "write_agent_board", "error": "write_agent_board requires title"},
+            )
+        if not content:
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={"tool": "write_agent_board", "error": "write_agent_board requires content"},
+            )
+
+        board_id = str(args.get("board_id") or "default").strip() or "default"
+        confidence_arg = args.get("confidence")
+        confidence = float(confidence_arg) if isinstance(confidence_arg, (int, float)) else None
+        state = self._ensure_state(context)
+        author_agent_id = state.active_agent_id or self.parent_agent.name
+        runtime = self.communication_runtime
+        try:
+            item = runtime.build_board_item(
+                board_id=board_id,
+                author_agent_id=author_agent_id,
+                kind=kind,
+                title=title,
+                content=content,
+                tags=_string_array_tuple(args.get("tags")),
+                confidence=confidence,
+                refs=_string_array_tuple(args.get("refs")),
+                iteration=int(context.iteration),
+                supersedes_item_id=str(args.get("supersedes_item_id") or "").strip() or None,
+            )
+            updated_state = runtime.append_board_item(state, item)
+        except ValueError as exc:
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={
+                    "tool": "write_agent_board",
+                    "mode": "agent_board_write",
+                    "status": "failed",
+                    "error": str(exc),
+                },
+            )
+
+        emit_loop_event(
+            context.loop,
+            context.callback,
+            "agent_board_item_written",
+            context.run_id,
+            iteration=context.iteration,
+            root_agent=state.root_agent_id or self.parent_agent.name,
+            root_run_id=context.run_id,
+            board_id=item.board_id,
+            item_id=item.item_id,
+            kind=item.kind,
+        )
+        return ToolRuntimeOutcome(
+            handled=True,
+            tool_result={
+                "mode": "agent_board_write",
+                "status": "written",
+                "item": item.to_dict(),
+            },
+            state_updates={"subagent_state": updated_state},
+        )
+
+    def _read_agent_board(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:
+        args = _parse_arguments(tool_call.arguments)
+        board_id = str(args.get("board_id") or "default").strip() or "default"
+        author_agent_id = str(args.get("author_agent_id") or "").strip()
+        limit_arg = args.get("limit", 50)
+        limit = int(limit_arg) if isinstance(limit_arg, int) else 50
+        state = self._ensure_state(context)
+        items = self.communication_runtime.read_board_items(
+            state,
+            board_id=board_id,
+            kinds=_string_array_tuple(args.get("kinds")),
+            tags=_string_array_tuple(args.get("tags")),
+            author_agent_id=author_agent_id,
+            limit=limit,
+        )
+        emit_loop_event(
+            context.loop,
+            context.callback,
+            "agent_board_read",
+            context.run_id,
+            iteration=context.iteration,
+            root_agent=state.root_agent_id or self.parent_agent.name,
+            root_run_id=context.run_id,
+            board_id=board_id,
+            count=len(items),
+        )
+        return ToolRuntimeOutcome(
+            handled=True,
+            tool_result={
+                "mode": "agent_board_read",
+                "status": "ok",
+                "items": items,
+                "count": len(items),
+            },
         )
 
     def _delegate(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:

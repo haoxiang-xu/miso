@@ -267,3 +267,31 @@ class AgentCommunicationRuntime:
             raise ValueError("max_board_items exceeded")
         board.append(copy.deepcopy(item.to_dict()))
         return current
+
+    def read_board_items(
+        self,
+        state: SubagentState,
+        *,
+        board_id: str,
+        kinds: tuple[str, ...] = (),
+        tags: tuple[str, ...] = (),
+        author_agent_id: str = "",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        board = state.blackboards.get(board_id or "default", [])
+        items: list[dict[str, Any]] = []
+        tag_set = set(tags)
+        kind_set = set(kinds)
+        for raw in board:
+            if not isinstance(raw, dict):
+                continue
+            if kind_set and raw.get("kind") not in kind_set:
+                continue
+            if author_agent_id and raw.get("author_agent_id") != author_agent_id:
+                continue
+            raw_tags = raw.get("tags")
+            raw_tag_set = set(raw_tags if isinstance(raw_tags, list) else [])
+            if tag_set and not tag_set.issubset(raw_tag_set):
+                continue
+            items.append(copy.deepcopy(raw))
+        return items[-max(1, int(limit)):]

@@ -111,6 +111,97 @@ def test_communication_runtime_tool_builders_have_expected_names():
     ]
 
 
+def test_write_and_read_agent_board_filters_items():
+    def _after_first_write(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["mode"] == "agent_board_write"
+        assert payload["status"] == "written"
+        assert payload["item"]["title"] == "Parser bug"
+        assert payload["item"]["confidence"] == 0.8
+        return _openai_tool_turn(
+            call_id="call_write_second",
+            name="write_agent_board",
+            arguments={
+                "kind": "risk",
+                "title": "Missing tests",
+                "content": "No regression coverage.",
+                "tags": ["tests"],
+                "refs": ["tests/test_example.py:1"],
+            },
+        )
+
+    def _after_second_write(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["mode"] == "agent_board_write"
+        assert payload["status"] == "written"
+        assert payload["item"]["title"] == "Missing tests"
+        return _openai_tool_turn(
+            call_id="call_read",
+            name="read_agent_board",
+            arguments={"kinds": ["finding"], "tags": ["parser"]},
+        )
+
+    def _after_read(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["mode"] == "agent_board_read"
+        assert payload["status"] == "ok"
+        assert payload["count"] == 1
+        assert [item["title"] for item in payload["items"]] == ["Parser bug"]
+        return _text_turn("done")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(SubagentModule(),),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="call_write_first",
+                    name="write_agent_board",
+                    arguments={
+                        "kind": "finding",
+                        "title": "Parser bug",
+                        "content": "The parser drops empty chunks.",
+                        "tags": ["parser"],
+                        "confidence": 0.8,
+                        "refs": ["src/parser.py:10"],
+                    },
+                ),
+                _after_first_write,
+                _after_second_write,
+                _after_read,
+            ],
+        ),
+    )
+
+    result = parent.run("coordinate", max_iterations=4)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "done"
+
+
+def test_write_agent_board_requires_kind():
+    plugin = _wait_plugin()
+    context = _plugin_context_with_threads({})
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_write_missing_kind",
+            name="write_agent_board",
+            arguments={"title": "Parser bug", "content": "Details"},
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result == {
+        "tool": "write_agent_board",
+        "error": "write_agent_board requires kind",
+    }
+    assert outcome.state_updates == {}
+
+
 def test_spawn_wait_and_close_agent_thread_records_state_and_result():
     child = Agent(
         name="researcher",
