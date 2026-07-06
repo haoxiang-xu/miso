@@ -172,15 +172,19 @@ class AgentCommunicationRuntime:
         recipient: str,
         explicit_thread_id: str = "",
     ) -> AgentThreadRecord:
-        thread_id = explicit_thread_id or recipient
-        raw = state.threads.get(thread_id)
-        if raw is None:
+        if explicit_thread_id:
+            raw = state.threads.get(explicit_thread_id)
+            if not isinstance(raw, dict):
+                raise ValueError(f"unknown agent thread: {explicit_thread_id}")
+        else:
+            thread_id = recipient
+            raw = state.threads.get(thread_id)
             for candidate in state.threads.values():
-                if isinstance(candidate, dict) and candidate.get("agent_id") == recipient:
+                if raw is None and isinstance(candidate, dict) and candidate.get("agent_id") == recipient:
                     raw = candidate
                     break
-        if not isinstance(raw, dict):
-            raise ValueError(f"unknown agent thread: {thread_id}")
+            if not isinstance(raw, dict):
+                raise ValueError(f"unknown agent thread: {thread_id}")
         record = AgentThreadRecord.from_raw(raw)
         if explicit_thread_id and recipient not in {record.thread_id, record.agent_id}:
             raise ValueError(f"recipient does not match agent thread: {recipient}")

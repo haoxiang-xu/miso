@@ -485,6 +485,39 @@ def test_send_agent_message_rejects_mismatched_recipient_and_explicit_thread_id(
     assert context.state.subagent_state.mailboxes == {}
 
 
+def test_send_agent_message_rejects_missing_explicit_thread_without_agent_fallback():
+    plugin = _wait_plugin()
+    context = _plugin_context_with_threads(
+        {
+            "thread-a": {
+                "thread_id": "thread-a",
+                "agent_id": "manager.researcher.1",
+                "status": "completed",
+            },
+        }
+    )
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_send_missing_explicit",
+            name="send_agent_message",
+            arguments={
+                "recipient": "manager.researcher.1",
+                "thread_id": "missing-thread",
+                "content": "hello",
+            },
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result["tool"] == "send_agent_message"
+    assert outcome.tool_result["status"] == "failed"
+    assert outcome.tool_result["error"] == "unknown agent thread: missing-thread"
+    assert outcome.state_updates == {}
+    assert context.state.subagent_state.mailboxes == {}
+
+
 def test_send_agent_message_child_failure_persists_failed_thread_for_wait_and_emits_event():
     def _child_factory(spec, ctx):
         del spec, ctx
