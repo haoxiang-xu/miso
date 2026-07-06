@@ -475,22 +475,65 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             thread_id=child_id,
             background=background,
         )
-        result = self._run_child(
-            agent=child,
-            mode="thread",
-            child_id=child_id,
-            lineage=lineage,
-            template_name=template_name,
-            session_id=session_id,
-            memory_namespace=scoped_memory_namespace,
-            input_messages=task,
-            max_iterations=int(context.event.get("max_iterations") or 6),
-            child_run_id=child_run_id,
-            callback=context.callback,
-            on_tool_confirm=context.event.get("on_tool_confirm"),
-            on_human_input=context.event.get("on_human_input"),
-            on_max_iterations=context.event.get("on_max_iterations"),
-        )
+        try:
+            result = self._run_child(
+                agent=child,
+                mode="thread",
+                child_id=child_id,
+                lineage=lineage,
+                template_name=template_name,
+                session_id=session_id,
+                memory_namespace=scoped_memory_namespace,
+                input_messages=task,
+                max_iterations=int(context.event.get("max_iterations") or 6),
+                child_run_id=child_run_id,
+                callback=context.callback,
+                on_tool_confirm=context.event.get("on_tool_confirm"),
+                on_human_input=context.event.get("on_human_input"),
+                on_max_iterations=context.event.get("on_max_iterations"),
+            )
+        except Exception as exc:
+            failed_record = AgentThreadRecord(
+                thread_id=child_id,
+                agent_id=child_id,
+                parent_agent_id=parent_id,
+                target=target,
+                template_name=template_name,
+                mode="thread",
+                status="failed",
+                session_id=session_id,
+                memory_namespace=scoped_memory_namespace,
+                lineage=tuple(lineage),
+                created_iteration=int(context.iteration),
+                last_activity_iteration=int(context.iteration),
+                context_mode=context_mode,
+                instructions=instructions,
+                expected_output=expected_output,
+                close_reason=str(exc),
+            )
+            failed_state = self.communication_runtime.upsert_thread(threaded_state, failed_record)
+            self._emit_subagent_event(
+                context,
+                "agent_thread_failed",
+                subagent_id=child_id,
+                parent_id=parent_id,
+                mode="thread",
+                template=template_name,
+                lineage=lineage,
+                child_run_id=child_run_id,
+                thread_id=child_id,
+                status="failed",
+                error=str(exc),
+            )
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={
+                    "tool": "spawn_agent_thread",
+                    "thread_id": child_id,
+                    "error": str(exc),
+                },
+                state_updates={"subagent_state": failed_state},
+            )
         completed_record = AgentThreadRecord(
             thread_id=child_id,
             agent_id=child_id,
@@ -540,21 +583,40 @@ class SubagentToolPlugin(ToolRuntimePlugin):
     def _wait_agent_messages(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:
         args = _parse_arguments(tool_call.arguments)
         thread_ids = args.get("thread_ids")
+        condition = str(args.get("condition") or "all_done").strip() or "all_done"
         if not isinstance(thread_ids, list) or not thread_ids:
             return ToolRuntimeOutcome(handled=True, tool_result={"error": "wait_agent_messages requires thread_ids"})
+        if condition not in {"all_done", "any_done", "idle"}:
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={"error": "wait_agent_messages condition must be one of all_done, any_done, or idle"},
+            )
 
         state = self._ensure_state(context)
         threads: list[dict[str, Any]] = []
+        found_threads: list[dict[str, Any]] = []
+        has_unknown = False
         for thread_id in thread_ids:
             normalized_thread_id = str(thread_id or "").strip()
             raw = state.threads.get(normalized_thread_id)
             if isinstance(raw, dict):
-                threads.append(copy.deepcopy(raw))
+                thread = copy.deepcopy(raw)
+                threads.append(thread)
+                found_threads.append(thread)
             else:
+                has_unknown = True
                 threads.append({"thread_id": normalized_thread_id, "status": "not_found"})
 
         done_statuses = {"completed", "failed", "closed"}
-        status = "completed" if all(thread.get("status") in done_statuses for thread in threads) else "running"
+        if has_unknown:
+            status = "not_found"
+        elif condition == "all_done":
+            status = "completed" if all(thread.get("status") in done_statuses for thread in threads) else "running"
+        elif condition == "any_done":
+            status = "completed" if any(thread.get("status") in done_statuses for thread in threads) else "running"
+        else:
+            idle_statuses = {"idle", *done_statuses}
+            status = "completed" if all(thread.get("status") in idle_statuses for thread in found_threads) else "running"
         emit_loop_event(
             context.loop,
             context.callback,
