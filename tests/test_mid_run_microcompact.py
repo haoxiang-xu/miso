@@ -1,0 +1,132 @@
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from unchain.kernel.harness import HarnessContext
+from unchain.kernel.microcompact import (
+    MidRunMicrocompactConfig,
+    MidRunMicrocompactHarness,
+)
+from unchain.kernel.state import RunState
+from unchain.kernel.types import ToolCall
+from unchain.tools.toolkit import Toolkit
+
+
+def _call(call_id: str, name: str = "demo_tool") -> ToolCall:
+    return ToolCall(call_id=call_id, name=name, arguments={})
+
+
+def _function_call(call: ToolCall) -> dict[str, Any]:
+    return {
+        "type": "function_call",
+        "call_id": call.call_id,
+        "name": call.name,
+        "arguments": "{}",
+    }
+
+
+def _function_call_output(call: ToolCall, blob: str) -> dict[str, Any]:
+    return {
+        "type": "function_call_output",
+        "call_id": call.call_id,
+        "output": json.dumps({"blob": blob}),
+    }
+
+
+def _state_with_two_openai_tool_turns(
+    *,
+    max_context_window_tokens: int,
+) -> tuple[RunState, ToolCall, ToolCall, str, str]:
+    old_call = _call("call_old")
+    new_call = _call("call_new")
+    old_output = json.dumps({"blob": "old-" * 400})
+    new_output = json.dumps({"blob": "new-" * 400})
+    messages = [
+        {"role": "user", "content": "run two tools"},
+        _function_call(old_call),
+        {
+            "type": "function_call_output",
+            "call_id": old_call.call_id,
+            "output": old_output,
+        },
+        _function_call(new_call),
+        {
+            "type": "function_call_output",
+            "call_id": new_call.call_id,
+            "output": new_output,
+        },
+    ]
+    state = RunState(transcript=messages)
+    state.next_model_input = [dict(message) for message in messages]
+    state.provider_state.provider = "openai"
+    state.provider_state.model = "gpt-4.1"
+    state.provider_state.max_context_window_tokens = max_context_window_tokens
+    state.session_state.session_id = "session-a"
+    return state, old_call, new_call, old_output, new_output
+
+
+def test_mid_run_microcompact_compacts_old_tool_turn_only():
+    state, old_call, new_call, _old_output, new_output = _state_with_two_openai_tool_turns(
+        max_context_window_tokens=200,
+    )
+    harness = MidRunMicrocompactHarness(
+        config=MidRunMicrocompactConfig(
+            trigger_context_ratio=0.01,
+            trigger_remaining_tokens=10_000,
+            keep_recent_completed_turns=1,
+            compact_current_batch=False,
+            min_savings_chars=10,
+            max_compacted_result_chars=180,
+            preview_chars=24,
+        )
+    )
+    context = HarnessContext(
+        state=state,
+        phase="after_tool_batch",
+        event={
+            "toolkit": Toolkit(),
+            "tool_calls": [new_call],
+        },
+    )
+
+    delta = harness.build_delta(context)
+    assert delta is not None
+    state.apply_delta(delta)
+
+    transcript_old = json.loads(state.transcript[2]["output"])
+    next_input_old = json.loads(state.next_model_input[2]["output"])
+    assert transcript_old["compacted"] is True
+    assert transcript_old["reason"] == "mid_run_microcompact"
+    assert transcript_old["call_id"] == old_call.call_id
+    assert next_input_old == transcript_old
+    assert state.transcript[4]["output"] == new_output
+    assert state.next_model_input[4]["output"] == new_output
+    assert state.optimizer_state["mid_run_microcompact"]["compacted_count"] == 1
+
+
+def test_mid_run_microcompact_noops_when_context_pressure_is_low():
+    state, _old_call, new_call, _old_output, _new_output = _state_with_two_openai_tool_turns(
+        max_context_window_tokens=1_000_000,
+    )
+    harness = MidRunMicrocompactHarness(
+        config=MidRunMicrocompactConfig(
+            trigger_context_ratio=0.99,
+            trigger_remaining_tokens=1,
+            keep_recent_completed_turns=1,
+            compact_current_batch=False,
+            min_savings_chars=10_000,
+            max_compacted_result_chars=180,
+            preview_chars=24,
+        )
+    )
+    context = HarnessContext(
+        state=state,
+        phase="after_tool_batch",
+        event={
+            "toolkit": Toolkit(),
+            "tool_calls": [new_call],
+        },
+    )
+
+    assert harness.build_delta(context) is None
