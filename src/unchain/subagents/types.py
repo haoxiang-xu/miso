@@ -204,6 +204,7 @@ class SubagentResult:
     lineage: list[str] = field(default_factory=list)
     clarification_request: dict[str, Any] | None = None
     error: str = ""
+    subagent_state: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -217,4 +218,5 @@ class SubagentResult:
             "lineage": list(self.lineage),
             "clarification_request": copy.deepcopy(self.clarification_request),
             "error": self.error,
+            "subagent_state": copy.deepcopy(self.subagent_state),
         }

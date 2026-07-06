@@ -211,6 +211,90 @@ def test_write_and_read_agent_board_filters_items():
     assert read_event["limit"] == 50
 
 
+def test_child_subagent_board_write_is_visible_to_parent():
+    def _child_after_write(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["mode"] == "agent_board_write"
+        assert payload["status"] == "written"
+        assert payload["item"]["title"] == "Child finding"
+        return _text_turn("child done")
+
+    child = Agent(
+        name="researcher",
+        provider="openai",
+        modules=(SubagentModule(),),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="child_write_board",
+                    name="write_agent_board",
+                    arguments={
+                        "kind": "finding",
+                        "title": "Child finding",
+                        "content": "Found by child",
+                        "tags": ["child"],
+                    },
+                ),
+                _child_after_write,
+            ],
+        ),
+    )
+
+    def _after_delegate(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["status"] == "completed"
+        assert payload["summary"] == "child done"
+        return _openai_tool_turn(
+            call_id="parent_read_board",
+            name="read_agent_board",
+            arguments={"tags": ["child"]},
+        )
+
+    def _after_read(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["mode"] == "agent_board_read"
+        assert payload["status"] == "ok"
+        assert payload["count"] == 1
+        assert payload["items"][0]["title"] == "Child finding"
+        assert payload["items"][0]["author_agent_id"] == "manager.researcher.1"
+        return _text_turn("done")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="researcher",
+                        description="Research specialist",
+                        agent=child,
+                        allowed_modes=("delegate", "worker"),
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="parent_delegate",
+                    name="delegate_to_subagent",
+                    arguments={"target": "researcher", "task": "Find evidence"},
+                ),
+                _after_delegate,
+                _after_read,
+            ],
+        ),
+    )
+
+    result = parent.run("coordinate", max_iterations=3)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "done"
+
+
 @pytest.mark.parametrize(
     ("arguments", "error"),
     [

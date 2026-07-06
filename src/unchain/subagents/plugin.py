@@ -311,6 +311,11 @@ class SubagentToolPlugin(ToolRuntimePlugin):
     def _build_child_run_id(self, *, session_id: str, child_id: str) -> str:
         return f"{session_id}:{child_id}:{uuid.uuid4()}"
 
+    def _merge_result_subagent_state(self, state: SubagentState, result: SubagentResult) -> SubagentState:
+        if not result.subagent_state:
+            return state
+        return state.merged(result.subagent_state)
+
     def _run_child(
         self,
         *,
@@ -334,26 +339,45 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 session_id=session_id,
                 child_id=child_id,
             )
-        child_callback = callback
-        if callable(callback):
-            def _child_callback(event: dict[str, Any]) -> None:
-                if isinstance(event, dict) and event.get("type") == "human_input_requested":
+        captured_state = SubagentState()
+        captured_item_ids: set[str] = set()
+
+        def _child_callback(event: dict[str, Any]) -> None:
+            if isinstance(event, dict):
+                if event.get("type") == "human_input_requested":
                     return None
+                result_payload = event.get("result")
+                if (
+                    event.get("type") == "tool_result"
+                    and event.get("tool_name") == "write_agent_board"
+                    and isinstance(result_payload, dict)
+                    and result_payload.get("mode") == "agent_board_write"
+                    and result_payload.get("status") == "written"
+                    and isinstance(result_payload.get("item"), dict)
+                ):
+                    item = copy.deepcopy(result_payload["item"])
+                    item_id = str(item.get("item_id") or "")
+                    if not item_id or item_id not in captured_item_ids:
+                        if item_id:
+                            captured_item_ids.add(item_id)
+                        board_id = str(item.get("board_id") or "default")
+                        captured_state.blackboards.setdefault(board_id, []).append(item)
+            if callable(callback):
                 callback(event)
 
-            child_callback = _child_callback
         result = agent.run(
             input_messages,
             session_id=session_id,
             memory_namespace=memory_namespace,
             max_iterations=max_iterations,
-            callback=child_callback,
+            callback=_child_callback,
             on_tool_confirm=on_tool_confirm,
             on_human_input=on_human_input,
             on_max_iterations=on_max_iterations,
             run_id=child_run_id,
         )
         output = _last_assistant_text(result.messages)
+        captured_delta = {"blackboards": copy.deepcopy(captured_state.blackboards)} if captured_state.blackboards else {}
         if result.status == "awaiting_human_input":
             return SubagentResult(
                 mode=mode,
@@ -365,6 +389,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 messages=[],
                 lineage=lineage,
                 clarification_request=copy.deepcopy(result.human_input_request),
+                subagent_state=captured_delta,
             )
         return SubagentResult(
             mode=mode,
@@ -375,6 +400,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             summary=output,
             messages=copy.deepcopy(result.messages),
             lineage=lineage,
+            subagent_state=captured_delta,
         )
 
     def _render_result(
@@ -572,6 +598,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             expected_output=expected_output,
         )
         threaded_state = self.communication_runtime.upsert_thread(threaded_state, completed_record)
+        threaded_state = self._merge_result_subagent_state(threaded_state, result)
         if result.clarification_request is not None:
             threaded_state = threaded_state.merged(
                 {
@@ -799,6 +826,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             expected_output=record.expected_output,
         )
         updated_state = runtime.upsert_thread(messaged_state, completed_record)
+        updated_state = self._merge_result_subagent_state(updated_state, result)
         if result.clarification_request is not None:
             updated_state = updated_state.merged(
                 {
@@ -1197,11 +1225,12 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             on_max_iterations=context.event.get("on_max_iterations"),
         )
         template_payload = self._render_result(result=result, output_mode=output_mode, template_name=template_name)
+        result_state = self._merge_result_subagent_state(next_state, result)
         update = {
-            "subagent_state": next_state,
+            "subagent_state": result_state,
         }
         if result.clarification_request is not None:
-            update["subagent_state"] = next_state.merged(
+            update["subagent_state"] = result_state.merged(
                 {
                     "blocked_clarifications": [
                         {
@@ -1295,8 +1324,9 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             on_human_input=context.event.get("on_human_input"),
             on_max_iterations=context.event.get("on_max_iterations"),
         )
+        result_state = self._merge_result_subagent_state(next_state, result)
         if result.clarification_request is not None:
-            blocked_state = next_state.merged(
+            blocked_state = result_state.merged(
                 {
                     "blocked_clarifications": [
                         {
@@ -1324,7 +1354,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 tool_result=result.to_dict(),
                 state_updates={"subagent_state": blocked_state},
             )
-        handoff_state = next_state.merged(
+        handoff_state = result_state.merged(
             {
                 "active_agent_id": child_id,
                 "active_lineage": lineage,
@@ -1530,6 +1560,8 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         results = self.executor.execute_batch(items=prepared_items, run_item=_run_item)
         final_state = allocation_state.copy()
         final_state.running_batches.pop(batch_id, None)
+        for result in results:
+            final_state = self._merge_result_subagent_state(final_state, result)
         clarifications = [
             {
                 "subagent_id": result.agent_name,
