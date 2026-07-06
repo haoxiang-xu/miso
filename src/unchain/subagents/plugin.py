@@ -29,6 +29,14 @@ _COMMUNICATION_TOOL_NAMES = {
     "return_handoff_to_subagent",
     "return_to_parent",
 }
+_TERMINAL_THREAD_STATUSES = {
+    "completed",
+    "failed",
+    "closed",
+    "max_iterations",
+    "needs_clarification",
+    "awaiting_human_input",
+}
 
 
 def _slug(value: str) -> str:
@@ -607,15 +615,14 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 has_unknown = True
                 threads.append({"thread_id": normalized_thread_id, "status": "not_found"})
 
-        done_statuses = {"completed", "failed", "closed"}
         if has_unknown:
             status = "not_found"
         elif condition == "all_done":
-            status = "completed" if all(thread.get("status") in done_statuses for thread in threads) else "running"
+            status = "completed" if all(thread.get("status") in _TERMINAL_THREAD_STATUSES for thread in threads) else "running"
         elif condition == "any_done":
-            status = "completed" if any(thread.get("status") in done_statuses for thread in threads) else "running"
+            status = "completed" if any(thread.get("status") in _TERMINAL_THREAD_STATUSES for thread in threads) else "running"
         else:
-            idle_statuses = {"idle", *done_statuses}
+            idle_statuses = {"idle", *_TERMINAL_THREAD_STATUSES}
             status = "completed" if all(thread.get("status") in idle_statuses for thread in found_threads) else "running"
         emit_loop_event(
             context.loop,

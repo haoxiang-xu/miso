@@ -232,6 +232,63 @@ def test_wait_agent_messages_unknown_thread_returns_not_found_status():
     assert outcome.tool_result["threads"][1] == {"thread_id": "missing-thread", "status": "not_found"}
 
 
+def test_wait_agent_messages_treats_terminal_thread_statuses_as_done():
+    plugin = _wait_plugin()
+    context = _plugin_context_with_threads(
+        {
+            "thread-1": {"thread_id": "thread-1", "status": "max_iterations"},
+            "thread-2": {"thread_id": "thread-2", "status": "needs_clarification"},
+        }
+    )
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_wait",
+            name="wait_agent_messages",
+            arguments={"thread_ids": ["thread-1", "thread-2"], "condition": "all_done"},
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result["status"] == "completed"
+    assert [thread["status"] for thread in outcome.tool_result["threads"]] == [
+        "max_iterations",
+        "needs_clarification",
+    ]
+
+
+def test_unimplemented_communication_tool_uses_reserved_placeholder_result():
+    def _after_send(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload == {
+            "error": "send_agent_message is a reserved runtime tool and cannot be executed directly"
+        }
+        return _text_turn("done")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(SubagentModule(),),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="call_send",
+                    name="send_agent_message",
+                    arguments={"recipient": "thread-1", "content": "hello"},
+                ),
+                _after_send,
+            ],
+        ),
+    )
+
+    result = parent.run("coordinate", max_iterations=2)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "done"
+
+
 def test_spawn_agent_thread_child_failure_persists_failed_thread_for_wait():
     def _raise_child_failure(request):
         del request
