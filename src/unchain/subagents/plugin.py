@@ -537,7 +537,12 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 handled=True,
                 tool_result={
                     "tool": "spawn_agent_thread",
+                    "mode": "agent_thread",
                     "thread_id": child_id,
+                    "agent_id": child_id,
+                    "template_name": template_name,
+                    "status": "failed",
+                    "lineage": list(lineage),
                     "error": str(exc),
                 },
                 state_updates={"subagent_state": failed_state},
@@ -585,6 +590,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 child_run_id=child_run_id,
                 thread_id=child_id,
                 request_id=result.clarification_request.get("request_id"),
+                clarification_request=copy.deepcopy(result.clarification_request),
             )
         self._emit_subagent_event(
             context,

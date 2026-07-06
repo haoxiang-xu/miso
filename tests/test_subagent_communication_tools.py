@@ -328,6 +328,8 @@ def test_spawn_agent_thread_child_failure_persists_failed_thread_for_wait():
         nonlocal observed_thread_id
         payload = json.loads(request.messages[-1]["output"])
         assert payload["tool"] == "spawn_agent_thread"
+        assert payload["mode"] == "agent_thread"
+        assert payload["status"] == "failed"
         assert payload["thread_id"]
         assert payload["error"] == "child exploded"
         observed_thread_id = payload["thread_id"]
@@ -459,4 +461,5 @@ def test_spawn_agent_thread_preserves_child_clarification_request_for_parent():
     clarification_event = next(event for event in events if event["type"] == "agent_thread_clarification_requested")
     assert clarification_event["thread_id"] == observed_thread_id
     assert clarification_event["request_id"]
+    assert clarification_event["clarification_request"]["question"] == "Which environment?"
     assert all(event["type"] != "human_input_requested" for event in events)
