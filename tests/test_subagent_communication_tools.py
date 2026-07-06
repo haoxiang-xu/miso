@@ -333,6 +333,45 @@ def test_write_agent_board_rejects_nan_confidence_without_mutation():
 @pytest.mark.parametrize(
     ("arguments", "error"),
     [
+        ({"tags": "parser"}, "write_agent_board tags must be an array of strings"),
+        ({"tags": ["parser", 3]}, "write_agent_board tags must be an array of strings"),
+        ({"refs": "src.py:1"}, "write_agent_board refs must be an array of strings"),
+        ({"refs": ["src.py:1", 7]}, "write_agent_board refs must be an array of strings"),
+    ],
+)
+def test_write_agent_board_rejects_invalid_tags_and_refs_without_mutation(arguments, error):
+    plugin = _wait_plugin()
+    context = _plugin_context_with_threads({})
+    original_blackboards = json.loads(json.dumps(context.state.subagent_state.blackboards))
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_write_invalid_metadata",
+            name="write_agent_board",
+            arguments={
+                "kind": "finding",
+                "title": "Parser bug",
+                "content": "Details",
+                **arguments,
+            },
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result == {
+        "tool": "write_agent_board",
+        "mode": "agent_board_write",
+        "status": "failed",
+        "error": error,
+    }
+    assert outcome.state_updates == {}
+    assert context.state.subagent_state.blackboards == original_blackboards
+
+
+@pytest.mark.parametrize(
+    ("arguments", "error"),
+    [
         ({"tags": "parser"}, "read_agent_board tags must be an array of strings"),
         ({"kinds": [123]}, "read_agent_board kinds must be an array of strings"),
         ({"tags": ["parser", 3]}, "read_agent_board tags must be an array of strings"),

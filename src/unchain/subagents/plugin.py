@@ -54,12 +54,6 @@ def _parse_arguments(arguments: dict[str, Any] | str | None) -> dict[str, Any]:
     return {}
 
 
-def _string_array_tuple(value: Any) -> tuple[str, ...]:
-    if not isinstance(value, list):
-        return ()
-    return tuple(str(item) for item in value if isinstance(item, str))
-
-
 def _last_assistant_text(messages: list[dict[str, Any]]) -> str:
     for message in reversed(messages or []):
         if not isinstance(message, dict) or message.get("role") != "assistant":
@@ -992,8 +986,34 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         state = self._ensure_state(context)
         author_agent_id = state.active_agent_id or self.parent_agent.name
         runtime = self.communication_runtime
-        tags = _string_array_tuple(args.get("tags"))
-        refs = _string_array_tuple(args.get("refs"))
+        tags: tuple[str, ...] = ()
+        if "tags" in args:
+            raw_tags = args.get("tags")
+            if not isinstance(raw_tags, list) or any(not isinstance(item, str) for item in raw_tags):
+                return ToolRuntimeOutcome(
+                    handled=True,
+                    tool_result={
+                        "tool": "write_agent_board",
+                        "mode": "agent_board_write",
+                        "status": "failed",
+                        "error": "write_agent_board tags must be an array of strings",
+                    },
+                )
+            tags = tuple(raw_tags)
+        refs: tuple[str, ...] = ()
+        if "refs" in args:
+            raw_refs = args.get("refs")
+            if not isinstance(raw_refs, list) or any(not isinstance(item, str) for item in raw_refs):
+                return ToolRuntimeOutcome(
+                    handled=True,
+                    tool_result={
+                        "tool": "write_agent_board",
+                        "mode": "agent_board_write",
+                        "status": "failed",
+                        "error": "write_agent_board refs must be an array of strings",
+                    },
+                )
+            refs = tuple(raw_refs)
         supersedes_item_id = str(args.get("supersedes_item_id") or "").strip() or None
         try:
             item = runtime.build_board_item(
