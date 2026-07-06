@@ -27,6 +27,7 @@ def test_runtime_assembly_builds_default_tool_and_interaction_hooks():
     assert {
         "tool_prompt",
         "tool_execution",
+        "mid_run_microcompact",
         "human_input_resume",
     }.issubset(names)
 
@@ -59,6 +60,7 @@ def test_runtime_assembly_builds_kernel_loop_with_default_hooks():
     assert {
         "tool_prompt",
         "tool_execution",
+        "mid_run_microcompact",
         "human_input_resume",
     }.issubset({harness.name for harness in loop.harnesses})
 
@@ -97,6 +99,7 @@ def test_kernel_loop_does_not_import_default_runtime_feature_hooks():
 
     assert "ToolPromptHarness" not in source
     assert "ToolExecutionHarness" not in source
+    assert "MidRunMicrocompactHarness" not in source
     assert "HumanInputResumeHarness" not in source
     assert "WorkspaceChangeArtifactHarness" not in source
     assert "KernelMemoryRuntime" not in source
@@ -110,6 +113,7 @@ def test_runtime_assembly_owns_default_feature_hooks():
     assert names == [
         "tool_prompt",
         "tool_execution",
+        "mid_run_microcompact",
         "human_input_resume",
         "workspace_change_artifacts",
     ]

@@ -5,6 +5,7 @@ from typing import Any
 from ..interaction import HumanInputResumeHarness
 from ..kernel.harness import RuntimeHarness
 from ..kernel.loop import KernelLoop
+from ..kernel.microcompact import MidRunMicrocompactHarness
 from ..kernel.model_io import ModelIO
 from ..memory import KernelMemoryRuntime
 from ..retry import RetryConfig
@@ -16,6 +17,7 @@ def build_default_runtime_components() -> list[RuntimeHarness]:
     return [
         ToolPromptHarness(),
         ToolExecutionHarness(),
+        MidRunMicrocompactHarness(),
         HumanInputResumeHarness(),
         WorkspaceChangeArtifactHarness(),
     ]
