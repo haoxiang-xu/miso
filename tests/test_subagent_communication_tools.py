@@ -285,7 +285,7 @@ def test_read_agent_board_rejects_invalid_limit_without_mutation(limit):
     assert context.state.subagent_state.blackboards == original_blackboards
 
 
-@pytest.mark.parametrize("confidence", [2, -0.1, True])
+@pytest.mark.parametrize("confidence", [2, -0.1, True, float("inf"), float("-inf")])
 def test_write_agent_board_rejects_invalid_confidence_without_mutation(confidence):
     plugin = _wait_plugin()
     context = _plugin_context_with_threads({})
