@@ -278,6 +278,8 @@ class AgentCommunicationRuntime:
         author_agent_id: str = "",
         limit: int = 50,
     ) -> list[dict[str, Any]]:
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise ValueError("limit must be a positive integer")
         board = state.blackboards.get(board_id or "default", [])
         items: list[dict[str, Any]] = []
         tag_set = set(tags)

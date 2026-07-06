@@ -160,6 +160,79 @@ def test_blackboard_item_rejects_oversized_content():
         )
 
 
+@pytest.mark.parametrize("limit", [0, -1, True, "1"])
+def test_read_board_items_rejects_invalid_limit(limit):
+    runtime = AgentCommunicationRuntime(SubagentPolicy())
+    state = SubagentState(root_agent_id="root", active_agent_id="root")
+    state.blackboards["default"] = [
+        {
+            "item_id": "item-1",
+            "board_id": "default",
+            "author_agent_id": "root",
+            "kind": "finding",
+            "title": "Parser bug",
+            "content": "Details",
+            "tags": ["parser"],
+        }
+    ]
+
+    with pytest.raises(ValueError, match="positive integer"):
+        runtime.read_board_items(state, board_id="default", limit=limit)
+
+
+def test_read_board_items_limit_returns_latest_matching_items():
+    runtime = AgentCommunicationRuntime(SubagentPolicy())
+    state = SubagentState(root_agent_id="root", active_agent_id="root")
+    state.blackboards["default"] = [
+        {
+            "item_id": "item-1",
+            "board_id": "default",
+            "author_agent_id": "root",
+            "kind": "finding",
+            "title": "Older parser bug",
+            "content": "Older details",
+            "tags": ["parser"],
+        },
+        {
+            "item_id": "item-2",
+            "board_id": "default",
+            "author_agent_id": "root",
+            "kind": "risk",
+            "title": "Missing tests",
+            "content": "No coverage.",
+            "tags": ["tests"],
+        },
+        {
+            "item_id": "item-3",
+            "board_id": "default",
+            "author_agent_id": "root",
+            "kind": "finding",
+            "title": "Middle parser bug",
+            "content": "Middle details",
+            "tags": ["parser"],
+        },
+        {
+            "item_id": "item-4",
+            "board_id": "default",
+            "author_agent_id": "root",
+            "kind": "finding",
+            "title": "Latest parser bug",
+            "content": "Latest details",
+            "tags": ["parser"],
+        },
+    ]
+
+    items = runtime.read_board_items(
+        state,
+        board_id="default",
+        kinds=("finding",),
+        tags=("parser",),
+        limit=2,
+    )
+
+    assert [item["title"] for item in items] == ["Middle parser bug", "Latest parser bug"]
+
+
 def test_runtime_opens_thread_sends_message_and_closes_thread():
     runtime = AgentCommunicationRuntime(SubagentPolicy(max_open_threads=1))
     state = SubagentState(root_agent_id="root", active_agent_id="root")
