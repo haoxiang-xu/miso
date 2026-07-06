@@ -1106,6 +1106,72 @@ def test_spawn_wait_and_close_agent_thread_records_state_and_result():
     assert "agent_thread_closed" in event_types
 
 
+def test_communication_events_include_thread_and_board_identifiers():
+    events = []
+    child = Agent(
+        name="researcher",
+        provider="openai",
+        model_io_factory=lambda spec, ctx: SequenceModelIO("openai", [_text_turn("thread done")]),
+    )
+
+    def _after_spawn(request):
+        payload = json.loads(request.messages[-1]["output"])
+        return _openai_tool_turn(
+            call_id="call_write_board",
+            name="write_agent_board",
+            arguments={
+                "kind": "summary",
+                "title": "Thread result",
+                "content": payload["summary"],
+                "tags": ["thread"],
+            },
+        )
+
+    def _after_board(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["status"] == "written"
+        return _text_turn("done")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="researcher",
+                        description="Research specialist",
+                        agent=child,
+                        allowed_modes=("delegate", "worker"),
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="call_spawn_thread",
+                    name="spawn_agent_thread",
+                    arguments={"target": "researcher", "task": "Investigate"},
+                ),
+                _after_spawn,
+                _after_board,
+            ],
+        ),
+    )
+
+    result = parent.run("start", max_iterations=3, run_id="root-run", callback=events.append)
+
+    assert result.status == "completed"
+    spawned = next(event for event in events if event["type"] == "agent_thread_spawned")
+    board = next(event for event in events if event["type"] == "agent_board_item_written")
+    assert spawned["root_run_id"] == "root-run"
+    assert spawned["thread_id"]
+    assert board["board_id"] == "default"
+    assert board["item_id"].startswith("item-")
+
+
 def test_wait_agent_messages_any_done_completes_when_one_thread_is_done():
     plugin = _wait_plugin()
     context = _plugin_context_with_threads(
