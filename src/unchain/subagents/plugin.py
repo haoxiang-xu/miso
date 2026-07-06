@@ -40,6 +40,13 @@ _TERMINAL_THREAD_STATUSES = {
 }
 
 
+class _ChildRunError(RuntimeError):
+    def __init__(self, original: Exception, subagent_state: dict[str, Any]):
+        super().__init__(str(original))
+        self.original = original
+        self.subagent_state = copy.deepcopy(subagent_state)
+
+
 def _slug(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", ".", str(value or "").strip().lower())
     slug = re.sub(r"\.+", ".", slug).strip(".")
@@ -316,6 +323,17 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             return state
         return state.merged(result.subagent_state)
 
+    def _subagent_state_from_child_exception(self, exc: Exception) -> dict[str, Any]:
+        if isinstance(exc, _ChildRunError):
+            return copy.deepcopy(exc.subagent_state)
+        return {}
+
+    def _merge_child_exception_subagent_state(self, state: SubagentState, exc: Exception) -> SubagentState:
+        delta = self._subagent_state_from_child_exception(exc)
+        if not delta:
+            return state
+        return state.merged(delta)
+
     def _run_child(
         self,
         *,
@@ -365,19 +383,25 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             if callable(callback):
                 callback(event)
 
-        result = agent.run(
-            input_messages,
-            session_id=session_id,
-            memory_namespace=memory_namespace,
-            max_iterations=max_iterations,
-            callback=_child_callback,
-            on_tool_confirm=on_tool_confirm,
-            on_human_input=on_human_input,
-            on_max_iterations=on_max_iterations,
-            run_id=child_run_id,
-        )
+        def _captured_delta() -> dict[str, Any]:
+            return {"blackboards": copy.deepcopy(captured_state.blackboards)} if captured_state.blackboards else {}
+
+        try:
+            result = agent.run(
+                input_messages,
+                session_id=session_id,
+                memory_namespace=memory_namespace,
+                max_iterations=max_iterations,
+                callback=_child_callback,
+                on_tool_confirm=on_tool_confirm,
+                on_human_input=on_human_input,
+                on_max_iterations=on_max_iterations,
+                run_id=child_run_id,
+            )
+        except Exception as exc:
+            raise _ChildRunError(exc, _captured_delta()) from exc
         output = _last_assistant_text(result.messages)
-        captured_delta = {"blackboards": copy.deepcopy(captured_state.blackboards)} if captured_state.blackboards else {}
+        captured_delta = _captured_delta()
         if result.status == "awaiting_human_input":
             return SubagentResult(
                 mode=mode,
@@ -553,6 +577,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 close_reason=str(exc),
             )
             failed_state = self.communication_runtime.upsert_thread(threaded_state, failed_record)
+            failed_state = self._merge_child_exception_subagent_state(failed_state, exc)
             self._emit_subagent_event(
                 context,
                 "agent_thread_failed",
@@ -781,6 +806,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 close_reason=str(exc),
             )
             failed_state = runtime.upsert_thread(messaged_state, failed_record)
+            failed_state = self._merge_child_exception_subagent_state(failed_state, exc)
             self._emit_subagent_event(
                 context,
                 "agent_message_failed",
@@ -1114,6 +1140,21 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                     },
                 )
             kinds = tuple(raw_kinds)
+        if "kind" in args:
+            raw_kind = args.get("kind")
+            if not isinstance(raw_kind, str) or not raw_kind.strip():
+                return ToolRuntimeOutcome(
+                    handled=True,
+                    tool_result={
+                        "tool": "read_agent_board",
+                        "mode": "agent_board_read",
+                        "status": "failed",
+                        "error": "read_agent_board kind must be a non-empty string",
+                    },
+                )
+            kind = raw_kind.strip()
+            if kind not in kinds:
+                kinds = (*kinds, kind)
         tags: tuple[str, ...] = ()
         if "tags" in args:
             raw_tags = args.get("tags")
@@ -1208,22 +1249,50 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         )
         self._emit_subagent_event(context, "subagent_spawned", subagent_id=child_id, parent_id=parent_id, mode="delegate", template=template_name, lineage=lineage, child_run_id=child_run_id)
         self._emit_subagent_event(context, "subagent_started", subagent_id=child_id, parent_id=parent_id, mode="delegate", template=template_name, lineage=lineage, child_run_id=child_run_id)
-        result = self._run_child(
-            agent=child,
-            mode="delegate",
-            child_id=child_id,
-            lineage=lineage,
-            template_name=template_name,
-            session_id=session_id,
-            memory_namespace=memory_namespace if memory_policy == "scoped_persistent" else "",
-            input_messages=task,
-            max_iterations=int(context.event.get("max_iterations") or 6),
-            child_run_id=child_run_id,
-            callback=context.callback,
-            on_tool_confirm=context.event.get("on_tool_confirm"),
-            on_human_input=context.event.get("on_human_input"),
-            on_max_iterations=context.event.get("on_max_iterations"),
-        )
+        try:
+            result = self._run_child(
+                agent=child,
+                mode="delegate",
+                child_id=child_id,
+                lineage=lineage,
+                template_name=template_name,
+                session_id=session_id,
+                memory_namespace=memory_namespace if memory_policy == "scoped_persistent" else "",
+                input_messages=task,
+                max_iterations=int(context.event.get("max_iterations") or 6),
+                child_run_id=child_run_id,
+                callback=context.callback,
+                on_tool_confirm=context.event.get("on_tool_confirm"),
+                on_human_input=context.event.get("on_human_input"),
+                on_max_iterations=context.event.get("on_max_iterations"),
+            )
+        except Exception as exc:
+            failed_state = self._merge_child_exception_subagent_state(next_state, exc)
+            self._emit_subagent_event(
+                context,
+                "subagent_failed",
+                subagent_id=child_id,
+                parent_id=parent_id,
+                mode="delegate",
+                template=template_name,
+                lineage=lineage,
+                child_run_id=child_run_id,
+                status="failed",
+                error=str(exc),
+            )
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={
+                    "tool": "delegate_to_subagent",
+                    "mode": "delegate",
+                    "agent_name": child_id,
+                    "template_name": template_name,
+                    "status": "failed",
+                    "lineage": list(lineage),
+                    "error": str(exc),
+                },
+                state_updates={"subagent_state": failed_state},
+            )
         template_payload = self._render_result(result=result, output_mode=output_mode, template_name=template_name)
         result_state = self._merge_result_subagent_state(next_state, result)
         update = {
@@ -1308,22 +1377,50 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             input_messages: str | list[dict[str, Any]] = sanitized_messages
         else:
             input_messages = reason or "Continue the task."
-        result = self._run_child(
-            agent=child,
-            mode="handoff",
-            child_id=child_id,
-            lineage=lineage,
-            template_name=template_name,
-            session_id=session_id,
-            memory_namespace=memory_namespace if memory_policy == "scoped_persistent" else "",
-            input_messages=input_messages,
-            max_iterations=int(context.event.get("max_iterations") or 6),
-            child_run_id=child_run_id,
-            callback=context.callback,
-            on_tool_confirm=context.event.get("on_tool_confirm"),
-            on_human_input=context.event.get("on_human_input"),
-            on_max_iterations=context.event.get("on_max_iterations"),
-        )
+        try:
+            result = self._run_child(
+                agent=child,
+                mode="handoff",
+                child_id=child_id,
+                lineage=lineage,
+                template_name=template_name,
+                session_id=session_id,
+                memory_namespace=memory_namespace if memory_policy == "scoped_persistent" else "",
+                input_messages=input_messages,
+                max_iterations=int(context.event.get("max_iterations") or 6),
+                child_run_id=child_run_id,
+                callback=context.callback,
+                on_tool_confirm=context.event.get("on_tool_confirm"),
+                on_human_input=context.event.get("on_human_input"),
+                on_max_iterations=context.event.get("on_max_iterations"),
+            )
+        except Exception as exc:
+            failed_state = self._merge_child_exception_subagent_state(next_state, exc)
+            self._emit_subagent_event(
+                context,
+                "subagent_failed",
+                subagent_id=child_id,
+                parent_id=parent_id,
+                mode="handoff",
+                template=template_name,
+                lineage=lineage,
+                child_run_id=child_run_id,
+                status="failed",
+                error=str(exc),
+            )
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={
+                    "tool": "handoff_to_subagent",
+                    "mode": "handoff",
+                    "agent_name": child_id,
+                    "template_name": template_name,
+                    "status": "failed",
+                    "lineage": list(lineage),
+                    "error": str(exc),
+                },
+                state_updates={"subagent_state": failed_state},
+            )
         result_state = self._merge_result_subagent_state(next_state, result)
         if result.clarification_request is not None:
             blocked_state = result_state.merged(
@@ -1511,24 +1608,35 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             output_mode = str(item.get("output_mode") or "summary")
             self._emit_subagent_event(context, "subagent_spawned", subagent_id=child_id, parent_id=parent_id, mode="worker", template=template_name, lineage=lineage, batch_id=batch_id, child_run_id=child_run_id)
             self._emit_subagent_event(context, "subagent_started", subagent_id=child_id, parent_id=parent_id, mode="worker", template=template_name, lineage=lineage, batch_id=batch_id, child_run_id=child_run_id)
-            result = self._run_child(
-                agent=item["agent"],
-                mode="worker",
-                child_id=child_id,
-                lineage=lineage,
-                template_name=template_name,
-                session_id=str(item["session_id"]),
-                memory_namespace=str(item["memory_namespace"]),
-                child_run_id=child_run_id,
-                input_messages=task,
-                max_iterations=int(context.event.get("max_iterations") or 6),
-                callback=context.callback,
-                on_tool_confirm=context.event.get("on_tool_confirm"),
-                on_human_input=context.event.get("on_human_input"),
-                on_max_iterations=context.event.get("on_max_iterations"),
-            )
-            rendered = self._render_result(result=result, output_mode=output_mode, template_name=template_name)
-            result = SubagentResult(**rendered)
+            try:
+                result = self._run_child(
+                    agent=item["agent"],
+                    mode="worker",
+                    child_id=child_id,
+                    lineage=lineage,
+                    template_name=template_name,
+                    session_id=str(item["session_id"]),
+                    memory_namespace=str(item["memory_namespace"]),
+                    child_run_id=child_run_id,
+                    input_messages=task,
+                    max_iterations=int(context.event.get("max_iterations") or 6),
+                    callback=context.callback,
+                    on_tool_confirm=context.event.get("on_tool_confirm"),
+                    on_human_input=context.event.get("on_human_input"),
+                    on_max_iterations=context.event.get("on_max_iterations"),
+                )
+                rendered = self._render_result(result=result, output_mode=output_mode, template_name=template_name)
+                result = SubagentResult(**rendered)
+            except Exception as exc:
+                result = SubagentResult(
+                    mode="worker",
+                    agent_name=child_id,
+                    template_name=template_name,
+                    status="failed",
+                    error=str(exc),
+                    lineage=lineage,
+                    subagent_state=self._subagent_state_from_child_exception(exc),
+                )
             event_type = "subagent_completed" if not result.error else "subagent_failed"
             self._emit_subagent_event(
                 context,

@@ -46,6 +46,30 @@ def _text_turn(text: str) -> ModelTurnResult:
     )
 
 
+def _board_write_turn(*, call_id: str, title: str, tag: str) -> ModelTurnResult:
+    return _openai_tool_turn(
+        call_id=call_id,
+        name="write_agent_board",
+        arguments={
+            "kind": "finding",
+            "title": title,
+            "content": f"{title} content",
+            "tags": [tag],
+        },
+    )
+
+
+def _raise_after_board_write(*, title: str, error: str):
+    def _raise(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["mode"] == "agent_board_write"
+        assert payload["status"] == "written"
+        assert payload["item"]["title"] == title
+        raise RuntimeError(error)
+
+    return _raise
+
+
 class SequenceModelIO:
     def __init__(self, provider: str, steps):
         self.provider = provider
@@ -295,6 +319,285 @@ def test_child_subagent_board_write_is_visible_to_parent():
     assert result.messages[-1]["content"] == "done"
 
 
+def test_child_delegate_board_write_survives_child_failure():
+    child = Agent(
+        name="researcher",
+        provider="openai",
+        modules=(SubagentModule(),),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _board_write_turn(call_id="child_delegate_write", title="Delegate child finding", tag="delegate-child"),
+                _raise_after_board_write(title="Delegate child finding", error="delegate exploded"),
+            ],
+        ),
+    )
+
+    def _after_delegate_failure(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["tool"] == "delegate_to_subagent"
+        assert payload["mode"] == "delegate"
+        assert payload["status"] == "failed"
+        assert payload["error"] == "delegate exploded"
+        return _openai_tool_turn(
+            call_id="parent_read_delegate_board",
+            name="read_agent_board",
+            arguments={"tags": ["delegate-child"]},
+        )
+
+    def _after_read(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["mode"] == "agent_board_read"
+        assert payload["status"] == "ok"
+        assert payload["count"] == 1
+        assert payload["items"][0]["title"] == "Delegate child finding"
+        assert payload["items"][0]["author_agent_id"] == "manager.researcher.1"
+        return _text_turn("done")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="researcher",
+                        description="Research specialist",
+                        agent=child,
+                        allowed_modes=("delegate", "worker"),
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="parent_delegate_failure",
+                    name="delegate_to_subagent",
+                    arguments={"target": "researcher", "task": "Find evidence"},
+                ),
+                _after_delegate_failure,
+                _after_read,
+            ],
+        ),
+    )
+
+    result = parent.run("coordinate", max_iterations=3)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "done"
+
+
+def test_child_thread_board_write_survives_child_failure():
+    child = Agent(
+        name="researcher",
+        provider="openai",
+        modules=(SubagentModule(),),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _board_write_turn(call_id="child_thread_write", title="Thread child finding", tag="thread-child"),
+                _raise_after_board_write(title="Thread child finding", error="thread exploded"),
+            ],
+        ),
+    )
+    observed_thread_id = ""
+
+    def _after_spawn_failure(request):
+        nonlocal observed_thread_id
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["tool"] == "spawn_agent_thread"
+        assert payload["mode"] == "agent_thread"
+        assert payload["status"] == "failed"
+        assert payload["error"] == "thread exploded"
+        observed_thread_id = payload["thread_id"]
+        return _openai_tool_turn(
+            call_id="parent_read_thread_board",
+            name="read_agent_board",
+            arguments={"tags": ["thread-child"]},
+        )
+
+    def _after_read(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["mode"] == "agent_board_read"
+        assert payload["status"] == "ok"
+        assert payload["count"] == 1
+        assert payload["items"][0]["title"] == "Thread child finding"
+        assert payload["items"][0]["author_agent_id"] == observed_thread_id
+        return _text_turn("done")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="researcher",
+                        description="Research specialist",
+                        agent=child,
+                        allowed_modes=("delegate", "worker"),
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="parent_spawn_thread",
+                    name="spawn_agent_thread",
+                    arguments={"target": "researcher", "task": "Investigate"},
+                ),
+                _after_spawn_failure,
+                _after_read,
+            ],
+        ),
+    )
+
+    result = parent.run("coordinate", max_iterations=3)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "done"
+
+
+def test_worker_batch_board_write_survives_child_failure():
+    child = Agent(
+        name="researcher",
+        provider="openai",
+        modules=(SubagentModule(),),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _board_write_turn(call_id="child_worker_write", title="Worker child finding", tag="worker-child"),
+                _raise_after_board_write(title="Worker child finding", error="worker exploded"),
+            ],
+        ),
+    )
+
+    def _after_worker_batch(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["mode"] == "worker_batch"
+        assert payload["status"] == "partial_failure"
+        assert payload["results"][0]["status"] == "failed"
+        assert payload["results"][0]["error"] == "worker exploded"
+        return _openai_tool_turn(
+            call_id="parent_read_worker_board",
+            name="read_agent_board",
+            arguments={"tags": ["worker-child"]},
+        )
+
+    def _after_read(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["mode"] == "agent_board_read"
+        assert payload["status"] == "ok"
+        assert payload["count"] == 1
+        assert payload["items"][0]["title"] == "Worker child finding"
+        assert payload["items"][0]["author_agent_id"] == "manager.researcher.1"
+        return _text_turn("done")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="researcher",
+                        description="Research specialist",
+                        agent=child,
+                        allowed_modes=("worker",),
+                        parallel_safe=True,
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="parent_worker_batch",
+                    name="spawn_worker_batch",
+                    arguments={"target": "researcher", "tasks": [{"task": "Investigate"}]},
+                ),
+                _after_worker_batch,
+                _after_read,
+            ],
+        ),
+    )
+
+    result = parent.run("coordinate", max_iterations=3)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "done"
+
+
+def test_handoff_board_write_survives_child_failure_in_state_update():
+    child = Agent(
+        name="specialist",
+        provider="openai",
+        modules=(SubagentModule(),),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _board_write_turn(call_id="child_handoff_write", title="Handoff child finding", tag="handoff-child"),
+                _raise_after_board_write(title="Handoff child finding", error="handoff exploded"),
+            ],
+        ),
+    )
+    events = []
+    plugin = SubagentToolPlugin(
+        parent_agent=SimpleNamespace(name="manager"),
+        templates=(
+            SubagentTemplate(
+                name="specialist",
+                description="Specialist handoff target",
+                agent=child,
+                allowed_modes=("handoff",),
+            ),
+        ),
+        policy=SubagentPolicy(),
+        executor=SubagentExecutor(),
+    )
+    context = SimpleNamespace(
+        state=SimpleNamespace(
+            subagent_state=SubagentState(
+                root_agent_id="manager",
+                active_agent_id="manager",
+                active_lineage=["manager"],
+            )
+        ),
+        loop=RecordingLoop(),
+        callback=events.append,
+        run_id="root-run",
+        session_id="root-session",
+        memory_namespace="root-ns",
+        iteration=1,
+        event={"max_iterations": 3},
+        latest_messages=lambda: [{"role": "user", "content": "Need a specialist"}],
+    )
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_handoff",
+            name="handoff_to_subagent",
+            arguments={"target": "specialist", "reason": "Needs deep expertise"},
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result["tool"] == "handoff_to_subagent"
+    assert outcome.tool_result["mode"] == "handoff"
+    assert outcome.tool_result["status"] == "failed"
+    assert outcome.tool_result["error"] == "handoff exploded"
+    updated_state = outcome.state_updates["subagent_state"]
+    assert updated_state.blackboards["default"][0]["title"] == "Handoff child finding"
+    assert updated_state.blackboards["default"][0]["author_agent_id"] == "manager.specialist.1"
+    assert any(event["type"] == "subagent_failed" for event in events)
+
+
 @pytest.mark.parametrize(
     ("arguments", "error"),
     [
@@ -469,12 +772,55 @@ def test_write_agent_board_rejects_invalid_tags_and_refs_without_mutation(argume
     assert context.state.subagent_state.blackboards == original_blackboards
 
 
+def test_read_agent_board_accepts_singular_kind_filter():
+    plugin = _wait_plugin()
+    context = _plugin_context_with_threads({})
+    context.state.subagent_state.blackboards["default"] = [
+        {
+            "item_id": "item-1",
+            "board_id": "default",
+            "author_agent_id": "manager",
+            "kind": "finding",
+            "title": "Parser bug",
+            "content": "Details",
+            "tags": ["parser"],
+        },
+        {
+            "item_id": "item-2",
+            "board_id": "default",
+            "author_agent_id": "manager",
+            "kind": "risk",
+            "title": "Missing tests",
+            "content": "No coverage.",
+            "tags": ["tests"],
+        },
+    ]
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_read_kind",
+            name="read_agent_board",
+            arguments={"kind": "finding"},
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result["mode"] == "agent_board_read"
+    assert outcome.tool_result["status"] == "ok"
+    assert outcome.tool_result["count"] == 1
+    assert [item["title"] for item in outcome.tool_result["items"]] == ["Parser bug"]
+
+
 @pytest.mark.parametrize(
     ("arguments", "error"),
     [
         ({"tags": "parser"}, "read_agent_board tags must be an array of strings"),
         ({"kinds": [123]}, "read_agent_board kinds must be an array of strings"),
         ({"tags": ["parser", 3]}, "read_agent_board tags must be an array of strings"),
+        ({"kind": 123}, "read_agent_board kind must be a non-empty string"),
+        ({"kind": ""}, "read_agent_board kind must be a non-empty string"),
+        ({"kind": "   "}, "read_agent_board kind must be a non-empty string"),
     ],
 )
 def test_read_agent_board_rejects_invalid_filters_without_mutation(arguments, error):
@@ -1095,6 +1441,111 @@ def test_send_agent_message_child_failure_persists_failed_thread_for_wait_and_em
     assert failed_event["error"] == "followup exploded"
     assert failed_event["subagent_id"] == observed_thread_id
     assert failed_event["parent_id"] == "manager"
+
+
+def test_child_message_board_write_survives_child_failure():
+    def _child_factory(spec, ctx):
+        del spec, ctx
+
+        def _fetch_child_turn(request):
+            content = request.messages[-1]["content"]
+            if content == "Initial task":
+                return _text_turn("initial done")
+            if content == "Follow up":
+                return _board_write_turn(
+                    call_id="child_message_write",
+                    title="Message child finding",
+                    tag="message-child",
+                )
+            raise AssertionError(f"unexpected child content: {content}")
+
+        return SequenceModelIO(
+            "openai",
+            [
+                _fetch_child_turn,
+                _raise_after_board_write(title="Message child finding", error="message exploded"),
+            ],
+        )
+
+    child = Agent(
+        name="researcher",
+        provider="openai",
+        modules=(SubagentModule(),),
+        model_io_factory=_child_factory,
+    )
+    observed_thread_id = ""
+
+    def _after_spawn(request):
+        nonlocal observed_thread_id
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["status"] == "completed"
+        observed_thread_id = payload["thread_id"]
+        return _openai_tool_turn(
+            call_id="call_send_message_board",
+            name="send_agent_message",
+            arguments={
+                "recipient": observed_thread_id,
+                "content": "Follow up",
+                "kind": "followup",
+            },
+        )
+
+    def _after_send_failure(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["tool"] == "send_agent_message"
+        assert payload["mode"] == "agent_message"
+        assert payload["status"] == "failed"
+        assert payload["thread_id"] == observed_thread_id
+        assert payload["error"] == "message exploded"
+        return _openai_tool_turn(
+            call_id="parent_read_message_board",
+            name="read_agent_board",
+            arguments={"tags": ["message-child"]},
+        )
+
+    def _after_read(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["mode"] == "agent_board_read"
+        assert payload["status"] == "ok"
+        assert payload["count"] == 1
+        assert payload["items"][0]["title"] == "Message child finding"
+        assert payload["items"][0]["author_agent_id"] == observed_thread_id
+        return _text_turn("done")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="researcher",
+                        description="Research specialist",
+                        agent=child,
+                        allowed_modes=("delegate", "worker"),
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="call_spawn_message_board",
+                    name="spawn_agent_thread",
+                    arguments={"target": "researcher", "task": "Initial task"},
+                ),
+                _after_spawn,
+                _after_send_failure,
+                _after_read,
+            ],
+        ),
+    )
+
+    result = parent.run("coordinate", max_iterations=4)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "done"
 
 
 def test_spawn_agent_thread_child_failure_persists_failed_thread_for_wait():
