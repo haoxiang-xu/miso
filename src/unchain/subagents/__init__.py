@@ -15,9 +15,17 @@ __all__ = [
     "SubagentResult",
     "SubagentState",
     "SubagentTemplate",
+    "build_close_agent_thread_tool",
     "build_delegate_to_subagent_tool",
     "build_handoff_to_subagent_tool",
+    "build_read_agent_board_tool",
+    "build_return_handoff_to_subagent_tool",
+    "build_return_to_parent_tool",
+    "build_send_agent_message_tool",
+    "build_spawn_agent_thread_tool",
     "build_spawn_worker_batch_tool",
+    "build_wait_agent_messages_tool",
+    "build_write_agent_board_tool",
 ]
 
 _TYPE_EXPORTS = {
@@ -37,9 +45,17 @@ _COMMUNICATION_EXPORTS = {
 }
 _EXECUTOR_EXPORTS = {"SubagentExecutor"}
 _RUNTIME_TOOL_EXPORTS = {
+    "build_close_agent_thread_tool",
     "build_delegate_to_subagent_tool",
     "build_handoff_to_subagent_tool",
+    "build_read_agent_board_tool",
+    "build_return_handoff_to_subagent_tool",
+    "build_return_to_parent_tool",
+    "build_send_agent_message_tool",
+    "build_spawn_agent_thread_tool",
     "build_spawn_worker_batch_tool",
+    "build_wait_agent_messages_tool",
+    "build_write_agent_board_tool",
 }
 
 
