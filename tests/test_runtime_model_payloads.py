@@ -39,6 +39,30 @@ def test_claude_opus_48_runtime_resources_are_registered():
     assert payloads["claude-opus-4-8"]["max_tokens"] == 128000
 
 
+def test_claude_fable_5_runtime_resources_are_registered():
+    capabilities = load_model_capabilities()
+    payloads = load_default_payloads()
+
+    fable_5 = capabilities["claude-fable-5"]
+    assert fable_5["provider"] == "anthropic"
+    assert fable_5["max_context_window_tokens"] == 1000000
+    assert fable_5["max_output_tokens"] == 128000
+    assert fable_5["supports_tools"] is True
+    assert fable_5["supports_response_format"] is False
+    assert fable_5["supports_previous_response_id"] is False
+    assert fable_5["supports_reasoning"] is True
+    assert fable_5["input_modalities"] == ["text", "image", "pdf"]
+    assert fable_5["input_source_types"]["image"] == ["url", "base64"]
+    assert fable_5["input_source_types"]["pdf"] == ["url", "base64"]
+    assert fable_5["allowed_payload_keys"] == [
+        "max_tokens",
+        "thinking",
+        "output_config",
+        "fallbacks",
+    ]
+    assert payloads["claude-fable-5"]["max_tokens"] == 128000
+
+
 def test_claude_haiku_35_runtime_resources_are_removed():
     capabilities = load_model_capabilities()
     payloads = load_default_payloads()
