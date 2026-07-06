@@ -516,9 +516,8 @@ class ToolResultBudgetController:
             record = records[index]
             optimized, optimizer_used = optimizer_payload(index)
             if optimizer_used:
-                if optimized is not None:
-                    apply_payload(index, optimized)
-                return
+                if optimized is not None and apply_payload(index, optimized):
+                    return
             generic = _compact_payload_for_target(
                 record,
                 reason=reason,

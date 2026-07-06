@@ -412,3 +412,44 @@ def test_budget_controller_preserves_raw_openai_string_writeback():
 
     assert outcome.messages[0]["output"] == "raw summary for call_1"
     assert outcome.stats.compacted_count == 1
+
+
+def test_budget_controller_falls_back_when_optimizer_has_no_savings():
+    call = _call(name="no_savings_tool")
+    toolkit = Toolkit()
+
+    def no_savings_tool() -> dict[str, Any]:
+        return {"blob": "unused"}
+
+    def optimizer(payload: Any, context: ToolHistoryOptimizationContext) -> Any:
+        assert context.tool_name == "no_savings_tool"
+        return payload
+
+    toolkit.register(
+        no_savings_tool,
+        name="no_savings_tool",
+        history_result_optimizer=optimizer,
+    )
+    message = _message("openai", call, {"blob": "D" * 600})
+    controller = ToolResultBudgetController(
+        ToolResultBudgetConfig(
+            max_result_chars=160,
+            max_batch_chars=1_000,
+            preview_chars=24,
+            min_chars_to_budget=40,
+        )
+    )
+
+    outcome = controller.budget_messages(
+        provider="openai",
+        toolkit=toolkit,
+        tool_calls=[call],
+        result_messages=[message],
+        session_id="session-a",
+    )
+
+    payload = _openai_payload(outcome.messages[0])
+    assert payload["compacted"] is True
+    assert payload["reason"] == "tool_result_budget"
+    assert payload["tool_name"] == "no_savings_tool"
+    assert outcome.stats.compacted_count == 1
