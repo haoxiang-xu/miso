@@ -182,6 +182,8 @@ class AgentCommunicationRuntime:
         if not isinstance(raw, dict):
             raise ValueError(f"unknown agent thread: {thread_id}")
         record = AgentThreadRecord.from_raw(raw)
+        if explicit_thread_id and recipient not in {record.thread_id, record.agent_id}:
+            raise ValueError(f"recipient does not match agent thread: {recipient}")
         if record.status == "closed":
             raise ValueError(f"agent thread is closed: {record.thread_id}")
         return record

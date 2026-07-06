@@ -749,6 +749,20 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 close_reason=str(exc),
             )
             failed_state = runtime.upsert_thread(messaged_state, failed_record)
+            self._emit_subagent_event(
+                context,
+                "agent_message_failed",
+                subagent_id=record.agent_id,
+                parent_id=record.parent_agent_id or parent_id,
+                mode="message",
+                template=template_name,
+                lineage=lineage,
+                child_run_id=child_run_id,
+                thread_id=record.thread_id,
+                message_id=message.message_id,
+                status="failed",
+                error=str(exc),
+            )
             return ToolRuntimeOutcome(
                 handled=True,
                 tool_result={
@@ -807,6 +821,19 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 request_id=result.clarification_request.get("request_id"),
                 clarification_request=copy.deepcopy(result.clarification_request),
             )
+        self._emit_subagent_event(
+            context,
+            "agent_message_completed",
+            subagent_id=record.agent_id,
+            parent_id=record.parent_agent_id or parent_id,
+            mode="message",
+            template=template_name,
+            lineage=lineage,
+            child_run_id=child_run_id,
+            thread_id=record.thread_id,
+            message_id=message.message_id,
+            status=result.status,
+        )
         return ToolRuntimeOutcome(
             handled=True,
             tool_result={

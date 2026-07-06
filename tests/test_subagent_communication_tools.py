@@ -283,6 +283,7 @@ def test_wait_agent_messages_idle_completes_for_idle_and_terminal_threads():
 
 def test_send_agent_message_runs_followup_on_existing_thread_session():
     child_observations = []
+    events = []
 
     def _child_factory(spec, ctx):
         del spec
@@ -372,6 +373,7 @@ def test_send_agent_message_runs_followup_on_existing_thread_session():
         max_iterations=3,
         session_id="root-session",
         memory_namespace="root-ns",
+        callback=events.append,
     )
 
     assert result.status == "completed"
@@ -381,6 +383,14 @@ def test_send_agent_message_runs_followup_on_existing_thread_session():
     assert child_observations[0]["memory_namespace"] == child_observations[1]["memory_namespace"]
     assert child_observations[0]["session_id"] == f"root-session:{observed_thread_id}"
     assert child_observations[0]["memory_namespace"] == f"root-ns:{observed_thread_id}"
+    event_types = [event["type"] for event in events]
+    assert "agent_message_sent" in event_types
+    assert "agent_message_completed" in event_types
+    completed_event = next(event for event in events if event["type"] == "agent_message_completed")
+    assert completed_event["thread_id"] == observed_thread_id
+    assert completed_event["status"] == "completed"
+    assert completed_event["subagent_id"] == observed_thread_id
+    assert completed_event["parent_id"] == "manager"
 
 
 def test_send_agent_message_rejects_unknown_or_closed_thread():
@@ -435,6 +445,148 @@ def test_send_agent_message_rejects_unknown_or_closed_thread():
     assert outcome.handled is True
     assert outcome.tool_result["tool"] == "send_agent_message"
     assert outcome.tool_result["error"] == "agent thread is closed: closed-thread"
+
+
+def test_send_agent_message_rejects_mismatched_recipient_and_explicit_thread_id():
+    plugin = _wait_plugin()
+    context = _plugin_context_with_threads(
+        {
+            "thread-a": {
+                "thread_id": "thread-a",
+                "agent_id": "manager.researcher.1",
+                "status": "completed",
+            },
+            "thread-b": {
+                "thread_id": "thread-b",
+                "agent_id": "manager.writer.1",
+                "status": "completed",
+            },
+        }
+    )
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_send_mismatch",
+            name="send_agent_message",
+            arguments={
+                "recipient": "manager.researcher.1",
+                "thread_id": "thread-b",
+                "content": "hello",
+            },
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result["tool"] == "send_agent_message"
+    assert outcome.tool_result["status"] == "failed"
+    assert outcome.tool_result["error"] == "recipient does not match agent thread: manager.researcher.1"
+    assert outcome.state_updates == {}
+    assert context.state.subagent_state.mailboxes == {}
+
+
+def test_send_agent_message_child_failure_persists_failed_thread_for_wait_and_emits_event():
+    def _child_factory(spec, ctx):
+        del spec, ctx
+
+        def _fetch_child_turn(request):
+            content = request.messages[-1]["content"]
+            if content == "Initial task":
+                return _text_turn("initial done")
+            if content == "Follow up":
+                raise RuntimeError("followup exploded")
+            raise AssertionError(f"unexpected child content: {content}")
+
+        return SequenceModelIO("openai", [_fetch_child_turn])
+
+    child = Agent(
+        name="researcher",
+        provider="openai",
+        model_io_factory=_child_factory,
+    )
+    observed_thread_id = ""
+
+    def _after_spawn(request):
+        nonlocal observed_thread_id
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["status"] == "completed"
+        observed_thread_id = payload["thread_id"]
+        return _openai_tool_turn(
+            call_id="call_send",
+            name="send_agent_message",
+            arguments={
+                "recipient": observed_thread_id,
+                "content": "Follow up",
+                "kind": "followup",
+            },
+        )
+
+    def _after_send_failure(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["tool"] == "send_agent_message"
+        assert payload["mode"] == "agent_message"
+        assert payload["status"] == "failed"
+        assert payload["thread_id"] == observed_thread_id
+        assert payload["message"]["content"] == "Follow up"
+        assert payload["error"] == "followup exploded"
+        return _openai_tool_turn(
+            call_id="call_wait",
+            name="wait_agent_messages",
+            arguments={"thread_ids": [observed_thread_id], "condition": "all_done"},
+        )
+
+    def _after_wait(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["status"] == "completed"
+        assert payload["threads"][0]["thread_id"] == observed_thread_id
+        assert payload["threads"][0]["status"] == "failed"
+        assert payload["threads"][0]["close_reason"] == "followup exploded"
+        return _text_turn("done")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="researcher",
+                        description="Research specialist",
+                        agent=child,
+                        allowed_modes=("delegate", "worker"),
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="call_spawn",
+                    name="spawn_agent_thread",
+                    arguments={"target": "researcher", "task": "Initial task"},
+                ),
+                _after_spawn,
+                _after_send_failure,
+                _after_wait,
+            ],
+        ),
+    )
+    events = []
+
+    result = parent.run("coordinate", max_iterations=4, callback=events.append)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "done"
+    event_types = [event["type"] for event in events]
+    assert "agent_message_sent" in event_types
+    assert "agent_message_failed" in event_types
+    failed_event = next(event for event in events if event["type"] == "agent_message_failed")
+    assert failed_event["thread_id"] == observed_thread_id
+    assert failed_event["status"] == "failed"
+    assert failed_event["error"] == "followup exploded"
+    assert failed_event["subagent_id"] == observed_thread_id
+    assert failed_event["parent_id"] == "manager"
 
 
 def test_spawn_agent_thread_child_failure_persists_failed_thread_for_wait():
