@@ -58,6 +58,27 @@ def _provider_payload(
     raise AssertionError(f"unsupported provider for payload parsing: {provider}")
 
 
+def test_budget_config_from_raw_accepts_config_dict_and_non_dict():
+    existing = ToolResultBudgetConfig(max_result_chars=20)
+
+    assert ToolResultBudgetConfig.from_raw(existing) is existing
+    assert ToolResultBudgetConfig.from_raw(None) == ToolResultBudgetConfig()
+
+    parsed = ToolResultBudgetConfig.from_raw(
+        {
+            "max_result_chars": "0",
+            "max_batch_chars": "-5",
+            "preview_chars": "-10",
+            "min_chars_to_budget": "-20",
+            "ignored": 999,
+        }
+    )
+    assert parsed.max_result_chars == 1
+    assert parsed.max_batch_chars == 1
+    assert parsed.preview_chars == 0
+    assert parsed.min_chars_to_budget == 0
+
+
 def test_budget_controller_compacts_large_openai_result_with_digest():
     call = _call()
     message = _message("openai", call, {"blob": "A" * 600})

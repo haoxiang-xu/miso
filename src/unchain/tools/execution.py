@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 from ..capabilities import CapabilityOutcome, CreateArtifactOp, RunDelta
@@ -688,35 +688,22 @@ class ToolExecutionHarness(BaseToolHarness):
 
         budget_stats: dict[str, Any] | None = None
         tool_runtime_config = context.event.get("tool_runtime_config")
-        if isinstance(tool_runtime_config, dict) and "tool_result_budget" in tool_runtime_config:
-            raw_budget_config = tool_runtime_config.get("tool_result_budget")
-            config_from_raw = getattr(ToolResultBudgetConfig, "from_raw", None)
-            if callable(config_from_raw):
-                budget_config = config_from_raw(raw_budget_config)
-            elif isinstance(raw_budget_config, ToolResultBudgetConfig):
-                budget_config = raw_budget_config
-            elif isinstance(raw_budget_config, dict):
-                config_fields = getattr(ToolResultBudgetConfig, "__dataclass_fields__", {})
-                budget_config = ToolResultBudgetConfig(
-                    **{
-                        key: value
-                        for key, value in raw_budget_config.items()
-                        if key in config_fields
-                    }
-                )
-            else:
-                budget_config = ToolResultBudgetConfig()
-            budget_outcome = ToolResultBudgetController(budget_config).budget_messages(
-                provider=context.provider,
-                toolkit=context.toolkit,
-                tool_calls=list(context.event.get("tool_calls") or []),
-                result_messages=result_messages,
-                session_id=context.session_id,
-                latest_messages=context.state.transcript,
-            )
-            result_messages = budget_outcome.messages
-            stats_to_dict = getattr(budget_outcome.stats, "to_dict", None)
-            budget_stats = stats_to_dict() if callable(stats_to_dict) else asdict(budget_outcome.stats)
+        raw_budget_config = (
+            tool_runtime_config.get("tool_result_budget")
+            if isinstance(tool_runtime_config, dict)
+            else None
+        )
+        budget_config = ToolResultBudgetConfig.from_raw(raw_budget_config)
+        budget_outcome = ToolResultBudgetController(budget_config).budget_messages(
+            provider=context.provider,
+            toolkit=context.toolkit,
+            tool_calls=list(context.event.get("tool_calls") or []),
+            result_messages=result_messages,
+            session_id=context.session_id,
+            latest_messages=context.state.transcript,
+        )
+        result_messages = budget_outcome.messages
+        budget_stats = budget_outcome.stats.to_dict()
 
         if not result_messages:
             return HarnessDelta(

@@ -18,6 +18,29 @@ class ToolResultBudgetConfig:
     preview_chars: int = 600
     min_chars_to_budget: int = 1_200
 
+    @classmethod
+    def from_raw(cls, raw: Any) -> "ToolResultBudgetConfig":
+        if isinstance(raw, cls):
+            return raw
+        defaults = cls()
+        if not isinstance(raw, dict):
+            return defaults
+
+        def int_field(name: str, minimum: int) -> int:
+            value = raw.get(name, getattr(defaults, name))
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                parsed = getattr(defaults, name)
+            return max(minimum, parsed)
+
+        return cls(
+            max_result_chars=int_field("max_result_chars", 1),
+            max_batch_chars=int_field("max_batch_chars", 1),
+            preview_chars=int_field("preview_chars", 0),
+            min_chars_to_budget=int_field("min_chars_to_budget", 0),
+        )
+
 
 @dataclass(frozen=True)
 class ToolResultBudgetStats:
@@ -27,6 +50,16 @@ class ToolResultBudgetStats:
     original_chars: int = 0
     budgeted_chars: int = 0
     saved_chars: int = 0
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "result_count": int(self.result_count),
+            "compacted_count": int(self.compacted_count),
+            "optimizer_error_count": int(self.optimizer_error_count),
+            "original_chars": int(self.original_chars),
+            "budgeted_chars": int(self.budgeted_chars),
+            "saved_chars": int(self.saved_chars),
+        }
 
 
 @dataclass(frozen=True)

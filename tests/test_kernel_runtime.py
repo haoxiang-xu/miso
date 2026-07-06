@@ -155,14 +155,18 @@ def test_kernel_run_leaves_small_tool_result_unchanged_by_default_budget():
     toolkit = Toolkit()
     toolkit.register(lambda: {"value": 2}, name="small_tool")
     loop = build_runtime_loop(model_io=model_io)
-
-    result = loop.run(
+    state = loop.seed_state(
         [{"role": "user", "content": "start"}],
         provider="openai",
         model="gpt-4.1",
+    )
+    state.provider_state.use_previous_response_chain = True
+
+    result = loop._run_state(
+        state,
         toolkit=toolkit,
         max_iterations=3,
-        tool_runtime_config={"tool_result_budget": {}},
+        run_id="small-default-budget",
     )
 
     assert result.status == "completed"
@@ -170,6 +174,14 @@ def test_kernel_run_leaves_small_tool_result_unchanged_by_default_budget():
     assert tool_message["call_id"] == "call_small"
     assert json.loads(tool_message["output"]) == {"value": 2}
     assert model_io.requests[1].messages == [tool_message]
+    assert state.optimizer_state["tool_result_budget"] == {
+        "result_count": 1,
+        "compacted_count": 0,
+        "optimizer_error_count": 0,
+        "original_chars": len(json.dumps({"value": 2}, separators=(",", ":"))),
+        "budgeted_chars": len(json.dumps({"value": 2}, separators=(",", ":"))),
+        "saved_chars": 0,
+    }
 
 
 def test_kernel_run_sanitizes_non_deepcopyable_tool_result_values():
