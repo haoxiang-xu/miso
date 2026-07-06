@@ -10,11 +10,25 @@ from typing import TYPE_CHECKING, Any
 from ..tools.common import emit_loop_event
 from ..tools.runtime import ToolRuntimeOutcome, ToolRuntimePlugin
 from ..kernel.types import ToolCall
+from .communication import AgentCommunicationRuntime, AgentThreadRecord
 from .executor import SubagentExecutor
 from .types import SubagentPolicy, SubagentResult, SubagentState, SubagentTemplate
 
 if TYPE_CHECKING:
     from ..agent.agent import Agent as KernelAgent
+
+
+_SUBAGENT_TOOL_NAMES = {"delegate_to_subagent", "handoff_to_subagent", "spawn_worker_batch"}
+_COMMUNICATION_TOOL_NAMES = {
+    "spawn_agent_thread",
+    "send_agent_message",
+    "wait_agent_messages",
+    "close_agent_thread",
+    "write_agent_board",
+    "read_agent_board",
+    "return_handoff_to_subagent",
+    "return_to_parent",
+}
 
 
 def _slug(value: str) -> str:
@@ -143,8 +157,12 @@ class SubagentToolPlugin(ToolRuntimePlugin):
     def template_map(self) -> dict[str, SubagentTemplate]:
         return {template.name: template for template in self.templates}
 
+    @property
+    def communication_runtime(self) -> AgentCommunicationRuntime:
+        return AgentCommunicationRuntime(self.policy)
+
     def can_handle(self, *, tool_call: ToolCall, context) -> bool:
-        if tool_call.name not in {"delegate_to_subagent", "handoff_to_subagent", "spawn_worker_batch"}:
+        if tool_call.name not in _SUBAGENT_TOOL_NAMES | _COMMUNICATION_TOOL_NAMES:
             return False
         toolkit = getattr(context, "toolkit", None)
         if toolkit is None or not hasattr(toolkit, "get"):
@@ -159,6 +177,12 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 return self._handoff(tool_call=tool_call, context=context)
             if tool_call.name == "spawn_worker_batch":
                 return self._worker_batch(tool_call=tool_call, context=context)
+            if tool_call.name == "spawn_agent_thread":
+                return self._spawn_agent_thread(tool_call=tool_call, context=context)
+            if tool_call.name == "wait_agent_messages":
+                return self._wait_agent_messages(tool_call=tool_call, context=context)
+            if tool_call.name == "close_agent_thread":
+                return self._close_agent_thread(tool_call=tool_call, context=context)
             return ToolRuntimeOutcome(handled=False)
         except Exception as exc:
             return ToolRuntimeOutcome(
@@ -381,6 +405,203 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             lineage=list(lineage),
             batch_id=batch_id,
             **extra,
+        )
+
+    def _spawn_agent_thread(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:
+        args = _parse_arguments(tool_call.arguments)
+        target = str(args.get("target") or "").strip()
+        task = str(args.get("task") or "").strip()
+        instructions = str(args.get("instructions") or "").strip()
+        expected_output = str(args.get("expected_output") or "").strip()
+        context_mode = str(args.get("context_mode") or "none").strip() or "none"
+        background = bool(args.get("background", False))
+        if not target:
+            return ToolRuntimeOutcome(handled=True, tool_result={"error": "spawn_agent_thread requires target"})
+        if not task:
+            return ToolRuntimeOutcome(handled=True, tool_result={"error": "spawn_agent_thread requires task"})
+
+        state = self._ensure_state(context)
+        child_id, lineage, next_state = self._next_subagent_identity(state=state, target=target, mode="delegate")
+        template = self._resolve_template(target, mode="delegate")
+        child, memory_policy, template_name = self._build_subagent(
+            template=template,
+            child_id=child_id,
+            lineage=lineage,
+            mode="delegate",
+            target=target,
+            task=task,
+            instructions=instructions,
+            expected_output=expected_output,
+        )
+        session_id = f"{context.session_id or context.run_id}:{child_id}"
+        memory_namespace = f"{context.memory_namespace or context.session_id or context.run_id}:{child_id}"
+        scoped_memory_namespace = memory_namespace if memory_policy == "scoped_persistent" else ""
+        parent_id = state.active_agent_id or self.parent_agent.name
+        child_run_id = self._build_child_run_id(
+            session_id=context.session_id or context.run_id,
+            child_id=child_id,
+        )
+        running_record = AgentThreadRecord(
+            thread_id=child_id,
+            agent_id=child_id,
+            parent_agent_id=parent_id,
+            target=target,
+            template_name=template_name,
+            mode="thread",
+            status="running",
+            session_id=session_id,
+            memory_namespace=scoped_memory_namespace,
+            lineage=tuple(lineage),
+            created_iteration=int(context.iteration),
+            last_activity_iteration=int(context.iteration),
+            context_mode=context_mode,
+            instructions=instructions,
+            expected_output=expected_output,
+        )
+        try:
+            threaded_state = self.communication_runtime.upsert_thread(next_state, running_record)
+        except ValueError as exc:
+            return ToolRuntimeOutcome(handled=True, tool_result={"error": str(exc)})
+
+        self._emit_subagent_event(
+            context,
+            "agent_thread_spawned",
+            subagent_id=child_id,
+            parent_id=parent_id,
+            mode="thread",
+            template=template_name,
+            lineage=lineage,
+            child_run_id=child_run_id,
+            thread_id=child_id,
+            background=background,
+        )
+        result = self._run_child(
+            agent=child,
+            mode="thread",
+            child_id=child_id,
+            lineage=lineage,
+            template_name=template_name,
+            session_id=session_id,
+            memory_namespace=scoped_memory_namespace,
+            input_messages=task,
+            max_iterations=int(context.event.get("max_iterations") or 6),
+            child_run_id=child_run_id,
+            callback=context.callback,
+            on_tool_confirm=context.event.get("on_tool_confirm"),
+            on_human_input=context.event.get("on_human_input"),
+            on_max_iterations=context.event.get("on_max_iterations"),
+        )
+        completed_record = AgentThreadRecord(
+            thread_id=child_id,
+            agent_id=child_id,
+            parent_agent_id=parent_id,
+            target=target,
+            template_name=template_name,
+            mode="thread",
+            status=result.status,
+            session_id=session_id,
+            memory_namespace=scoped_memory_namespace,
+            lineage=tuple(lineage),
+            created_iteration=int(context.iteration),
+            last_activity_iteration=int(context.iteration),
+            context_mode=context_mode,
+            instructions=instructions,
+            expected_output=expected_output,
+        )
+        threaded_state = self.communication_runtime.upsert_thread(threaded_state, completed_record)
+        self._emit_subagent_event(
+            context,
+            "agent_thread_completed",
+            subagent_id=child_id,
+            parent_id=parent_id,
+            mode="thread",
+            template=template_name,
+            lineage=lineage,
+            child_run_id=child_run_id,
+            thread_id=child_id,
+            status=result.status,
+        )
+        return ToolRuntimeOutcome(
+            handled=True,
+            tool_result={
+                "mode": "agent_thread",
+                "thread_id": child_id,
+                "agent_id": result.agent_name,
+                "template_name": template_name,
+                "status": result.status,
+                "summary": result.summary,
+                "output": result.output,
+                "lineage": list(lineage),
+                "background": background,
+            },
+            state_updates={"subagent_state": threaded_state},
+        )
+
+    def _wait_agent_messages(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:
+        args = _parse_arguments(tool_call.arguments)
+        thread_ids = args.get("thread_ids")
+        if not isinstance(thread_ids, list) or not thread_ids:
+            return ToolRuntimeOutcome(handled=True, tool_result={"error": "wait_agent_messages requires thread_ids"})
+
+        state = self._ensure_state(context)
+        threads: list[dict[str, Any]] = []
+        for thread_id in thread_ids:
+            normalized_thread_id = str(thread_id or "").strip()
+            raw = state.threads.get(normalized_thread_id)
+            if isinstance(raw, dict):
+                threads.append(copy.deepcopy(raw))
+            else:
+                threads.append({"thread_id": normalized_thread_id, "status": "not_found"})
+
+        done_statuses = {"completed", "failed", "closed"}
+        status = "completed" if all(thread.get("status") in done_statuses for thread in threads) else "running"
+        emit_loop_event(
+            context.loop,
+            context.callback,
+            "agent_message_wait_completed",
+            context.run_id,
+            iteration=context.iteration,
+            root_agent=state.root_agent_id or self.parent_agent.name,
+            root_run_id=context.run_id,
+            status=status,
+            thread_ids=[str(thread_id or "").strip() for thread_id in thread_ids],
+        )
+        return ToolRuntimeOutcome(
+            handled=True,
+            tool_result={"mode": "agent_wait", "status": status, "threads": threads},
+        )
+
+    def _close_agent_thread(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:
+        args = _parse_arguments(tool_call.arguments)
+        thread_id = str(args.get("thread_id") or "").strip()
+        reason = str(args.get("reason") or "").strip()
+        if not thread_id:
+            return ToolRuntimeOutcome(handled=True, tool_result={"error": "close_agent_thread requires thread_id"})
+
+        state = self._ensure_state(context)
+        try:
+            closed_state = self.communication_runtime.close_thread(state, thread_id, reason=reason)
+        except ValueError as exc:
+            return ToolRuntimeOutcome(handled=True, tool_result={"error": str(exc)})
+        thread = copy.deepcopy(closed_state.threads[thread_id])
+        lineage = list(thread.get("lineage") or [])
+        parent_id = str(thread.get("parent_agent_id") or state.active_agent_id or self.parent_agent.name)
+        template_name = thread.get("template_name")
+        self._emit_subagent_event(
+            context,
+            "agent_thread_closed",
+            subagent_id=thread_id,
+            parent_id=parent_id,
+            mode=str(thread.get("mode") or "thread"),
+            template=str(template_name) if template_name is not None else None,
+            lineage=lineage,
+            thread_id=thread_id,
+            reason=reason,
+        )
+        return ToolRuntimeOutcome(
+            handled=True,
+            tool_result={"mode": "agent_thread_close", "status": "closed", "thread": thread},
+            state_updates={"subagent_state": closed_state},
         )
 
     def _delegate(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:
