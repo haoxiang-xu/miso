@@ -42,35 +42,105 @@ class _ResultRecord:
     tool_name: str
     call_id: str
     payload: Any
+    payload_format: str
     original_chars: int
     block_index: int | None = None
     part_index: int | None = None
 
 
+def _safe_repr(value: Any) -> str:
+    try:
+        return repr(value)
+    except Exception:
+        return f"<{type(value).__module__}.{type(value).__qualname__}>"
+
+
+def _canonicalize(value: Any) -> Any:
+    if isinstance(value, dict):
+        pairs: list[tuple[str, Any]] = []
+        for key, item in value.items():
+            pairs.append((_canonical_key(key), _canonicalize(item)))
+        pairs.sort(key=lambda pair: pair[0])
+
+        canonical: dict[str, Any] = {}
+        duplicate_counts: dict[str, int] = {}
+        for key, item in pairs:
+            duplicate_counts[key] = duplicate_counts.get(key, 0) + 1
+            output_key = key if duplicate_counts[key] == 1 else f"{key}#{duplicate_counts[key]}"
+            canonical[output_key] = item
+        return canonical
+
+    if isinstance(value, (list, tuple)):
+        return [_canonicalize(item) for item in value]
+
+    if isinstance(value, (set, frozenset)):
+        items = [_canonicalize(item) for item in value]
+        return sorted(items, key=_stable_json_dumps)
+
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+
+    return f"{type(value).__module__}.{type(value).__qualname__}:{_safe_repr(value)}"
+
+
+def _canonical_key(key: Any) -> str:
+    if isinstance(key, str):
+        return key
+    canonical = _canonicalize(key)
+    return f"{type(key).__module__}.{type(key).__qualname__}:{_stable_json_dumps(canonical)}"
+
+
 def _stable_json_dumps(value: Any) -> str:
-    return json.dumps(
-        value,
-        default=str,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    try:
+        canonical = _canonicalize(value)
+        return json.dumps(
+            canonical,
+            default=str,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except Exception:
+        fallback = f"{type(value).__module__}.{type(value).__qualname__}:{_safe_repr(value)}"
+        return json.dumps(fallback, ensure_ascii=False, separators=(",", ":"))
 
 
-def _safe_json_loads(value: Any) -> Any:
+def _normalize_payload(value: Any) -> tuple[Any, str]:
     if not isinstance(value, str):
-        return copy.deepcopy(value)
+        return copy.deepcopy(value), "native"
     stripped = value.strip()
     if not stripped or stripped[0] not in "[{":
-        return value
+        return value, "raw_string"
     try:
-        return json.loads(stripped)
+        parsed = json.loads(stripped)
     except Exception:
-        return value
+        return value, "raw_string"
+    if isinstance(parsed, (dict, list)):
+        return parsed, "json_string"
+    return value, "raw_string"
+
+
+def _serialize_payload(payload: Any, payload_format: str) -> Any:
+    if payload_format == "json_string":
+        return _stable_json_dumps(payload)
+    if payload_format == "raw_string":
+        return payload if isinstance(payload, str) else _stable_json_dumps(payload)
+    if isinstance(payload, dict):
+        return copy.deepcopy(payload)
+    return {"value": copy.deepcopy(payload)}
+
+
+def _payload_chars(payload: Any, payload_format: str) -> int:
+    serialized = _serialize_payload(payload, payload_format)
+    if isinstance(serialized, str):
+        return len(serialized)
+    return len(_stable_json_dumps(serialized))
 
 
 def _preview_text(text: str, preview_chars: int) -> str:
-    limit = max(1, int(preview_chars))
+    limit = int(preview_chars)
+    if limit <= 0:
+        return ""
     if len(text) <= limit * 2:
         return text
     head = text[:limit]
@@ -114,6 +184,53 @@ def _compact_payload(
         compacted["budgeted_chars"] = current_size
         previous_size = current_size
     return compacted
+
+
+def _compact_payload_for_target(
+    record: _ResultRecord,
+    *,
+    reason: str,
+    preview_chars: int,
+    target_chars: int | None = None,
+) -> dict[str, Any]:
+    max_preview_chars = max(0, int(preview_chars))
+    if target_chars is None:
+        return _compact_payload(
+            record.payload,
+            reason=reason,
+            tool_name=record.tool_name,
+            call_id=record.call_id,
+            preview_chars=max_preview_chars,
+        )
+
+    minimal = _compact_payload(
+        record.payload,
+        reason=reason,
+        tool_name=record.tool_name,
+        call_id=record.call_id,
+        preview_chars=0,
+    )
+    if _payload_chars(minimal, record.payload_format) > target_chars:
+        return minimal
+
+    best = minimal
+    low = 0
+    high = max_preview_chars
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = _compact_payload(
+            record.payload,
+            reason=reason,
+            tool_name=record.tool_name,
+            call_id=record.call_id,
+            preview_chars=middle,
+        )
+        if _payload_chars(candidate, record.payload_format) <= target_chars:
+            best = candidate
+            low = middle + 1
+        else:
+            high = middle - 1
+    return best
 
 
 def _tool_call_maps(
@@ -177,7 +294,7 @@ def _collect_result_records(
                 by_name=by_name,
                 used_call_ids=used_call_ids,
             )
-            payload = _safe_json_loads(message.get("output", ""))
+            payload, payload_format = _normalize_payload(message.get("output", ""))
             records.append(
                 _ResultRecord(
                     message_index=message_index,
@@ -185,7 +302,8 @@ def _collect_result_records(
                     tool_name=tool_name,
                     call_id=resolved_call_id,
                     payload=payload,
-                    original_chars=_budgeted_chars(payload),
+                    payload_format=payload_format,
+                    original_chars=_payload_chars(payload, payload_format),
                 )
             )
 
@@ -202,7 +320,7 @@ def _collect_result_records(
                     by_name=by_name,
                     used_call_ids=used_call_ids,
                 )
-                payload = _safe_json_loads(block.get("content", ""))
+                payload, payload_format = _normalize_payload(block.get("content", ""))
                 records.append(
                     _ResultRecord(
                         message_index=message_index,
@@ -210,7 +328,8 @@ def _collect_result_records(
                         tool_name=tool_name,
                         call_id=resolved_call_id,
                         payload=payload,
-                        original_chars=_budgeted_chars(payload),
+                        payload_format=payload_format,
+                        original_chars=_payload_chars(payload, payload_format),
                         block_index=block_index,
                     )
                 )
@@ -224,7 +343,7 @@ def _collect_result_records(
                 by_name=by_name,
                 used_call_ids=used_call_ids,
             )
-            payload = _safe_json_loads(message.get("content", ""))
+            payload, payload_format = _normalize_payload(message.get("content", ""))
             records.append(
                 _ResultRecord(
                     message_index=message_index,
@@ -232,7 +351,8 @@ def _collect_result_records(
                     tool_name=tool_name,
                     call_id=resolved_call_id,
                     payload=payload,
-                    original_chars=_budgeted_chars(payload),
+                    payload_format=payload_format,
+                    original_chars=_payload_chars(payload, payload_format),
                 )
             )
 
@@ -253,7 +373,7 @@ def _collect_result_records(
                     by_name=by_name,
                     used_call_ids=used_call_ids,
                 )
-                payload = _safe_json_loads(function_response.get("response", {}))
+                payload, payload_format = _normalize_payload(function_response.get("response", {}))
                 records.append(
                     _ResultRecord(
                         message_index=message_index,
@@ -261,7 +381,8 @@ def _collect_result_records(
                         tool_name=resolved_tool_name,
                         call_id=resolved_call_id,
                         payload=payload,
-                        original_chars=_budgeted_chars(payload),
+                        payload_format=payload_format,
+                        original_chars=_payload_chars(payload, payload_format),
                         part_index=part_index,
                     )
                 )
@@ -280,8 +401,10 @@ def _write_record_payload(
     if not isinstance(message, dict):
         return
 
+    serialized = _serialize_payload(payload, record.payload_format)
+
     if record.location_type == "openai_function_call_output":
-        message["output"] = _stable_json_dumps(payload)
+        message["output"] = serialized
         return
 
     if record.location_type == "content_block_tool_result":
@@ -290,11 +413,11 @@ def _write_record_payload(
             return
         if record.block_index >= len(content) or not isinstance(content[record.block_index], dict):
             return
-        content[record.block_index]["content"] = _stable_json_dumps(payload)
+        content[record.block_index]["content"] = serialized
         return
 
     if record.location_type == "role_tool_content":
-        message["content"] = _stable_json_dumps(payload)
+        message["content"] = serialized
         return
 
     if record.location_type == "parts_function_response":
@@ -306,11 +429,7 @@ def _write_record_payload(
         function_response = parts[record.part_index].get("function_response")
         if not isinstance(function_response, dict):
             return
-        function_response["response"] = (
-            copy.deepcopy(payload)
-            if isinstance(payload, dict)
-            else {"value": copy.deepcopy(payload)}
-        )
+        function_response["response"] = serialized
 
 
 class ToolResultBudgetController:
@@ -345,54 +464,29 @@ class ToolResultBudgetController:
         max_result_chars = max(1, int(self.config.max_result_chars))
         max_batch_chars = max(1, int(self.config.max_batch_chars))
         min_chars_to_budget = max(0, int(self.config.min_chars_to_budget))
-        selected_indexes: set[int] = {
-            index
-            for index, record in enumerate(records)
-            if record.original_chars >= min_chars_to_budget
-            and record.original_chars > max_result_chars
-        }
-
+        compacted_payloads: dict[int, Any] = {}
         current_chars = {
             index: record.original_chars
             for index, record in enumerate(records)
         }
-        for index in selected_indexes:
-            current_chars[index] = _estimate_generic_compacted_chars(
-                records[index],
-                reason=reason,
-                preview_chars=self.config.preview_chars,
-            )
-        for index in sorted(
-            range(len(records)),
-            key=lambda candidate: records[candidate].original_chars,
-            reverse=True,
-        ):
-            if sum(current_chars.values()) <= max_batch_chars:
-                break
-            if index in selected_indexes:
-                continue
-            record = records[index]
-            if record.original_chars < min_chars_to_budget:
-                continue
-            selected_indexes.add(index)
-            current_chars[index] = _estimate_generic_compacted_chars(
-                record,
-                reason=reason,
-                preview_chars=self.config.preview_chars,
-            )
-
-        compacted_payloads: dict[int, Any] = {}
         optimizer_error_count = 0
+        optimizer_attempted: set[int] = set()
         latest_context_messages = copy.deepcopy(latest_messages) if latest_messages is not None else []
-        for index in sorted(selected_indexes):
-            record = records[index]
-            optimized: Any | None = None
-            optimizer = None
-            if toolkit is not None and record.tool_name:
-                tool_obj = toolkit.get(record.tool_name)
-                if tool_obj is not None:
-                    optimizer = getattr(tool_obj, "history_result_optimizer", None)
 
+        def optimizer_payload(index: int) -> tuple[Any | None, bool]:
+            nonlocal optimizer_error_count
+            if index in optimizer_attempted:
+                return None, False
+            optimizer_attempted.add(index)
+            record = records[index]
+            if toolkit is None or not record.tool_name:
+                return None, False
+            tool_obj = toolkit.get(record.tool_name)
+            if tool_obj is None:
+                return None, False
+            optimizer = getattr(tool_obj, "history_result_optimizer", None)
+            if not callable(optimizer):
+                return None, False
             context = ToolHistoryOptimizationContext(
                 tool_name=record.tool_name,
                 call_id=record.call_id,
@@ -404,33 +498,94 @@ class ToolResultBudgetController:
                 preview_chars=max(1, int(self.config.preview_chars)),
                 include_hash=True,
             )
-            if callable(optimizer):
-                try:
-                    optimized = optimizer(copy.deepcopy(record.payload), context)
-                except Exception:
-                    optimizer_error_count += 1
-                    optimized = None
+            try:
+                return optimizer(copy.deepcopy(record.payload), context), True
+            except Exception:
+                optimizer_error_count += 1
+                return None, False
 
-            if optimized is None:
-                optimized = _compact_payload(
-                    record.payload,
+        def apply_payload(index: int, payload: Any) -> bool:
+            size = _payload_chars(payload, records[index].payload_format)
+            if size >= current_chars[index]:
+                return False
+            compacted_payloads[index] = payload
+            current_chars[index] = size
+            return True
+
+        def apply_soft_compaction(index: int) -> None:
+            record = records[index]
+            optimized, optimizer_used = optimizer_payload(index)
+            if optimizer_used:
+                if optimized is not None:
+                    apply_payload(index, optimized)
+                return
+            generic = _compact_payload_for_target(
+                record,
+                reason=reason,
+                preview_chars=self.config.preview_chars,
+            )
+            apply_payload(index, generic)
+
+        def apply_hard_compaction(index: int, target_chars: int) -> bool:
+            record = records[index]
+            candidates: list[Any] = []
+            optimized, optimizer_used = optimizer_payload(index)
+            if optimizer_used and optimized is not None:
+                candidates.append(optimized)
+            candidates.append(
+                _compact_payload_for_target(
+                    record,
                     reason=reason,
-                    tool_name=record.tool_name,
-                    call_id=record.call_id,
                     preview_chars=self.config.preview_chars,
+                    target_chars=target_chars,
                 )
+            )
+            candidates.sort(key=lambda item: _payload_chars(item, record.payload_format))
+            for candidate in candidates:
+                if apply_payload(index, candidate):
+                    return True
+            return False
 
-            compacted_payloads[index] = optimized
-            _write_record_payload(messages, record, optimized)
-
-        final_chars = 0
-        compacted_count = 0
         for index, record in enumerate(records):
-            payload = compacted_payloads.get(index, record.payload)
-            payload_chars = _budgeted_chars(payload)
-            final_chars += payload_chars
-            if _stable_json_dumps(payload) != _stable_json_dumps(record.payload):
-                compacted_count += 1
+            if (
+                record.original_chars >= min_chars_to_budget
+                and record.original_chars > max_result_chars
+            ):
+                apply_soft_compaction(index)
+
+        while sum(current_chars.values()) > max_batch_chars:
+            changed = False
+            for index in sorted(
+                range(len(records)),
+                key=lambda candidate: current_chars[candidate],
+                reverse=True,
+            ):
+                total_chars = sum(current_chars.values())
+                if total_chars <= max_batch_chars:
+                    break
+                target_chars = max(0, max_batch_chars - (total_chars - current_chars[index]))
+                if apply_hard_compaction(index, target_chars):
+                    changed = True
+            if not changed:
+                break
+
+        for index, payload in compacted_payloads.items():
+            _write_record_payload(messages, records[index], payload)
+
+        final_chars = sum(current_chars.values())
+        compacted_count = sum(
+            1
+            for index, record in enumerate(records)
+            if _stable_json_dumps(
+                _serialize_payload(
+                    compacted_payloads.get(index, record.payload),
+                    record.payload_format,
+                )
+            )
+            != _stable_json_dumps(
+                _serialize_payload(record.payload, record.payload_format)
+            )
+        )
 
         return ToolResultBudgetOutcome(
             messages=messages,
@@ -443,23 +598,6 @@ class ToolResultBudgetController:
                 saved_chars=max(0, original_total - final_chars),
             ),
         )
-
-
-def _estimate_generic_compacted_chars(
-    record: _ResultRecord,
-    *,
-    reason: str,
-    preview_chars: int,
-) -> int:
-    return _budgeted_chars(
-        _compact_payload(
-            record.payload,
-            reason=reason,
-            tool_name=record.tool_name,
-            call_id=record.call_id,
-            preview_chars=preview_chars,
-        )
-    )
 
 
 __all__ = [
