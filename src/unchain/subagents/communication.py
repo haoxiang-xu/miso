@@ -294,4 +294,4 @@ class AgentCommunicationRuntime:
             if tag_set and not tag_set.issubset(raw_tag_set):
                 continue
             items.append(copy.deepcopy(raw))
-        return items[-max(1, int(limit)):]
+        return items[-limit:]

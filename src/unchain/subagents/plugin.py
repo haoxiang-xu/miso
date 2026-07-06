@@ -965,10 +965,35 @@ class SubagentToolPlugin(ToolRuntimePlugin):
 
         board_id = str(args.get("board_id") or "default").strip() or "default"
         confidence_arg = args.get("confidence")
-        confidence = float(confidence_arg) if isinstance(confidence_arg, (int, float)) else None
+        confidence: float | None = None
+        if "confidence" in args:
+            if isinstance(confidence_arg, bool) or not isinstance(confidence_arg, (int, float)):
+                return ToolRuntimeOutcome(
+                    handled=True,
+                    tool_result={
+                        "tool": "write_agent_board",
+                        "mode": "agent_board_write",
+                        "status": "failed",
+                        "error": "write_agent_board confidence must be between 0 and 1",
+                    },
+                )
+            confidence = float(confidence_arg)
+            if confidence < 0 or confidence > 1:
+                return ToolRuntimeOutcome(
+                    handled=True,
+                    tool_result={
+                        "tool": "write_agent_board",
+                        "mode": "agent_board_write",
+                        "status": "failed",
+                        "error": "write_agent_board confidence must be between 0 and 1",
+                    },
+                )
         state = self._ensure_state(context)
         author_agent_id = state.active_agent_id or self.parent_agent.name
         runtime = self.communication_runtime
+        tags = _string_array_tuple(args.get("tags"))
+        refs = _string_array_tuple(args.get("refs"))
+        supersedes_item_id = str(args.get("supersedes_item_id") or "").strip() or None
         try:
             item = runtime.build_board_item(
                 board_id=board_id,
@@ -976,11 +1001,11 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 kind=kind,
                 title=title,
                 content=content,
-                tags=_string_array_tuple(args.get("tags")),
+                tags=tags,
                 confidence=confidence,
-                refs=_string_array_tuple(args.get("refs")),
+                refs=refs,
                 iteration=int(context.iteration),
-                supersedes_item_id=str(args.get("supersedes_item_id") or "").strip() or None,
+                supersedes_item_id=supersedes_item_id,
             )
             updated_state = runtime.append_board_item(state, item)
         except ValueError as exc:
@@ -1005,6 +1030,10 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             board_id=item.board_id,
             item_id=item.item_id,
             kind=item.kind,
+            author_agent_id=item.author_agent_id,
+            title=item.title,
+            tags=list(item.tags),
+            supersedes_item_id=item.supersedes_item_id,
         )
         return ToolRuntimeOutcome(
             handled=True,
@@ -1019,15 +1048,27 @@ class SubagentToolPlugin(ToolRuntimePlugin):
     def _read_agent_board(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:
         args = _parse_arguments(tool_call.arguments)
         board_id = str(args.get("board_id") or "default").strip() or "default"
+        kinds = _string_array_tuple(args.get("kinds"))
+        tags = _string_array_tuple(args.get("tags"))
         author_agent_id = str(args.get("author_agent_id") or "").strip()
         limit_arg = args.get("limit", 50)
-        limit = int(limit_arg) if isinstance(limit_arg, int) else 50
+        if "limit" in args and (isinstance(limit_arg, bool) or not isinstance(limit_arg, int) or limit_arg <= 0):
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={
+                    "tool": "read_agent_board",
+                    "mode": "agent_board_read",
+                    "status": "failed",
+                    "error": "read_agent_board limit must be a positive integer",
+                },
+            )
+        limit = int(limit_arg)
         state = self._ensure_state(context)
         items = self.communication_runtime.read_board_items(
             state,
             board_id=board_id,
-            kinds=_string_array_tuple(args.get("kinds")),
-            tags=_string_array_tuple(args.get("tags")),
+            kinds=kinds,
+            tags=tags,
             author_agent_id=author_agent_id,
             limit=limit,
         )
@@ -1041,6 +1082,10 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             root_run_id=context.run_id,
             board_id=board_id,
             count=len(items),
+            kinds=list(kinds),
+            tags=list(tags),
+            author_agent_id=author_agent_id,
+            limit=limit,
         )
         return ToolRuntimeOutcome(
             handled=True,

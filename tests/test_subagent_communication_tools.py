@@ -1,6 +1,8 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from unchain.agent import Agent, SubagentModule
 from unchain.kernel import ModelTurnResult, ToolCall
 from unchain.subagents.plugin import SubagentToolPlugin
@@ -61,6 +63,17 @@ class SequenceModelIO:
         return step
 
 
+class RecordingLoop:
+    def __init__(self):
+        self.events = []
+
+    def emit_event(self, callback, event_type: str, run_id: str, **payload):
+        event = {"type": event_type, "run_id": run_id, **payload}
+        self.events.append(event)
+        if callable(callback):
+            callback(event)
+
+
 def _plugin_context_with_threads(threads: dict[str, dict]):
     return SimpleNamespace(
         state=SimpleNamespace(
@@ -112,6 +125,8 @@ def test_communication_runtime_tool_builders_have_expected_names():
 
 
 def test_write_and_read_agent_board_filters_items():
+    events = []
+
     def _after_first_write(request):
         payload = json.loads(request.messages[-1]["output"])
         assert payload["mode"] == "agent_board_write"
@@ -175,10 +190,25 @@ def test_write_and_read_agent_board_filters_items():
         ),
     )
 
-    result = parent.run("coordinate", max_iterations=4)
+    result = parent.run("coordinate", max_iterations=4, callback=events.append)
 
     assert result.status == "completed"
     assert result.messages[-1]["content"] == "done"
+    write_event = next(event for event in events if event["type"] == "agent_board_item_written")
+    assert write_event["board_id"] == "default"
+    assert write_event["item_id"].startswith("item-")
+    assert write_event["kind"] == "finding"
+    assert write_event["author_agent_id"] == "manager"
+    assert write_event["title"] == "Parser bug"
+    assert write_event["tags"] == ["parser"]
+    assert write_event["supersedes_item_id"] is None
+    read_event = next(event for event in events if event["type"] == "agent_board_read")
+    assert read_event["board_id"] == "default"
+    assert read_event["count"] == 1
+    assert read_event["kinds"] == ["finding"]
+    assert read_event["tags"] == ["parser"]
+    assert read_event["author_agent_id"] == ""
+    assert read_event["limit"] == 50
 
 
 def test_write_agent_board_requires_kind():
@@ -200,6 +230,137 @@ def test_write_agent_board_requires_kind():
         "error": "write_agent_board requires kind",
     }
     assert outcome.state_updates == {}
+
+
+@pytest.mark.parametrize("limit", [0, -1, "1", True])
+def test_read_agent_board_rejects_invalid_limit_without_mutation(limit):
+    plugin = _wait_plugin()
+    context = _plugin_context_with_threads({})
+    context.state.subagent_state.blackboards["default"] = [
+        {
+            "item_id": "item-1",
+            "board_id": "default",
+            "author_agent_id": "manager",
+            "kind": "finding",
+            "title": "Parser bug",
+            "content": "Details",
+            "tags": ["parser"],
+        }
+    ]
+    original_blackboards = json.loads(json.dumps(context.state.subagent_state.blackboards))
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_read_invalid_limit",
+            name="read_agent_board",
+            arguments={"limit": limit},
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result == {
+        "tool": "read_agent_board",
+        "mode": "agent_board_read",
+        "status": "failed",
+        "error": "read_agent_board limit must be a positive integer",
+    }
+    assert outcome.state_updates == {}
+    assert context.state.subagent_state.blackboards == original_blackboards
+
+
+@pytest.mark.parametrize("confidence", [2, -0.1, True])
+def test_write_agent_board_rejects_invalid_confidence_without_mutation(confidence):
+    plugin = _wait_plugin()
+    context = _plugin_context_with_threads({})
+    original_blackboards = json.loads(json.dumps(context.state.subagent_state.blackboards))
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_write_invalid_confidence",
+            name="write_agent_board",
+            arguments={
+                "kind": "finding",
+                "title": "Parser bug",
+                "content": "Details",
+                "confidence": confidence,
+            },
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result == {
+        "tool": "write_agent_board",
+        "mode": "agent_board_write",
+        "status": "failed",
+        "error": "write_agent_board confidence must be between 0 and 1",
+    }
+    assert outcome.state_updates == {}
+    assert context.state.subagent_state.blackboards == original_blackboards
+
+
+def test_read_agent_board_limit_returns_latest_matching_item_and_emits_filters():
+    plugin = _wait_plugin()
+    events = []
+    context = _plugin_context_with_threads({})
+    context.loop = RecordingLoop()
+    context.callback = events.append
+    context.state.subagent_state.blackboards["default"] = [
+        {
+            "item_id": "item-1",
+            "board_id": "default",
+            "author_agent_id": "manager",
+            "kind": "finding",
+            "title": "Older parser bug",
+            "content": "Older details",
+            "tags": ["parser", "runtime"],
+        },
+        {
+            "item_id": "item-2",
+            "board_id": "default",
+            "author_agent_id": "manager",
+            "kind": "risk",
+            "title": "Missing tests",
+            "content": "No coverage.",
+            "tags": ["parser", "tests"],
+        },
+        {
+            "item_id": "item-3",
+            "board_id": "default",
+            "author_agent_id": "manager",
+            "kind": "finding",
+            "title": "Latest parser bug",
+            "content": "Latest details",
+            "tags": ["parser", "runtime"],
+        },
+    ]
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_read_latest",
+            name="read_agent_board",
+            arguments={
+                "kinds": ["finding"],
+                "tags": ["parser", "runtime"],
+                "author_agent_id": "manager",
+                "limit": 1,
+            },
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result["status"] == "ok"
+    assert outcome.tool_result["count"] == 1
+    assert [item["title"] for item in outcome.tool_result["items"]] == ["Latest parser bug"]
+    read_event = next(event for event in events if event["type"] == "agent_board_read")
+    assert read_event["board_id"] == "default"
+    assert read_event["count"] == 1
+    assert read_event["kinds"] == ["finding"]
+    assert read_event["tags"] == ["parser", "runtime"]
+    assert read_event["author_agent_id"] == "manager"
+    assert read_event["limit"] == 1
 
 
 def test_spawn_wait_and_close_agent_thread_records_state_and_result():
