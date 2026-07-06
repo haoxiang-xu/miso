@@ -547,10 +547,19 @@ def _select_candidate_identities(
 ) -> tuple[set[tuple[Any, ...]], int]:
     keep_count = max(0, int(config.keep_recent_completed_turns))
     protected: set[tuple[Any, ...]] = set()
-    if keep_count:
+    protect_latest_current_group = (
+        not config.compact_current_batch
+        and bool(current_call_ids)
+    )
+    completed_turns: list[set[tuple[Any, ...]]] = []
+    if keep_count or protect_latest_current_group:
         completed_turns = _completed_tool_turn_identities(messages, records)
+
+    if keep_count:
         for turn in completed_turns[-keep_count:]:
             protected.update(turn)
+    if protect_latest_current_group and completed_turns:
+        protected.update(completed_turns[-1])
 
     candidate_identities: set[tuple[Any, ...]] = set()
     estimated_savings = 0

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from typing import Any
 
@@ -211,6 +212,103 @@ def test_mid_run_microcompact_keeps_all_results_in_newest_completed_turn():
     assert state.transcript[5]["output"] == new_output_2
     assert state.next_model_input[4]["output"] == new_output_1
     assert state.next_model_input[5]["output"] == new_output_2
+    assert state.optimizer_state["mid_run_microcompact"]["compacted_count"] == 1
+
+
+def test_mid_run_microcompact_protects_idless_current_gemini_result():
+    old_call = _call("call_old", name="old_tool")
+    current_call = _call("call_current", name="gemini_tool")
+    old_response = {"blob": "old-" * 400}
+    current_response = {"blob": "current-" * 400}
+    messages = [
+        {
+            "role": "user",
+            "parts": [{"text": "run gemini tools"}],
+        },
+        {
+            "role": "model",
+            "parts": [
+                {
+                    "function_call": {
+                        "id": old_call.call_id,
+                        "name": old_call.name,
+                        "args": {},
+                    }
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "parts": [
+                {
+                    "function_response": {
+                        "id": old_call.call_id,
+                        "name": old_call.name,
+                        "response": old_response,
+                    }
+                }
+            ],
+        },
+        {
+            "role": "model",
+            "parts": [
+                {
+                    "function_call": {
+                        "name": current_call.name,
+                        "args": {},
+                    }
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "parts": [
+                {
+                    "function_response": {
+                        "name": current_call.name,
+                        "response": current_response,
+                    }
+                }
+            ],
+        },
+    ]
+    state = RunState(transcript=messages)
+    state.next_model_input = copy.deepcopy(messages)
+    state.provider_state.provider = "gemini"
+    state.provider_state.model = "gemini-2.5"
+    state.provider_state.max_context_window_tokens = 200
+    state.session_state.session_id = "session-a"
+    harness = MidRunMicrocompactHarness(
+        config=MidRunMicrocompactConfig(
+            trigger_context_ratio=0.01,
+            trigger_remaining_tokens=10_000,
+            keep_recent_completed_turns=0,
+            compact_current_batch=False,
+            min_savings_chars=10,
+            max_compacted_result_chars=180,
+            preview_chars=24,
+        )
+    )
+    context = HarnessContext(
+        state=state,
+        phase="after_tool_batch",
+        event={
+            "toolkit": Toolkit(),
+            "tool_calls": [current_call],
+        },
+    )
+
+    delta = harness.build_delta(context)
+    assert delta is not None
+    state.apply_delta(delta)
+
+    old_payload = state.transcript[2]["parts"][0]["function_response"]["response"]
+    current_payload = state.transcript[4]["parts"][0]["function_response"]["response"]
+    current_next_input_payload = state.next_model_input[4]["parts"][0]["function_response"]["response"]
+    assert old_payload["compacted"] is True
+    assert old_payload["reason"] == "mid_run_microcompact"
+    assert current_payload == current_response
+    assert current_next_input_payload == current_response
     assert state.optimizer_state["mid_run_microcompact"]["compacted_count"] == 1
 
 
