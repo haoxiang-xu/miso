@@ -211,15 +211,30 @@ def test_write_and_read_agent_board_filters_items():
     assert read_event["limit"] == 50
 
 
-def test_write_agent_board_requires_kind():
+@pytest.mark.parametrize(
+    ("arguments", "error"),
+    [
+        ({"title": "Parser bug", "content": "Details"}, "write_agent_board requires kind"),
+        ({"kind": "   ", "title": "Parser bug", "content": "Details"}, "write_agent_board requires kind"),
+        ({"kind": 123, "title": "Parser bug", "content": "Details"}, "write_agent_board requires kind"),
+        ({"kind": "finding", "content": "Details"}, "write_agent_board requires title"),
+        ({"kind": "finding", "title": "   ", "content": "Details"}, "write_agent_board requires title"),
+        ({"kind": "finding", "title": 123, "content": "Details"}, "write_agent_board requires title"),
+        ({"kind": "finding", "title": "Parser bug"}, "write_agent_board requires content"),
+        ({"kind": "finding", "title": "Parser bug", "content": "   "}, "write_agent_board requires content"),
+        ({"kind": "finding", "title": "Parser bug", "content": 123}, "write_agent_board requires content"),
+    ],
+)
+def test_write_agent_board_requires_non_empty_strings(arguments, error):
     plugin = _wait_plugin()
     context = _plugin_context_with_threads({})
+    original_blackboards = json.loads(json.dumps(context.state.subagent_state.blackboards))
 
     outcome = plugin.execute(
         tool_call=ToolCall(
-            call_id="call_write_missing_kind",
+            call_id="call_write_invalid_required",
             name="write_agent_board",
-            arguments={"title": "Parser bug", "content": "Details"},
+            arguments=arguments,
         ),
         context=context,
     )
@@ -227,9 +242,10 @@ def test_write_agent_board_requires_kind():
     assert outcome.handled is True
     assert outcome.tool_result == {
         "tool": "write_agent_board",
-        "error": "write_agent_board requires kind",
+        "error": error,
     }
     assert outcome.state_updates == {}
+    assert context.state.subagent_state.blackboards == original_blackboards
 
 
 @pytest.mark.parametrize("limit", [0, -1, "1", True])

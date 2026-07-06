@@ -939,24 +939,27 @@ class SubagentToolPlugin(ToolRuntimePlugin):
 
     def _write_agent_board(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:
         args = _parse_arguments(tool_call.arguments)
-        kind = str(args.get("kind") or "").strip()
-        title = str(args.get("title") or "").strip()
-        content = str(args.get("content") or "").strip()
-        if not kind:
+        raw_kind = args.get("kind")
+        raw_title = args.get("title")
+        raw_content = args.get("content")
+        if not isinstance(raw_kind, str) or not raw_kind.strip():
             return ToolRuntimeOutcome(
                 handled=True,
                 tool_result={"tool": "write_agent_board", "error": "write_agent_board requires kind"},
             )
-        if not title:
+        if not isinstance(raw_title, str) or not raw_title.strip():
             return ToolRuntimeOutcome(
                 handled=True,
                 tool_result={"tool": "write_agent_board", "error": "write_agent_board requires title"},
             )
-        if not content:
+        if not isinstance(raw_content, str) or not raw_content.strip():
             return ToolRuntimeOutcome(
                 handled=True,
                 tool_result={"tool": "write_agent_board", "error": "write_agent_board requires content"},
             )
+        kind = raw_kind.strip()
+        title = raw_title.strip()
+        content = raw_content.strip()
 
         board_id = str(args.get("board_id") or "default").strip() or "default"
         confidence_arg = args.get("confidence")
