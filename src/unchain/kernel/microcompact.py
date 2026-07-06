@@ -544,12 +544,13 @@ def _select_candidate_identities(
     *,
     config: MidRunMicrocompactConfig,
     current_call_ids: set[str],
+    current_batch_present: bool = False,
 ) -> tuple[set[tuple[Any, ...]], int]:
     keep_count = max(0, int(config.keep_recent_completed_turns))
     protected: set[tuple[Any, ...]] = set()
     protect_latest_current_group = (
         not config.compact_current_batch
-        and bool(current_call_ids)
+        and current_batch_present
     )
     completed_turns: list[set[tuple[Any, ...]]] = []
     if keep_count or protect_latest_current_group:
@@ -723,6 +724,7 @@ class MidRunMicrocompactHarness(BaseRuntimeHarness):
             records,
             config=config,
             current_call_ids=current_call_ids,
+            current_batch_present=bool(event_tool_calls),
         )
         if not candidate_identities:
             return None

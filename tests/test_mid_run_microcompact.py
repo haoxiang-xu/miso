@@ -217,7 +217,7 @@ def test_mid_run_microcompact_keeps_all_results_in_newest_completed_turn():
 
 def test_mid_run_microcompact_protects_idless_current_gemini_result():
     old_call = _call("call_old", name="old_tool")
-    current_call = _call("call_current", name="gemini_tool")
+    current_call = _call("", name="gemini_tool")
     old_response = {"blob": "old-" * 400}
     current_response = {"blob": "current-" * 400}
     messages = [
