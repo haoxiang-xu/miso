@@ -187,6 +187,8 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 return self._worker_batch(tool_call=tool_call, context=context)
             if tool_call.name == "spawn_agent_thread":
                 return self._spawn_agent_thread(tool_call=tool_call, context=context)
+            if tool_call.name == "send_agent_message":
+                return self._send_agent_message(tool_call=tool_call, context=context)
             if tool_call.name == "wait_agent_messages":
                 return self._wait_agent_messages(tool_call=tool_call, context=context)
             if tool_call.name == "close_agent_thread":
@@ -619,6 +621,203 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 "clarification_request": copy.deepcopy(result.clarification_request),
             },
             state_updates={"subagent_state": threaded_state},
+        )
+
+    def _send_agent_message(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:
+        args = _parse_arguments(tool_call.arguments)
+        recipient = str(args.get("recipient") or "").strip()
+        content = str(args.get("content") or "").strip()
+        kind = str(args.get("kind") or "followup").strip() or "followup"
+        explicit_thread_id = str(args.get("thread_id") or "").strip()
+        correlation_id = str(args.get("correlation_id") or "").strip() or None
+        requires_ack = bool(args.get("requires_ack", False))
+        if not recipient:
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={"tool": "send_agent_message", "error": "send_agent_message requires recipient"},
+            )
+        if not content:
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={"tool": "send_agent_message", "error": "send_agent_message requires content"},
+            )
+
+        state = self._ensure_state(context)
+        runtime = self.communication_runtime
+        try:
+            record = runtime.require_thread(state, recipient, explicit_thread_id)
+        except ValueError as exc:
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={
+                    "tool": "send_agent_message",
+                    "mode": "agent_message",
+                    "status": "failed",
+                    "error": str(exc),
+                },
+            )
+
+        parent_id = state.active_agent_id or self.parent_agent.name
+        lineage = list(record.lineage or [parent_id, record.agent_id])
+        try:
+            message = runtime.build_message(
+                sender_agent_id=parent_id,
+                recipient_agent_id=record.agent_id,
+                thread_id=record.thread_id,
+                kind=kind,
+                content=content,
+                iteration=int(context.iteration),
+                correlation_id=correlation_id,
+                requires_ack=requires_ack,
+            )
+            messaged_state = runtime.append_message(state, message)
+        except ValueError as exc:
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={
+                    "tool": "send_agent_message",
+                    "mode": "agent_message",
+                    "status": "failed",
+                    "thread_id": record.thread_id,
+                    "error": str(exc),
+                },
+            )
+
+        template = self._resolve_template(record.target, mode="delegate")
+        child, memory_policy, template_name = self._build_subagent(
+            template=template,
+            child_id=record.agent_id,
+            lineage=lineage,
+            mode="delegate",
+            target=record.target,
+            task=content,
+            instructions=record.instructions,
+            expected_output=record.expected_output,
+        )
+        child_run_id = self._build_child_run_id(
+            session_id=record.session_id,
+            child_id=record.agent_id,
+        )
+        self._emit_subagent_event(
+            context,
+            "agent_message_sent",
+            subagent_id=record.agent_id,
+            parent_id=record.parent_agent_id or parent_id,
+            mode="message",
+            template=template_name,
+            lineage=lineage,
+            child_run_id=child_run_id,
+            thread_id=record.thread_id,
+            message_id=message.message_id,
+            kind=message.kind,
+        )
+        event = getattr(context, "event", {}) or {}
+        try:
+            result = self._run_child(
+                agent=child,
+                mode="message",
+                child_id=record.agent_id,
+                lineage=lineage,
+                template_name=template_name,
+                session_id=record.session_id,
+                memory_namespace=record.memory_namespace if memory_policy == "scoped_persistent" else "",
+                input_messages=content,
+                max_iterations=int(event.get("max_iterations") or 6),
+                child_run_id=child_run_id,
+                callback=getattr(context, "callback", None),
+                on_tool_confirm=event.get("on_tool_confirm"),
+                on_human_input=event.get("on_human_input"),
+                on_max_iterations=event.get("on_max_iterations"),
+            )
+        except Exception as exc:
+            failed_record = AgentThreadRecord(
+                thread_id=record.thread_id,
+                agent_id=record.agent_id,
+                parent_agent_id=record.parent_agent_id,
+                target=record.target,
+                template_name=record.template_name,
+                mode=record.mode,
+                status="failed",
+                session_id=record.session_id,
+                memory_namespace=record.memory_namespace,
+                lineage=record.lineage,
+                created_iteration=record.created_iteration,
+                last_activity_iteration=int(context.iteration),
+                context_mode=record.context_mode,
+                instructions=record.instructions,
+                expected_output=record.expected_output,
+                close_reason=str(exc),
+            )
+            failed_state = runtime.upsert_thread(messaged_state, failed_record)
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={
+                    "tool": "send_agent_message",
+                    "mode": "agent_message",
+                    "status": "failed",
+                    "thread_id": record.thread_id,
+                    "message": message.to_dict(),
+                    "error": str(exc),
+                },
+                state_updates={"subagent_state": failed_state},
+            )
+
+        completed_record = AgentThreadRecord(
+            thread_id=record.thread_id,
+            agent_id=record.agent_id,
+            parent_agent_id=record.parent_agent_id,
+            target=record.target,
+            template_name=record.template_name,
+            mode=record.mode,
+            status=result.status,
+            session_id=record.session_id,
+            memory_namespace=record.memory_namespace,
+            lineage=record.lineage,
+            created_iteration=record.created_iteration,
+            last_activity_iteration=int(context.iteration),
+            context_mode=record.context_mode,
+            instructions=record.instructions,
+            expected_output=record.expected_output,
+        )
+        updated_state = runtime.upsert_thread(messaged_state, completed_record)
+        if result.clarification_request is not None:
+            updated_state = updated_state.merged(
+                {
+                    "blocked_clarifications": [
+                        {
+                            "subagent_id": record.agent_id,
+                            "mode": "message",
+                            "thread_id": record.thread_id,
+                            "lineage": lineage,
+                            "request": copy.deepcopy(result.clarification_request),
+                        }
+                    ]
+                }
+            )
+            self._emit_subagent_event(
+                context,
+                "agent_message_clarification_requested",
+                subagent_id=record.agent_id,
+                parent_id=record.parent_agent_id or parent_id,
+                mode="message",
+                template=template_name,
+                lineage=lineage,
+                child_run_id=child_run_id,
+                thread_id=record.thread_id,
+                request_id=result.clarification_request.get("request_id"),
+                clarification_request=copy.deepcopy(result.clarification_request),
+            )
+        return ToolRuntimeOutcome(
+            handled=True,
+            tool_result={
+                "mode": "agent_message",
+                "status": result.status,
+                "thread_id": record.thread_id,
+                "message": message.to_dict(),
+                "reply": result.to_dict(),
+                "clarification_request": copy.deepcopy(result.clarification_request),
+            },
+            state_updates={"subagent_state": updated_state},
         )
 
     def _wait_agent_messages(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:

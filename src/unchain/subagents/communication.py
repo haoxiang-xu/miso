@@ -166,6 +166,26 @@ class AgentCommunicationRuntime:
         current.threads[thread_id] = updated
         return current
 
+    def require_thread(
+        self,
+        state: SubagentState,
+        recipient: str,
+        explicit_thread_id: str = "",
+    ) -> AgentThreadRecord:
+        thread_id = explicit_thread_id or recipient
+        raw = state.threads.get(thread_id)
+        if raw is None:
+            for candidate in state.threads.values():
+                if isinstance(candidate, dict) and candidate.get("agent_id") == recipient:
+                    raw = candidate
+                    break
+        if not isinstance(raw, dict):
+            raise ValueError(f"unknown agent thread: {thread_id}")
+        record = AgentThreadRecord.from_raw(raw)
+        if record.status == "closed":
+            raise ValueError(f"agent thread is closed: {record.thread_id}")
+        return record
+
     def build_message(
         self,
         *,

@@ -281,13 +281,114 @@ def test_wait_agent_messages_idle_completes_for_idle_and_terminal_threads():
     assert [thread["status"] for thread in outcome.tool_result["threads"]] == ["idle", "needs_clarification"]
 
 
-def test_unimplemented_communication_tool_uses_reserved_placeholder_result():
+def test_send_agent_message_runs_followup_on_existing_thread_session():
+    child_observations = []
+
+    def _child_factory(spec, ctx):
+        del spec
+
+        def _fetch_child_turn(request):
+            content = request.messages[-1]["content"]
+            child_observations.append(
+                {
+                    "session_id": ctx.session_id,
+                    "memory_namespace": ctx.memory_namespace,
+                    "content": content,
+                }
+            )
+            if content == "Initial task":
+                return _text_turn("initial done")
+            if content == "Follow up":
+                return _text_turn("followup done")
+            raise AssertionError(f"unexpected child content: {content}")
+
+        return SequenceModelIO("openai", [_fetch_child_turn])
+
+    child = Agent(
+        name="researcher",
+        provider="openai",
+        model_io_factory=_child_factory,
+    )
+    observed_thread_id = ""
+
+    def _after_spawn(request):
+        nonlocal observed_thread_id
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["mode"] == "agent_thread"
+        assert payload["status"] == "completed"
+        observed_thread_id = payload["thread_id"]
+        return _openai_tool_turn(
+            call_id="call_send",
+            name="send_agent_message",
+            arguments={
+                "recipient": observed_thread_id,
+                "content": "Follow up",
+                "kind": "followup",
+            },
+        )
+
     def _after_send(request):
         payload = json.loads(request.messages[-1]["output"])
-        assert payload == {
-            "error": "send_agent_message is a reserved runtime tool and cannot be executed directly"
-        }
+        assert payload["mode"] == "agent_message"
+        assert payload["status"] == "completed"
+        assert payload["thread_id"] == observed_thread_id
+        assert payload["reply"]["summary"] == "followup done"
+        assert payload["message"]["kind"] == "followup"
+        assert payload["message"]["content"] == "Follow up"
         return _text_turn("done")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="researcher",
+                        description="Research specialist",
+                        agent=child,
+                        allowed_modes=("delegate", "worker"),
+                        memory_policy="scoped_persistent",
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="call_spawn",
+                    name="spawn_agent_thread",
+                    arguments={"target": "researcher", "task": "Initial task"},
+                ),
+                _after_spawn,
+                _after_send,
+            ],
+        ),
+    )
+
+    result = parent.run(
+        "coordinate",
+        max_iterations=3,
+        session_id="root-session",
+        memory_namespace="root-ns",
+    )
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "done"
+    assert [item["content"] for item in child_observations] == ["Initial task", "Follow up"]
+    assert child_observations[0]["session_id"] == child_observations[1]["session_id"]
+    assert child_observations[0]["memory_namespace"] == child_observations[1]["memory_namespace"]
+    assert child_observations[0]["session_id"] == f"root-session:{observed_thread_id}"
+    assert child_observations[0]["memory_namespace"] == f"root-ns:{observed_thread_id}"
+
+
+def test_send_agent_message_rejects_unknown_or_closed_thread():
+    def _after_send(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["tool"] == "send_agent_message"
+        assert payload["error"] == "unknown agent thread: missing-thread"
+        return _text_turn("unknown agent thread")
 
     parent = Agent(
         name="manager",
@@ -299,7 +400,7 @@ def test_unimplemented_communication_tool_uses_reserved_placeholder_result():
                 _openai_tool_turn(
                     call_id="call_send",
                     name="send_agent_message",
-                    arguments={"recipient": "thread-1", "content": "hello"},
+                    arguments={"recipient": "missing-thread", "content": "hello"},
                 ),
                 _after_send,
             ],
@@ -309,7 +410,31 @@ def test_unimplemented_communication_tool_uses_reserved_placeholder_result():
     result = parent.run("coordinate", max_iterations=2)
 
     assert result.status == "completed"
-    assert result.messages[-1]["content"] == "done"
+    assert "unknown agent thread" in result.messages[-1]["content"]
+
+    plugin = _wait_plugin()
+    context = _plugin_context_with_threads(
+        {
+            "closed-thread": {
+                "thread_id": "closed-thread",
+                "agent_id": "manager.researcher.1",
+                "status": "closed",
+            }
+        }
+    )
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_send_closed",
+            name="send_agent_message",
+            arguments={"recipient": "closed-thread", "content": "hello"},
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result["tool"] == "send_agent_message"
+    assert outcome.tool_result["error"] == "agent thread is closed: closed-thread"
 
 
 def test_spawn_agent_thread_child_failure_persists_failed_thread_for_wait():
