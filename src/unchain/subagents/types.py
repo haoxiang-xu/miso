@@ -160,6 +160,9 @@ class SubagentState:
         return state
 
     def merged(self, raw: Any) -> "SubagentState":
+        raw_spawn_stats = raw.spawn_stats if isinstance(raw, SubagentState) else None
+        if isinstance(raw, dict):
+            raw_spawn_stats = raw.get("spawn_stats") if "spawn_stats" in raw else None
         update = SubagentState.from_raw(raw)
         current = self.copy()
         if update.root_agent_id:
@@ -186,8 +189,10 @@ class SubagentState:
                 current.blackboards.setdefault(key, []).extend(copy.deepcopy(value))
         if update.return_handoff_stack:
             current.return_handoff_stack.extend(copy.deepcopy(update.return_handoff_stack))
-        if update.spawn_stats:
-            for key, value in update.spawn_stats.items():
+        if isinstance(raw_spawn_stats, dict):
+            for key, value in raw_spawn_stats.items():
+                if key not in {"delegate", "handoff", "worker"} or not isinstance(value, int):
+                    continue
                 current.spawn_stats[key] = int(value)
         return current
 

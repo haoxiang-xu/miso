@@ -140,6 +140,7 @@ def build_read_agent_board_tool() -> Tool:
         func=lambda **_: {"error": "read_agent_board is a reserved runtime tool and cannot be executed directly"},
         parameters=[
             ToolParameter(name="board_id", description="Board id. Defaults to default.", type_="string", required=False),
+            ToolParameter(name="kind", description="Optional singular item kind to include.", type_="string", required=False),
             ToolParameter(name="kinds", description="Optional item kinds to include.", type_="array", required=False, items={"type": "string"}),
             ToolParameter(name="tags", description="Optional tags to match.", type_="array", required=False, items={"type": "string"}),
             ToolParameter(name="author_agent_id", description="Optional author filter.", type_="string", required=False),

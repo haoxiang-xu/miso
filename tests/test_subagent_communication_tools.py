@@ -148,6 +148,22 @@ def test_communication_runtime_tool_builders_have_expected_names():
     ]
 
 
+def test_read_agent_board_tool_schema_exposes_singular_kind_filter():
+    read_tool = build_read_agent_board_tool()
+
+    assert [parameter.name for parameter in read_tool.parameters] == [
+        "board_id",
+        "kind",
+        "kinds",
+        "tags",
+        "author_agent_id",
+        "limit",
+    ]
+    kind_parameter = next(parameter for parameter in read_tool.parameters if parameter.name == "kind")
+    assert kind_parameter.type_ == "string"
+    assert kind_parameter.required is False
+
+
 def test_write_and_read_agent_board_filters_items():
     events = []
 
@@ -233,6 +249,65 @@ def test_write_and_read_agent_board_filters_items():
     assert read_event["tags"] == ["parser"]
     assert read_event["author_agent_id"] == ""
     assert read_event["limit"] == 50
+
+
+def test_write_agent_board_timestamp_roundtrips_through_read_result():
+    captured_created_at = ""
+    captured_created_iteration = -1
+
+    def _after_write(request):
+        nonlocal captured_created_at, captured_created_iteration
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["mode"] == "agent_board_write"
+        assert payload["status"] == "written"
+        item = payload["item"]
+        captured_created_at = item["created_at"]
+        captured_created_iteration = item["created_iteration"]
+        assert item["title"] == "Timestamped finding"
+        assert captured_created_at.endswith("Z")
+        return _openai_tool_turn(
+            call_id="call_read_timestamped",
+            name="read_agent_board",
+            arguments={"kind": "finding", "tags": ["timestamp"]},
+        )
+
+    def _after_read(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["mode"] == "agent_board_read"
+        assert payload["status"] == "ok"
+        assert payload["count"] == 1
+        assert payload["items"][0]["title"] == "Timestamped finding"
+        assert payload["items"][0]["created_at"] == captured_created_at
+        assert payload["items"][0]["created_iteration"] == captured_created_iteration
+        return _text_turn("done")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(SubagentModule(),),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="call_write_timestamped",
+                    name="write_agent_board",
+                    arguments={
+                        "kind": "finding",
+                        "title": "Timestamped finding",
+                        "content": "Has timestamp metadata.",
+                        "tags": ["timestamp"],
+                    },
+                ),
+                _after_write,
+                _after_read,
+            ],
+        ),
+    )
+
+    result = parent.run("coordinate", max_iterations=3)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "done"
 
 
 def test_child_subagent_board_write_is_visible_to_parent():

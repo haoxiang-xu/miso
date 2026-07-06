@@ -89,6 +89,38 @@ def test_subagent_state_merges_communication_fields_without_dropping_existing_st
     assert merged.return_handoff_stack[0]["frame_id"] == "frame"
 
 
+def test_subagent_state_merge_preserves_spawn_stats_for_partial_blackboard_delta():
+    state = SubagentState(root_agent_id="root", active_agent_id="root")
+    state.spawn_stats = {"delegate": 3, "handoff": 2, "worker": 5}
+
+    merged = state.merged(
+        {
+            "blackboards": {
+                "default": [
+                    {
+                        "item_id": "item-1",
+                        "board_id": "default",
+                        "kind": "finding",
+                        "title": "Parser bug",
+                    }
+                ]
+            }
+        }
+    )
+
+    assert merged.spawn_stats == {"delegate": 3, "handoff": 2, "worker": 5}
+    assert merged.blackboards["default"][0]["item_id"] == "item-1"
+
+
+def test_subagent_state_merge_applies_explicit_spawn_stats_update():
+    state = SubagentState(root_agent_id="root", active_agent_id="root")
+    state.spawn_stats = {"delegate": 3, "handoff": 2, "worker": 5}
+
+    merged = state.merged({"spawn_stats": {"delegate": 4, "worker": 6}})
+
+    assert merged.spawn_stats == {"delegate": 4, "handoff": 2, "worker": 6}
+
+
 def test_subagent_policy_has_conservative_communication_defaults():
     policy = SubagentPolicy()
 

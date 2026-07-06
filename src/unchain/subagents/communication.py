@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from .types import SubagentPolicy, SubagentState
@@ -120,6 +121,7 @@ class BlackboardItem:
     refs: tuple[str, ...]
     created_iteration: int
     supersedes_item_id: str | None = None
+    created_at: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -134,6 +136,7 @@ class BlackboardItem:
             "refs": list(self.refs),
             "created_iteration": int(self.created_iteration),
             "supersedes_item_id": self.supersedes_item_id,
+            "created_at": self.created_at,
         }
 
 
@@ -258,6 +261,7 @@ class AgentCommunicationRuntime:
             refs=tuple(refs),
             created_iteration=int(iteration),
             supersedes_item_id=supersedes_item_id,
+            created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         )
 
     def append_board_item(self, state: SubagentState, item: BlackboardItem) -> SubagentState:
