@@ -300,6 +300,90 @@ def test_write_agent_board_rejects_invalid_confidence_without_mutation(confidenc
     assert context.state.subagent_state.blackboards == original_blackboards
 
 
+def test_write_agent_board_rejects_nan_confidence_without_mutation():
+    plugin = _wait_plugin()
+    context = _plugin_context_with_threads({})
+    original_blackboards = json.loads(json.dumps(context.state.subagent_state.blackboards))
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_write_nan_confidence",
+            name="write_agent_board",
+            arguments={
+                "kind": "finding",
+                "title": "Parser bug",
+                "content": "Details",
+                "confidence": float("nan"),
+            },
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result == {
+        "tool": "write_agent_board",
+        "mode": "agent_board_write",
+        "status": "failed",
+        "error": "write_agent_board confidence must be between 0 and 1",
+    }
+    assert outcome.state_updates == {}
+    assert context.state.subagent_state.blackboards == original_blackboards
+
+
+@pytest.mark.parametrize(
+    ("arguments", "error"),
+    [
+        ({"tags": "parser"}, "read_agent_board tags must be an array of strings"),
+        ({"kinds": [123]}, "read_agent_board kinds must be an array of strings"),
+        ({"tags": ["parser", 3]}, "read_agent_board tags must be an array of strings"),
+    ],
+)
+def test_read_agent_board_rejects_invalid_filters_without_mutation(arguments, error):
+    plugin = _wait_plugin()
+    context = _plugin_context_with_threads({})
+    context.state.subagent_state.blackboards["default"] = [
+        {
+            "item_id": "item-1",
+            "board_id": "default",
+            "author_agent_id": "manager",
+            "kind": "finding",
+            "title": "Parser bug",
+            "content": "Details",
+            "tags": ["parser"],
+        },
+        {
+            "item_id": "item-2",
+            "board_id": "default",
+            "author_agent_id": "manager",
+            "kind": "risk",
+            "title": "Missing tests",
+            "content": "No coverage.",
+            "tags": ["tests"],
+        },
+    ]
+    original_blackboards = json.loads(json.dumps(context.state.subagent_state.blackboards))
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_read_invalid_filter",
+            name="read_agent_board",
+            arguments=arguments,
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result == {
+        "tool": "read_agent_board",
+        "mode": "agent_board_read",
+        "status": "failed",
+        "error": error,
+    }
+    assert "items" not in outcome.tool_result
+    assert outcome.state_updates == {}
+    assert context.state.subagent_state.blackboards == original_blackboards
+
+
 def test_read_agent_board_limit_returns_latest_matching_item_and_emits_filters():
     plugin = _wait_plugin()
     events = []

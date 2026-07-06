@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import re
 import uuid
 from dataclasses import dataclass
@@ -978,7 +979,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                     },
                 )
             confidence = float(confidence_arg)
-            if confidence < 0 or confidence > 1:
+            if not math.isfinite(confidence) or confidence < 0 or confidence > 1:
                 return ToolRuntimeOutcome(
                     handled=True,
                     tool_result={
@@ -1048,8 +1049,34 @@ class SubagentToolPlugin(ToolRuntimePlugin):
     def _read_agent_board(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:
         args = _parse_arguments(tool_call.arguments)
         board_id = str(args.get("board_id") or "default").strip() or "default"
-        kinds = _string_array_tuple(args.get("kinds"))
-        tags = _string_array_tuple(args.get("tags"))
+        kinds: tuple[str, ...] = ()
+        if "kinds" in args:
+            raw_kinds = args.get("kinds")
+            if not isinstance(raw_kinds, list) or any(not isinstance(item, str) for item in raw_kinds):
+                return ToolRuntimeOutcome(
+                    handled=True,
+                    tool_result={
+                        "tool": "read_agent_board",
+                        "mode": "agent_board_read",
+                        "status": "failed",
+                        "error": "read_agent_board kinds must be an array of strings",
+                    },
+                )
+            kinds = tuple(raw_kinds)
+        tags: tuple[str, ...] = ()
+        if "tags" in args:
+            raw_tags = args.get("tags")
+            if not isinstance(raw_tags, list) or any(not isinstance(item, str) for item in raw_tags):
+                return ToolRuntimeOutcome(
+                    handled=True,
+                    tool_result={
+                        "tool": "read_agent_board",
+                        "mode": "agent_board_read",
+                        "status": "failed",
+                        "error": "read_agent_board tags must be an array of strings",
+                    },
+                )
+            tags = tuple(raw_tags)
         author_agent_id = str(args.get("author_agent_id") or "").strip()
         limit_arg = args.get("limit", 50)
         if "limit" in args and (isinstance(limit_arg, bool) or not isinstance(limit_arg, int) or limit_arg <= 0):
