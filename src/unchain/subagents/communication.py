@@ -149,7 +149,8 @@ class AgentCommunicationRuntime:
             if isinstance(item, dict) and item.get("status") not in {"completed", "failed", "closed"}
         )
         is_new = record.thread_id not in current.threads
-        if is_new and open_count >= int(self.policy.max_open_threads):
+        is_open_record = record.status not in {"completed", "failed", "closed"}
+        if is_new and is_open_record and open_count >= int(self.policy.max_open_threads):
             raise ValueError("max_open_threads exceeded")
         current.threads[record.thread_id] = record.to_dict()
         return current
@@ -159,25 +160,10 @@ class AgentCommunicationRuntime:
         raw = current.threads.get(thread_id)
         if not isinstance(raw, dict):
             raise ValueError(f"unknown agent thread: {thread_id}")
-        record = AgentThreadRecord.from_raw(raw)
-        current.threads[thread_id] = AgentThreadRecord(
-            thread_id=record.thread_id,
-            agent_id=record.agent_id,
-            parent_agent_id=record.parent_agent_id,
-            target=record.target,
-            template_name=record.template_name,
-            mode=record.mode,
-            status="closed",
-            session_id=record.session_id,
-            memory_namespace=record.memory_namespace,
-            lineage=record.lineage,
-            created_iteration=record.created_iteration,
-            last_activity_iteration=record.last_activity_iteration,
-            context_mode=record.context_mode,
-            instructions=record.instructions,
-            expected_output=record.expected_output,
-            close_reason=reason,
-        ).to_dict()
+        updated = copy.deepcopy(raw)
+        updated["status"] = "closed"
+        updated["close_reason"] = reason
+        current.threads[thread_id] = updated
         return current
 
     def build_message(
@@ -210,7 +196,7 @@ class AgentCommunicationRuntime:
 
     def append_message(self, state: SubagentState, message: AgentMessage) -> SubagentState:
         current = state.copy()
-        if message.thread_id and message.thread_id not in current.threads:
+        if not message.thread_id or message.thread_id not in current.threads:
             raise ValueError(f"unknown agent thread: {message.thread_id}")
         mailbox = current.mailboxes.setdefault(message.recipient_agent_id, [])
         if len(mailbox) >= int(self.policy.max_mailbox_messages):

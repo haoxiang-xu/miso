@@ -194,3 +194,76 @@ def test_runtime_opens_thread_sends_message_and_closes_thread():
     assert state.threads["thread-1"]["status"] == "closed"
     assert state.threads["thread-1"]["close_reason"] == "done"
     assert state.mailboxes["root.worker.1"][0]["content"] == "Inspect parser"
+
+
+def test_append_message_rejects_empty_thread_id_and_leaves_state_unchanged():
+    runtime = AgentCommunicationRuntime(SubagentPolicy())
+    state = SubagentState(root_agent_id="root", active_agent_id="root")
+    message = AgentMessage(
+        message_id="msg-1",
+        sender_agent_id="root",
+        recipient_agent_id="root.worker.1",
+        thread_id="",
+        kind="task",
+        content="Inspect parser",
+        created_iteration=1,
+    )
+
+    with pytest.raises(ValueError, match="unknown agent thread"):
+        runtime.append_message(state, message)
+
+    assert state.mailboxes == {}
+
+
+@pytest.mark.parametrize("status", ("closed", "completed", "failed"))
+def test_upsert_thread_allows_new_finished_record_when_open_thread_limit_is_reached(status):
+    runtime = AgentCommunicationRuntime(SubagentPolicy(max_open_threads=1))
+    state = SubagentState(root_agent_id="root", active_agent_id="root")
+    state.threads["open"] = {"thread_id": "open", "status": "idle"}
+    record = AgentThreadRecord(
+        thread_id=f"historical-{status}",
+        agent_id="root.worker.2",
+        parent_agent_id="root",
+        target="worker",
+        template_name="worker",
+        mode="thread",
+        status=status,
+        session_id=f"session:historical-{status}",
+        memory_namespace=f"memory:historical-{status}",
+        lineage=("root", "root.worker.2"),
+        created_iteration=1,
+        last_activity_iteration=1,
+        context_mode="none",
+    )
+
+    updated = runtime.upsert_thread(state, record)
+
+    assert updated.threads[record.thread_id]["status"] == status
+    assert state.threads == {"open": {"thread_id": "open", "status": "idle"}}
+
+
+def test_close_thread_preserves_extra_stored_fields():
+    runtime = AgentCommunicationRuntime(SubagentPolicy())
+    state = SubagentState(root_agent_id="root", active_agent_id="root")
+    state.threads["thread-1"] = {
+        "thread_id": "thread-1",
+        "agent_id": "root.worker.1",
+        "parent_agent_id": "root",
+        "target": "worker",
+        "template_name": "worker",
+        "mode": "thread",
+        "status": "idle",
+        "session_id": "session:thread-1",
+        "memory_namespace": "memory:thread-1",
+        "lineage": ["root", "root.worker.1"],
+        "created_iteration": 1,
+        "last_activity_iteration": 1,
+        "context_mode": "none",
+        "child_run_id": "run-123",
+    }
+
+    updated = runtime.close_thread(state, "thread-1", reason="done")
+
+    assert updated.threads["thread-1"]["status"] == "closed"
+    assert updated.threads["thread-1"]["close_reason"] == "done"
+    assert updated.threads["thread-1"]["child_run_id"] == "run-123"
