@@ -258,6 +258,29 @@ def test_wait_agent_messages_treats_terminal_thread_statuses_as_done():
     ]
 
 
+def test_wait_agent_messages_idle_completes_for_idle_and_terminal_threads():
+    plugin = _wait_plugin()
+    context = _plugin_context_with_threads(
+        {
+            "thread-1": {"thread_id": "thread-1", "status": "idle"},
+            "thread-2": {"thread_id": "thread-2", "status": "needs_clarification"},
+        }
+    )
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_wait",
+            name="wait_agent_messages",
+            arguments={"thread_ids": ["thread-1", "thread-2"], "condition": "idle"},
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result["status"] == "completed"
+    assert [thread["status"] for thread in outcome.tool_result["threads"]] == ["idle", "needs_clarification"]
+
+
 def test_unimplemented_communication_tool_uses_reserved_placeholder_result():
     def _after_send(request):
         payload = json.loads(request.messages[-1]["output"])
@@ -360,3 +383,80 @@ def test_spawn_agent_thread_child_failure_persists_failed_thread_for_wait():
     event_types = [event["type"] for event in events]
     assert "agent_thread_spawned" in event_types
     assert "agent_thread_failed" in event_types
+
+
+def test_spawn_agent_thread_preserves_child_clarification_request_for_parent():
+    clarification_args = {
+        "title": "Need more detail",
+        "question": "Which environment?",
+        "selection_mode": "single",
+        "options": [{"label": "Prod", "value": "prod"}, {"label": "Staging", "value": "staging"}],
+    }
+    child = Agent(
+        name="clarifier",
+        provider="openai",
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [_openai_tool_turn(call_id="child_call", name="ask_user_question", arguments=clarification_args)],
+        ),
+    )
+    observed_thread_id = ""
+
+    def _after_spawn(request):
+        nonlocal observed_thread_id
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["status"] == "needs_clarification"
+        assert payload["clarification_request"]["question"] == "Which environment?"
+        observed_thread_id = payload["thread_id"]
+        return _openai_tool_turn(
+            call_id="call_wait",
+            name="wait_agent_messages",
+            arguments={"thread_ids": [observed_thread_id], "condition": "all_done"},
+        )
+
+    def _after_wait(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["status"] == "completed"
+        assert payload["threads"][0]["thread_id"] == observed_thread_id
+        assert payload["threads"][0]["status"] == "needs_clarification"
+        return _text_turn("done")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="clarifier",
+                        description="Clarification specialist",
+                        agent=child,
+                        allowed_modes=("delegate", "worker"),
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="call_spawn",
+                    name="spawn_agent_thread",
+                    arguments={"target": "clarifier", "task": "Ask for missing context"},
+                ),
+                _after_spawn,
+                _after_wait,
+            ],
+        ),
+    )
+    events = []
+
+    result = parent.run("coordinate", max_iterations=3, callback=events.append)
+
+    assert result.status == "completed"
+    assert result.human_input_request is None
+    assert result.messages[-1]["content"] == "done"
+    clarification_event = next(event for event in events if event["type"] == "agent_thread_clarification_requested")
+    assert clarification_event["thread_id"] == observed_thread_id
+    assert clarification_event["request_id"]
+    assert all(event["type"] != "human_input_requested" for event in events)

@@ -560,6 +560,32 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             expected_output=expected_output,
         )
         threaded_state = self.communication_runtime.upsert_thread(threaded_state, completed_record)
+        if result.clarification_request is not None:
+            threaded_state = threaded_state.merged(
+                {
+                    "blocked_clarifications": [
+                        {
+                            "subagent_id": child_id,
+                            "mode": "thread",
+                            "thread_id": child_id,
+                            "lineage": lineage,
+                            "request": copy.deepcopy(result.clarification_request),
+                        }
+                    ]
+                }
+            )
+            self._emit_subagent_event(
+                context,
+                "agent_thread_clarification_requested",
+                subagent_id=child_id,
+                parent_id=parent_id,
+                mode="thread",
+                template=template_name,
+                lineage=lineage,
+                child_run_id=child_run_id,
+                thread_id=child_id,
+                request_id=result.clarification_request.get("request_id"),
+            )
         self._emit_subagent_event(
             context,
             "agent_thread_completed",
@@ -584,6 +610,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 "output": result.output,
                 "lineage": list(lineage),
                 "background": background,
+                "clarification_request": copy.deepcopy(result.clarification_request),
             },
             state_updates={"subagent_state": threaded_state},
         )
