@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from .delta import HarnessDelta
+from .delta import HarnessDelta, ReplaceSpanOp
 from .harness import BaseRuntimeHarness, HarnessContext, RuntimePhase
 from .types import ToolCall
 from ..tools.result_budget import ToolResultBudgetConfig, ToolResultBudgetController
@@ -330,6 +330,93 @@ def _collect_result_records(
     return records
 
 
+def _is_tool_call_message(message: dict[str, Any]) -> bool:
+    if message.get("type") == "function_call":
+        return True
+
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list) and any(isinstance(item, dict) for item in tool_calls):
+        return True
+
+    content = message.get("content")
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                return True
+
+    parts = message.get("parts")
+    if isinstance(parts, list):
+        for part in parts:
+            if isinstance(part, dict) and isinstance(part.get("function_call"), dict):
+                return True
+
+    return False
+
+
+def _is_tool_result_message(message: dict[str, Any]) -> bool:
+    if message.get("type") == "function_call_output":
+        return True
+
+    if message.get("role") == "tool" and "content" in message:
+        return True
+
+    content = message.get("content")
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                return True
+
+    parts = message.get("parts")
+    if isinstance(parts, list):
+        for part in parts:
+            if isinstance(part, dict) and isinstance(part.get("function_response"), dict):
+                return True
+
+    return False
+
+
+def _completed_tool_turn_identities(
+    messages: list[dict[str, Any]],
+    records: list[_ResultRecord],
+) -> list[set[tuple[Any, ...]]]:
+    records_by_message_index: dict[int, list[_ResultRecord]] = {}
+    for record in records:
+        records_by_message_index.setdefault(record.message_index, []).append(record)
+
+    turns: list[set[tuple[Any, ...]]] = []
+    current_turn: set[tuple[Any, ...]] | None = None
+
+    def close_turn() -> None:
+        nonlocal current_turn
+        if current_turn:
+            turns.append(current_turn)
+        current_turn = None
+
+    for message_index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            continue
+
+        is_result = _is_tool_result_message(message)
+        if _is_tool_call_message(message):
+            close_turn()
+            current_turn = set()
+        elif message.get("role") == "assistant" and not is_result:
+            close_turn()
+        elif message.get("role") == "user" and not is_result:
+            close_turn()
+
+        if not is_result:
+            continue
+
+        if current_turn is None:
+            current_turn = set()
+        for record in records_by_message_index.get(message_index, []):
+            current_turn.add(record.identity)
+
+    close_turn()
+    return turns
+
+
 def _synthetic_message(record: _ResultRecord) -> dict[str, Any]:
     if record.location_type == "openai_function_call_output":
         return {
@@ -452,16 +539,19 @@ def _estimate_pressure(messages: list[dict[str, Any]], config: MidRunMicrocompac
 
 
 def _select_candidate_identities(
+    messages: list[dict[str, Any]],
     records: list[_ResultRecord],
     *,
     config: MidRunMicrocompactConfig,
     current_call_ids: set[str],
 ) -> tuple[set[tuple[Any, ...]], int]:
     keep_count = max(0, int(config.keep_recent_completed_turns))
-    protected = {
-        record.identity
-        for record in records[-keep_count:]
-    } if keep_count else set()
+    protected: set[tuple[Any, ...]] = set()
+    if keep_count:
+        completed_turns = _completed_tool_turn_identities(messages, records)
+        for turn in completed_turns[-keep_count:]:
+            protected.update(turn)
+
     candidate_identities: set[tuple[Any, ...]] = set()
     estimated_savings = 0
 
@@ -620,6 +710,7 @@ class MidRunMicrocompactHarness(BaseRuntimeHarness):
             return None
 
         candidate_identities, estimated_candidate_savings = _select_candidate_identities(
+            transcript,
             records,
             config=config,
             current_call_ids=current_call_ids,
@@ -714,8 +805,21 @@ class MidRunMicrocompactHarness(BaseRuntimeHarness):
                 else 0
             ),
         }
+        ops = ()
+        if state.latest_version_id is not None:
+            active_messages = context.latest_messages()
+            replace_end = len(active_messages) if active_messages else len(transcript)
+            ops = (
+                ReplaceSpanOp(
+                    start=0,
+                    end=replace_end,
+                    messages=transcript_outcome.messages,
+                ),
+            )
+
         return HarnessDelta(
             created_by=f"harness.{self.name}",
+            ops=ops,
             state_updates=state_updates,
             trace=trace,
         )
