@@ -43,6 +43,36 @@
       "effort": "medium"
     }
   },
+  "gpt-5.6-sol": {
+    "instructions": "",
+    "max_output_tokens": 128000,
+    "truncation": "auto",
+    "store": false,
+    "include": [],
+    "reasoning": {
+      "effort": "medium"
+    }
+  },
+  "gpt-5.6-terra": {
+    "instructions": "",
+    "max_output_tokens": 128000,
+    "truncation": "auto",
+    "store": false,
+    "include": [],
+    "reasoning": {
+      "effort": "medium"
+    }
+  },
+  "gpt-5.6-luna": {
+    "instructions": "",
+    "max_output_tokens": 128000,
+    "truncation": "auto",
+    "store": false,
+    "include": [],
+    "reasoning": {
+      "effort": "medium"
+    }
+  },
   "gpt-5-codex": {
     "instructions": "",
     "max_output_tokens": 128000,
