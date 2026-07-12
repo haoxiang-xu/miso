@@ -431,4 +431,4 @@ agent = Agent(
 )
 ```
 
-`SteerBuffer`（run 结束后合并追加请求）与 `ProgressDigest`/`build_btw_prompt`（旁路问答）不经过 `AgentModule`，由调用方在 `run()` 之外自行编排——同样在 [Interject 原语指南](../guides/interject.md) 中有完整示例。
+`QueuedTurnBuffer`（run 结束后合并追加请求）与 `ProgressDigest`/`build_btw_prompt`（旁路问答）不经过 `AgentModule`，由调用方在 `run()` 之外自行编排——同样在 [Interject 原语指南](../guides/interject.md) 中有完整示例。
