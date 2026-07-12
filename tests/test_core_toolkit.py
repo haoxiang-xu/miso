@@ -453,7 +453,7 @@ def test_core_toolkit_uses_core_coding_backend_for_coding_tools(monkeypatch):
     assert edit_result["replacement_count"] == 1
     assert glob_result["match_count"] == 1
     assert grep_result["match_count"] == 1
-    assert shell_result["error"] == "action must be one of: run, poll, kill"
+    assert shell_result["error"] == "action must be one of: run, poll, wait, kill"
     assert confirmation.requires_confirmation is False
     assert "operation must be one of" in lsp_result["error"]
 
@@ -1097,6 +1097,74 @@ def test_code_toolkit_shell_background_poll_returns_incremental_output():
         assert "beta" in stdout
         assert final_poll["status"] in {"completed", "timed_out"}
         assert final_poll["completed"] is True
+
+
+def test_code_toolkit_shell_wait_blocks_inside_tool_instead_of_model_poll_loop():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = CoreToolkit(workspace_root=tmp)
+        command = (
+            "Start-Sleep -Milliseconds 200; Write-Output finished"
+            if sys.platform.startswith("win")
+            else "sleep 0.2; printf 'finished\\n'"
+        )
+        started = toolkit.execute(
+            "shell",
+            {
+                "action": "run",
+                "command": command,
+                "run_in_background": True,
+                "yield_time_ms": 0,
+            },
+        )
+
+        waited = toolkit.execute(
+            "shell",
+            {
+                "action": "wait",
+                "task_id": started["task_id"],
+                "timeout_ms": 2_000,
+            },
+        )
+
+        assert waited["action"] == "wait"
+        assert waited["status"] == "completed"
+        assert waited["completed"] is True
+        assert waited["wait_timed_out"] is False
+        assert "finished" in waited["stdout"]
+
+
+def test_code_toolkit_shell_wait_returns_running_at_bounded_timeout():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = CoreToolkit(workspace_root=tmp)
+        command = (
+            "Start-Sleep -Seconds 5"
+            if sys.platform.startswith("win")
+            else "sleep 5"
+        )
+        started = toolkit.execute(
+            "shell",
+            {
+                "action": "run",
+                "command": command,
+                "run_in_background": True,
+                "yield_time_ms": 0,
+            },
+        )
+
+        waited = toolkit.execute(
+            "shell",
+            {
+                "action": "wait",
+                "task_id": started["task_id"],
+                "timeout_ms": 1_000,
+            },
+        )
+
+        assert waited["action"] == "wait"
+        assert waited["status"] == "running"
+        assert waited["completed"] is False
+        assert waited["wait_timed_out"] is True
+        toolkit.execute("shell", {"action": "kill", "task_id": started["task_id"]})
 
 
 def test_shell_runtime_detect_executor_prefers_pwsh_and_env_shell(monkeypatch):

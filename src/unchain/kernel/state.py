@@ -316,6 +316,16 @@ class RunState:
                     if hasattr(self.provider_state, inner_key):
                         setattr(self.provider_state, inner_key, copy.deepcopy(inner_value))
                 continue
+            if key == "provider_replay_frame" and isinstance(value, dict):
+                from .provider_replay import set_provider_replay_frame
+
+                set_provider_replay_frame(self, value)
+                continue
+            if key == "provider_replay_append" and isinstance(value, list):
+                from .provider_replay import append_provider_replay_items
+
+                append_provider_replay_items(self, value)
+                continue
             if key == "token_state" and isinstance(value, dict):
                 for inner_key, inner_value in value.items():
                     if hasattr(self.token_state, inner_key):

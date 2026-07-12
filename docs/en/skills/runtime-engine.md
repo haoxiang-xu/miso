@@ -80,7 +80,7 @@ For day-to-day use, prefer `Agent.run()`. Direct `KernelLoop` use is only needed
 ## Current Execution Flow
 
 1. `run()` normalizes incoming messages, validates modality support against model capabilities, and builds a `RunState` for this iteration.
-2. The loop dispatches hooks across the eight phases (see `architecture-overview.md` for the full list) before and after each model turn.
+2. The loop dispatches hooks across the public extension phases (see `architecture-overview.md` for the full list) before and after each model turn, then crosses reserved durability barriers on suspension and finalization.
 3. `ModelAdapter.fetch_turn(request)` returns a `ModelTurnResult` containing assistant messages, tool calls, and token counts.
 4. If the model emitted tool calls, `ToolExecutionHook` runs them. Confirmation-gated tools cause the loop to return early with `status="awaiting_human_input"`.
 5. Tools marked with `observe=True` trigger an additional observation turn during `after_tool_batch`.
@@ -89,7 +89,7 @@ For day-to-day use, prefer `Agent.run()`. Direct `KernelLoop` use is only needed
 ## Design Notes
 
 - Memory is integrated as hook components (bootstrap/before-model recall + before-commit write). Runs without memory simply omit the `MemoryModule`.
-- Retry is a wrapper around `ModelAdapter.fetch_turn()` (see `unchain.retry`) and never retries content that has already been streamed downstream.
+- Retry is a wrapper around `ModelAdapter.fetch_turn()` (see `unchain.retry`). Debug-only request tracing events do not commit an attempt, so a transient failure may still retry; the first user-visible token/tool/reasoning event closes that gate to prevent duplicate output.
 - Provider-specific projection (canonical messages → SDK shape) lives entirely inside each model adapter implementation, so the kernel stays vendor-agnostic.
 
 ## Provider Abstraction

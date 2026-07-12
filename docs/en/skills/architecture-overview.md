@@ -181,7 +181,8 @@ KernelLoop.run(messages, ...)
   │      └─ memory.commit_messages()
   │
   │    on suspension:
-  │      dispatch_phase("on_suspend")              ─ checkpoint state
+  │      dispatch_phase("on_suspend")              ─ state contributions
+  │      dispatch_phase("suspend_persist")         ─ reserved durable barrier
   │      return KernelRunResult(status="awaiting_human_input", continuation=...)
   │
   ▼
@@ -195,7 +196,9 @@ User code reads the result; if suspended, calls Agent.resume_human_input().
 
 ## RuntimePhase reference
 
-The kernel dispatches harness work across eight ordered phases:
+The kernel exposes nine ordered extension phases. Two additional phases are
+reserved durability barriers owned by the runtime; ordinary harnesses cannot
+register them.
 
 | Phase | When | Typical use |
 | --- | --- | --- |
@@ -207,6 +210,13 @@ The kernel dispatches harness work across eight ordered phases:
 | `before_commit` | Before memory commit at end of iteration. | Memory write hooks, summarization triggers. |
 | `on_suspend` | When the loop yields control to the caller. | Checkpoint catalog/discovery state, save resume tokens. |
 | `on_resume` | When `resume_human_input()` re-enters the loop. | Restore state from continuation payload. |
+| `run_finalizing` | After a terminal status is chosen, before durable finalization. | Add final state contributions and artifacts. |
+
+After every `on_suspend`, the reserved `suspend_persist` barrier snapshots all
+contributions. After every `run_finalizing`, the reserved `finalize_persist`
+barrier performs the final semantic commit or checkpoint transition. This keeps
+late, high-order extension hooks from mutating state after it was declared
+durable.
 
 ## Component Relationships
 

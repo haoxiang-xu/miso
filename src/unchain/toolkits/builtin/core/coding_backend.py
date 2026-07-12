@@ -639,7 +639,7 @@ class CoreCodingBackend:
         task_id: str = "",
     ) -> dict[str, Any]:
         resolved_action = str(action or "").strip().lower()
-        if resolved_action not in {"run", "poll", "kill"}:
+        if resolved_action not in {"run", "poll", "wait", "kill"}:
             return {
                 "ok": False,
                 "action": resolved_action or str(action or ""),
@@ -648,7 +648,7 @@ class CoreCodingBackend:
                 "platform": sys.platform,
                 "cwd": "",
                 "task_id": str(task_id or ""),
-                "error": "action must be one of: run, poll, kill",
+                "error": "action must be one of: run, poll, wait, kill",
             }
 
         session_key = self._session_key()
@@ -675,6 +675,12 @@ class CoreCodingBackend:
             }
         if resolved_action == "poll":
             return self._shell_runtime.poll(task_id=task_id, max_output_chars=max_output_chars)
+        if resolved_action == "wait":
+            return self._shell_runtime.wait(
+                task_id=task_id,
+                timeout_ms=timeout_ms,
+                max_output_chars=max_output_chars,
+            )
         return self._shell_runtime.kill(task_id=task_id, max_output_chars=max_output_chars)
 
     def _resolve_shell_confirmation(
@@ -683,7 +689,7 @@ class CoreCodingBackend:
         execution_context: BuiltinExecutionContext | None,
     ) -> ToolConfirmationPolicy:
         action = str(arguments.get("action") or "").strip().lower()
-        if action in {"poll", "kill"}:
+        if action in {"poll", "wait", "kill"}:
             return ToolConfirmationPolicy(requires_confirmation=False)
         if action != "run":
             return ToolConfirmationPolicy(requires_confirmation=False)

@@ -88,7 +88,7 @@ class CoreToolkit(BuiltinToolkit):
         )
         self.register(
             self.shell,
-            description="Run a shell command, poll a background task, or kill a background task within the workspace.",
+            description="Run a shell command, poll or wait for a background task, or kill it within the workspace.",
             requires_confirmation=True,
             confirmation_resolver=self._resolve_shell_confirmation,
             history_arguments_optimizer=self._compact_shell_args,
@@ -257,17 +257,17 @@ class CoreToolkit(BuiltinToolkit):
         yield_time_ms: int = 300,
         task_id: str = "",
     ) -> dict[str, Any]:
-        """Run, poll, or kill a shell task inside the workspace.
+        """Run, poll, wait for, or kill a shell task inside the workspace.
 
         Args:
-            action: One of `run`, `poll`, or `kill`.
+            action: One of `run`, `poll`, `wait`, or `kill`.
             command: Shell command used when `action="run"`.
             cwd: Optional working directory. Relative paths resolve from the session cwd.
-            timeout_ms: Maximum runtime for `run`. Clamped to 1s..600s.
+            timeout_ms: Maximum runtime for `run`, or maximum blocking time for `wait`. Clamped to 1s..600s.
             run_in_background: When true, start a background task and return a `task_id`.
             max_output_chars: Maximum characters returned per stream, capped at 100,000.
             yield_time_ms: Small delay before returning a background task so early output can accumulate.
-            task_id: Background task id used by `poll` and `kill`.
+            task_id: Background task id used by `poll`, `wait`, and `kill`.
         """
         return self._coding_backend.shell(
             action=action,

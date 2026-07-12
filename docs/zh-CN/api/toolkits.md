@@ -120,14 +120,14 @@ obj.push_execution_context(...)
 | `glob` | `glob(pattern: str, ...)` | 否 | 返回最多 200 条匹配 glob 的路径，按最近修改时间倒序。 |
 | `grep` | `grep(pattern: str, globs: list[str] | None = None, mode: str = ...)` | 否 | UTF-8 文本正则搜索，支持 glob 过滤和分页输出模式。 |
 | `web_fetch` | `web_fetch(url: str, extract: str | None = None)` | 是 | 抓取 HTTP(S) 页面；`extract` 切换原始内容或 runtime 配置的提取模型。 |
-| `shell` | `shell(command: str, ...)` | 是（按风险） | 运行 shell 命令、轮询后台任务或终止任务。低风险命令跳过确认。 |
+| `shell` | `shell(action: str, command: str = "", ..., task_id: str = "")` | 是（按风险） | 运行命令、轮询或有界等待进程内后台任务，或终止任务。`wait` 在工具内部阻塞，不消耗模型轮次做轮询；低风险命令及 poll/wait/kill 跳过确认。 |
 | `lsp` | `lsp(path: str, method: str, ...)` | 否 | 查询语言服务器（Python 或 TS/JS），支持 `goToDefinition`、`findReferences`、`hover`、`documentSymbol`、`workspaceSymbol`。 |
 | `ask_user_question` | `ask_user_question(title, question, selection_mode, options, ...)` | n/a | 保留运行时工具：会暂停整个 run，由框架而非直接执行来满足。 |
 
 ### Runtime 协作者
 
 - `LSPRuntime`（Python + TS/JS 语言服务器，按 `workspace_roots` 懒启动）。
-- `ShellRuntime`（探测 `bash`/`zsh`/`sh`，确认前做风险分类）。
+- `ShellRuntime`（探测 `bash`/`zsh`/`sh`，确认前做风险分类，并支持有界的进程内 wait；目前还不是可跨进程 reattach 的 durable supervisor）。
 - `WebFetchService`（缓存响应；支持 runtime 配置的提取模型）。
 - 每 session 一张 `_ReadSnapshot` 表 —— write/edit 拒绝操作未被完整读取或磁盘上已变更的文件。
 

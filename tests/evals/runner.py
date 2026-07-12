@@ -8,13 +8,14 @@ from typing import Any
 import re
 import time
 
-from unchain.agent import Agent
+from unchain.agent import Agent, ToolsModule
+from unchain.kernel import KernelRunResult
 from unchain.toolkits import CoreToolkit
 from unchain.runtime.payloads import load_model_capabilities
 
 from .cases import build_eval_case, get_eval_case, list_eval_cases
 from .defaults import get_default_judge_model_spec
-from .env import filter_model_specs, load_root_env, resolve_api_key
+from .env import filter_model_specs, get_model_spec_skip_reason, load_root_env, resolve_api_key
 from .judge import (
     build_judge_instructions,
     build_judge_messages,
@@ -25,11 +26,11 @@ from .judge import (
 from .scoring import extract_last_assistant_text, score_run_artifact, summarize_tool_usage
 from .serialization import ensure_directory, persist_judge_report, persist_run_artifact, write_json, write_jsonl, write_leaderboard_csv
 from .types import DEFAULT_RUBRIC_WEIGHTS, EvalCase, JudgeReport, ModelSpec, RunArtifact, coerce_model_spec, to_jsonable
-from .workspace import prepare_workspace
+from .workspace import diff_workspace_snapshots, prepare_workspace, snapshot_workspace
 
 
 def _utc_timestamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
 
 
 def _slugify(value: str) -> str:
@@ -41,14 +42,44 @@ def _load_model_capabilities(repo_root: Path) -> dict[str, Any]:
     return load_model_capabilities()
 
 
+def _resolve_model_key(model: str, registry: dict[str, Any]) -> str | None:
+    if model in registry:
+        return model
+
+    normalized_model = model.replace(".", "-")
+    best: str | None = None
+    for raw_key in registry:
+        key = str(raw_key)
+        normalized_key = key.replace(".", "-")
+        if (
+            model.startswith(key)
+            or model.startswith(normalized_key)
+            or normalized_model.startswith(key)
+            or normalized_model.startswith(normalized_key)
+            or key.startswith(model)
+            or key.startswith(normalized_model)
+            or normalized_key.startswith(model)
+            or normalized_key.startswith(normalized_model)
+        ) and (best is None or len(key) > len(best)):
+            best = key
+    return best
+
+
+def _model_capabilities(model_spec: ModelSpec, repo_root: Path) -> dict[str, Any]:
+    registry = _load_model_capabilities(repo_root)
+    resolved_key = _resolve_model_key(model_spec.model, registry)
+    capabilities = registry.get(resolved_key, {}) if resolved_key else {}
+    return dict(capabilities) if isinstance(capabilities, dict) else {}
+
+
 def _build_standard_payload(
     *,
     model_spec: ModelSpec,
     repo_root: Path,
     max_output_tokens: int,
 ) -> dict[str, Any]:
-    capabilities = _load_model_capabilities(repo_root)
-    allowed_keys = set((capabilities.get(model_spec.model) or {}).get("allowed_payload_keys") or [])
+    capabilities = _model_capabilities(model_spec, repo_root)
+    allowed_keys = set(capabilities.get("allowed_payload_keys") or [])
     payload: dict[str, Any] = {}
 
     if not allowed_keys:
@@ -74,10 +105,19 @@ def _build_standard_payload(
     return payload
 
 
+def _max_context_window_tokens(model_spec: ModelSpec, repo_root: Path) -> int | None:
+    raw_value = _model_capabilities(model_spec, repo_root).get("max_context_window_tokens")
+    try:
+        value = int(raw_value or 0)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def _build_candidate_instructions(case: EvalCase) -> str:
     base = (
         "You are running inside a benchmark harness for tool-using coding agents.\n"
-        "Use the provided workspace and terminal tools to inspect the task.\n"
+        "Use the provided workspace tools to inspect the task.\n"
         "This benchmark is diagnosis and planning only. Do not modify files.\n"
         "Base every claim on tool-derived evidence.\n"
         "Reference files using relative paths.\n"
@@ -91,7 +131,6 @@ def _build_candidate_instructions(case: EvalCase) -> str:
 def _build_candidate_tools(case: EvalCase, workspace_root: Path) -> list[Any]:
     toolkits: list[Any] = []
     allowed_toolkits = tuple(case.allowed_toolkits or ())
-    toolkit_options = dict(case.toolkit_options or {})
 
     for toolkit_name in allowed_toolkits:
         if toolkit_name == "core":
@@ -103,6 +142,100 @@ def _build_candidate_tools(case: EvalCase, workspace_root: Path) -> list[Any]:
         raise ValueError(f"unsupported toolkit for eval case '{case.id}': {toolkit_name}")
 
     return toolkits
+
+
+def _build_candidate_modules(case: EvalCase, workspace_root: Path) -> tuple[Any, ...]:
+    tools = tuple(_build_candidate_tools(case, workspace_root))
+    if not tools:
+        return ()
+    return (ToolsModule(tools=tools),)
+
+
+def _kernel_result_bundle(
+    result: KernelRunResult,
+    callback_events: list[dict[str, Any]] | None = None,
+    *,
+    model: str | None = None,
+    max_context_window_tokens: int | None = None,
+) -> dict[str, Any]:
+    bundle: dict[str, Any] = {}
+    for event in reversed(callback_events or []):
+        event_bundle = event.get("bundle") if isinstance(event, dict) else None
+        if isinstance(event_bundle, dict):
+            bundle.update(event_bundle)
+            break
+
+    bundle.update(
+        {
+            "status": result.status,
+            "human_input_request": result.human_input_request,
+            "continuation": result.continuation,
+            "consumed_tokens": int(result.consumed_tokens or 0),
+            "input_tokens": int(result.input_tokens or 0),
+            "output_tokens": int(result.output_tokens or 0),
+            "last_turn_tokens": int(result.last_turn_tokens or 0),
+            "last_turn_input_tokens": int(result.last_turn_input_tokens or 0),
+            "last_turn_output_tokens": int(result.last_turn_output_tokens or 0),
+            "cache_read_input_tokens": int(result.cache_read_input_tokens or 0),
+            "cache_creation_input_tokens": int(result.cache_creation_input_tokens or 0),
+            "previous_response_id": result.previous_response_id,
+            "iteration": int(result.iteration or 0),
+        }
+    )
+    if model and not bundle.get("model"):
+        bundle["model"] = model
+    if max_context_window_tokens and not bundle.get("max_context_window_tokens"):
+        bundle["max_context_window_tokens"] = int(max_context_window_tokens)
+    if bundle.get("context_window_used_pct") is None and bundle.get("max_context_window_tokens"):
+        bundle["context_window_used_pct"] = round(
+            int(result.last_turn_tokens or 0)
+            / int(bundle["max_context_window_tokens"])
+            * 100.0,
+            2,
+        )
+    return bundle
+
+
+def _coerce_agent_run_output(
+    output: KernelRunResult | tuple[list[dict[str, Any]], dict[str, Any]],
+    *,
+    callback_events: list[dict[str, Any]] | None = None,
+    model: str | None = None,
+    max_context_window_tokens: int | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if isinstance(output, KernelRunResult):
+        return list(output.messages), _kernel_result_bundle(
+            output,
+            callback_events,
+            model=model,
+            max_context_window_tokens=max_context_window_tokens,
+        )
+    if isinstance(output, tuple) and len(output) == 2:
+        messages, bundle = output
+        if isinstance(messages, list) and isinstance(bundle, dict):
+            normalized_bundle: dict[str, Any] = {}
+            for event in reversed(callback_events or []):
+                event_bundle = event.get("bundle") if isinstance(event, dict) else None
+                if isinstance(event_bundle, dict):
+                    normalized_bundle.update(event_bundle)
+                    break
+            normalized_bundle.update(bundle)
+            if model and not normalized_bundle.get("model"):
+                normalized_bundle["model"] = model
+            if max_context_window_tokens and not normalized_bundle.get("max_context_window_tokens"):
+                normalized_bundle["max_context_window_tokens"] = int(max_context_window_tokens)
+            if (
+                normalized_bundle.get("context_window_used_pct") is None
+                and normalized_bundle.get("max_context_window_tokens")
+            ):
+                normalized_bundle["context_window_used_pct"] = round(
+                    int(normalized_bundle.get("last_turn_tokens") or 0)
+                    / int(normalized_bundle["max_context_window_tokens"])
+                    * 100.0,
+                    2,
+                )
+            return list(messages), normalized_bundle
+    raise TypeError("agent run must return KernelRunResult or a legacy (messages, bundle) tuple")
 
 
 def _build_run_artifact(
@@ -125,6 +258,13 @@ def _build_run_artifact(
         "consumed_tokens": int((bundle or {}).get("consumed_tokens", 0) or 0),
         "input_tokens": int((bundle or {}).get("input_tokens", 0) or 0),
         "output_tokens": int((bundle or {}).get("output_tokens", 0) or 0),
+        "last_turn_tokens": int((bundle or {}).get("last_turn_tokens", 0) or 0),
+        "last_turn_input_tokens": int((bundle or {}).get("last_turn_input_tokens", 0) or 0),
+        "last_turn_output_tokens": int((bundle or {}).get("last_turn_output_tokens", 0) or 0),
+        "cache_read_input_tokens": int((bundle or {}).get("cache_read_input_tokens", 0) or 0),
+        "cache_creation_input_tokens": int(
+            (bundle or {}).get("cache_creation_input_tokens", 0) or 0
+        ),
         "context_window_used_pct": (bundle or {}).get("context_window_used_pct"),
         "max_context_window_tokens": (bundle or {}).get("max_context_window_tokens"),
     }
@@ -167,7 +307,8 @@ def _run_candidate_case(
     started_at = datetime.now(timezone.utc).isoformat()
     started = time.perf_counter()
 
-    if not api_key:
+    skip_reason = get_model_spec_skip_reason(model_spec, api_key=api_key)
+    if skip_reason is not None:
         return _build_run_artifact(
             suite_id=suite_id,
             case=case,
@@ -175,30 +316,51 @@ def _run_candidate_case(
             started_at=started_at,
             duration_seconds=0.0,
             status="skipped",
-            skip_reason=f"missing API key for {model_spec.label}",
+            skip_reason=skip_reason,
         )
 
     callback_events: list[dict[str, Any]] = []
     try:
         with prepare_workspace(case, repo_root=repo_root) as workspace_root:
-            agent = agent_cls(
-                name=f"candidate-{_slugify(model_spec.label)}",
-                provider=model_spec.provider,
-                model=model_spec.model,
-                api_key=api_key,
-                instructions=_build_candidate_instructions(case),
-                tools=_build_candidate_tools(case, workspace_root),
-            )
-            messages, bundle = agent.run(
-                case.task_prompt,
-                payload=_build_standard_payload(
-                    model_spec=model_spec,
-                    repo_root=repo_root,
-                    max_output_tokens=2048,
-                ),
-                callback=callback_events.append,
-                max_iterations=max_iterations,
-            )
+            workspace_before = snapshot_workspace(workspace_root)
+            try:
+                max_context_window_tokens = _max_context_window_tokens(model_spec, repo_root)
+                agent = agent_cls(
+                    name=f"candidate-{_slugify(model_spec.label)}",
+                    provider=model_spec.provider,
+                    model=model_spec.model,
+                    api_key=api_key,
+                    instructions=_build_candidate_instructions(case),
+                    modules=_build_candidate_modules(case, workspace_root),
+                )
+                output = agent.run(
+                    case.task_prompt,
+                    payload=_build_standard_payload(
+                        model_spec=model_spec,
+                        repo_root=repo_root,
+                        max_output_tokens=2048,
+                    ),
+                    callback=callback_events.append,
+                    max_iterations=max_iterations,
+                    max_context_window_tokens=max_context_window_tokens,
+                    tool_runtime_config=dict(case.toolkit_options or {}) or None,
+                )
+                messages, bundle = _coerce_agent_run_output(
+                    output,
+                    callback_events=callback_events,
+                    model=model_spec.model,
+                    max_context_window_tokens=max_context_window_tokens,
+                )
+            finally:
+                callback_events.append(
+                    {
+                        "type": "workspace_changes",
+                        **diff_workspace_snapshots(
+                            workspace_before,
+                            snapshot_workspace(workspace_root),
+                        ),
+                    }
+                )
     except Exception as exc:
         return _build_run_artifact(
             suite_id=suite_id,
@@ -255,17 +417,19 @@ def _run_judge(
         )
 
     judge_api_key, _ = resolve_api_key(judge_model_spec)
-    if not judge_api_key:
+    judge_skip_reason = get_model_spec_skip_reason(judge_model_spec, api_key=judge_api_key)
+    if judge_skip_reason is not None:
         return build_skipped_judge_report(
             case=case,
             run_artifact=run_artifact,
             judge_provider=judge_model_spec.provider,
             judge_model=judge_model_spec.model,
             judge_label=judge_model_spec.label,
-            reason=f"missing API key for judge model {judge_model_spec.label}",
+            reason=judge_skip_reason,
         )
 
     try:
+        max_context_window_tokens = _max_context_window_tokens(judge_model_spec, repo_root)
         judge_agent = judge_agent_cls(
             name=f"judge-{_slugify(judge_model_spec.label)}",
             provider=judge_model_spec.provider,
@@ -273,7 +437,7 @@ def _run_judge(
             api_key=judge_api_key,
             instructions=build_judge_instructions(),
         )
-        messages, bundle = judge_agent.run(
+        output = judge_agent.run(
             messages=build_judge_messages(
                 case=case,
                 run_artifact=run_artifact,
@@ -286,6 +450,12 @@ def _run_judge(
             ),
             response_format=build_judge_response_format(),
             max_iterations=1,
+            max_context_window_tokens=max_context_window_tokens,
+        )
+        messages, bundle = _coerce_agent_run_output(
+            output,
+            model=judge_model_spec.model,
+            max_context_window_tokens=max_context_window_tokens,
         )
         return parse_judge_output(
             case=case,
@@ -349,8 +519,7 @@ def run_benchmark_suite(
     rubric = dict(rubric_weights or DEFAULT_RUBRIC_WEIGHTS)
     blend_weights = dict(score_weights or {"rule": 0.4, "judge": 0.6})
 
-    ready_specs, skipped_specs = filter_model_specs(model_specs)
-    ready_by_label = {spec.label: api_key for spec, api_key, _ in ready_specs}
+    _, skipped_specs = filter_model_specs(model_specs)
     all_specs = [coerce_model_spec(spec) for spec in model_specs]
     judge_spec = (
         coerce_model_spec(judge_model_spec)
@@ -365,12 +534,13 @@ def run_benchmark_suite(
 
     for case in cases:
         for model_spec in all_specs:
+            candidate_api_key, _ = resolve_api_key(model_spec)
             run_artifact = _run_candidate_case(
                 repo_root=repo_path,
                 suite_id=suite_id,
                 case=case,
                 model_spec=model_spec,
-                api_key=ready_by_label.get(model_spec.label),
+                api_key=candidate_api_key,
                 max_iterations=max_iterations,
                 agent_cls=candidate_agent_cls,
             )

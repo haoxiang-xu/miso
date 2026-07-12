@@ -9,6 +9,11 @@ import httpx
 
 from .base import ModelTurnRequest
 from .native import _NativeModelIOBase
+from ..kernel.provider_replay import (
+    redact_provider_replay_secrets,
+    strict_json_copy,
+    tool_schema_digest,
+)
 from ..kernel.types import ModelTurnResult, ToolCall
 
 
@@ -63,7 +68,9 @@ class OllamaModelIO(_NativeModelIOBase):
             callback=request.callback,
             run_id=request.run_id,
             iteration=request.iteration,
-            messages=request_body.get("messages", []),
+            messages=redact_provider_replay_secrets(
+                request_body.get("messages", [])
+            ),
             tool_names=self._tool_names_for_trace(tools),
         )
 
@@ -123,24 +130,51 @@ class OllamaModelIO(_NativeModelIOBase):
 
                 raw_tool_calls = message.get("tool_calls") or []
                 if raw_tool_calls:
-                    assistant_message = {
-                        "role": "assistant",
-                        "content": message.get("content", ""),
-                        "tool_calls": copy.deepcopy(raw_tool_calls),
-                    }
+                    normalized_tool_calls: list[dict[str, Any]] = []
                     tool_calls: list[ToolCall] = []
                     for raw_tool_call in raw_tool_calls:
-                        fn = raw_tool_call.get("function", {}) or {}
+                        normalized_call = copy.deepcopy(raw_tool_call)
+                        call_id = str(normalized_call.get("id") or str(uuid.uuid4()))
+                        normalized_call["id"] = call_id
+                        normalized_tool_calls.append(normalized_call)
+                        fn = normalized_call.get("function", {}) or {}
                         tool_calls.append(
                             ToolCall(
-                                call_id=str(raw_tool_call.get("id") or str(uuid.uuid4())),
+                                call_id=call_id,
                                 name=str(fn.get("name", "") or ""),
                                 arguments=copy.deepcopy(fn.get("arguments", {})),
                             )
                         )
+                    assistant_message = {
+                        "role": "assistant",
+                        "content": message.get("content", ""),
+                        "tool_calls": normalized_tool_calls,
+                    }
+                    if reasoning_chunks:
+                        assistant_message["thinking"] = "".join(reasoning_chunks)
+
+                    provider_replay_frame = {
+                        "format": "ollama.chat.v1",
+                        "complete": True,
+                        "items": strict_json_copy(
+                            [*copy.deepcopy(request.messages), assistant_message]
+                        ),
+                        "mode": "replace",
+                        "source": "ollama_chat_message",
+                        "tool_schema_digest": tool_schema_digest(
+                            request.toolkit,
+                            self.provider,
+                        ),
+                    }
 
                     return ModelTurnResult(
-                        assistant_messages=[assistant_message],
+                        assistant_messages=[
+                            {
+                                "role": "assistant",
+                                "content": assistant_message.get("content", ""),
+                                "tool_calls": copy.deepcopy(normalized_tool_calls),
+                            }
+                        ],
                         tool_calls=tool_calls,
                         final_text="",
                         response_id=None,
@@ -148,10 +182,17 @@ class OllamaModelIO(_NativeModelIOBase):
                         consumed_tokens=latest_prompt_eval_count + latest_eval_count,
                         input_tokens=latest_prompt_eval_count,
                         output_tokens=latest_eval_count,
+                        provider_replay_frame=provider_replay_frame,
                     )
 
                 if data.get("done", False):
                     full_message = message.get("content") or "".join(collected_chunks)
+                    raw_assistant_message = {
+                        "role": "assistant",
+                        "content": full_message,
+                    }
+                    if reasoning_chunks:
+                        raw_assistant_message["thinking"] = "".join(reasoning_chunks)
                     return ModelTurnResult(
                         assistant_messages=[{"role": "assistant", "content": full_message}],
                         tool_calls=[],
@@ -161,6 +202,19 @@ class OllamaModelIO(_NativeModelIOBase):
                         consumed_tokens=latest_prompt_eval_count + latest_eval_count,
                         input_tokens=latest_prompt_eval_count,
                         output_tokens=latest_eval_count,
+                        provider_replay_frame={
+                            "format": "ollama.chat.v1",
+                            "complete": True,
+                            "items": strict_json_copy(
+                                [*copy.deepcopy(request.messages), raw_assistant_message]
+                            ),
+                            "mode": "replace",
+                            "source": "ollama_chat_message",
+                            "tool_schema_digest": tool_schema_digest(
+                                request.toolkit,
+                                self.provider,
+                            ),
+                        },
                     )
 
         raise ValueError("error: unexpected termination of ollama stream. ( kernel.model_io -> OllamaModelIO.fetch_turn )")

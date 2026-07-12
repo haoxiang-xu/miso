@@ -1,6 +1,6 @@
 # Notebook Tests
 
-Copy [single_test_template.ipynb](/Users/red/Desktop/GITRepo/miso/tests/evals/templates/single_test_template.ipynb)
+Copy [single_test_template.ipynb](../templates/single_test_template.ipynb)
 into this folder when you want to create a new benchmark notebook.
 
 Recommended pattern:

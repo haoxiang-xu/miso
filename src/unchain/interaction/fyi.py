@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import copy
 import threading
 import uuid
 from dataclasses import dataclass, field
 
 from ..capabilities import ContextTarget, EmitEventOp, InsertMessagesOp, RunDelta
 from ..kernel.harness import BaseRuntimeHarness, HarnessContext
+from ..kernel.provider_replay import current_provider_replay_frame
 
 
 @dataclass(frozen=True)
@@ -84,11 +86,25 @@ class FyiInjectionHarness(BaseRuntimeHarness):
         if not drained:
             return None
         wrapped = [wrap_fyi(m) for m in drained]
+        state_updates = {}
+        if isinstance(current_provider_replay_frame(context.state), dict):
+            state_updates["provider_replay_append"] = copy.deepcopy(wrapped)
+        if (
+            context.state.provider_state.use_previous_response_chain
+            and isinstance(context.state.next_model_input, list)
+        ):
+            state_updates["next_model_input"] = [
+                *copy.deepcopy(context.state.next_model_input),
+                *copy.deepcopy(wrapped),
+            ]
         # Append onto the CONVERSATION target: apply_run_delta both extends
         # state.transcript (persistence into the final result) AND creates a
         # new version graph node from it, becoming state.latest_version_id —
         # so the injected message is visible to the model in *this* turn's
         # state.latest_messages(), not just on the next iteration's rebuild.
+        # The state updates also preserve both provider context owners: a
+        # stateful continuation gets the FYI in its next input delta, while a
+        # manual/cold continuation gets it in the lossless provider replay.
         return RunDelta(
             created_by=FYI_CREATED_BY,
             context_ops=(
@@ -110,5 +126,6 @@ class FyiInjectionHarness(BaseRuntimeHarness):
                     reason=FYI_CREATED_BY,
                 ),
             ),
+            state_updates=state_updates,
             trace={"fyi_injected_count": len(drained)},
         )

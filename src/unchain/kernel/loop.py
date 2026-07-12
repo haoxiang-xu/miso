@@ -17,9 +17,12 @@ from .lifecycle_events import (
     build_run_started_payload,
 )
 from .model_io import ModelIO
-from .results import build_kernel_run_result
 from .run_limits import resolve_max_iterations_boundary
-from .run_outcomes import finish_completed_run, finish_max_iterations_run
+from .run_outcomes import (
+    finish_awaiting_human_input_run,
+    finish_completed_run,
+    finish_max_iterations_run,
+)
 from .run_preparation import (
     infer_model,
     infer_provider,
@@ -29,6 +32,9 @@ from .run_preparation import (
 )
 from .state import RunState
 from .types import KernelRunResult, ModelTurnResult
+
+
+_DURABLE_BARRIER_PHASES = frozenset({"suspend_persist", "finalize_persist"})
 
 
 class KernelLoop:
@@ -52,6 +58,28 @@ class KernelLoop:
         return list(self._harnesses)
 
     def register_harness(self, harness: RuntimeHarness) -> None:
+        harness_phases = set(getattr(harness, "phases", ()))
+        reserved_phases = harness_phases & _DURABLE_BARRIER_PHASES
+        if reserved_phases and getattr(harness, "durable_barrier", False) is not True:
+            phase_list = ", ".join(sorted(reserved_phases))
+            raise ValueError(
+                f"harness '{harness.name}' cannot register reserved durable "
+                f"phase(s): {phase_list}"
+            )
+        for phase in reserved_phases:
+            existing = next(
+                (
+                    item
+                    for item in self._harnesses
+                    if phase in getattr(item, "phases", ())
+                ),
+                None,
+            )
+            if existing is not None:
+                raise ValueError(
+                    f"durable phase '{phase}' already belongs to harness "
+                    f"'{existing.name}'"
+                )
         self._harnesses.append(harness)
         self._harnesses.sort(key=lambda item: (item.order, item.name))
 
@@ -277,6 +305,7 @@ class KernelLoop:
         toolkit: Toolkit | None,
         run_id: str,
         resume_mode: bool,
+        continuation: dict[str, Any] | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
     ) -> None:
         runtime_toolkit = toolkit if toolkit is not None else Toolkit()
@@ -292,6 +321,7 @@ class KernelLoop:
                 "response_format": response_format,
                 "supports_tools": True,
                 "resume_mode": resume_mode,
+                "continuation": copy.deepcopy(continuation),
                 "loop": self,
                 "tool_runtime_config": copy.deepcopy(tool_runtime_config or {}),
             },
@@ -306,14 +336,53 @@ class KernelLoop:
         iteration: int,
         status: str,
     ) -> None:
+        event = {
+            "callback": callback,
+            "run_id": run_id,
+            "iteration": int(iteration),
+            "status": status,
+            "loop": self,
+        }
+        self.dispatch_phase(state, phase="run_finalizing", event=event)
+        self.dispatch_phase(state, phase="finalize_persist", event=event)
+
+    def _dispatch_on_suspend(
+        self,
+        state: RunState,
+        *,
+        callback: Any,
+        run_id: str,
+        iteration: int,
+        status: str,
+    ) -> None:
+        event = {
+            "callback": callback,
+            "run_id": run_id,
+            "iteration": int(iteration),
+            "status": status,
+            "loop": self,
+        }
+        self.dispatch_phase(state, phase="on_suspend", event=event)
+        self.dispatch_phase(state, phase="suspend_persist", event=event)
+
+    def _dispatch_on_resume(
+        self,
+        state: RunState,
+        *,
+        continuation: dict[str, Any],
+        response: Any,
+        callback: Any,
+        run_id: str,
+    ) -> None:
         self.dispatch_phase(
             state,
-            phase="run_finalizing",
+            phase="on_resume",
             event={
+                "continuation": copy.deepcopy(continuation),
+                "response": copy.deepcopy(response),
                 "callback": callback,
                 "run_id": run_id,
-                "iteration": int(iteration),
-                "status": status,
+                "iteration": int(state.iteration),
                 "loop": self,
             },
         )
@@ -385,7 +454,26 @@ class KernelLoop:
             **build_run_started_payload(state),
         )
         effective_max = int(max_iterations)
+        if (
+            state.memory_state.get("execution_checkpoint_restored") is True
+            and state.memory_state.get("execution_checkpoint_status")
+            == "max_iterations"
+        ):
+            # A fresh run that restores a max-iterations checkpoint treats its
+            # limit as budget for this invocation.  ``state.iteration`` remains
+            # cumulative so telemetry and checkpoint diagnostics stay honest.
+            effective_max += int(state.iteration)
         while True:
+            def persist_before_max_iterations_wait() -> None:
+                state.run_status = "max_iterations"
+                self._dispatch_on_suspend(
+                    state,
+                    callback=callback,
+                    run_id=run_id,
+                    iteration=int(state.iteration),
+                    status="max_iterations",
+                )
+
             boundary = resolve_max_iterations_boundary(
                 state,
                 effective_max=effective_max,
@@ -393,6 +481,7 @@ class KernelLoop:
                 callback=callback,
                 run_id=run_id,
                 emit_event=self.emit_event,
+                before_wait=persist_before_max_iterations_wait,
             )
             effective_max = boundary.effective_max
             if boundary.should_finish:
@@ -404,6 +493,8 @@ class KernelLoop:
                     emit_event=self.emit_event,
                     dispatch_run_finalizing=self._dispatch_run_finalizing,
                 )
+            if state.run_status == "max_iterations":
+                state.run_status = "running"
 
             self.emit_event(
                 callback,
@@ -426,14 +517,46 @@ class KernelLoop:
                 tool_runtime_plugins=tool_runtime_plugins,
                 tool_runtime_config=tool_runtime_config,
             )
+            if state.run_status == "awaiting_human_input":
+                suspended = finish_awaiting_human_input_run(
+                    state,
+                    callback=callback,
+                    run_id=run_id,
+                    dispatch_on_suspend=self._dispatch_on_suspend,
+                )
+                request = state.tool_batch_state.human_input_request
+                continuation = suspended.continuation
+                self.emit_event(
+                    callback,
+                    "response_received",
+                    run_id,
+                    **build_response_received_payload(state, turn),
+                )
+                if request is not None:
+                    self.emit_event(
+                        callback,
+                        "human_input_requested",
+                        run_id,
+                        iteration=max(0, int(state.iteration) - 1),
+                        **request.to_dict(),
+                    )
+                if not callable(on_human_input) or request is None or continuation is None:
+                    return suspended
+                response = on_human_input(request)
+                self._dispatch_on_resume(
+                    state,
+                    continuation=continuation,
+                    response=response,
+                    callback=callback,
+                    run_id=run_id,
+                )
+                continue
             self.emit_event(
                 callback,
                 "response_received",
                 run_id,
                 **build_response_received_payload(state, turn),
             )
-            if state.run_status == "awaiting_human_input":
-                return build_kernel_run_result(state, status="awaiting_human_input")
             if state.run_status == "completed":
                 return finish_completed_run(
                     state,
@@ -551,18 +674,15 @@ class KernelLoop:
             toolkit=toolkit,
             run_id=plan.run_id,
             resume_mode=True,
+            continuation=continuation,
             tool_runtime_config=tool_runtime_config,
         )
-        self.dispatch_phase(
+        self._dispatch_on_resume(
             plan.state,
-            phase="on_resume",
-            event={
-                "continuation": copy.deepcopy(continuation),
-                "response": copy.deepcopy(response),
-                "callback": callback,
-                "run_id": plan.run_id,
-                "loop": self,
-            },
+            continuation=continuation,
+            response=response,
+            callback=callback,
+            run_id=plan.run_id,
         )
         return self._run_state(
             plan.state,

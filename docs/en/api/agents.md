@@ -116,9 +116,11 @@ Main entry point. Normalizes messages, prepares a `PreparedAgent` via `AgentBuil
 - Category: Method
 - Returns: `KernelRunResult`
 
-#### `resume_human_input(self, *, conversation: list[dict[str, Any]], continuation: dict[str, Any], response: dict[str, Any] | Any, payload: dict[str, Any] | None=None, response_format: Any=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, on_tool_confirm: Callable[..., Any] | None=None, on_human_input: Callable[..., Any] | None=None, on_max_iterations: Callable[..., Any] | None=None, session_id: str | None=None, memory_namespace: str | None=None, run_id: str | None=None, tool_runtime_config: dict[str, Any] | None=None) -> KernelRunResult`
+#### `resume_human_input(self, *, conversation: list[dict[str, Any]] | None=None, continuation: dict[str, Any] | None=None, response: dict[str, Any] | Any, payload: dict[str, Any] | None=None, response_format: Any=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, on_tool_confirm: Callable[..., Any] | None=None, on_human_input: Callable[..., Any] | None=None, on_max_iterations: Callable[..., Any] | None=None, session_id: str | None=None, memory_namespace: str | None=None, run_id: str | None=None, tool_runtime_config: dict[str, Any] | None=None) -> KernelRunResult`
 
 Resumes a suspended run after human input has been collected.
+
+When both `conversation` and `continuation` are omitted, a memory-backed `session_id` must contain an `awaiting_human_input` execution checkpoint; the method restores both values from that checkpoint.
 
 - Category: Method
 - Returns: `KernelRunResult`

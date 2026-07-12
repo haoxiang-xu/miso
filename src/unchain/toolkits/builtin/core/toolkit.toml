@@ -71,7 +71,7 @@ requires_confirmation = true
 [[tools]]
 name = "shell"
 title = "Shell"
-description = "Run a shell command, poll a background task, or kill a background task inside the workspace."
+description = "Run a shell command, poll or wait for a background task, or kill it inside the workspace."
 observe = false
 requires_confirmation = true
 

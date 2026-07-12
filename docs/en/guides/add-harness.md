@@ -58,6 +58,7 @@ class MyHarness(BaseRuntimeHarness):
 ### Key points
 
 - **`phases`**: Tuple of phase names this harness participates in. Common phases: `bootstrap`, `before_model`, `on_tool_call`, `after_tool_batch`.
+- **Reserved phases**: `suspend_persist` and `finalize_persist` are runtime-owned durability barriers. A normal custom harness must contribute through `on_suspend` or `run_finalizing` instead.
 - **`order`**: Integer controlling execution priority within a phase. Lower values run first.
 - **`build_delta`**: The core method. Return `None` to be a no-op, or a `HarnessDelta` to mutate run state.
 

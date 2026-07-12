@@ -63,6 +63,8 @@ This chapter documents the high-level orchestration surface: how a single `Agent
 
 `Agent` is the high-level interface exposed to callers. It owns identity, default instructions, and the module set, but it does not execute the model loop itself. Each `run()` builds a fresh `PreparedAgent` (with a fresh `KernelLoop`) to perform the actual execution.
 
+System instructions are composable, not a singleton. The agent-owned base `instructions` contribution is kept to one copy when a full transcript is replayed, while caller, toolkit, character, policy, and memory harnesses may add their own ordered system contributions. Session merge preserves distinct historical contributions even when the next call sends only the agent base instruction; re-sending an identical contribution does not multiply it. A provider such as Anthropic may flatten those contributions into one wire-level `system` field; that provider projection does not change the kernel's multi-owner prompt model.
+
 In other words, `Agent` is the configuration envelope and public entry surface, while `KernelLoop` is the single-run executor. `Agent` defines what the agent is and what defaults it carries; `KernelLoop` defines how one concrete request executes.
 
 ## Construction
@@ -162,6 +164,17 @@ final = agent.resume_human_input(
     response={"approved": True},  # or a HumanInputResponse for ask_user_question
 )
 ```
+
+With a durable memory-backed `session_id`, the execution checkpoint is authoritative after a process restart. The caller may omit the in-process result object:
+
+```python
+final = agent.resume_human_input(
+    session_id="durable-session",
+    response={"approved": True},
+)
+```
+
+If `run()` receives a synchronous `on_human_input` callback, the kernel first completes every `on_suspend` contribution and, for a durable memory-backed session, persists and verifies the checkpoint before emitting the input-request event or invoking the callback. After a valid response it resumes on the same `RunState`. The same ordering applies to `on_max_iterations`; without a memory-backed `session_id`, the phase ordering still applies but there is no durable checkpoint guarantee.
 
 ## Tool Exposure (Module-driven)
 
@@ -287,7 +300,7 @@ def my_callback(event: dict) -> None:
 
 4. **Subagent namespace accumulates** — A subagent of a subagent gets namespace `root:parent:child`. Deep nesting creates long namespace strings.
 
-5. **Catalog/discovery state must be passed across suspensions** — Both runtimes checkpoint via the harness `on_suspend` phase, but you still have to pass `continuation` back into `resume_human_input()`.
+5. **Cold resume needs durable memory** — With a persisted execution checkpoint, `resume_human_input(session_id=..., response=...)` reloads conversation, continuation, provider replay data, and tool-schema identity. Without durable memory, pass `conversation` and `continuation` from the in-process result as before.
 
 6. **`Team` is no longer the right primitive** — If you need multi-agent flow, model it as a planner agent that uses `delegate_to_subagent` / `spawn_worker_batch` over `SubagentTemplate`s.
 

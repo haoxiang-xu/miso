@@ -66,6 +66,14 @@
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
+#### `load_with_revision(self, session_id: str) -> SessionSnapshot`
+
+加载完整 state 以及其单调 CAS revision。
+
+#### `save_if_revision(self, session_id: str, state: dict[str, Any], expected_revision: int) -> int`
+
+原子保存并返回下一个 revision。`expected_revision` 过期时抛出 `SessionRevisionConflictError`。
+
 ### 协作关系与关联类型
 
 - `VectorStoreAdapter`
@@ -743,13 +751,13 @@ obj.prepare(...)
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
-#### `commit_messages(self, session_id: str, full_conversation: list[dict[str, Any]], *, memory_namespace: str | None=None, model: str | None=None, long_term_extractor: LongTermExtractor | None=None)`
+#### `commit_messages(self, session_id: str, full_conversation: list[dict[str, Any]], *, memory_namespace: str | None=None, model: str | None=None, long_term_extractor: LongTermExtractor | None=None, expected_revision: int | None=None, summary_text: str | None=None, return_result: bool=False, clear_execution_checkpoint_id: str | None=None) -> MemoryCommitResult | None`
 
 `MemoryManager` 对外暴露的方法 `commit_messages`。
 
 - 类型：方法
 - 定义位置：`src/unchain/memory/manager.py:2269`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
+- 返回形状：默认保持兼容并返回 `None`。传 `return_result=True` 时返回 `MemoryCommitResult(commit_info, session_snapshot)`；`commit_info` 包含落盘 revision 与 consistency mode。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
 
 ### 生命周期与运行时角色
@@ -787,7 +795,7 @@ Qdrant 向量适配器，以及 JSON 会话存储实现。
 | 源码 | `src/unchain/memory/qdrant.py:198` |
 | 模块职责 | Qdrant 向量适配器，以及 JSON 会话存储实现。 |
 | 继承/协议 | `-` |
-| 导出状态 | 未导出，应视为实现细节。 |
+| 导出状态 | 通过 `unchain.memory` 导出。 |
 | 对象类型 | 类；公开或包内可见。 |
 
 ### 构造表面
@@ -942,6 +950,14 @@ obj.add_texts(...)
 - 定义位置：`src/unchain/memory/qdrant.py:438`
 - 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
 - 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
+
+#### `load_with_revision(self, session_id: str) -> SessionSnapshot`
+
+在每个 session 的文件锁内加载 JSON state 并返回 revision。JSON 损坏时抛出 `SessionStoreCorruptionError`。
+
+#### `save_if_revision(self, session_id: str, state: dict[str, Any], expected_revision: int) -> int`
+
+通过文件锁、`fsync` 与原子替换执行跨进程 CAS。
 
 ### 协作关系与关联类型
 

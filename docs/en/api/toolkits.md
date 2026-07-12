@@ -120,14 +120,14 @@ All nine tools are registered eagerly during `__init__` and validated against `t
 | `glob` | `glob(pattern: str, ...)` | no | Returns up to 200 paths matching a glob, sorted by most-recently-modified first. |
 | `grep` | `grep(pattern: str, globs: list[str] | None = None, mode: str = ...)` | no | Regex search over UTF-8 text with optional glob filters and paginated result modes. |
 | `web_fetch` | `web_fetch(url: str, extract: str | None = None)` | yes | Fetches an HTTP(S) page; `extract` toggles raw vs. runtime-configured extraction model. |
-| `shell` | `shell(command: str, ...)` | yes (risk-classified) | Runs a shell command, polls a background task, or kills one. Low-risk commands skip confirmation. |
+| `shell` | `shell(action: str, command: str = "", ..., task_id: str = "")` | yes (risk-classified) | Runs a command, polls or bounded-waits for a process-local background task, or kills it. `wait` blocks inside the tool rather than spending model turns on a polling loop. Low-risk commands and poll/wait/kill skip confirmation. |
 | `lsp` | `lsp(path: str, method: str, ...)` | no | Queries a language server (Python or TS/JS) for `goToDefinition`, `findReferences`, `hover`, `documentSymbol`, `workspaceSymbol`. |
 | `ask_user_question` | `ask_user_question(title, question, selection_mode, options, ...)` | n/a | Reserved runtime tool: it suspends the run and is fulfilled by the framework, not by direct execution. |
 
 ### Runtime collaborators
 
 - `LSPRuntime` (Python + TS/JS language servers, lazy-started per `workspace_roots`).
-- `ShellRuntime` (detects `bash`/`zsh`/`sh`, applies risk classification before confirmation).
+- `ShellRuntime` (detects `bash`/`zsh`/`sh`, applies risk classification before confirmation, and supports bounded process-local waits; it is not yet a durable cross-process supervisor).
 - `WebFetchService` (caches responses; supports a runtime-configured extraction model).
 - `_ReadSnapshot` table per session — write/edit refuse to operate on files that were not fully read or have changed on disk since the last read.
 

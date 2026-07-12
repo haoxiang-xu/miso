@@ -277,6 +277,12 @@ def _apply_runtime_state_op(state: RunState, op: SetRuntimeStateOp) -> None:
 
     head = path[0]
     value = copy.deepcopy(op.value)
+    if len(path) == 1 and head == "workspace_change_state":
+        # RunState mirrors workspace state into component_state for harnesses
+        # that consume the generic component bucket.  Preserve that invariant
+        # when a structured runtime op replaces the root value.
+        state._apply_state_updates({head: value})
+        return
     if len(path) == 1 and hasattr(state, head):
         setattr(state, head, value)
         return
@@ -331,6 +337,15 @@ def _apply_merge_runtime_state_op(state: RunState, op: MergeRuntimeStateOp) -> N
         root = getattr(state, head)
         if isinstance(root, dict):
             _merge_nested_value(root, path[1:], value)
+            return
+        if len(path) == 1:
+            unknown_keys = [key for key in value if not hasattr(root, key)]
+            if unknown_keys:
+                raise ValueError(
+                    f"cannot merge unknown {head} fields: {', '.join(unknown_keys)}"
+                )
+            for key, item in value.items():
+                setattr(root, key, copy.deepcopy(item))
             return
 
     bucket = state.component_bucket(head)

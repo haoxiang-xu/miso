@@ -1,3 +1,5 @@
+import pytest
+
 from unchain.kernel import (
     AppendMessagesOp,
     BaseRuntimeHarness,
@@ -84,6 +86,36 @@ def test_kernel_loop_applies_harnesses_in_order():
     ]
 
 
+def test_durable_barrier_phases_reject_normal_or_duplicate_harnesses():
+    class _ReservedPhaseHarness(BaseRuntimeHarness):
+        def __init__(self, *, name: str, durable: bool):
+            super().__init__(
+                name=name,
+                phases=("suspend_persist",),
+                order=100,
+            )
+            self.durable_barrier = durable
+
+        def build_delta(self, context):
+            del context
+            return None
+
+    with pytest.raises(ValueError, match="reserved durable phase"):
+        KernelLoop(
+            harnesses=[
+                _ReservedPhaseHarness(name="ordinary", durable=False)
+            ]
+        )
+
+    loop = KernelLoop(
+        harnesses=[_ReservedPhaseHarness(name="owner", durable=True)]
+    )
+    with pytest.raises(ValueError, match="already belongs"):
+        loop.register_harness(
+            _ReservedPhaseHarness(name="second-owner", durable=True)
+        )
+
+
 def test_openai_model_io_builds_request_and_parses_text(monkeypatch):
     captured_kwargs = {}
     events = []
@@ -124,6 +156,7 @@ def test_openai_model_io_builds_request_and_parses_text(monkeypatch):
     loop = KernelLoop(model_io=io)
     state = loop.seed_state([{"role": "user", "content": "hi"}], provider="openai", model="gpt-4.1")
     state.provider_state.previous_response_id = "prev_0"
+    state.provider_state.use_previous_response_chain = True
 
     turn = loop.fetch_model_turn(
         state,
@@ -239,6 +272,7 @@ def test_step_once_runs_before_after_model_and_before_commit_without_tool_calls(
     )
     state = loop.seed_state([{"role": "user", "content": "start"}], provider="openai", model="gpt-4.1")
     state.provider_state.previous_response_id = "prev_0"
+    state.provider_state.use_previous_response_chain = True
 
     turn = loop.step_once(state, payload={"temperature": 0.2}, toolkit=Toolkit(), run_id="step-run")
 

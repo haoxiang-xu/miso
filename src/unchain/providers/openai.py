@@ -8,6 +8,11 @@ from openai import OpenAI
 
 from .base import ModelTurnRequest
 from .native import _NativeModelIOBase, _translate_content_blocks_for_openai
+from ..kernel.provider_replay import (
+    redact_provider_replay_secrets,
+    strict_json_copy,
+    tool_schema_digest,
+)
 from ..kernel.types import ModelTurnResult, TokenUsage, ToolCall
 
 
@@ -39,6 +44,19 @@ class OpenAIModelIO(_NativeModelIOBase):
         openai_client = self._client_factory(api_key=self.api_key)
         normalized_messages = self._normalize_input_messages(request.messages)
         request_payload = self._merged_payload(request.payload)
+        if (
+            request_payload.get("store") is False
+            and self._model_capability("supports_reasoning", False)
+        ):
+            raw_include = request_payload.get("include")
+            include = (
+                [str(item) for item in raw_include if isinstance(item, str)]
+                if isinstance(raw_include, list)
+                else []
+            )
+            if "reasoning.encrypted_content" not in include:
+                include.append("reasoning.encrypted_content")
+            request_payload["include"] = include
 
         request_kwargs: dict[str, Any] = {
             "model": self.model,
@@ -71,7 +89,7 @@ class OpenAIModelIO(_NativeModelIOBase):
             callback=request.callback,
             run_id=request.run_id,
             iteration=request.iteration,
-            messages=normalized_messages,
+            messages=redact_provider_replay_secrets(normalized_messages),
             previous_response_id=request.previous_response_id,
             tool_names=self._tool_names_for_trace(tools_json),
         )
@@ -104,6 +122,7 @@ class OpenAIModelIO(_NativeModelIOBase):
         request: ModelTurnRequest,
         request_kwargs: dict[str, Any],
     ) -> ModelTurnResult:
+        used_remote_continuation = bool(request_kwargs.get("previous_response_id"))
         collected_chunks: list[str] = []
         completed_response = None
         created_response_id: str | None = None
@@ -161,12 +180,15 @@ class OpenAIModelIO(_NativeModelIOBase):
                 usage = TokenUsage()
             elif collected_chunks:
                 full_text = "".join(collected_chunks).strip()
-                return ModelTurnResult(
-                    assistant_messages=[{"role": "assistant", "content": full_text}],
-                    tool_calls=[],
-                    final_text=full_text,
-                    response_id=created_response_id,
-                )
+                outputs = [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": full_text}],
+                    }
+                ]
+                response_id = created_response_id
+                usage = TokenUsage()
             else:
                 raise ValueError("error: OpenAI stream ended without completion payload")
         else:
@@ -178,9 +200,11 @@ class OpenAIModelIO(_NativeModelIOBase):
         tool_calls: list[ToolCall] = []
         final_text_parts: list[str] = []
         reasoning_items: list[dict[str, Any]] = []
+        raw_output_items = strict_json_copy(
+            [self._as_dict(output_item) for output_item in outputs]
+        )
 
-        for output_item in outputs:
-            item = self._as_dict(output_item)
+        for item in raw_output_items:
             item_type = item.get("type")
             if item_type == "function_call":
                 call_id = item.get("call_id") or item.get("id") or str(uuid.uuid4())
@@ -213,6 +237,36 @@ class OpenAIModelIO(_NativeModelIOBase):
             assistant_messages.append({"role": "assistant", "content": full_text})
             final_text_parts.append(full_text)
 
+        normalized_replay_input = strict_json_copy(request_kwargs.get("input") or [])
+        if used_remote_continuation:
+            provider_replay_frame = {
+                "format": "openai.responses.v1",
+                "complete": False,
+                "items": raw_output_items,
+                "response_items": raw_output_items,
+                "mode": "append_response",
+                "source": "openai_response_output",
+                "tool_schema_digest": tool_schema_digest(
+                    request.toolkit,
+                    self.provider,
+                ),
+                "incomplete_reason": (
+                    "response used previous_response_id and requires an existing local replay prefix"
+                ),
+            }
+        else:
+            provider_replay_frame = {
+                "format": "openai.responses.v1",
+                "complete": True,
+                "items": [*normalized_replay_input, *raw_output_items],
+                "mode": "replace",
+                "source": "openai_response_output",
+                "tool_schema_digest": tool_schema_digest(
+                    request.toolkit,
+                    self.provider,
+                ),
+            }
+
         return ModelTurnResult(
             assistant_messages=assistant_messages,
             tool_calls=tool_calls,
@@ -223,6 +277,7 @@ class OpenAIModelIO(_NativeModelIOBase):
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             cache_read_input_tokens=cached_input_tokens,
+            provider_replay_frame=provider_replay_frame,
         )
 
     def _normalize_input_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -234,12 +289,9 @@ class OpenAIModelIO(_NativeModelIOBase):
             item_type = message.get("type")
             if item_type == "function_call":
                 call_id = message.get("call_id") or message.get("id") or str(uuid.uuid4())
-                normalized.append({
-                    "type": "function_call",
-                    "call_id": call_id,
-                    "name": message.get("name", ""),
-                    "arguments": message.get("arguments", "{}"),
-                })
+                normalized_item = copy.deepcopy(message)
+                normalized_item["call_id"] = call_id
+                normalized.append(normalized_item)
                 continue
             normalized.append(copy.deepcopy(message))
         _translate_content_blocks_for_openai(normalized)

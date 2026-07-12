@@ -10,6 +10,7 @@ from ..capabilities import (
     MergeRuntimeStateOp,
     ReplaceMessagesOp,
     RunDelta,
+    SetRuntimeStateOp,
 )
 from ..kernel.delta import MessageListOp, ReplaceSpanOp
 
@@ -73,7 +74,32 @@ def _state_updates_to_context_ops(updates: dict[str, Any] | None) -> tuple[Conte
                 )
             )
             continue
-        if key in {"memory_state", "memory_prepare_info", "memory_commit_info", "optimizer_state"}:
+        if key == "provider_replay_frame":
+            context_ops.append(
+                MergeRuntimeStateOp(
+                    path=("component_state", "provider_replay"),
+                    value={"frame": _copy_dict(value)},
+                    reason="memory.provider_replay.restore",
+                )
+            )
+            continue
+        if key in {"iteration", "workspace_change_state"}:
+            context_ops.append(
+                SetRuntimeStateOp(
+                    path=(key,),
+                    value=copy.deepcopy(value),
+                    reason="memory.state.restore",
+                )
+            )
+            continue
+        if key in {
+            "memory_state",
+            "memory_prepare_info",
+            "memory_commit_info",
+            "optimizer_state",
+            "provider_state",
+            "token_state",
+        }:
             context_ops.append(
                 MergeRuntimeStateOp(
                     path=(key,),

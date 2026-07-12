@@ -179,7 +179,8 @@ KernelLoop.run(messages, ...)
   │      └─ memory.commit_messages()
   │
   │    暂停时：
-  │      dispatch_phase("on_suspend")              ─ checkpoint state
+  │      dispatch_phase("on_suspend")              ─ 汇总状态 contribution
+  │      dispatch_phase("suspend_persist")         ─ 保留的持久化 barrier
   │      return KernelRunResult(status="awaiting_human_input", continuation=...)
   │
   ▼
@@ -193,7 +194,8 @@ KernelRunResult
 
 ## RuntimePhase 速查
 
-kernel 把 harness 工作分成 8 个有序阶段：
+kernel 对外提供 9 个有序扩展阶段；另外两个 phase 是 runtime 独占的持久化
+barrier，普通 harness 不能注册。
 
 | 阶段 | 时机 | 典型用途 |
 | --- | --- | --- |
@@ -205,6 +207,12 @@ kernel 把 harness 工作分成 8 个有序阶段：
 | `before_commit` | 迭代末尾 memory commit 前。 | memory 写 hook、摘要触发。 |
 | `on_suspend` | loop 把控制权交还给调用方时。 | checkpoint catalog/discovery state，保存 resume token。 |
 | `on_resume` | `resume_human_input()` 重新进入 loop 时。 | 从 continuation payload 恢复状态。 |
+| `run_finalizing` | 已决定终态、但尚未 durable finalize 时。 | 补充最终状态与 artifact。 |
+
+每次 `on_suspend` 全部执行完后，保留的 `suspend_persist` barrier 才会把所有
+contribution 写入 checkpoint；每次 `run_finalizing` 完成后，保留的
+`finalize_persist` barrier 才执行最终 semantic commit 或 checkpoint 转换。
+因此高 order 的扩展 harness 不会在“已经宣称持久化”之后继续改状态。
 
 ## 组件关系
 

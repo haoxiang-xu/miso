@@ -7,7 +7,11 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-from ..memory import KernelMemoryRuntime
+from ..memory import (
+    ExecutionCheckpointResumeRequiredError,
+    KernelMemoryRuntime,
+)
+from ..memory.ownership import ensure_no_external_provider_history
 from ..kernel.loop import KernelLoop
 from ..kernel.model_io import ModelIO
 from ..kernel.types import KernelRunResult
@@ -56,6 +60,7 @@ class PreparedAgent:
     spec: AgentSpec
     state: AgentState
     call_context: AgentCallContext
+    memory_runtime: KernelMemoryRuntime | None = None
     default_payload: dict[str, Any] = field(default_factory=dict)
     default_response_format: ResponseFormat | None = None
     default_max_iterations: int | None = None
@@ -67,6 +72,7 @@ class PreparedAgent:
     tool_runtime_plugins: list[Any] = field(default_factory=list)
     tool_optimizer_config: ToolOptimizerConfig | None = None
     completion_policy: CompletionPolicy | None = None
+    session_history_owned_by_memory: bool = False
 
     def _merge_payloads(self, *payloads: dict[str, Any] | None) -> dict[str, Any] | None:
         merged: dict[str, Any] = {}
@@ -147,6 +153,11 @@ class PreparedAgent:
         previous_response_id: str | None,
         max_iterations: int,
     ) -> KernelRunResult:
+        if self.session_history_owned_by_memory:
+            ensure_no_external_provider_history(
+                provider=self.spec.provider,
+                previous_response_id=previous_response_id,
+            )
         toolkit, tool_runtime_plugins = self._prepare_tool_exposure(
             messages=messages,
             payload=payload,
@@ -175,10 +186,35 @@ class PreparedAgent:
             tool_runtime_config=copy.deepcopy(self.call_context.tool_runtime_config or {}),
         )
 
+    def _run_completion_repair_once(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        payload: dict[str, Any] | None,
+        previous_response_id: str | None,
+        max_iterations: int,
+    ) -> KernelRunResult:
+        if not self.session_history_owned_by_memory:
+            return self._run_once(
+                messages=messages,
+                payload=payload,
+                previous_response_id=previous_response_id,
+                max_iterations=max_iterations,
+            )
+        feedback = copy.deepcopy(messages[-1]) if messages else None
+        if not isinstance(feedback, dict) or feedback.get("role") != "user":
+            raise ValueError("completion repair must end with a user feedback message")
+        return self._run_once(
+            messages=[feedback],
+            payload=payload,
+            previous_response_id=None,
+            max_iterations=max_iterations,
+        )
+
     def _completion_policy_runner(self) -> CompletionPolicyRunner:
         return CompletionPolicyRunner(
             policy=self.completion_policy,
-            run_once=self._run_once,
+            run_once=self._run_completion_repair_once,
             event_callback=self.call_context.callback,
             run_id=str(self.call_context.run_id or "agent"),
         )
@@ -200,29 +236,57 @@ class PreparedAgent:
         return self._apply_run_hooks(result)
 
     def resume_human_input(self) -> KernelRunResult:
+        provided_conversation = self.call_context.conversation
+        provided_continuation = self.call_context.continuation
+        if (provided_conversation is None) != (provided_continuation is None):
+            raise ValueError(
+                "conversation and continuation must either both be provided or both be omitted"
+            )
+        if provided_conversation is None and provided_continuation is None:
+            session_id = str(self.call_context.session_id or "")
+            if self.memory_runtime is None or not session_id:
+                raise ExecutionCheckpointResumeRequiredError(
+                    "cold human-input resume requires a memory-backed session_id"
+                )
+            checkpoint = self.memory_runtime.load_execution_checkpoint(session_id)
+            if (
+                not isinstance(checkpoint, dict)
+                or checkpoint.get("status") != "awaiting_human_input"
+            ):
+                raise ExecutionCheckpointResumeRequiredError(
+                    "session has no awaiting_human_input execution checkpoint"
+                )
+            provided_conversation = copy.deepcopy(checkpoint.get("transcript") or [])
+            raw_continuation = checkpoint.get("continuation")
+            if not isinstance(raw_continuation, dict):
+                raise ExecutionCheckpointResumeRequiredError(
+                    "persisted human-input checkpoint has no continuation"
+                )
+            provided_continuation = copy.deepcopy(raw_continuation)
+
         continuation_payload = None
-        if isinstance(self.call_context.continuation, dict):
-            raw_payload = self.call_context.continuation.get("payload")
+        if isinstance(provided_continuation, dict):
+            raw_payload = provided_continuation.get("payload")
             continuation_payload = raw_payload if isinstance(raw_payload, dict) else None
-        conversation = copy.deepcopy(self.call_context.conversation or [])
+        conversation = copy.deepcopy(provided_conversation or [])
         payload = self._merge_payloads(self.default_payload, continuation_payload, self.call_context.payload)
         toolkit, tool_runtime_plugins = self._prepare_tool_exposure(
             messages=conversation,
             payload=payload,
             provider=(
-                str(self.call_context.continuation.get("provider") or "")
-                if isinstance(self.call_context.continuation, dict)
+                str(provided_continuation.get("provider") or "")
+                if isinstance(provided_continuation, dict)
                 else None
             ),
             model=(
-                str(self.call_context.continuation.get("model") or "")
-                if isinstance(self.call_context.continuation, dict)
+                str(provided_continuation.get("model") or "")
+                if isinstance(provided_continuation, dict)
                 else None
             ),
         )
         result = self.loop.resume_human_input(
             conversation=conversation,
-            continuation=copy.deepcopy(self.call_context.continuation or {}),
+            continuation=copy.deepcopy(provided_continuation or {}),
             response=copy.deepcopy(self.call_context.response),
             payload=payload,
             response_format=self._resolved_response_format(),
@@ -398,6 +462,7 @@ class AgentBuilder:
             spec=self.spec,
             state=self.state,
             call_context=self.call_context,
+            memory_runtime=self.memory_runtime,
             default_payload=copy.deepcopy(self.default_payload),
             default_response_format=self.default_response_format,
             default_max_iterations=self.default_max_iterations,
@@ -409,4 +474,7 @@ class AgentBuilder:
             tool_runtime_plugins=list(self.tool_runtime_plugins),
             tool_optimizer_config=self.tool_optimizer_config,
             completion_policy=self.completion_policy,
+            session_history_owned_by_memory=(
+                self.memory_runtime is not None and bool(self.call_context.session_id)
+            ),
         )
