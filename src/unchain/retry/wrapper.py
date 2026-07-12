@@ -1,4 +1,4 @@
-"""High-level wrapper: run ModelIO.fetch_turn with retry + first-event gate."""
+"""High-level wrapper: run ModelIO.fetch_turn with retry + first-visible-event gate."""
 from __future__ import annotations
 
 import dataclasses
@@ -13,6 +13,21 @@ class _ModelIOLike(Protocol):
     def fetch_turn(self, request: Any) -> Any: ...
 
 
+_NON_USER_VISIBLE_EVENT_TYPES = frozenset({
+    "previous_response_id_fallback",
+    "request_messages",
+})
+
+
+def _event_commits_user_visible_output(event: Any) -> bool:
+    """Return whether replaying the failed attempt could duplicate visible output."""
+
+    if not isinstance(event, dict):
+        return True
+    event_type = str(event.get("type") or "")
+    return event_type not in _NON_USER_VISIBLE_EVENT_TYPES
+
+
 def fetch_turn_with_retry(
     model_io: _ModelIOLike,
     request: Any,
@@ -23,9 +38,9 @@ def fetch_turn_with_retry(
 ) -> Any:
     """Call `model_io.fetch_turn(request)` with transparent retry on transient errors.
 
-    First-event gate: if `request.callback` is set and has been invoked at least
-    once during a failing attempt, the wrapper will NOT retry - retrying would
-    re-emit already-shown content to the caller.
+    First-visible-event gate: once a failing attempt emits model output, the
+    wrapper will NOT retry because doing so would duplicate content already
+    shown to the caller. Debug-only request events do not commit the attempt.
     """
 
     original_callback = getattr(request, "callback", None)
@@ -41,7 +56,8 @@ def fetch_turn_with_retry(
     committed = {"value": False}
 
     def proxy_callback(event: Any) -> None:
-        committed["value"] = True
+        if _event_commits_user_visible_output(event):
+            committed["value"] = True
         original_callback(event)
 
     gated_request = dataclasses.replace(request, callback=proxy_callback)

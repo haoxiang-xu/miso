@@ -117,9 +117,11 @@ Frozen dataclass，持有 Agent 实例的不可变配置。
 - 类型：方法
 - 返回：`KernelRunResult`
 
-#### `resume_human_input(self, *, conversation: list[dict[str, Any]], continuation: dict[str, Any], response: dict[str, Any] | Any, payload: dict[str, Any] | None=None, response_format: Any=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, on_tool_confirm: Callable[..., Any] | None=None, on_human_input: Callable[..., Any] | None=None, on_max_iterations: Callable[..., Any] | None=None, session_id: str | None=None, memory_namespace: str | None=None, run_id: str | None=None, tool_runtime_config: dict[str, Any] | None=None) -> KernelRunResult`
+#### `resume_human_input(self, *, conversation: list[dict[str, Any]] | None=None, continuation: dict[str, Any] | None=None, response: dict[str, Any] | Any, payload: dict[str, Any] | None=None, response_format: Any=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, on_tool_confirm: Callable[..., Any] | None=None, on_human_input: Callable[..., Any] | None=None, on_max_iterations: Callable[..., Any] | None=None, session_id: str | None=None, memory_namespace: str | None=None, run_id: str | None=None, tool_runtime_config: dict[str, Any] | None=None) -> KernelRunResult`
 
 在收集到人类输入后恢复暂停的运行。
+
+如果同时省略 `conversation` 和 `continuation`，则 memory-backed `session_id` 中必须存在 `awaiting_human_input` execution checkpoint；该方法会从 checkpoint 恢复两者。
 
 - 类型：方法
 - 返回：`KernelRunResult`

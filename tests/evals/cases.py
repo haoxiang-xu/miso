@@ -54,7 +54,7 @@ def list_eval_cases(repo_root: str | Path) -> list[EvalCase]:
                 "- Use tools to inspect the codebase. Do not guess.\n"
                 "- Do not modify files.\n"
                 "- Cite at least 4 relative file paths as evidence.\n"
-                "- Mention the exact test command.\n"
+                "- Mention the exact test command `PYTHONPATH=src pytest tests/ -q`.\n"
                 "- Keep the final answer concise but concrete.\n"
             ),
             rule_checks={
@@ -65,26 +65,25 @@ def list_eval_cases(repo_root: str | Path) -> list[EvalCase]:
                     "README.md",
                 ],
                 "required_substrings": [
-                    "run_tests.sh",
-                    "workspace",
-                    "terminal",
+                    "PYTHONPATH=src pytest tests/ -q",
+                    "KernelLoop",
+                    "CoreToolkit",
                     "ResponseFormat",
                 ],
                 "required_any_substrings": [
                     ["Agent", "agent"],
                     ["ModelIO", "providers"],
                 ],
-                "required_tool_any_of": [["list_directories", "search_text", "read_files"]],
+                "required_tool_any_of": [["glob", "grep", "read"]],
                 "min_tool_calls": 3,
                 "min_final_chars": 180,
                 "min_file_reference_count": 4,
                 "forbidden_tool_names": [
-                    "write_file",
-                    "insert_lines",
-                    "replace_lines",
-                    "delete_lines",
+                    "write",
+                    "edit",
                 ],
                 "forbidden_result_substrings": ["blocked by strict mode"],
+                "forbid_workspace_changes": True,
             },
         ),
         build_eval_case(
@@ -114,17 +113,16 @@ def list_eval_cases(repo_root: str | Path) -> list[EvalCase]:
                 "required_regexes": [
                     r"(floor|integer)\s+division",
                 ],
-                "required_tool_names": ["terminal_exec"],
-                "required_tool_any_of": [["read_files", "read_lines", "search_text"]],
+                "required_tool_names": ["shell"],
+                "required_tool_any_of": [["read", "grep", "glob"]],
                 "min_tool_calls": 2,
                 "min_final_chars": 140,
                 "min_file_reference_count": 2,
                 "forbidden_tool_names": [
-                    "write_file",
-                    "insert_lines",
-                    "replace_lines",
-                    "delete_lines",
+                    "write",
+                    "edit",
                 ],
+                "forbid_workspace_changes": True,
             },
         ),
         build_eval_case(
@@ -153,16 +151,15 @@ def list_eval_cases(repo_root: str | Path) -> list[EvalCase]:
                     "test",
                     "filter",
                 ],
-                "required_tool_any_of": [["read_files", "read_lines", "search_text", "list_directories"]],
+                "required_tool_any_of": [["read", "grep", "glob"]],
                 "min_tool_calls": 2,
                 "min_final_chars": 160,
                 "min_file_reference_count": 3,
                 "forbidden_tool_names": [
-                    "write_file",
-                    "insert_lines",
-                    "replace_lines",
-                    "delete_lines",
+                    "write",
+                    "edit",
                 ],
+                "forbid_workspace_changes": True,
             },
         ),
     ]

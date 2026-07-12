@@ -40,6 +40,9 @@ class LlmSummaryOptimizer(BaseContextOptimizer):
     def build_optimizer_delta(self, context: OptimizerContext):
         bucket = context.optimizer_state()
         bucket["summary_triggered"] = False
+        bucket["source_preservation_required"] = False
+        bucket.pop("summary_skip_reason", None)
+        bucket.pop("summary_fallback_reason", None)
 
         max_context_window_tokens = context.max_context_window_tokens
         if max_context_window_tokens <= 0:
@@ -85,6 +88,7 @@ class LlmSummaryOptimizer(BaseContextOptimizer):
         summary_generator = self.config.summary_generator
         if not callable(summary_generator):
             bucket["summary_fallback_reason"] = "summary_generator_missing"
+            bucket["source_preservation_required"] = True
             return self.state_only_delta(bucket=bucket)
 
         try:
@@ -96,11 +100,13 @@ class LlmSummaryOptimizer(BaseContextOptimizer):
             )
         except Exception as exc:
             bucket["summary_fallback_reason"] = f"summary_generation_failed: {exc}"
+            bucket["source_preservation_required"] = True
             return self.state_only_delta(bucket=bucket)
 
         summary_text = str(summary_text or "").strip()
         if not summary_text:
             bucket["summary_fallback_reason"] = "empty_summary"
+            bucket["source_preservation_required"] = True
             return self.state_only_delta(bucket=bucket)
 
         if len(summary_text) > int(self.config.max_summary_chars):
@@ -111,6 +117,7 @@ class LlmSummaryOptimizer(BaseContextOptimizer):
         bucket["summary_old_turn_count"] = old_turn_count
         bucket["summary_kept_turn_count"] = len(kept_turns)
         bucket["summary_target_tokens"] = target_tokens
+        bucket["source_preservation_required"] = False
         bucket.pop("summary_skip_reason", None)
         bucket.pop("summary_fallback_reason", None)
 

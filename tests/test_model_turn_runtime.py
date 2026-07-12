@@ -35,6 +35,7 @@ def test_provider_model_turn_runtime_builds_request_and_applies_turn_state():
     state.seed_messages([{"role": "user", "content": "original"}])
     state.next_model_input = [{"role": "user", "content": "resume-only"}]
     state.provider_state.previous_response_id = "prev-1"
+    state.provider_state.use_previous_response_chain = True
     state.token_state.consumed_tokens = 10
     state.token_state.input_tokens = 6
     state.token_state.output_tokens = 4

@@ -324,6 +324,40 @@ class ShellRuntime:
             "truncated": stdout_truncated or stderr_truncated,
         }
 
+    def wait(
+        self,
+        task_id: str,
+        *,
+        timeout_ms: int = DEFAULT_TIMEOUT_MS,
+        max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
+    ) -> dict[str, Any]:
+        """Wait once for a background task without spending model iterations."""
+
+        task = self.background_tasks.get(str(task_id or ""))
+        if task is None:
+            return {
+                **self._base_result(action="wait"),
+                "task_id": str(task_id or ""),
+                "status": "missing",
+                "completed": True,
+                "wait_timed_out": False,
+                "error": f"task not found: {task_id}",
+            }
+
+        resolved_timeout_ms = self._normalize_timeout_ms(timeout_ms)
+        wait_timed_out = False
+        if task.process.poll() is None:
+            try:
+                task.process.wait(timeout=resolved_timeout_ms / 1000.0)
+            except subprocess.TimeoutExpired:
+                wait_timed_out = True
+
+        result = self.poll(task_id=task.task_id, max_output_chars=max_output_chars)
+        result["action"] = "wait"
+        result["wait_timeout_ms"] = resolved_timeout_ms
+        result["wait_timed_out"] = bool(wait_timed_out and not result["completed"])
+        return result
+
     def kill(self, task_id: str, max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS) -> dict[str, Any]:
         task = self.background_tasks.get(str(task_id or ""))
         if task is None:

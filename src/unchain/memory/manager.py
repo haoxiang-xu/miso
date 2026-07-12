@@ -7,9 +7,23 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 from typing import Any, Callable, Protocol, runtime_checkable
 
 from ..tools.models import NormalizedToolHistoryRecord, ToolHistoryOptimizationContext
+from .checkpoint_state import (
+    EXECUTION_CHECKPOINT_KEY,
+    ExecutionCheckpointCompatibilityError,
+    ExecutionCheckpointResumeRequiredError,
+    validate_execution_checkpoint,
+)
+from .ownership import ensure_session_delta_input
+from .revision import (
+    SessionRevisionConflictError,
+    SessionSnapshot,
+    load_session_snapshot,
+    save_session_snapshot,
+)
 
 
 SummaryGenerator = Callable[[str, list[dict[str, Any]], int, str], str]
@@ -106,12 +120,49 @@ class InMemorySessionStore:
 
     def __init__(self):
         self._sessions: dict[str, dict[str, Any]] = {}
+        self._revisions: dict[str, int] = {}
+        self._lock = RLock()
 
     def load(self, session_id: str) -> dict[str, Any]:
-        return copy.deepcopy(self._sessions.get(session_id, {}))
+        with self._lock:
+            return copy.deepcopy(self._sessions.get(session_id, {}))
 
     def save(self, session_id: str, state: dict[str, Any]) -> None:
-        self._sessions[session_id] = copy.deepcopy(state)
+        with self._lock:
+            self._sessions[session_id] = copy.deepcopy(state)
+            self._revisions[session_id] = self._revisions.get(session_id, 0) + 1
+
+    def load_with_revision(self, session_id: str) -> SessionSnapshot:
+        with self._lock:
+            return SessionSnapshot(
+                state=copy.deepcopy(self._sessions.get(session_id, {})),
+                revision=self._revisions.get(session_id, 0),
+            )
+
+    def save_if_revision(
+        self,
+        session_id: str,
+        state: dict[str, Any],
+        expected_revision: int,
+    ) -> int:
+        if (
+            isinstance(expected_revision, bool)
+            or not isinstance(expected_revision, int)
+            or expected_revision < 0
+        ):
+            raise ValueError("expected_revision must be a non-negative integer")
+        with self._lock:
+            actual_revision = self._revisions.get(session_id, 0)
+            if actual_revision != expected_revision:
+                raise SessionRevisionConflictError(
+                    session_id=session_id,
+                    expected_revision=expected_revision,
+                    actual_revision=actual_revision,
+                )
+            next_revision = actual_revision + 1
+            self._sessions[session_id] = copy.deepcopy(state)
+            self._revisions[session_id] = next_revision
+            return next_revision
 
 
 class JsonFileLongTermProfileStore:
@@ -181,6 +232,14 @@ class MemoryConfig:
     deferred_tool_compaction_hash_payloads: bool = True
     sliding_window_pct: float = 0.7
     sliding_window_max_tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class MemoryCommitResult:
+    """Per-call commit output that is safe to consume across concurrent runs."""
+
+    commit_info: dict[str, Any]
+    session_snapshot: SessionSnapshot
 
 
 def _default_user_data_dir() -> Path:
@@ -1151,14 +1210,12 @@ def _merge_history_and_incoming(
         return clean_incoming
     if not clean_incoming:
         return clean_history
-    if (
-        len(clean_incoming) >= len(clean_history)
-        and clean_incoming[: len(clean_history)] == clean_history
-    ):
-        return clean_incoming
     incoming_systems, incoming_non_system = _split_system_and_non_system(clean_incoming)
     history_systems, history_non_system = _split_system_and_non_system(clean_history)
-    systems = incoming_systems if incoming_systems else history_systems
+    systems = copy.deepcopy(history_systems)
+    for contribution in incoming_systems:
+        if contribution not in systems:
+            systems.append(copy.deepcopy(contribution))
     return systems + history_non_system + incoming_non_system
 
 
@@ -2380,11 +2437,27 @@ class MemoryManager:
         tool_resolver: HistoryToolResolver | None = None,
         supports_tools: bool | None = None,
     ) -> list[dict[str, Any]]:
-        state = self.store.load(session_id) if session_id else {}
+        session_snapshot = (
+            load_session_snapshot(self.store, session_id)
+            if session_id
+            else SessionSnapshot(state={}, revision=None)
+        )
+        state = copy.deepcopy(session_snapshot.state)
+        loaded_state = copy.deepcopy(state)
+        if EXECUTION_CHECKPOINT_KEY in state:
+            checkpoint = validate_execution_checkpoint(
+                state.get(EXECUTION_CHECKPOINT_KEY)
+            )
+            raise ExecutionCheckpointResumeRequiredError(
+                "session contains a durable execution checkpoint "
+                f"({checkpoint.get('status')}); use Agent/KernelMemoryRuntime "
+                "to restore it before preparing semantic memory"
+            )
         history = state.get("messages", [])
         if not isinstance(history, list):
             history = []
 
+        ensure_session_delta_input(history=history, incoming=incoming)
         merged = _merge_history_and_incoming(history, incoming)
         before_tokens = self.estimate_tokens(merged)
 
@@ -2426,15 +2499,25 @@ class MemoryManager:
         after_tokens = self.estimate_tokens(prepared)
         memory_meta = state.pop("_memory_meta", {})
 
+        persisted_snapshot = session_snapshot
+        if session_id and state != loaded_state:
+            persisted_snapshot = save_session_snapshot(
+                self.store,
+                session_id,
+                state,
+                expected_revision=session_snapshot.revision,
+            )
+
         self._last_prepare_info = {
             "session_id": session_id,
             "memory_namespace": _resolve_memory_namespace(session_id, memory_namespace),
             "before_estimated_tokens": before_tokens,
             "after_estimated_tokens": after_tokens,
+            "session_revision": persisted_snapshot.revision,
+            "session_revision_supported": persisted_snapshot.revision_supported,
+            "session_consistency": persisted_snapshot.consistency,
             **(memory_meta if isinstance(memory_meta, dict) else {}),
         }
-        if session_id:
-            self.store.save(session_id, state)
         return prepared
 
     def _commit_long_term_memory(
@@ -2576,8 +2659,53 @@ class MemoryManager:
         memory_namespace: str | None = None,
         model: str | None = None,
         long_term_extractor: LongTermExtractor | None = None,
-    ) -> None:
-        state = self.store.load(session_id) if session_id else {}
+        expected_revision: int | None = None,
+        summary_text: str | None = None,
+        return_result: bool = False,
+        clear_execution_checkpoint_id: str | None = None,
+    ) -> MemoryCommitResult | None:
+        session_snapshot = (
+            load_session_snapshot(self.store, session_id)
+            if session_id
+            else SessionSnapshot(state={}, revision=None)
+        )
+        if (
+            expected_revision is not None
+            and session_snapshot.revision is not None
+            and session_snapshot.revision != expected_revision
+        ):
+            raise SessionRevisionConflictError(
+                session_id=session_id,
+                expected_revision=expected_revision,
+                actual_revision=session_snapshot.revision,
+            )
+        state = copy.deepcopy(session_snapshot.state)
+        if (
+            EXECUTION_CHECKPOINT_KEY in state
+            and not clear_execution_checkpoint_id
+        ):
+            checkpoint = validate_execution_checkpoint(
+                state.get(EXECUTION_CHECKPOINT_KEY)
+            )
+            raise ExecutionCheckpointResumeRequiredError(
+                "session contains a durable execution checkpoint "
+                f"({checkpoint.get('status')}); semantic commit must resume or "
+                "atomically clear that checkpoint"
+            )
+        checkpoint_cleared = False
+        if clear_execution_checkpoint_id:
+            current_checkpoint = state.get(EXECUTION_CHECKPOINT_KEY)
+            current_checkpoint_id = (
+                str(current_checkpoint.get("checkpoint_id") or "")
+                if isinstance(current_checkpoint, dict)
+                else ""
+            )
+            if current_checkpoint_id != clear_execution_checkpoint_id:
+                raise ExecutionCheckpointCompatibilityError(
+                    "refusing to commit over a different execution checkpoint"
+                )
+            state.pop(EXECUTION_CHECKPOINT_KEY, None)
+            checkpoint_cleared = True
         clean_conversation = _deepcopy_messages(full_conversation)
         state["messages"] = clean_conversation
 
@@ -2587,7 +2715,13 @@ class MemoryManager:
             "session_id": session_id,
             "memory_namespace": _resolve_memory_namespace(session_id, memory_namespace),
             "stored_message_count": len(clean_conversation),
+            "execution_checkpoint_cleared": checkpoint_cleared,
         }
+        if summary_text is not None:
+            normalized_summary = str(summary_text or "").strip()
+            state["summary"] = normalized_summary
+            commit_info["summary_persisted"] = bool(normalized_summary)
+            commit_info["summary_length"] = len(normalized_summary)
 
         adapter = self.config.vector_adapter
         if adapter is not None:
@@ -2625,9 +2759,32 @@ class MemoryManager:
             long_term_extractor=long_term_extractor,
         )
 
+        persisted_snapshot = session_snapshot
         if session_id:
-            self.store.save(session_id, state)
+            persisted_snapshot = save_session_snapshot(
+                self.store,
+                session_id,
+                state,
+                expected_revision=(
+                    expected_revision
+                    if expected_revision is not None
+                    else session_snapshot.revision
+                ),
+            )
+        else:
+            persisted_snapshot = SessionSnapshot(state=copy.deepcopy(state), revision=None)
+        commit_info["session_revision"] = persisted_snapshot.revision
+        commit_info["session_revision_supported"] = persisted_snapshot.revision_supported
+        commit_info["session_consistency"] = persisted_snapshot.consistency
         self._last_commit_info = commit_info
+        result = MemoryCommitResult(
+            commit_info=copy.deepcopy(commit_info),
+            session_snapshot=SessionSnapshot(
+                state=copy.deepcopy(persisted_snapshot.state),
+                revision=persisted_snapshot.revision,
+            ),
+        )
+        return result if return_result else None
 
 
 __all__ = [
@@ -2638,6 +2795,7 @@ __all__ = [
     "LastNTurnsStrategy",
     "LongTermExtractor",
     "LongTermMemoryConfig",
+    "MemoryCommitResult",
     "LongTermProfileStore",
     "LongTermVectorAdapter",
     "MemoryConfig",

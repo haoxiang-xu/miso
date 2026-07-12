@@ -34,9 +34,29 @@ class LastNOptimizer(BaseContextOptimizer):
         _, non_system = split_system_and_non_system(messages)
         turns = split_turns(non_system)
         last_n_turns = max(0, int(self.config.last_n_turns))
-        kept_turns = turns[-last_n_turns:] if last_n_turns > 0 else []
         bucket = context.optimizer_state()
         bucket["last_n_turns"] = last_n_turns
+        summary_state = context.state.optimizer_state.get("llm_summary", {})
+        if (
+            isinstance(summary_state, dict)
+            and summary_state.get("source_preservation_required") is True
+        ):
+            bucket["skipped"] = True
+            bucket["skip_reason"] = "upstream_summary_replacement_unavailable"
+            bucket["kept_turn_count"] = len(turns)
+            bucket["total_turn_count"] = len(turns)
+            return self.state_only_delta(
+                bucket=bucket,
+                trace={
+                    "skipped": True,
+                    "skip_reason": "upstream_summary_replacement_unavailable",
+                    "total_turn_count": len(turns),
+                },
+            )
+
+        bucket["skipped"] = False
+        bucket.pop("skip_reason", None)
+        kept_turns = turns[-last_n_turns:] if last_n_turns > 0 else []
         bucket["kept_turn_count"] = len(kept_turns)
         bucket["total_turn_count"] = len(turns)
         updated_messages = replace_non_system_span(messages, _flatten_turns(kept_turns))

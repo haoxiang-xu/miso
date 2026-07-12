@@ -147,6 +147,46 @@ agent = Agent(
 
 `MemoryModule` 接受 `KernelMemoryRuntime`、`MemoryManager`、`MemoryConfig` 或 dict（自动 coerce）。传 config 让记忆行为保持声明式；传 `KernelMemoryRuntime` 可以让多个 agent 复用同一个 runtime。
 
+同一个 `Agent` 实例会跨调用复用由 config 创建的 runtime，因此固定 `session_id` 能保留历史；但默认 store 仍然只在当前进程有效。需要重启恢复时，应显式提供持久 store：
+
+```python
+from unchain.memory import JsonFileSessionStore, MemoryConfig, MemoryManager
+
+manager = MemoryManager(
+    config=MemoryConfig(last_n_turns=10),
+    store=JsonFileSessionStore("./session-state"),
+)
+agent = Agent(
+    name="durable-coder",
+    modules=(MemoryModule(memory=manager),),
+)
+```
+
+## Semantic Memory 与 Execution Checkpoint
+
+Session store 刻意分成两层：
+
+| 层 | 用途 | 能否被摘要或清洗 |
+| --- | --- | --- |
+| `messages` | 已完成、面向人的 semantic conversation | 可以 |
+| `execution_checkpoint` | 未完成工具事务、continuation、provider replay frame、完整性和 tool-schema digest | 不可以 |
+
+- `completed`：在同一次 CAS 写入中原子提交 semantic messages，并按 checkpoint ID 条件清除匹配的 checkpoint。
+- `max_iterations`：semantic messages 保持不变，单独保存 execution checkpoint。
+- `awaiting_human_input`：semantic messages 保持不变，保存 transcript 与 continuation。
+
+之后使用相同 `session_id` 调 `agent.run(...)`，可从 `max_iterations` checkpoint 继续，已经完成的工具不会再次执行。冷恢复时，`max_iterations=N` 表示给这次新调用再增加 N 个模型迭代；累计 iteration 仍会恢复，用于 telemetry。遇到 awaiting-human checkpoint 时，fresh run 会 fail closed；可用 `agent.resume_human_input(session_id=..., response=...)` 直接从持久 checkpoint 恢复，无需旧进程里的 result 对象。
+
+Replay frame 是 provider-native 且有序的：OpenAI 保留 encrypted reasoning item，Anthropic/Hyperspace 保留 thinking signature，Ollama 保留 thinking 字段。它会校验完整性，并绑定 provider/model 与当前 tool schema；不会进入普通 memory compaction，请求 trace 中也会脱敏。
+
+保证从 checkpoint 写入并回读验证成功后开始。如果进程恰好在“外部工具已经产生副作用、checkpoint 还没落盘”之间崩溃，仍需 idempotency key、write-ahead log 或 transactional outbox；仅靠 execution checkpoint 无法提供任意崩溃下的 exactly-once。
+
+对于 memory-backed `session_id`，全部 `on_suspend` contribution 会先完成，然后才跨过保留的持久化 barrier。阻塞式 `on_human_input`、`on_max_iterations` callback 及其对应 request event，只会在 checkpoint 写入并回读成功后执行；final message event 也只会在 durable finalization 后发出。因此 checkpoint 写入失败时，运行不会进入长期等待。callback 返回的用户回答目前还不是 exactly-once 的持久 interaction record；如果用户已经回答、但进程在 resume delta 应用前崩溃，调用方可能仍需重新提交该回答。
+
+当前 execution checkpoint 恢复的是内建 continuation 边界：semantic transcript、provider replay frame、累计 iteration/token、context-window 大小和 workspace-change state。它还不是任意 harness 状态的通用序列化格式。自定义 `component_state`、optimizer 内部状态、artifact 与 subagent state 如果也要跨进程冷恢复，后续仍需 versioned per-harness checkpoint slice 协议。
+
+每个内置 session store 还会为整份 session state 维护单调 revision。Bootstrap 捕获 revision；semantic commit、checkpoint 保存/清除、workspace pin 修改以及 edit/resend 替换都通过 compare-and-swap（CAS）写入。过期 worker 会抛出 `SessionRevisionConflictError`，不会覆盖较新的 messages 或 checkpoint；重复写入同一个确定性 checkpoint 是幂等的。
+
 ## 上下文策略
 
 策略决定 session store 中的哪些消息被包含在 LLM 的上下文窗口中。
@@ -177,6 +217,10 @@ config = MemoryConfig(
 ### `HybridContextStrategy`
 
 组合 LastNTurns + SummaryToken。近期轮次始终保留；空间不足时对旧轮次做摘要。提供 `MemoryConfig` 时这是 **默认** 策略。
+
+压缩按事务处理：只有 summary 阶段成功生成非空替代内容后，LastN 才能删除
+源轮次。如果 generator 缺失、报错或返回空摘要，原始上下文会保留，并记录
+`upstream_summary_replacement_unavailable`，不会静默丢掉早期证据。
 
 ## Namespace 作用域
 
@@ -256,18 +300,33 @@ store = InMemorySessionStore()
 from unchain.memory import SessionStore
 
 class MySessionStore(SessionStore):
-    def load(self, session_id: str) -> list[dict]:
-        """加载 session 的对话轮次。"""
+    def load(self, session_id: str) -> dict:
+        """加载完整 session state。"""
         ...
 
-    def save(self, session_id: str, messages: list[dict]) -> None:
-        """保存 session 的对话轮次。"""
-        ...
-
-    def delete(self, session_id: str) -> None:
-        """删除 session 的所有轮次。"""
+    def save(self, session_id: str, state: dict) -> None:
+        """无条件保存完整 session state。"""
         ...
 ```
+
+旧接口仍然兼容，但会报告 `session_consistency="best_effort"`，无法阻止跨进程的过期写入。长时任务使用的生产 store 应同时实现可选 revision capability：
+
+```python
+from unchain.memory import SessionSnapshot
+
+def load_with_revision(session_id: str) -> SessionSnapshot:
+    ...
+
+def save_if_revision(
+    session_id: str,
+    state: dict,
+    expected_revision: int,
+) -> int:
+    """原子保存；revision 不匹配时抛出 SessionRevisionConflictError。"""
+    ...
+```
+
+`InMemorySessionStore` 提供进程内 CAS。`JsonFileSessionStore` 通过每个 session 的文件锁、`fsync` 和原子替换提供跨进程 CAS；持久文件损坏时会 fail closed，不会被当成空 session 覆盖。
 
 ## Vector Store Adapter
 
@@ -352,7 +411,7 @@ KernelRunResult 返回给调用方
 
 5. **工具压缩是有损的** -- 旧工具结果被替换为摘要。如果 LLM 需要引用之前的精确结果，可能找不到。当前轮次永远不会被压缩。
 
-6. **InMemorySessionStore 是临时的** -- 默认 store 在进程重启时丢失一切。多 session 场景需要实现持久化 `SessionStore`。
+6. **InMemorySessionStore 是临时的** -- 默认 store 在进程重启时丢失一切。需要重启恢复时，应使用 `JsonFileSessionStore` 或其他带 revision 的持久 store。仅实现 `load/save` 的旧 store 仍可运行，但并发一致性只是 best-effort。
 
 ## 相关 Skills
 

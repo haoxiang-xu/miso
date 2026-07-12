@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import shutil
 import tempfile
 from contextlib import contextmanager
@@ -21,6 +22,43 @@ _COMMON_IGNORED_NAMES = {
     "build",
     "dist",
 }
+_SNAPSHOT_IGNORED_NAMES = _COMMON_IGNORED_NAMES | {
+    ".coverage",
+    "node_modules",
+}
+
+
+def snapshot_workspace(workspace_root: str | Path) -> dict[str, str]:
+    root = Path(workspace_root).resolve()
+    snapshot: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if any(part in _SNAPSHOT_IGNORED_NAMES for part in relative.parts):
+            continue
+        if not path.is_file():
+            continue
+        try:
+            snapshot[relative.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            continue
+    return snapshot
+
+
+def diff_workspace_snapshots(
+    before: dict[str, str],
+    after: dict[str, str],
+) -> dict[str, list[str]]:
+    before_paths = set(before)
+    after_paths = set(after)
+    return {
+        "created_paths": sorted(after_paths - before_paths),
+        "modified_paths": sorted(
+            path
+            for path in before_paths & after_paths
+            if before[path] != after[path]
+        ),
+        "deleted_paths": sorted(before_paths - after_paths),
+    }
 
 
 def _repo_copy_ignore(repo_root: Path):
@@ -48,7 +86,7 @@ def prepare_workspace(case: EvalCase, *, repo_root: str | Path) -> Iterator[Path
     if not source_path.exists():
         raise FileNotFoundError(f"workspace source not found for case '{case.id}': {source_path}")
 
-    temp_root = Path(tempfile.mkdtemp(prefix=f"miso-eval-{case.id}-"))
+    temp_root = Path(tempfile.mkdtemp(prefix=f"unchain-eval-{case.id}-"))
     workspace_root = temp_root / "workspace"
     try:
         ignore = _repo_copy_ignore(repo_path) if case.workspace_mode == "repo_copy" else None

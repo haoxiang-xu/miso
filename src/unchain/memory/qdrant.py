@@ -3,9 +3,12 @@ from __future__ import annotations
 import copy
 import json
 import os
+import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
+from weakref import WeakValueDictionary
 
 from ..runtime.payloads import (
     DEFAULT_PAYLOADS_RESOURCE,
@@ -13,6 +16,16 @@ from ..runtime.payloads import (
     load_default_payloads,
     load_model_capabilities,
 )
+from .revision import (
+    SessionRevisionConflictError,
+    SessionSnapshot,
+    SessionStoreCorruptionError,
+)
+
+if os.name == "nt":  # pragma: no cover - exercised on Windows
+    import msvcrt
+else:  # pragma: no cover - platform selection itself is trivial
+    import fcntl
 
 try:
     from qdrant_client import QdrantClient
@@ -23,6 +36,45 @@ except ImportError:  # pragma: no cover
 
 DEFAULT_PAYLOADS_FILE = DEFAULT_PAYLOADS_RESOURCE
 MODEL_CAPABILITIES_FILE = MODEL_CAPABILITIES_RESOURCE
+
+_SESSION_REVISION_FIELD = "__unchain_session_revision__"
+_JSON_SESSION_THREAD_LOCKS: WeakValueDictionary[str, threading.RLock] = WeakValueDictionary()
+_JSON_SESSION_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+def _json_session_thread_lock(path: Path) -> threading.RLock:
+    key = str(path.resolve())
+    with _JSON_SESSION_THREAD_LOCKS_GUARD:
+        lock = _JSON_SESSION_THREAD_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _JSON_SESSION_THREAD_LOCKS[key] = lock
+        return lock
+
+
+@contextmanager
+def _exclusive_json_session_lock(path: Path) -> Iterator[None]:
+    thread_lock = _json_session_thread_lock(path)
+    with thread_lock:
+        lock_path = path.with_name(f".{path.name}.lock")
+        with lock_path.open("a+b") as lock_file:
+            if os.name == "nt":  # pragma: no cover - exercised on Windows
+                lock_file.seek(0, os.SEEK_END)
+                if lock_file.tell() == 0:
+                    lock_file.write(b"\0")
+                    lock_file.flush()
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if os.name == "nt":  # pragma: no cover - exercised on Windows
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _load_json_registry(path: str | Path) -> dict[str, dict[str, Any]]:
@@ -438,24 +490,104 @@ class JsonFileSessionStore:
         safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in session_id)
         return self._base / f"{safe}.json"
 
-    def load(self, session_id: str) -> dict[str, Any]:
-        p = self._path(session_id)
-        if not p.exists():
-            return {}
+    def _read_unlocked(self, session_id: str, path: Path) -> SessionSnapshot:
+        if not path.exists():
+            return SessionSnapshot(state={}, revision=0)
         try:
-            return copy.deepcopy(json.loads(p.read_text(encoding="utf-8")))
-        except Exception:
-            return {}
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise SessionStoreCorruptionError(
+                session_id=session_id,
+                detail=f"cannot decode {path.name}",
+            ) from exc
+        if not isinstance(raw, dict):
+            raise SessionStoreCorruptionError(
+                session_id=session_id,
+                detail=f"{path.name} must contain a JSON object",
+            )
+
+        revision = raw.pop(_SESSION_REVISION_FIELD, 0)
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+            raise SessionStoreCorruptionError(
+                session_id=session_id,
+                detail=f"{path.name} contains an invalid revision",
+            )
+        return SessionSnapshot(state=copy.deepcopy(raw), revision=revision)
+
+    def _write_unlocked(
+        self,
+        *,
+        path: Path,
+        state: dict[str, Any],
+        revision: int,
+    ) -> None:
+        payload = copy.deepcopy(state)
+        payload.pop(_SESSION_REVISION_FIELD, None)
+        payload[_SESSION_REVISION_FIELD] = revision
+        serialized = json.dumps(payload, default=str, ensure_ascii=False)
+        temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with temp_path.open("x", encoding="utf-8") as temp_file:
+                temp_file.write(serialized)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+            os.replace(temp_path, path)
+            if os.name != "nt":
+                directory_fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    def load(self, session_id: str) -> dict[str, Any]:
+        return self.load_with_revision(session_id).state
 
     def save(self, session_id: str, state: dict[str, Any]) -> None:
-        p = self._path(session_id)
-        try:
-            p.write_text(
-                json.dumps(state, default=str, ensure_ascii=False),
-                encoding="utf-8",
+        path = self._path(session_id)
+        with _exclusive_json_session_lock(path):
+            snapshot = self._read_unlocked(session_id, path)
+            self._write_unlocked(
+                path=path,
+                state=state,
+                revision=int(snapshot.revision or 0) + 1,
             )
-        except Exception:
-            pass
+
+    def load_with_revision(self, session_id: str) -> SessionSnapshot:
+        path = self._path(session_id)
+        with _exclusive_json_session_lock(path):
+            return self._read_unlocked(session_id, path)
+
+    def save_if_revision(
+        self,
+        session_id: str,
+        state: dict[str, Any],
+        expected_revision: int,
+    ) -> int:
+        if (
+            isinstance(expected_revision, bool)
+            or not isinstance(expected_revision, int)
+            or expected_revision < 0
+        ):
+            raise ValueError("expected_revision must be a non-negative integer")
+        path = self._path(session_id)
+        with _exclusive_json_session_lock(path):
+            snapshot = self._read_unlocked(session_id, path)
+            actual_revision = int(snapshot.revision or 0)
+            if actual_revision != expected_revision:
+                raise SessionRevisionConflictError(
+                    session_id=session_id,
+                    expected_revision=expected_revision,
+                    actual_revision=actual_revision,
+                )
+            next_revision = actual_revision + 1
+            self._write_unlocked(
+                path=path,
+                state=state,
+                revision=next_revision,
+            )
+            return next_revision
 
 
 def build_embedded_qdrant_client(*, path: str | Path) -> "QdrantClient":

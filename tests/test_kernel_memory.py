@@ -1,11 +1,20 @@
 import copy
 import json
 
+import pytest
+
 from unchain.input.human_input import ASK_USER_QUESTION_TOOL_NAME
 from unchain.kernel import BaseRuntimeHarness, KernelLoop, ModelTurnResult
 from unchain.memory import KernelMemoryRuntime
 from unchain.kernel.types import ToolCall as KernelToolCall
-from unchain.memory import InMemorySessionStore, LongTermMemoryConfig, MemoryConfig, MemoryManager
+from unchain.memory import (
+    ExecutionCheckpointResumeRequiredError,
+    InMemorySessionStore,
+    JsonFileSessionStore,
+    LongTermMemoryConfig,
+    MemoryConfig,
+    MemoryManager,
+)
 from unchain.runtime import attach_memory_runtime_components, build_runtime_loop
 from unchain.tools import Toolkit
 
@@ -227,6 +236,90 @@ def test_memory_bootstrap_resume_mode_does_not_duplicate_history():
     assert transcript_after_bootstrap == conversation
     assert state.transcript == conversation
     assert state.optimizer_state["llm_summary"]["summary"] == "persisted summary"
+
+
+def test_direct_memory_prepare_rejects_session_history_replay_when_system_changes():
+    store = InMemorySessionStore()
+    session_id = "direct-memory-owner-guard"
+    stored_state = {
+        "messages": [
+            {"role": "system", "content": "OLD SYS"},
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+        ],
+        "summary": "keep me",
+    }
+    store.save(session_id, stored_state)
+    manager = MemoryManager(store=store)
+
+    with pytest.raises(ValueError, match="session history ownership conflict"):
+        manager.prepare_messages(
+            session_id=session_id,
+            incoming=[
+                {"role": "system", "content": "NEW SYS"},
+                {"role": "user", "content": "u1"},
+                {"role": "assistant", "content": "a1"},
+                {"role": "user", "content": "u2"},
+            ],
+            max_context_window_tokens=8_192,
+            model="fake",
+        )
+
+    assert store.load(session_id) == stored_state
+
+
+def test_direct_memory_prepare_allows_identical_delta_for_user_only_legacy_history():
+    store = InMemorySessionStore()
+    session_id = "user-only-legacy-history"
+    store.save(
+        session_id,
+        {"messages": [{"role": "user", "content": "repeat this"}]},
+    )
+    manager = MemoryManager(store=store)
+
+    prepared = manager.prepare_messages(
+        session_id=session_id,
+        incoming=[{"role": "user", "content": "repeat this"}],
+        max_context_window_tokens=8_192,
+        model="fake",
+    )
+
+    assert [message.get("content") for message in prepared] == [
+        "repeat this",
+        "repeat this",
+    ]
+
+
+def test_memory_bootstrap_rejects_openai_previous_response_history_owner_conflict():
+    class _NeverModelIO:
+        provider = "openai"
+        model = "gpt-4.1"
+
+        def __init__(self):
+            self.calls = 0
+
+        def fetch_turn(self, request):
+            del request
+            self.calls += 1
+            raise AssertionError("model must not be called for conflicting history owners")
+
+    model_io = _NeverModelIO()
+    store = InMemorySessionStore()
+    runtime = KernelMemoryRuntime.from_config(store=store)
+    loop = KernelLoop(model_io=model_io)
+    attach_memory_runtime_components(loop, runtime)
+
+    with pytest.raises(ValueError, match="previous_response_id"):
+        loop.run(
+            [{"role": "user", "content": "u1"}],
+            provider="openai",
+            model="gpt-4.1",
+            previous_response_id="resp_external",
+            session_id="provider-owner-conflict-session",
+        )
+
+    assert model_io.calls == 0
+    assert store.load("provider-owner-conflict-session") == {}
 
 
 def test_runtime_memory_components_register_default_stack_and_restore_history_across_runs():
@@ -554,8 +647,8 @@ def test_memory_commit_does_not_advance_cursors_when_indexing_fails():
     assert state.memory_commit_info["long_term_profile_fallback_reason"].startswith("profile_save_failed:")
 
 
-def test_memory_suspend_skips_commit_and_resume_does_not_duplicate_history():
-    store = InMemorySessionStore()
+def test_memory_suspend_checkpoint_survives_cold_resume_without_duplicate_history(tmp_path):
+    store = JsonFileSessionStore(tmp_path)
     session_id = "memory-human-input"
     history = [
         {"role": "user", "content": "persisted user"},
@@ -623,7 +716,36 @@ def test_memory_suspend_skips_commit_and_resume_does_not_duplicate_history():
         max_iterations=3,
     )
     assert suspended.status == "awaiting_human_input"
-    assert store.load(session_id)["messages"] == history
+    stored_after_suspend = store.load(session_id)
+    assert stored_after_suspend["messages"] == history
+    checkpoint = stored_after_suspend["execution_checkpoint"]
+    assert checkpoint["status"] == "awaiting_human_input"
+    assert checkpoint["transcript"] == suspended.messages
+    assert checkpoint["continuation"] == suspended.continuation
+
+    blocked_model_io = _QueueModelIO(
+        [
+            ModelTurnResult(
+                assistant_messages=[{"role": "assistant", "content": "must not run"}],
+                tool_calls=[],
+                final_text="must not run",
+            )
+        ]
+    )
+    blocked_loop = build_runtime_loop(model_io=blocked_model_io)
+    attach_memory_runtime_components(
+        blocked_loop,
+        KernelMemoryRuntime.from_config(store=JsonFileSessionStore(tmp_path)),
+    )
+    with pytest.raises(ExecutionCheckpointResumeRequiredError):
+        blocked_loop.run(
+            [{"role": "user", "content": "start over"}],
+            session_id=session_id,
+            provider="openai",
+            model="gpt-4.1",
+            toolkit=toolkit,
+        )
+    assert blocked_model_io.requests == []
 
     resume_model_io = _QueueModelIO(
         [
@@ -635,8 +757,10 @@ def test_memory_suspend_skips_commit_and_resume_does_not_duplicate_history():
             )
         ]
     )
+    cold_store = JsonFileSessionStore(tmp_path)
+    cold_runtime = KernelMemoryRuntime.from_config(store=cold_store)
     resume_loop = build_runtime_loop(model_io=resume_model_io)
-    attach_memory_runtime_components(resume_loop, runtime)
+    attach_memory_runtime_components(resume_loop, cold_runtime)
 
     resumed = resume_loop.resume_human_input(
         conversation=suspended.messages,
@@ -647,9 +771,11 @@ def test_memory_suspend_skips_commit_and_resume_does_not_duplicate_history():
     )
 
     assert resumed.status == "completed"
+    assert resume_model_io.requests[0].previous_response_id is None
     assert sum(1 for message in resumed.messages if message.get("content") == "persisted assistant") == 1
-    stored_after_resume = store.load(session_id)
+    stored_after_resume = cold_store.load(session_id)
     assert stored_after_resume["messages"][-1]["content"] == "React it is"
+    assert "execution_checkpoint" not in stored_after_resume
 
 
 def test_kernel_memory_runtime_from_memory_manager_reuses_existing_components():

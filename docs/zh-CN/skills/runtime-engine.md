@@ -78,7 +78,7 @@ result = loop.run(messages=[{"role": "user", "content": "Hello"}])
 ## 当前执行流
 
 1. `run()` 规范化输入消息，按模型能力校验模态支持，并为这次迭代构造 `RunState`。
-2. loop 在每个模型 turn 前后 dispatch harness 走完 8 个阶段（完整列表见 `architecture-overview.md`）。
+2. loop 在每个模型 turn 前后 dispatch 对外扩展 phase（完整列表见 `architecture-overview.md`），并在 suspend/finalize 时跨过 runtime 保留的 durable barrier。
 3. `ModelIO.fetch_turn(request)` 返回 `ModelTurnResult`，含 assistant 消息、工具调用、token 计数。
 4. 如果模型发出工具调用，`ToolExecutionHarness` 执行它们。需要确认的工具会让 loop 提前返回 `status="awaiting_human_input"`。
 5. 标了 `observe=True` 的工具会在 `after_tool_batch` 触发额外的 observation turn。
@@ -87,7 +87,7 @@ result = loop.run(messages=[{"role": "user", "content": "Hello"}])
 ## 设计要点
 
 - Memory 以 harness 对的形式集成（bootstrap/before-model 召回 + before-commit 写）。不带 memory 的 run 直接省掉 `MemoryModule`。
-- Retry 是包在 `ModelIO.fetch_turn()` 外的（见 `unchain.retry`），从来不重试已经流到下游的内容。
+- Retry 包在 `ModelIO.fetch_turn()` 外（见 `unchain.retry`）。仅用于调试的 request trace event 不会锁死 attempt，因此瞬态失败仍可重试；第一个用户可见 token/tool/reasoning event 会关闭 retry gate，避免重复输出。
 - Provider 特定投影（规范消息 → SDK 形状）完全在每个 `ModelIO` 实现内部，kernel 保持厂商无关。
 
 ## Provider 抽象

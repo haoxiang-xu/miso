@@ -190,6 +190,33 @@ def _budgeted_chars(payload: Any) -> int:
     return len(_stable_json_dumps(payload))
 
 
+def _retained_scalar_fields(payload: Any, max_chars: int) -> dict[str, Any]:
+    if not isinstance(payload, dict) or max_chars <= 0:
+        return {}
+
+    candidates: list[tuple[int, str, Any]] = []
+    duplicate_counts: dict[str, int] = {}
+    for raw_key, value in payload.items():
+        if not isinstance(value, (str, int, float, bool)) and value is not None:
+            continue
+        key = _canonical_key(raw_key)
+        duplicate_counts[key] = duplicate_counts.get(key, 0) + 1
+        if duplicate_counts[key] > 1:
+            key = f"{key}#{duplicate_counts[key]}"
+        candidate_chars = _budgeted_chars({key: value})
+        candidates.append((candidate_chars, key, copy.deepcopy(value)))
+
+    retained: dict[str, Any] = {}
+    for _candidate_chars, key, value in sorted(
+        candidates,
+        key=lambda item: (item[0], item[1]),
+    ):
+        candidate = {**retained, key: value}
+        if _budgeted_chars(candidate) <= max_chars:
+            retained[key] = value
+    return retained
+
+
 def _compact_payload(
     payload: Any,
     *,
@@ -209,6 +236,9 @@ def _compact_payload(
         "preview": _preview_text(original_json, preview_chars),
         "original_sha1": _sha1_text(original_json),
     }
+    retained_fields = _retained_scalar_fields(payload, max(0, int(preview_chars)))
+    if retained_fields:
+        compacted["retained_fields"] = retained_fields
     previous_size = -1
     while True:
         current_size = _budgeted_chars(compacted)

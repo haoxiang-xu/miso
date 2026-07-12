@@ -114,6 +114,48 @@ def test_budget_controller_compacts_large_openai_result_with_digest():
     assert outcome.stats.saved_chars > 0
 
 
+def test_budget_controller_retains_small_scalar_fields_from_large_mapping():
+    call = _call()
+    message = _message(
+        "openai",
+        call,
+        {
+            "head": "A" * 2_000,
+            "cursor": "result-page-7",
+            "retrieve_with": "read_range",
+            "status": "partial",
+            "tail": "Z" * 2_000,
+        },
+    )
+    controller = ToolResultBudgetController(
+        ToolResultBudgetConfig(
+            max_result_chars=1_000,
+            max_batch_chars=1_000,
+            preview_chars=160,
+            min_chars_to_budget=40,
+        )
+    )
+
+    outcome = controller.budget_messages(
+        provider="openai",
+        toolkit=Toolkit(),
+        tool_calls=[call],
+        result_messages=[message],
+        session_id="session-a",
+    )
+
+    payload = _openai_payload(outcome.messages[0])
+    assert payload["compacted"] is True
+    assert payload["retained_fields"] == {
+        "cursor": "result-page-7",
+        "retrieve_with": "read_range",
+        "status": "partial",
+    }
+    assert "head" not in payload["retained_fields"]
+    assert "tail" not in payload["retained_fields"]
+    assert outcome.stats.budgeted_chars <= 1_000
+
+
 def test_budget_controller_prefers_per_tool_result_optimizer():
     call = _call(name="semantic_tool")
     toolkit = Toolkit()

@@ -11,6 +11,7 @@ from .lifecycle_events import (
 from .state import RunState
 
 EmitEvent = Callable[..., None]
+BeforeWait = Callable[[], None]
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ def resolve_max_iterations_boundary(
     callback: Any,
     run_id: str,
     emit_event: EmitEvent,
+    before_wait: BeforeWait | None = None,
 ) -> MaxIterationsBoundary:
     current_max = int(effective_max)
     if int(state.iteration) < current_max:
@@ -40,6 +42,8 @@ def resolve_max_iterations_boundary(
             emit_run_max_iterations_on_finish=True,
         )
 
+    if before_wait is not None:
+        before_wait()
     emit_event(
         callback,
         "run_max_iterations",

@@ -11,6 +11,7 @@ from ..kernel.state import RunState
 from ..kernel.types import ToolCall
 from ..schemas import ResponseFormat
 from ..tools.base import BaseToolHarness, ToolContext
+from ..tools.common import emit_loop_event
 from ..tools.messages import get_provider_message_builder
 from ..tools.types import ToolBatchState
 
@@ -179,18 +180,37 @@ class HumanInputResumeHarness(BaseToolHarness):
             arguments={},
         )
         builder = get_provider_message_builder(context.provider)
+        tool_result = human_response.to_tool_result()
         tool_message = builder.build_tool_result_message(
             tool_call=tool_call,
-            tool_result=human_response.to_tool_result(),
+            tool_result=tool_result,
+        )
+        emit_loop_event(
+            context.loop,
+            context.callback,
+            "tool_result",
+            context.run_id,
+            iteration=max(0, _int_from_continuation(continuation, "iteration") - 1),
+            tool_name=tool_call.name,
+            call_id=tool_call.call_id,
+            result=copy.deepcopy(tool_result),
         )
 
-        use_previous_response_chain = bool(continuation.get("use_openai_previous_response_chain", False))
+        checkpoint_restored = bool(
+            context.state.memory_state.get("execution_checkpoint_restored", False)
+        )
+        use_previous_response_chain = bool(
+            continuation.get("use_openai_previous_response_chain", False)
+        ) and not checkpoint_restored
+        previous_response_id = (
+            None if checkpoint_restored else continuation.get("previous_response_id")
+        )
         next_model_input = (
             [copy.deepcopy(tool_message)]
             if context.provider == "openai"
             and use_previous_response_chain
-            and isinstance(continuation.get("previous_response_id"), str)
-            and continuation.get("previous_response_id")
+            and isinstance(previous_response_id, str)
+            and previous_response_id
             else None
         )
 
@@ -204,8 +224,9 @@ class HumanInputResumeHarness(BaseToolHarness):
                 "run_status": "running",
                 "last_continuation": None,
                 "next_model_input": next_model_input,
+                "provider_replay_append": [tool_message],
                 "provider_state": {
-                    "previous_response_id": continuation.get("previous_response_id"),
+                    "previous_response_id": previous_response_id,
                     "use_previous_response_chain": use_previous_response_chain,
                 },
                 "suspend_state": {
@@ -216,6 +237,7 @@ class HumanInputResumeHarness(BaseToolHarness):
             trace={
                 "request_id": request.request_id,
                 "resumed_from_continuation": True,
+                "execution_checkpoint_restored": checkpoint_restored,
             },
         )
 

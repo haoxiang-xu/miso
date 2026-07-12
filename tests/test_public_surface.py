@@ -262,6 +262,58 @@ def test_memory_surface_exports_same_objects_as_current_internal_paths():
     )
 
 
+def test_memory_surface_exports_session_history_ownership_error():
+    from unchain.memory import SessionHistoryOwnershipError
+    from unchain.memory.ownership import (
+        SessionHistoryOwnershipError as InternalSessionHistoryOwnershipError,
+    )
+
+    assert SessionHistoryOwnershipError is InternalSessionHistoryOwnershipError
+    assert issubclass(SessionHistoryOwnershipError, ValueError)
+    assert SessionHistoryOwnershipError.code == "session_history_ownership_conflict"
+
+
+def test_memory_surface_exports_revision_and_commit_contracts():
+    from unchain.memory import (
+        MemoryCommitResult,
+        RevisionedSessionStore,
+        SessionRevisionConflictError,
+        SessionSnapshot,
+        SessionStoreCorruptionError,
+        load_session_snapshot,
+        save_session_snapshot,
+    )
+    from unchain.memory.manager import MemoryCommitResult as InternalCommitResult
+    from unchain.memory.revision import SessionSnapshot as InternalSessionSnapshot
+
+    assert MemoryCommitResult is InternalCommitResult
+    assert SessionSnapshot is InternalSessionSnapshot
+    assert RevisionedSessionStore.__name__ == "RevisionedSessionStore"
+    assert SessionRevisionConflictError.code == "session_revision_conflict"
+    assert SessionStoreCorruptionError.code == "session_store_corruption"
+    assert callable(load_session_snapshot)
+    assert callable(save_session_snapshot)
+
+
+def test_memory_surface_exports_execution_checkpoint_errors():
+    from unchain.memory import (
+        ExecutionCheckpointError,
+        ExecutionCheckpointIntegrityError,
+        ExecutionCheckpointPersistenceError,
+        ExecutionCheckpointReplayUnavailableError,
+        ExecutionCheckpointResumeRequiredError,
+    )
+    from unchain.memory.checkpoint_state import (
+        ExecutionCheckpointError as InternalExecutionCheckpointError,
+    )
+
+    assert ExecutionCheckpointError is InternalExecutionCheckpointError
+    assert issubclass(ExecutionCheckpointIntegrityError, ExecutionCheckpointError)
+    assert issubclass(ExecutionCheckpointPersistenceError, ExecutionCheckpointError)
+    assert issubclass(ExecutionCheckpointReplayUnavailableError, ExecutionCheckpointError)
+    assert issubclass(ExecutionCheckpointResumeRequiredError, ExecutionCheckpointError)
+
+
 def test_events_surface_exports_runtime_v4_types():
     from unchain.events import RuntimeEvent, RuntimeEventBridge
 

@@ -8,6 +8,10 @@ from unchain.interaction.fyi import FyiChannel, FyiInjectionHarness, FyiMessage,
 from unchain.kernel import ModelTurnResult, ToolCall
 from unchain.kernel.harness import HarnessContext
 from unchain.kernel.loop import KernelLoop
+from unchain.kernel.provider_replay import (
+    current_provider_replay_frame,
+    set_provider_replay_frame,
+)
 from unchain.kernel.state import RunState
 
 
@@ -149,6 +153,50 @@ def test_fyi_injection_is_model_visible_and_persisted_same_turn_e2e():
     assert fyi_events[0]["count"] == 1
     assert fyi_events[0]["messages"][0]["message_id"] == mid
     assert fyi_events[0]["messages"][0]["text"] == "the user changed their mind mid-task"
+
+
+def test_fyi_injection_updates_stateful_delta_and_lossless_provider_replay():
+    channel = FyiChannel()
+    channel.post("also support Chinese")
+    harness = FyiInjectionHarness(channel=channel)
+    loop = KernelLoop(harnesses=[harness])
+    state = loop.seed_state([{"role": "user", "content": "original task"}])
+    tool_output = {
+        "type": "function_call_output",
+        "call_id": "call_1",
+        "output": '{"ok":true}',
+    }
+    state.provider_state.provider = "openai"
+    state.provider_state.use_previous_response_chain = True
+    state.provider_state.previous_response_id = "resp_1"
+    state.next_model_input = [tool_output]
+    set_provider_replay_frame(
+        state,
+        {
+            "format": "openai.responses.v1",
+            "complete": True,
+            "items": [
+                {"role": "user", "content": "original task"},
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "demo_tool",
+                    "arguments": "{}",
+                },
+                tool_output,
+            ],
+            "source": "test",
+        },
+    )
+
+    loop.dispatch_phase(state, phase="before_model", event={"run_id": "run-1"})
+
+    assert state.next_model_input[0] == tool_output
+    assert "also support Chinese" in state.next_model_input[-1]["content"]
+    assert "also support Chinese" in state.transcript[-1]["content"]
+    replay_frame = current_provider_replay_frame(state)
+    assert replay_frame is not None
+    assert "also support Chinese" in replay_frame["items"][-1]["content"]
 
 
 def test_fyi_posted_mid_run_reaches_next_model_request():

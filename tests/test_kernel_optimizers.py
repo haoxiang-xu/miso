@@ -188,6 +188,49 @@ def test_llm_summary_optimizer_falls_back_without_interrupting():
     assert state.transcript == history
 
 
+def test_failed_summary_blocks_destructive_last_n_only_for_that_pass():
+    summary = LlmSummaryOptimizer(
+        LlmSummaryOptimizerConfig(
+            summary_trigger_pct=0.2,
+            summary_target_pct=0.1,
+            max_summary_chars=200,
+            summary_generator=None,
+        )
+    )
+    loop = KernelLoop(
+        harnesses=[
+            summary,
+            LastNOptimizer(LastNOptimizerConfig(last_n_turns=1)),
+        ]
+    )
+    history = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "early " + ("U" * 1_000)},
+        {"role": "assistant", "content": "a1 " + ("A" * 1_000)},
+        {"role": "user", "content": "latest"},
+        {"role": "assistant", "content": "a2"},
+    ]
+    state = loop.seed_state(
+        history,
+        model="gpt-5",
+        max_context_window_tokens=500,
+    )
+
+    loop.dispatch_phase(state, phase="before_model", event={"toolkit": Toolkit()})
+
+    assert state.latest_messages() == history
+    assert state.optimizer_state["last_n"]["skip_reason"] == (
+        "upstream_summary_replacement_unavailable"
+    )
+
+    state.provider_state.max_context_window_tokens = 100_000
+    loop.dispatch_phase(state, phase="before_model", event={"toolkit": Toolkit()})
+
+    assert state.optimizer_state["llm_summary"]["source_preservation_required"] is False
+    assert state.optimizer_state["last_n"]["skipped"] is False
+    assert all("early" not in str(message.get("content", "")) for message in state.latest_messages())
+
+
 @pytest.mark.parametrize(
     ("provider", "builder"),
     [

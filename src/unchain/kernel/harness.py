@@ -16,8 +16,10 @@ RuntimePhase = Literal[
     "after_tool_batch",
     "before_commit",
     "on_suspend",
+    "suspend_persist",
     "on_resume",
     "run_finalizing",
+    "finalize_persist",
 ]
 
 

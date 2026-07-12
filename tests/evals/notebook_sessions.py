@@ -12,9 +12,17 @@ from unchain.agent import Agent
 
 from .cases import build_eval_case
 from .defaults import get_default_judge_model_spec
-from .env import load_root_env, resolve_api_key
+from .env import get_model_spec_skip_reason, load_root_env, resolve_api_key
 from .judge import build_skipped_judge_report
-from .runner import _build_candidate_tools, _build_run_artifact, _build_standard_payload, _run_judge, _slugify
+from .runner import (
+    _build_candidate_modules,
+    _build_run_artifact,
+    _build_standard_payload,
+    _coerce_agent_run_output,
+    _max_context_window_tokens,
+    _run_judge,
+    _slugify,
+)
 from .scoring import extract_last_assistant_text
 from .serialization import ensure_directory, persist_judge_report, persist_run_artifact, write_json
 from .types import EvalCase, ModelSpec, RunArtifact, coerce_model_spec, to_jsonable
@@ -77,7 +85,7 @@ def _candidate_agent(
     *,
     case: EvalCase,
     model_spec: ModelSpec,
-    api_key: str,
+    api_key: str | None,
     workspace_root: Path,
     agent_cls: type[Agent],
 ) -> Agent:
@@ -90,7 +98,7 @@ def _candidate_agent(
             "Use the mounted tools carefully. Base claims on evidence. "
             "Ask the user via ask_user_question when the prompt says you must confirm decisions."
         ),
-        tools=_build_candidate_tools(case, workspace_root),
+        modules=_build_candidate_modules(case, workspace_root),
     )
 
 
@@ -120,9 +128,10 @@ def start_notebook_session(
         else get_default_judge_model_spec()
     )
     api_key, _ = resolve_api_key(candidate_spec)
+    skip_reason = get_model_spec_skip_reason(candidate_spec, api_key=api_key)
     session_id = f"{eval_case.id}-{uuid.uuid4().hex}"
 
-    if not api_key:
+    if skip_reason is not None:
         run_artifact = _build_run_artifact(
             suite_id=session_id,
             case=eval_case,
@@ -130,7 +139,7 @@ def start_notebook_session(
             started_at=_now_iso(),
             duration_seconds=0.0,
             status="skipped",
-            skip_reason=f"missing API key for {candidate_spec.label}",
+            skip_reason=skip_reason,
         )
         run_artifact_path = artifacts_dir / "run_artifact.json"
         persist_run_artifact(run_artifact_path, run_artifact)
@@ -154,6 +163,7 @@ def start_notebook_session(
     started_at = _now_iso()
     started = time.perf_counter()
     try:
+        max_context_window_tokens = _max_context_window_tokens(candidate_spec, repo_path)
         agent = _candidate_agent(
             case=eval_case,
             model_spec=candidate_spec,
@@ -161,7 +171,7 @@ def start_notebook_session(
             workspace_root=workspace_root,
             agent_cls=agent_cls,
         )
-        messages, bundle = agent.run(
+        output = agent.run(
             eval_case.task_prompt,
             payload=_build_standard_payload(
                 model_spec=candidate_spec,
@@ -170,8 +180,16 @@ def start_notebook_session(
             ),
             callback=callback_events.append,
             max_iterations=max_iterations,
+            max_context_window_tokens=max_context_window_tokens,
             session_id=session_id,
             memory_namespace=session_id,
+            tool_runtime_config=dict(eval_case.toolkit_options or {}) or None,
+        )
+        messages, bundle = _coerce_agent_run_output(
+            output,
+            callback_events=callback_events,
+            model=candidate_spec.model,
+            max_context_window_tokens=max_context_window_tokens,
         )
         run_artifact = _build_run_artifact(
             suite_id=session_id,
@@ -251,8 +269,9 @@ def resume_notebook_session(
 
     load_root_env(repo_path)
     api_key, _ = resolve_api_key(candidate_spec)
-    if not api_key:
-        raise ValueError(f"missing API key for {candidate_spec.label}")
+    skip_reason = get_model_spec_skip_reason(candidate_spec, api_key=api_key)
+    if skip_reason is not None:
+        raise ValueError(skip_reason)
 
     callback_events: list[dict[str, Any]] = []
     started = time.perf_counter()
@@ -264,13 +283,23 @@ def resume_notebook_session(
             workspace_root=workspace_root,
             agent_cls=agent_cls,
         )
-        messages, bundle = agent.resume_human_input(
+        output = agent.resume_human_input(
             conversation=previous_artifact.messages,
             continuation=previous_artifact.bundle["continuation"],
             response=user_response,
             callback=callback_events.append,
             session_id=state["session_id"],
             memory_namespace=state["session_id"],
+            tool_runtime_config=dict(eval_case.toolkit_options or {}) or None,
+        )
+        messages, bundle = _coerce_agent_run_output(
+            output,
+            callback_events=callback_events,
+            model=candidate_spec.model,
+            max_context_window_tokens=int(
+                previous_artifact.bundle.get("max_context_window_tokens") or 0
+            )
+            or None,
         )
         total_duration = float(previous_artifact.duration_seconds or 0.0) + (time.perf_counter() - started)
         run_artifact = _build_run_artifact(

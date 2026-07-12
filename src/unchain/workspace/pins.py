@@ -6,6 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..memory.revision import (
+    SessionRevisionConflictError,
+    load_session_snapshot,
+    save_session_snapshot,
+)
+
 
 MAX_FULL_FILE_PIN_CHARS = 120_000
 MAX_SESSION_PIN_COUNT = 64
@@ -32,9 +38,24 @@ def save_workspace_pins(
     state: dict[str, Any],
     pins: list[dict[str, Any]],
 ) -> None:
-    next_state = copy.deepcopy(state if isinstance(state, dict) else {})
-    next_state[_SESSION_STATE_KEY] = copy.deepcopy([pin for pin in pins if isinstance(pin, dict)])
-    _save_session_state(session_store, session_id, next_state)
+    if session_store is None or not session_id:
+        return
+    normalized_pins = copy.deepcopy([pin for pin in pins if isinstance(pin, dict)])
+    for attempt in range(3):
+        snapshot = load_session_snapshot(session_store, session_id)
+        next_state = copy.deepcopy(snapshot.state)
+        next_state[_SESSION_STATE_KEY] = normalized_pins
+        try:
+            save_session_snapshot(
+                session_store,
+                session_id,
+                next_state,
+                expected_revision=snapshot.revision,
+            )
+            return
+        except SessionRevisionConflictError:
+            if attempt == 2:
+                raise
 
 
 def build_pin_record(
@@ -119,26 +140,19 @@ def remove_pins(
 def _load_session_state(session_store: Any, session_id: str) -> dict[str, Any]:
     if session_store is None or not session_id:
         return {}
-    load = getattr(session_store, "load", None)
-    if not callable(load):
-        return {}
-    try:
-        state = load(session_id)
-    except Exception:
-        return {}
-    return copy.deepcopy(state) if isinstance(state, dict) else {}
+    return copy.deepcopy(load_session_snapshot(session_store, session_id).state)
 
 
 def _save_session_state(session_store: Any, session_id: str, state: dict[str, Any]) -> None:
     if session_store is None or not session_id:
         return
-    save = getattr(session_store, "save", None)
-    if not callable(save):
-        return
-    try:
-        save(session_id, copy.deepcopy(state))
-    except Exception:
-        return
+    snapshot = load_session_snapshot(session_store, session_id)
+    save_session_snapshot(
+        session_store,
+        session_id,
+        copy.deepcopy(state),
+        expected_revision=snapshot.revision,
+    )
 
 
 def _resolve_line_range(

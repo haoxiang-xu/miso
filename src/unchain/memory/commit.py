@@ -23,6 +23,11 @@ class MemoryCommitHarness(BaseMemoryHarness):
             memory_namespace=context.memory_namespace,
             model=context.model,
             summary_text=summary_text,
+            expected_revision=context.state.memory_state.get("session_revision"),
+            expected_checkpoint_id=(
+                str(context.state.memory_state.get("execution_checkpoint_id") or "")
+                or None
+            ),
         )
         memory_state = {
             "loaded": bool(context.session_id),
@@ -34,7 +39,22 @@ class MemoryCommitHarness(BaseMemoryHarness):
             "long_term_indexed_until": int(stored_state.get("long_term_indexed_until") or 0),
             "long_term_pending_turn_count": int(stored_state.get("long_term_pending_turn_count") or 0),
             "summary": str(stored_state.get("summary", "") or ""),
+            "session_revision": commit_info.get("session_revision"),
+            "session_revision_supported": bool(
+                commit_info.get("session_revision_supported", False)
+            ),
+            "session_consistency": str(
+                commit_info.get("session_consistency") or "best_effort"
+            ),
         }
+        if commit_info.get("execution_checkpoint_cleared"):
+            memory_state.update(
+                {
+                    "execution_checkpoint_restored": False,
+                    "execution_checkpoint_status": "",
+                    "execution_checkpoint_id": "",
+                }
+            )
         return build_memory_delta(
             created_by=self.created_by,
             state_updates={

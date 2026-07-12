@@ -14,6 +14,7 @@ from ..optimizers import (
     ToolHistoryCompactionOptimizerConfig,
 )
 from .bootstrap import MemoryBootstrapHarness
+from .checkpoint import ExecutionCheckpointHarness
 from .commit import MemoryCommitHarness
 from .events import (
     MemoryCommitEventHarness,
@@ -64,6 +65,7 @@ def build_default_memory_components(memory_runtime: KernelMemoryRuntime) -> list
         MemoryCommitInfoResetHarness(runtime=memory_runtime),
         MemoryCommitHarness(runtime=memory_runtime),
         MemoryCommitEventHarness(runtime=memory_runtime),
+        ExecutionCheckpointHarness(runtime=memory_runtime),
     ]
 
 

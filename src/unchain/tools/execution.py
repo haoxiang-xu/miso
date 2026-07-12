@@ -13,11 +13,10 @@ from ..artifacts import (
     is_failed_tool_result,
     plan_artifact_from_tool_result,
 )
-from ..input.human_input import HumanInputResponse, is_human_input_tool_name
+from ..input.human_input import is_human_input_tool_name
 from ..interaction import (
     INTERACTION_EFFECT_CREATED_BY,
     build_human_input_continuation,
-    build_human_input_requested_event,
     build_human_input_suspend_request,
 )
 from ..toolkits.base import BuiltinToolkit
@@ -29,7 +28,7 @@ from .base import BaseToolHarness, ToolContext
 from .common import append_executed_call_id, copy_messages, emit_loop_event
 from .confirmation import execute_confirmable_tool_call
 from .human_input import parse_human_input_request
-from .messages import get_provider_message_builder
+from .messages import coalesce_provider_tool_result_messages, get_provider_message_builder
 from .models import ToolExecutionContext
 from .observation import ToolObservationRunner, inject_observation, observation_token_state
 from .result_budget import ToolResultBudgetConfig, ToolResultBudgetController
@@ -390,96 +389,9 @@ class ToolExecutionHarness(BaseToolHarness):
                     },
                 )
 
-            on_human_input = context.event.get("on_human_input")
-            if callable(on_human_input):
-                emit_loop_event(
-                    context.loop,
-                    context.callback,
-                    "human_input_requested",
-                    context.run_id,
-                    iteration=context.iteration,
-                    request_id=request.request_id,
-                    kind=request.kind,
-                    title=request.title,
-                    question=request.question,
-                    selection_mode=request.selection_mode,
-                    options=[option.to_dict() for option in request.options],
-                    allow_other=request.allow_other,
-                    other_label=request.other_label,
-                    other_placeholder=request.other_placeholder,
-                    min_selected=request.min_selected,
-                    max_selected=request.max_selected,
-                )
-                try:
-                    raw_response = on_human_input(request)
-                except Exception as cb_exc:
-                    builder = get_provider_message_builder(context.provider)
-                    tool_result = {
-                        "error": f"human input callback failed: {cb_exc}",
-                        "tool": tool_call.name,
-                    }
-                    result_messages = copy_messages(batch_state.result_messages)
-                    result_messages.append(
-                        builder.build_tool_result_message(tool_call=tool_call, tool_result=tool_result)
-                    )
-                    emit_loop_event(
-                        context.loop,
-                        context.callback,
-                        "tool_result",
-                        context.run_id,
-                        iteration=context.iteration,
-                        tool_name=tool_call.name,
-                        call_id=tool_call.call_id,
-                        result=tool_result,
-                    )
-                    return HarnessDelta(
-                        created_by=self.created_by,
-                        state_updates={
-                            "tool_batch_state": ToolBatchState(
-                                result_messages=result_messages,
-                                should_observe=False,
-                                awaiting_human_input=False,
-                                human_input_request=None,
-                                human_input_tool_call_id=None,
-                                executed_call_ids=append_executed_call_id(batch_state, tool_call.call_id),
-                            ),
-                        },
-                    )
-                human_response = HumanInputResponse.from_raw(raw_response, request=request)
-                builder = get_provider_message_builder(context.provider)
-                tool_result = human_response.to_tool_result()
-                result_messages = copy_messages(batch_state.result_messages)
-                result_messages.append(
-                    builder.build_tool_result_message(tool_call=tool_call, tool_result=tool_result)
-                )
-                emit_loop_event(
-                    context.loop,
-                    context.callback,
-                    "tool_result",
-                    context.run_id,
-                    iteration=context.iteration,
-                    tool_name=tool_call.name,
-                    call_id=tool_call.call_id,
-                    result=copy.deepcopy(tool_result),
-                )
-                return HarnessDelta(
-                    created_by=self.created_by,
-                    state_updates={
-                        "tool_batch_state": ToolBatchState(
-                            result_messages=result_messages,
-                            should_observe=False,
-                            awaiting_human_input=False,
-                            human_input_request=None,
-                            human_input_tool_call_id=None,
-                            executed_call_ids=append_executed_call_id(batch_state, tool_call.call_id),
-                        ),
-                    },
-                )
-
             return CapabilityOutcome(
-                delta=RunDelta(
+                delta=HarnessDelta(
                     created_by=INTERACTION_EFFECT_CREATED_BY,
-                    context_ops=(build_human_input_requested_event(request),),
                     state_updates={
                         "tool_batch_state": ToolBatchState(
                             result_messages=copy_messages(batch_state.result_messages),
@@ -703,6 +615,10 @@ class ToolExecutionHarness(BaseToolHarness):
             latest_messages=context.state.transcript,
         )
         result_messages = budget_outcome.messages
+        result_messages = coalesce_provider_tool_result_messages(
+            context.provider,
+            result_messages,
+        )
         budget_stats = budget_outcome.stats.to_dict()
 
         if not result_messages:
@@ -735,6 +651,7 @@ class ToolExecutionHarness(BaseToolHarness):
                 "run_status": "running",
                 "last_continuation": None,
                 "next_model_input": next_model_input,
+                "provider_replay_append": result_messages,
                 "token_state": token_state,
                 "suspend_state": {
                     "signal_kind": None,

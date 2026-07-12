@@ -1,8 +1,10 @@
 import threading
 from types import SimpleNamespace
 
+from unchain.agent import Agent
 from unchain.cli import repl
 from unchain.cli.repl import _fallback_renderer, _run_worker, build_followup_messages, route_input
+from unchain.kernel import ModelTurnResult
 
 
 def test_route_input_prefixes(capsys):
@@ -114,6 +116,47 @@ def test_build_followup_messages_appends_merged_as_user_turn():
 def test_build_followup_messages_with_empty_prior_history():
     result = build_followup_messages([], "merged queued text")
     assert result == [{"role": "user", "content": "merged queued text"}]
+
+
+def test_queue_chained_full_history_reuses_agent_instruction():
+    class _FakeModelIO:
+        provider = "ollama"
+        model = "fake"
+
+        def __init__(self):
+            self.calls = 0
+
+        def fetch_turn(self, request):
+            del request
+            self.calls += 1
+            return ModelTurnResult(
+                assistant_messages=[{"role": "assistant", "content": f"a{self.calls}"}],
+                tool_calls=[],
+                final_text=f"a{self.calls}",
+            )
+
+    model_io = _FakeModelIO()
+
+    def _make_test_agent():
+        return Agent(
+            name="repl-queue-regression",
+            provider="ollama",
+            model="fake",
+            instructions="REPL SYS",
+            model_io_factory=lambda spec, context: model_io,
+        )
+
+    first = _make_test_agent().run("u1")
+    second = _make_test_agent().run(build_followup_messages(first.messages, "u2"))
+
+    assert [message.get("role") for message in second.messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+    assert second.messages[0] == {"role": "system", "content": "REPL SYS"}
 
 
 class _FakeProgressDigest:
