@@ -25,7 +25,33 @@ from .resume import (
     parse_human_input_request,
     prepare_human_input_resume_plan,
 )
-from .steer import SteerBuffer, merge_steered_texts
+from .queue_turns import QueuedTurnBuffer, merge_queued_turn_texts
+
+# Deprecated aliases (steer -> queued-turns rename, 0.2.0): resolved lazily in
+# __getattr__ below so that `from unchain.interaction import SteerBuffer` keeps
+# working with a DeprecationWarning, while plain `import unchain.interaction`
+# stays silent. Shim removal is slated for the next minor release.
+_DEPRECATED_ALIASES = {
+    "SteerBuffer": "QueuedTurnBuffer",
+    "merge_steered_texts": "merge_queued_turn_texts",
+}
+
+
+def __getattr__(name: str):
+    replacement = _DEPRECATED_ALIASES.get(name)
+    if replacement is not None:
+        import warnings
+
+        warnings.warn(
+            f"unchain.interaction.{name} is deprecated and will be removed in "
+            f"the next minor release — use unchain.interaction.{replacement} "
+            "instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return globals()[replacement]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "ASK_USER_QUESTION_TOOL_NAME",
@@ -41,7 +67,7 @@ __all__ = [
     "FyiInjectionHarness",
     "FyiMessage",
     "ProgressDigest",
-    "SteerBuffer",
+    "QueuedTurnBuffer",
     "build_ask_user_question_tool",
     "build_btw_prompt",
     "build_human_input_continuation",
@@ -49,7 +75,7 @@ __all__ = [
     "build_human_input_suspend_request",
     "hydrate_human_input_resume_state",
     "is_human_input_tool_name",
-    "merge_steered_texts",
+    "merge_queued_turn_texts",
     "parse_human_input_request",
     "prepare_human_input_resume_plan",
     "wrap_fyi",

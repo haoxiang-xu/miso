@@ -5,10 +5,21 @@ from unchain.cli import repl
 from unchain.cli.repl import _fallback_renderer, _run_worker, build_followup_messages, route_input
 
 
-def test_route_input_prefixes():
+def test_route_input_prefixes(capsys):
     assert route_input("/btw how long?") == ("btw", "how long?")
     assert route_input("/fyi also support Chinese") == ("fyi", "also support Chinese")
-    assert route_input("/steer next refactor the tests") == ("steer", "next refactor the tests")
+    assert route_input("/queue next refactor the tests") == ("queue", "next refactor the tests")
+    # primary commands never print anything from routing
+    assert capsys.readouterr().out == ""
+
+
+def test_route_input_steer_alias_routes_to_queue_with_deprecation_notice(capsys):
+    # /steer is kept as an alias for one release: identical behavior, plus a
+    # one-line deprecation notice on the REPL output.
+    assert route_input("/steer next refactor the tests") == ("queue", "next refactor the tests")
+    out = capsys.readouterr().out
+    assert "deprecated" in out.lower()
+    assert "/queue" in out
 
 
 def test_route_input_bare_text_is_unknown():
@@ -101,8 +112,8 @@ def test_build_followup_messages_appends_merged_as_user_turn():
 
 
 def test_build_followup_messages_with_empty_prior_history():
-    result = build_followup_messages([], "merged steer text")
-    assert result == [{"role": "user", "content": "merged steer text"}]
+    result = build_followup_messages([], "merged queued text")
+    assert result == [{"role": "user", "content": "merged queued text"}]
 
 
 class _FakeProgressDigest:

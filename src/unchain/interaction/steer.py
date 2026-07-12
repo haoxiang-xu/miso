@@ -1,41 +1,28 @@
+"""DEPRECATED shim — this module was renamed to ``unchain.interaction.queue_turns``.
+
+CHANGELOG (0.2.0): the steer primitive was renamed to queued-turns —
+``SteerBuffer`` -> ``QueuedTurnBuffer`` and ``merge_steered_texts`` ->
+``merge_queued_turn_texts``. This shim re-exports the old names bound to the
+new implementations so existing imports keep working unchanged, but emits a
+``DeprecationWarning``. Removal is slated for the next minor release.
+"""
+
 from __future__ import annotations
 
-import threading
+import warnings
 
-_MERGE_HEADER = (
-    "The user sent several follow-up requests while the previous task was "
-    "running. Address all of them, in order:\n"
+from .queue_turns import QueuedTurnBuffer as SteerBuffer
+from .queue_turns import merge_queued_turn_texts as merge_steered_texts
+
+# stacklevel note: this warning fires from the module body at import time, so
+# there is no meaningful user frame to point at beyond the import machinery;
+# stacklevel is left at the default (the shim itself) on purpose.
+warnings.warn(
+    "unchain.interaction.steer is deprecated and will be removed in the next "
+    "minor release — import from unchain.interaction.queue_turns instead "
+    "(SteerBuffer -> QueuedTurnBuffer, "
+    "merge_steered_texts -> merge_queued_turn_texts).",
+    DeprecationWarning,
 )
 
-
-def merge_steered_texts(texts: list[str]) -> str:
-    cleaned = [t.strip() for t in texts if t.strip()]
-    if not cleaned:
-        return ""
-    if len(cleaned) == 1:
-        return cleaned[0]
-    numbered = "\n".join(f"{i}. {t}" for i, t in enumerate(cleaned, start=1))
-    return _MERGE_HEADER + numbered
-
-
-class SteerBuffer:
-    """Thread-safe buffer for 'do this next' messages; drained after a run ends."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._pending: list[str] = []
-
-    def post(self, text: str) -> None:
-        with self._lock:
-            self._pending.append(text)
-
-    def pending_count(self) -> int:
-        with self._lock:
-            return len(self._pending)
-
-    def drain_merged(self) -> str | None:
-        with self._lock:
-            drained = self._pending
-            self._pending = []
-        merged = merge_steered_texts(drained)
-        return merged or None
+__all__ = ["SteerBuffer", "merge_steered_texts"]
