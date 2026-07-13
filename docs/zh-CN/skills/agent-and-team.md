@@ -36,6 +36,7 @@
 - Module 组合：`modules=(...)`。
 - 允许列表过滤：`allowed_tools=(...)` 限定合并后的 toolkit。
 - `Agent.run()` 的 per-call 覆盖：`max_iterations`、`payload`、`callback`、`on_tool_confirm`、`on_human_input`、`on_max_iterations`、`session_id`、`memory_namespace`、`tool_runtime_config`。
+- Completion policy 通过 `PoliciesModule(completion_policy=...)` 显式启用。不配置时，`PreparedAgent` 返回第一次 completed 的 `KernelRunResult`；kernel loop 不会隐藏执行 repair turn。
 
 ## 常见陷阱
 
@@ -62,6 +63,8 @@
 
 `Agent` 是面向调用方的高层接口。它持有身份、默认指令、module 集合，但自己并不执行模型 loop。每次 `run()` 都构造新的 `PreparedAgent`（带新的 `KernelLoop`）来真正执行。
 
+System 指令是可组合的，不是全局单例。完整 transcript 重放时，Agent 自己拥有的基础 `instructions` 只保留一份；caller、toolkit、character、policy、memory harness 仍可按顺序加入各自的 system contribution。Session merge 会保留历史里不同的 contribution，即使下一次只重新发送 Agent 基础指令；重复发送完全相同的 contribution 也不会倍增。Anthropic 之类的 provider 可能在 wire 出口把它们压成一个 `system` 字段，但这不改变 kernel 内部的多 owner prompt 模型。
+
 换言之，`Agent` 是配置容器和公共入口，`KernelLoop` 是单次 run 的执行器。`Agent` 定义这个 agent 是什么、带什么默认值；`KernelLoop` 定义这次具体请求怎么执行。
 
 ## 构造
@@ -87,6 +90,38 @@ agent = Agent(
 ```
 
 `ToolsModule` 的 `tools` 字段接受 `Toolkit`、`Tool` 或 callable 的混合 —— `AgentBuilder.build()` 时全部合并为一个 `Toolkit`。
+
+## Completion Policy
+
+只有当 agent 需要验证 completed answer 并执行有界 repair turn 时才使用
+`CompletionPolicy`。这个 policy 住在 `unchain.runtime`，并从 `unchain.agent`
+重新导出；它不是默认 kernel 行为。
+
+```python
+from unchain.agent import CompletionEvaluation, CompletionPolicy, PoliciesModule
+
+def validate(result):
+    content = str(result.messages[-1].get("content") or "")
+    if "acceptance criteria" in content:
+        return CompletionEvaluation(complete=True)
+    return CompletionEvaluation(
+        complete=False,
+        feedback="Revise the answer and include acceptance criteria.",
+    )
+
+agent = Agent(
+    name="reviewer",
+    modules=(
+        PoliciesModule(
+            completion_policy=CompletionPolicy(
+                validator=validate,
+                max_repair_turns=1,
+                repair_max_iterations=4,
+            ),
+        ),
+    ),
+)
+```
 
 ## 运行
 
@@ -130,6 +165,17 @@ final = agent.resume_human_input(
 )
 ```
 
+如果 `session_id` 使用了持久 memory，进程重启后 execution checkpoint 是权威来源，不需要保留旧的 result 对象：
+
+```python
+final = agent.resume_human_input(
+    session_id="durable-session",
+    response={"approved": True},
+)
+```
+
+如果 `run()` 传入同步 `on_human_input` callback，kernel 会先完成全部 `on_suspend` contribution；对于使用持久 memory 的 session，它会先持久化并回读验证 checkpoint，然后才发 input-request event 或调用 callback。收到合法回答后，它会在同一个 `RunState` 上继续；`on_max_iterations` 也遵循相同顺序。没有 memory-backed `session_id` 时，phase 顺序仍成立，但不提供持久 checkpoint 保证。
+
 ## Tool 暴露（module 驱动）
 
 Toolkit catalog 和工具级 deferred discovery 都通过 module 接进来，不是 runtime 方法。完整说明见 [tool-system-patterns.md](tool-system-patterns.md)；速记：
@@ -139,8 +185,8 @@ Toolkit catalog 和工具级 deferred discovery 都通过 module 接进来，不
 from unchain.tools import ToolkitCatalogRuntime, ToolkitCatalogConfig
 catalog = ToolkitCatalogRuntime(
     config=ToolkitCatalogConfig(
-        managed_toolkit_ids=("code", "external_api"),
-        always_active_toolkit_ids=("code",),
+        managed_toolkit_ids=("core", "plan"),
+        always_active_toolkit_ids=("core",),
     ),
     eager_toolkits=[],
 )
@@ -152,7 +198,7 @@ from unchain.tools import ToolDiscoveryConfig
 agent = Agent(
     name="...",
     modules=(ToolDiscoveryModule(
-        config=ToolDiscoveryConfig(managed_toolkit_ids=("code", "external_api")),
+        config=ToolDiscoveryConfig(managed_toolkit_ids=("core", "plan")),
     ),),
 )
 ```
@@ -254,7 +300,7 @@ def my_callback(event: dict) -> None:
 
 4. **Subagent namespace 会累加** —— sub 的 sub 拿到的 namespace 是 `root:parent:child`。深嵌套会产生很长的 namespace。
 
-5. **Catalog/discovery 状态要跨暂停传** —— 两个 runtime 都通过 harness 的 `on_suspend` 阶段 checkpoint，但你仍然要把 `continuation` 传回 `resume_human_input()`。
+5. **冷恢复需要持久 memory** —— 有持久 execution checkpoint 时，`resume_human_input(session_id=..., response=...)` 会恢复 conversation、continuation、provider replay 数据和 tool-schema identity。没有持久 memory 时，仍需传入进程内 result 的 `conversation` 与 `continuation`。
 
 6. **`Team` 不再是合适的原语** —— 需要多 agent 流程时，把它建模成一个 planner agent，用 `delegate_to_subagent` / `spawn_worker_batch` 调度 `SubagentTemplate`。
 

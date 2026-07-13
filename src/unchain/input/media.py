@@ -1,7 +1,7 @@
 """
 unchain.media — helpers for building canonical multimodal content blocks.
 
-Builds provider-agnostic blocks that Broth translates correctly for
+Builds provider-agnostic blocks that model adapters translate correctly for
 OpenAI, Claude, and Ollama — no provider-specific code needed in userland.
 
 Typical usage
@@ -41,7 +41,7 @@ def from_file(path: str | Path) -> dict:
 
     Supported formats: ``.png``, ``.jpg`` / ``.jpeg``, ``.gif``, ``.webp``, ``.pdf``
 
-    Broth handles the provider-specific encoding automatically:
+    Model adapters handle the provider-specific encoding automatically:
 
     * **OpenAI** images → ``input_image`` block
     * **OpenAI** PDFs   → ``input_file`` block (base64 data URL)

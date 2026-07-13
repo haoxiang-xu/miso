@@ -1,6 +1,11 @@
 # Core Toolkit
 
-`CoreToolkit` is the builtin core toolkit for precise file reads, guarded writes, string edits, globbing, grep-style search, public web fetch, cross-platform shell execution, LSP-powered code intelligence, and structured user questions.
+`CoreToolkit` is the default coding-agent toolkit. It bundles the basic tools a Codex- or Claude Code-style agent expects: precise file reads, guarded writes, string edits, globbing, grep-style search, public web fetch, cross-platform shell execution, LSP-powered code intelligence, and structured user questions.
+
+Core owns the public coding-agent capability surface directly. The former
+focused wrappers for interaction, web fetch, and workspace-specific tool names
+have been absorbed by Core. Legacy toolkit ids should be normalized to `core` by
+host applications rather than imported as Python toolkit classes.
 
 ## What this README is for
 
@@ -17,4 +22,4 @@
 
 ## Notes
 
-This file stays intentionally short. The manifest links here, while the broader runtime and toolkit documentation continues to live under `docs/`.
+This file stays intentionally short. `CoreToolkit` is the primary bundled coding toolkit, while broader runtime and toolkit documentation continues to live under `docs/`.

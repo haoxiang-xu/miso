@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ...schemas import ResponseFormat
+from ...runtime import CompletionPolicy
 from .base import BaseAgentModule
 
 
@@ -15,6 +16,7 @@ class PoliciesModule(BaseAgentModule):
     max_iterations: int | None = None
     max_context_window_tokens: int | None = None
     on_tool_confirm: Callable[..., Any] | None = None
+    completion_policy: CompletionPolicy | None = None
     name: str = "policies"
 
     def configure(self, builder) -> None:
@@ -27,3 +29,5 @@ class PoliciesModule(BaseAgentModule):
             builder.set_max_context_window_tokens_default(int(self.max_context_window_tokens))
         if self.on_tool_confirm is not None:
             builder.set_on_tool_confirm_default(self.on_tool_confirm)
+        if self.completion_policy is not None:
+            builder.set_completion_policy(self.completion_policy)

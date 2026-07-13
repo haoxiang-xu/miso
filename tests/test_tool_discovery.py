@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import copy
 import importlib
 import json
 import sys
 from pathlib import Path
 
 from unchain.agent import Agent, ToolDiscoveryModule
-from unchain.kernel import KernelLoop, ModelTurnResult
+from unchain.kernel import ModelTurnResult
+from unchain.kernel.provider_replay import tool_schema_digest, tool_schema_manifest
 from unchain.kernel.types import ToolCall as KernelToolCall
+from unchain.runtime import build_runtime_loop
 from unchain.tools import ToolDiscoveryConfig, ToolDiscoveryRuntime, Toolkit
 
 
@@ -126,7 +129,7 @@ def test_tool_discovery_runtime_reports_name_conflicts(tmp_path):
 
 
 def test_tool_prompt_harness_inserts_and_replaces_tools_block():
-    loop = KernelLoop()
+    loop = build_runtime_loop()
     state = loop.seed_state(
         [
             {"role": "system", "content": "base system"},
@@ -135,8 +138,6 @@ def test_tool_prompt_harness_inserts_and_replaces_tools_block():
         provider="openai",
         model="gpt-4.1",
     )
-    loop._ensure_runtime_harnesses()
-
     toolkit_one = Toolkit()
     toolkit_one.register(lambda text=None: {"text": text}, name="alpha", description="Alpha tool.")
     loop.dispatch_phase(state, phase="before_model", event={"toolkit": toolkit_one})
@@ -196,6 +197,14 @@ def test_tool_discovery_module_loads_tools_into_later_turns_and_shuts_down(tmp_p
                     and "tool_search" in str(message.get("content"))
                     for message in request.messages
                 )
+                raw_call = {
+                    "type": "function_call",
+                    "id": "fc_search",
+                    "call_id": "call_search",
+                    "name": "tool_search",
+                    "arguments": json.dumps({"query": "discover"}),
+                    "status": "completed",
+                }
                 return ModelTurnResult(
                     assistant_messages=[
                         {
@@ -207,10 +216,31 @@ def test_tool_discovery_module_loads_tools_into_later_turns_and_shuts_down(tmp_p
                     ],
                     tool_calls=[KernelToolCall(call_id="call_search", name="tool_search", arguments={"query": "discover"})],
                     response_id="resp_1",
+                    provider_replay_frame={
+                        "format": "openai.responses.v1",
+                        "complete": True,
+                        "items": [*copy.deepcopy(request.messages), raw_call],
+                        "tool_schema_digest": tool_schema_digest(
+                            request.toolkit,
+                            "openai",
+                        ),
+                        "tool_schema_manifest": tool_schema_manifest(
+                            request.toolkit,
+                            "openai",
+                        ),
+                    },
                 )
 
             if self.calls == 2:
                 assert "discover" not in request.toolkit.tools
+                raw_call = {
+                    "type": "function_call",
+                    "id": "fc_load",
+                    "call_id": "call_load",
+                    "name": "tool_load",
+                    "arguments": json.dumps({"handles": ["demo:discover"]}),
+                    "status": "completed",
+                }
                 return ModelTurnResult(
                     assistant_messages=[
                         {
@@ -224,6 +254,19 @@ def test_tool_discovery_module_loads_tools_into_later_turns_and_shuts_down(tmp_p
                         KernelToolCall(call_id="call_load", name="tool_load", arguments={"handles": ["demo:discover"]})
                     ],
                     response_id="resp_2",
+                    provider_replay_frame={
+                        "format": "openai.responses.v1",
+                        "complete": True,
+                        "items": [*copy.deepcopy(request.messages), raw_call],
+                        "tool_schema_digest": tool_schema_digest(
+                            request.toolkit,
+                            "openai",
+                        ),
+                        "tool_schema_manifest": tool_schema_manifest(
+                            request.toolkit,
+                            "openai",
+                        ),
+                    },
                 )
 
             assert self.calls == 3
@@ -233,6 +276,12 @@ def test_tool_discovery_module_loads_tools_into_later_turns_and_shuts_down(tmp_p
                 and "discover" in str(message.get("content"))
                 for message in request.messages
             )
+            assert sum(
+                1
+                for message in request.messages
+                if message.get("role") == "system"
+                and "<tools>" in str(message.get("content"))
+            ) == 1
             return ModelTurnResult(
                 assistant_messages=[{"role": "assistant", "content": "loaded"}],
                 tool_calls=[],

@@ -4,9 +4,28 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..execution import ExecutionFence, ExecutionLeaseError
+from .checkpoint_state import (
+    EXECUTION_CHECKPOINT_KEY,
+    ExecutionCheckpointCompatibilityError,
+    ExecutionCheckpointPersistenceError,
+    ensure_checkpoint_compatible,
+    merge_checkpoint_transcript_with_incoming,
+    restore_fresh_checkpoint_messages,
+    restore_resume_checkpoint_messages,
+    transcript_digest,
+    validate_execution_checkpoint,
+)
 from .config import MemoryConfig
 from .long_term import LongTermExtractor
 from .manager import MemoryManager, SummaryGenerator
+from .ownership import ensure_session_delta_input
+from .revision import (
+    SessionRevisionConflictError,
+    SessionSnapshot,
+    load_session_snapshot,
+    save_session_snapshot,
+)
 from .stores import InMemorySessionStore, SessionStore
 
 
@@ -39,11 +58,12 @@ def _merge_history_and_incoming(
         return clean_incoming
     if not clean_incoming:
         return clean_history
-    if len(clean_incoming) >= len(clean_history) and clean_incoming[: len(clean_history)] == clean_history:
-        return clean_incoming
     incoming_systems, incoming_non_system = _split_system_and_non_system(clean_incoming)
     history_systems, history_non_system = _split_system_and_non_system(clean_history)
-    systems = incoming_systems if incoming_systems else history_systems
+    systems = copy.deepcopy(history_systems)
+    for contribution in incoming_systems:
+        if contribution not in systems:
+            systems.append(copy.deepcopy(contribution))
     return systems + history_non_system + incoming_non_system
 
 
@@ -53,6 +73,55 @@ def _resolve_memory_namespace(session_id: str, memory_namespace: str | None) -> 
     if isinstance(session_id, str) and session_id.strip():
         return session_id.strip()
     return ""
+
+
+def _ensure_expected_revision(
+    snapshot: SessionSnapshot,
+    *,
+    session_id: str,
+    expected_revision: int | None,
+) -> None:
+    if (
+        expected_revision is not None
+        and snapshot.revision is not None
+        and snapshot.revision != expected_revision
+    ):
+        raise SessionRevisionConflictError(
+            session_id=session_id,
+            expected_revision=expected_revision,
+            actual_revision=snapshot.revision,
+        )
+
+
+def _verify_execution_fence(store: object, fence: ExecutionFence | None) -> None:
+    if fence is None:
+        return
+    verify_lease = getattr(store, "verify_lease", None)
+    if not callable(verify_lease):
+        raise TypeError("execution fence requires a lease-aware session store")
+    verify_lease(
+        fence.execution_id,
+        fence.owner_id,
+        fence.fencing_token,
+    )
+
+
+def _ensure_checkpoint_extends_semantic_history(
+    *,
+    history: list[dict[str, Any]],
+    checkpoint: dict[str, Any],
+) -> None:
+    if not history:
+        return
+    checkpoint_transcript = checkpoint.get("transcript")
+    if (
+        not isinstance(checkpoint_transcript, list)
+        or checkpoint_transcript[: len(history)] != history
+    ):
+        raise ExecutionCheckpointCompatibilityError(
+            "stored semantic history diverges from the execution checkpoint; "
+            "refusing to restore a stale checkpoint"
+        )
 
 
 @dataclass
@@ -114,22 +183,242 @@ class KernelMemoryRuntime:
     def ensure_long_term_components(self) -> None:
         try:
             self.memory_manager.ensure_long_term_components()
+        except ExecutionLeaseError:
+            raise
         except Exception:
             return
 
     def load_session_state(self, session_id: str) -> dict[str, Any]:
         if not session_id:
             return {}
-        try:
-            state = self.store.load(session_id)
-        except Exception:
-            return {}
-        return copy.deepcopy(state) if isinstance(state, dict) else {}
+        return copy.deepcopy(self.load_session_snapshot(session_id).state)
 
-    def save_session_state(self, session_id: str, state: dict[str, Any]) -> None:
+    def load_session_snapshot(self, session_id: str) -> SessionSnapshot:
         if not session_id:
-            return
-        self.store.save(session_id, copy.deepcopy(state if isinstance(state, dict) else {}))
+            return SessionSnapshot(state={}, revision=None)
+        return load_session_snapshot(self.store, session_id)
+
+    def save_session_state(
+        self,
+        session_id: str,
+        state: dict[str, Any],
+        *,
+        expected_revision: int | None = None,
+        execution_fence: ExecutionFence | None = None,
+    ) -> SessionSnapshot:
+        if not session_id:
+            return SessionSnapshot(state={}, revision=None)
+        current = self.load_session_snapshot(session_id)
+        _ensure_expected_revision(
+            current,
+            session_id=session_id,
+            expected_revision=expected_revision,
+        )
+        return save_session_snapshot(
+            self.store,
+            session_id,
+            copy.deepcopy(state if isinstance(state, dict) else {}),
+            expected_revision=(
+                expected_revision
+                if expected_revision is not None
+                else current.revision
+            ),
+            execution_fence=execution_fence,
+        )
+
+    def load_execution_checkpoint(self, session_id: str) -> dict[str, Any] | None:
+        if not session_id:
+            return None
+        state = self.load_session_state(session_id)
+        if EXECUTION_CHECKPOINT_KEY not in state:
+            return None
+        return validate_execution_checkpoint(state.get(EXECUTION_CHECKPOINT_KEY))
+
+    def save_execution_checkpoint(
+        self,
+        session_id: str,
+        checkpoint: dict[str, Any],
+        *,
+        execution_fence: ExecutionFence | None = None,
+    ) -> dict[str, Any]:
+        persisted, _ = self.save_execution_checkpoint_snapshot(
+            session_id,
+            checkpoint,
+            execution_fence=execution_fence,
+        )
+        return persisted
+
+    def save_execution_checkpoint_snapshot(
+        self,
+        session_id: str,
+        checkpoint: dict[str, Any],
+        *,
+        expected_revision: int | None = None,
+        execution_fence: ExecutionFence | None = None,
+    ) -> tuple[dict[str, Any], SessionSnapshot]:
+        if not session_id:
+            raise ExecutionCheckpointPersistenceError(
+                "execution checkpoint persistence requires a non-empty session_id"
+            )
+        validated = validate_execution_checkpoint(checkpoint)
+        if validated.get("session_id") != session_id:
+            raise ExecutionCheckpointCompatibilityError(
+                "execution checkpoint session_id does not match the target session"
+            )
+        session_snapshot = self.load_session_snapshot(session_id)
+        current_raw = session_snapshot.state.get(EXECUTION_CHECKPOINT_KEY)
+        if isinstance(current_raw, dict):
+            current = validate_execution_checkpoint(current_raw)
+            current_revision = session_snapshot.revision
+            same_checkpoint = (
+                current.get("checkpoint_id") == validated.get("checkpoint_id")
+            )
+            same_revision_noop = current_revision == expected_revision
+            verified_retry = (
+                expected_revision is not None
+                and current_revision == expected_revision + 1
+                and current.get("base_session_revision") == expected_revision
+            )
+            if (
+                expected_revision is not None
+                and same_checkpoint
+                and (same_revision_noop or verified_retry)
+            ):
+                _verify_execution_fence(self.store, execution_fence)
+                return current, session_snapshot
+        _ensure_expected_revision(
+            session_snapshot,
+            session_id=session_id,
+            expected_revision=expected_revision,
+        )
+        state = copy.deepcopy(session_snapshot.state)
+        state[EXECUTION_CHECKPOINT_KEY] = copy.deepcopy(validated)
+        try:
+            persisted_snapshot = save_session_snapshot(
+                self.store,
+                session_id,
+                state,
+                expected_revision=(
+                    expected_revision
+                    if expected_revision is not None
+                    else session_snapshot.revision
+                ),
+                execution_fence=execution_fence,
+            )
+        except Exception as exc:
+            if isinstance(exc, (SessionRevisionConflictError, ExecutionLeaseError)):
+                raise
+            raise ExecutionCheckpointPersistenceError(
+                f"failed to persist execution checkpoint: {exc}"
+            ) from exc
+        try:
+            verified_snapshot = self.load_session_snapshot(session_id)
+            persisted_raw = verified_snapshot.state.get(EXECUTION_CHECKPOINT_KEY)
+            persisted = (
+                validate_execution_checkpoint(persisted_raw)
+                if isinstance(persisted_raw, dict)
+                else None
+            )
+        except Exception as exc:
+            raise ExecutionCheckpointPersistenceError(
+                f"persisted execution checkpoint could not be verified: {exc}"
+            ) from exc
+        if (
+            not isinstance(persisted, dict)
+            or persisted.get("checkpoint_id") != validated.get("checkpoint_id")
+        ):
+            if (
+                persisted_snapshot.revision is not None
+                and verified_snapshot.revision is not None
+                and verified_snapshot.revision != persisted_snapshot.revision
+            ):
+                raise SessionRevisionConflictError(
+                    session_id=session_id,
+                    expected_revision=persisted_snapshot.revision,
+                    actual_revision=verified_snapshot.revision,
+                )
+            raise ExecutionCheckpointPersistenceError(
+                "execution checkpoint write verification failed"
+            )
+        return persisted, persisted_snapshot
+
+    def clear_execution_checkpoint(
+        self,
+        session_id: str,
+        *,
+        expected_checkpoint_id: str | None = None,
+        execution_fence: ExecutionFence | None = None,
+    ) -> bool:
+        cleared, _ = self.clear_execution_checkpoint_snapshot(
+            session_id,
+            expected_checkpoint_id=expected_checkpoint_id,
+            execution_fence=execution_fence,
+        )
+        return cleared
+
+    def clear_execution_checkpoint_snapshot(
+        self,
+        session_id: str,
+        *,
+        expected_checkpoint_id: str | None = None,
+        expected_revision: int | None = None,
+        execution_fence: ExecutionFence | None = None,
+    ) -> tuple[bool, SessionSnapshot]:
+        if not session_id:
+            return False, SessionSnapshot(state={}, revision=None)
+        session_snapshot = self.load_session_snapshot(session_id)
+        _ensure_expected_revision(
+            session_snapshot,
+            session_id=session_id,
+            expected_revision=expected_revision,
+        )
+        state = copy.deepcopy(session_snapshot.state)
+        if EXECUTION_CHECKPOINT_KEY not in state:
+            _verify_execution_fence(self.store, execution_fence)
+            return False, session_snapshot
+        current = validate_execution_checkpoint(state.get(EXECUTION_CHECKPOINT_KEY))
+        if (
+            expected_checkpoint_id
+            and current.get("checkpoint_id") != expected_checkpoint_id
+        ):
+            raise ExecutionCheckpointCompatibilityError(
+                "refusing to clear a different execution checkpoint"
+            )
+        state.pop(EXECUTION_CHECKPOINT_KEY, None)
+        try:
+            persisted_snapshot = save_session_snapshot(
+                self.store,
+                session_id,
+                state,
+                expected_revision=(
+                    expected_revision
+                    if expected_revision is not None
+                    else session_snapshot.revision
+                ),
+                execution_fence=execution_fence,
+            )
+        except Exception as exc:
+            if isinstance(exc, (SessionRevisionConflictError, ExecutionLeaseError)):
+                raise
+            raise ExecutionCheckpointPersistenceError(
+                f"failed to clear execution checkpoint: {exc}"
+            ) from exc
+        verified_snapshot = self.load_session_snapshot(session_id)
+        if EXECUTION_CHECKPOINT_KEY in verified_snapshot.state:
+            if (
+                persisted_snapshot.revision is not None
+                and verified_snapshot.revision is not None
+                and verified_snapshot.revision != persisted_snapshot.revision
+            ):
+                raise SessionRevisionConflictError(
+                    session_id=session_id,
+                    expected_revision=persisted_snapshot.revision,
+                    actual_revision=verified_snapshot.revision,
+                )
+            raise ExecutionCheckpointPersistenceError(
+                "execution checkpoint clear verification failed"
+            )
+        return True, persisted_snapshot
 
     def bootstrap_session(
         self,
@@ -138,6 +427,9 @@ class KernelMemoryRuntime:
         memory_namespace: str | None,
         incoming_messages: list[dict[str, Any]],
         resume_mode: bool,
+        provider: str | None = None,
+        model: str | None = None,
+        resume_continuation: dict[str, Any] | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], str]:
         if not session_id:
             prepare_info = {
@@ -150,18 +442,53 @@ class KernelMemoryRuntime:
             self.last_prepare_info = copy.deepcopy(prepare_info)
             return _deepcopy_messages(incoming_messages), {}, prepare_info, ""
 
-        self.ensure_long_term_components()
-        loaded_state = self.load_session_state(session_id)
+        session_snapshot = self.load_session_snapshot(session_id)
+        loaded_state = copy.deepcopy(session_snapshot.state)
         history = loaded_state.get("messages", [])
         if not isinstance(history, list):
             history = []
         summary_text = str(loaded_state.get("summary", "") or "").strip()
         resolved_namespace = _resolve_memory_namespace(session_id, memory_namespace)
-        merged_messages = (
-            _deepcopy_messages(incoming_messages)
-            if resume_mode
-            else _merge_history_and_incoming(history, incoming_messages)
-        )
+        checkpoint = None
+        if EXECUTION_CHECKPOINT_KEY in loaded_state:
+            checkpoint = validate_execution_checkpoint(
+                loaded_state.get(EXECUTION_CHECKPOINT_KEY)
+            )
+        checkpoint_restored = False
+        if checkpoint is not None:
+            _ensure_checkpoint_extends_semantic_history(
+                history=history,
+                checkpoint=checkpoint,
+            )
+            ensure_checkpoint_compatible(
+                checkpoint,
+                session_id=session_id,
+                provider=provider,
+                model=model,
+            )
+            if resume_mode:
+                checkpoint_messages = restore_resume_checkpoint_messages(
+                    checkpoint,
+                    conversation=incoming_messages,
+                    continuation=resume_continuation,
+                )
+                merged_messages = _deepcopy_messages(checkpoint_messages)
+            else:
+                checkpoint_messages = restore_fresh_checkpoint_messages(
+                    checkpoint,
+                    incoming_messages=incoming_messages,
+                )
+                merged_messages = merge_checkpoint_transcript_with_incoming(
+                    checkpoint_messages,
+                    incoming_messages,
+                )
+            checkpoint_restored = True
+        elif resume_mode:
+            merged_messages = _deepcopy_messages(incoming_messages)
+        else:
+            ensure_session_delta_input(history=history, incoming=incoming_messages)
+            merged_messages = _merge_history_and_incoming(history, incoming_messages)
+        self.ensure_long_term_components()
         prepare_info = {
             "applied": True,
             "session_id": session_id,
@@ -173,6 +500,20 @@ class KernelMemoryRuntime:
             "vector_indexed_until": int(loaded_state.get("vector_indexed_until") or 0),
             "long_term_indexed_until": int(loaded_state.get("long_term_indexed_until") or 0),
             "long_term_pending_turn_count": int(loaded_state.get("long_term_pending_turn_count") or 0),
+            "execution_checkpoint_restored": checkpoint_restored,
+            "execution_checkpoint_status": (
+                str(checkpoint.get("status") or "")
+                if isinstance(checkpoint, dict)
+                else ""
+            ),
+            "execution_checkpoint_id": (
+                str(checkpoint.get("checkpoint_id") or "")
+                if isinstance(checkpoint, dict)
+                else ""
+            ),
+            "session_revision": session_snapshot.revision,
+            "session_revision_supported": session_snapshot.revision_supported,
+            "session_consistency": session_snapshot.consistency,
         }
         self.last_prepare_info = copy.deepcopy(prepare_info)
         return merged_messages, loaded_state, prepare_info, summary_text
@@ -275,6 +616,9 @@ class KernelMemoryRuntime:
         memory_namespace: str | None,
         model: str | None,
         summary_text: str | None,
+        expected_revision: int | None = None,
+        expected_checkpoint_id: str | None = None,
+        execution_fence: ExecutionFence | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         if not session_id:
             commit_info = {
@@ -287,72 +631,28 @@ class KernelMemoryRuntime:
             return commit_info, {}
 
         self.ensure_long_term_components()
-        self.memory_manager.commit_messages(
+        outcome = self.memory_manager.commit_messages(
             session_id=session_id,
             full_conversation=_deepcopy_messages(transcript),
             memory_namespace=memory_namespace,
             model=model,
             long_term_extractor=self.long_term_extractor,
+            expected_revision=expected_revision,
+            summary_text=str(summary_text or "").strip(),
+            return_result=True,
+            clear_execution_checkpoint_id=expected_checkpoint_id,
+            execution_fence=execution_fence,
         )
-        stored_state = self.load_session_state(session_id)
-        normalized_summary = str(summary_text or "").strip()
-        stored_state["summary"] = normalized_summary
-        self.save_session_state(session_id, stored_state)
-
-        commit_info = copy.deepcopy(self.memory_manager.last_commit_info)
+        if outcome is None:
+            raise RuntimeError("memory commit did not return its persisted session snapshot")
+        stored_state = copy.deepcopy(outcome.session_snapshot.state)
+        commit_info = copy.deepcopy(outcome.commit_info)
         commit_info["applied"] = True
-        commit_info["summary_persisted"] = bool(normalized_summary)
-        commit_info["summary_length"] = len(normalized_summary)
+        commit_info["transcript_digest"] = transcript_digest(transcript)
         self.last_commit_info = copy.deepcopy(commit_info)
         return commit_info, stored_state
 
     def build_default_components(self) -> list[Any]:
-        from ..optimizers import (
-            LastNOptimizer,
-            LastNOptimizerConfig,
-            LlmSummaryOptimizer,
-            LlmSummaryOptimizerConfig,
-            SlidingWindowOptimizer,
-            SlidingWindowOptimizerConfig,
-            ToolHistoryCompactionOptimizer,
-            ToolHistoryCompactionOptimizerConfig,
-        )
-        from .bootstrap import MemoryBootstrapHarness
-        from .commit import MemoryCommitHarness
-        from .recall_long_term import LongTermRecallMemoryHarness
-        from .short_term import ShortTermRecallMemoryHarness
+        from .assembly import build_default_memory_components
 
-        config = self.config
-        return [
-            ToolHistoryCompactionOptimizer(
-                ToolHistoryCompactionOptimizerConfig(
-                    enabled=bool(config.deferred_tool_compaction_enabled),
-                    keep_completed_turns=int(config.deferred_tool_compaction_keep_completed_turns),
-                    max_chars=int(config.deferred_tool_compaction_max_chars),
-                    preview_chars=int(config.deferred_tool_compaction_preview_chars),
-                    include_tools=copy.deepcopy(config.deferred_tool_compaction_include_tools),
-                    hash_payloads=bool(config.deferred_tool_compaction_hash_payloads),
-                )
-            ),
-            LlmSummaryOptimizer(
-                LlmSummaryOptimizerConfig(
-                    summary_trigger_pct=float(config.summary_trigger_pct),
-                    summary_target_pct=float(config.summary_target_pct),
-                    max_summary_chars=int(config.max_summary_chars),
-                    summary_generator=self.summary_generator,
-                )
-            ),
-            LastNOptimizer(
-                LastNOptimizerConfig(last_n_turns=int(config.last_n_turns))
-            ),
-            SlidingWindowOptimizer(
-                SlidingWindowOptimizerConfig(
-                    max_window_pct=float(config.sliding_window_pct),
-                    max_window_tokens=config.sliding_window_max_tokens,
-                )
-            ),
-            ShortTermRecallMemoryHarness(runtime=self),
-            LongTermRecallMemoryHarness(runtime=self),
-            MemoryBootstrapHarness(runtime=self),
-            MemoryCommitHarness(runtime=self),
-        ]
+        return build_default_memory_components(self)

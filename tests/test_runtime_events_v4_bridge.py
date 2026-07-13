@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from unchain.events_v4 import RuntimeEventV4
-from unchain.events_v4.bridge import RuntimeEventBridgeV4
+from unchain.events import RuntimeEvent
+from unchain.events.bridge import RuntimeEventBridge
 
 
 def _id_factory():
@@ -21,7 +21,7 @@ def _clock() -> datetime:
 
 
 def test_v4_bridge_emits_session_started_with_seq():
-    bridge = RuntimeEventBridgeV4(
+    bridge = RuntimeEventBridge(
         session_id="thread-1",
         root_run_id="run-root",
         id_factory=_id_factory(),
@@ -30,7 +30,7 @@ def test_v4_bridge_emits_session_started_with_seq():
 
     event = bridge.emit_session_started({"model": "gpt-5"})
 
-    assert isinstance(event, RuntimeEventV4)
+    assert isinstance(event, RuntimeEvent)
     assert event.to_dict()["schema_version"] == "v4"
     assert event.event_id == "evt-1"
     assert event.seq == 1
@@ -39,7 +39,7 @@ def test_v4_bridge_emits_session_started_with_seq():
 
 
 def test_v4_bridge_normalizes_raw_events_with_incrementing_seq():
-    bridge = RuntimeEventBridgeV4(
+    bridge = RuntimeEventBridge(
         session_id="thread-1",
         root_agent_id="developer",
         id_factory=_id_factory(),
@@ -73,7 +73,7 @@ def test_v4_bridge_normalizes_raw_events_with_incrementing_seq():
 
 
 def test_v4_bridge_records_dropped_unknown_events():
-    bridge = RuntimeEventBridgeV4(
+    bridge = RuntimeEventBridge(
         session_id="thread-1",
         root_run_id="run-root",
         id_factory=_id_factory(),

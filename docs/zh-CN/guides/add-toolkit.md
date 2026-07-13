@@ -12,7 +12,7 @@
 | 文件 | 职责 |
 |------|------|
 | `src/unchain/toolkits/builtin/core/` | 复杂 toolkit 示例（代码操作） |
-| `src/unchain/toolkits/builtin/external_api/` | 较小的内置 toolkit 示例 |
+| `src/unchain/toolkits/builtin/agent_reach/` | 较小的只读内置 toolkit 示例 |
 | `src/unchain/toolkits/builtin/plan/` | 进程内有状态 toolkit 示例 |
 | `src/unchain/tools/tool.py` | `Tool` 类 |
 | `src/unchain/tools/toolkit.py` | `Toolkit` 基类 |
@@ -22,7 +22,7 @@
 
 1. **学习现有 toolkit** 的实现模式：
    - **复杂型：** `src/unchain/toolkits/builtin/core/` -- 包含代码操作的多工具 toolkit
-   - **较小示例：** `src/unchain/toolkits/builtin/external_api/` -- 聚焦型内置 toolkit 示例
+   - **较小示例：** `src/unchain/toolkits/builtin/agent_reach/` -- 聚焦型只读内置 toolkit 示例
    - **有状态示例：** `src/unchain/toolkits/builtin/plan/` -- 进程内状态和需要确认的定稿工具
 
 2. **创建 toolkit 目录：**

@@ -4,7 +4,7 @@
 
 | 指标 | 值 |
 | --- | --- |
-| 类数量 | 6 |
+| 类数量 | 5 |
 | Dataclass | 2 |
 | 协议 | 0 |
 | 仅内部类型 | 2 |
@@ -14,9 +14,8 @@
 | 类 | 源码 | 导出 | 类型 |
 | --- | --- | --- | --- |
 | `BuiltinToolkit` | `src/unchain/toolkits/base.py:10` | subpackage | class |
+| `AgentReachToolkit` | `src/unchain/toolkits/builtin/agent_reach/agent_reach.py:13` | subpackage | class |
 | `CoreToolkit` | `src/unchain/toolkits/builtin/core/core.py:30` | subpackage | class |
-| `ExternalAPIToolkit` | `src/unchain/toolkits/builtin/external_api/external_api.py:12` | subpackage | class |
-| `GitToolkit` | `src/unchain/toolkits/builtin/git/git.py:14` | subpackage | class |
 | `PlanToolkit` | `src/unchain/toolkits/builtin/plan/plan.py:192` | subpackage | class |
 | `MCPToolkit` | `src/unchain/toolkits/mcp.py:62` | subpackage | class |
 
@@ -78,8 +77,6 @@
 ### 协作关系与关联类型
 
 - `CoreToolkit`
-- `ExternalAPIToolkit`
-- `GitToolkit`
 - `PlanToolkit`
 
 ### 最小调用示例
@@ -123,14 +120,14 @@ obj.push_execution_context(...)
 | `glob` | `glob(pattern: str, ...)` | 否 | 返回最多 200 条匹配 glob 的路径，按最近修改时间倒序。 |
 | `grep` | `grep(pattern: str, globs: list[str] | None = None, mode: str = ...)` | 否 | UTF-8 文本正则搜索，支持 glob 过滤和分页输出模式。 |
 | `web_fetch` | `web_fetch(url: str, extract: str | None = None)` | 是 | 抓取 HTTP(S) 页面；`extract` 切换原始内容或 runtime 配置的提取模型。 |
-| `shell` | `shell(command: str, ...)` | 是（按风险） | 运行 shell 命令、轮询后台任务或终止任务。低风险命令跳过确认。 |
+| `shell` | `shell(action: str, command: str = "", ..., task_id: str = "")` | 是（按风险） | 运行命令、轮询或有界等待进程内后台任务，或终止任务。`wait` 在工具内部阻塞，不消耗模型轮次做轮询；低风险命令及 poll/wait/kill 跳过确认。 |
 | `lsp` | `lsp(path: str, method: str, ...)` | 否 | 查询语言服务器（Python 或 TS/JS），支持 `goToDefinition`、`findReferences`、`hover`、`documentSymbol`、`workspaceSymbol`。 |
 | `ask_user_question` | `ask_user_question(title, question, selection_mode, options, ...)` | n/a | 保留运行时工具：会暂停整个 run，由框架而非直接执行来满足。 |
 
 ### Runtime 协作者
 
 - `LSPRuntime`（Python + TS/JS 语言服务器，按 `workspace_roots` 懒启动）。
-- `ShellRuntime`（探测 `bash`/`zsh`/`sh`，确认前做风险分类）。
+- `ShellRuntime`（探测 `bash`/`zsh`/`sh`，确认前做风险分类，并支持有界的进程内 wait；目前还不是可跨进程 reattach 的 durable supervisor）。
 - `WebFetchService`（缓存响应；支持 runtime 配置的提取模型）。
 - 每 session 一张 `_ReadSnapshot` 表 —— write/edit 拒绝操作未被完整读取或磁盘上已变更的文件。
 
@@ -143,8 +140,6 @@ obj.push_execution_context(...)
 ### 协作关系与关联类型
 
 - `BuiltinToolkit`
-- `ExternalAPIToolkit`
-- `GitToolkit`
 - `PlanToolkit`
 - `MCPToolkit`
 
@@ -160,48 +155,6 @@ agent = Agent(
     instructions="你是一个编码助手。",
     modules=(ToolsModule(tools=(CoreToolkit(workspace_root="."),)),),
 )
-```
-
-### `src/unchain/toolkits/builtin/git/git.py`
-
-工作区作用域 Git toolkit，用于 status、diff、stage、unstage 和 commit 工作流。
-
-## GitToolkit
-
-内置 toolkit，注册 5 个固定 argv 模板的 Git 工具。路径参数会按 workspace roots 校验，修改类操作都需要确认。
-
-| 项目 | 细节 |
-| --- | --- |
-| 源码 | `src/unchain/toolkits/builtin/git/git.py:14` |
-| 模块职责 | 带工作区路径校验的内置 Git 工作流 toolkit。 |
-| 继承/协议 | `BuiltinToolkit` |
-| 导出状态 | 从 `unchain.toolkits` 导出。 |
-| 对象类型 | 类；公开。 |
-
-### 构造表面
-
-- `__init__(self, *, workspace_root: str | Path | None = None, workspace_roots: list[str | Path] | None = None) -> None`
-
-`workspace_root` 是单根便捷写法；`workspace_roots` 接收多个允许的根目录。Git repo root 和路径参数都必须解析到这些根目录内。
-
-### 注册的工具
-
-| 工具 | 签名 | 需要确认 | 说明 |
-| --- | --- | --- | --- |
-| `git_status` | `git_status(cwd=".", include_untracked=True, max_output_chars=20000)` | 否 | 返回 branch/status 输出和结构化文件摘要。 |
-| `git_diff` | `git_diff(cwd=".", staged=False, paths=None, context_lines=3, max_output_chars=50000)` | 否 | 返回 worktree 或 staged unified diff，以及每个文件的增删统计。 |
-| `git_stage` | `git_stage(paths, cwd=".", max_output_chars=20000)` | 是 | stage 指定且校验通过的文件路径。 |
-| `git_unstage` | `git_unstage(paths, cwd=".", max_output_chars=20000)` | 是 | 从 staging area 移除指定且校验通过的文件路径。 |
-| `git_commit` | `git_commit(message, cwd=".", max_output_chars=20000)` | 是 | 只提交已 staged 内容，并提供 code-diff 确认预览。 |
-
-### 最小调用示例
-
-```python
-from unchain.toolkits import GitToolkit
-
-git = GitToolkit(workspace_root=".")
-status = git.git_status()
-diff = git.git_diff(staged=True)
 ```
 
 ### `src/unchain/toolkits/builtin/plan/plan.py`
@@ -258,81 +211,27 @@ plans.plan_update(
 finalized = plans.plan_finalize(created["plan_id"])
 ```
 
-### `src/unchain/toolkits/builtin/external_api/external_api.py`
+### `src/unchain/toolkits/builtin/agent_reach/agent_reach.py`
 
-提供简单 GET/POST HTTP 能力的外部 API toolkit。
+Agent Reach toolkit，提供只读网页与媒体元数据辅助工具。
 
-## ExternalAPIToolkit
+## AgentReachToolkit
 
-用于提供简单 GET/POST HTTP 能力的外部 API toolkit的实现类。
+只读 toolkit，封装 Agent-Reach 状态检查、网页读取和 YouTube 元数据辅助能力。
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/unchain/toolkits/builtin/external_api/external_api.py:12` |
-| 模块职责 | 提供简单 GET/POST HTTP 能力的外部 API toolkit。 |
-| 继承/协议 | `BuiltinToolkit` |
-| 导出状态 | 通过所属子包 `__init__` 导出。 |
-| 对象类型 | 类；公开或包内可见。 |
+| 源码 | `src/unchain/toolkits/builtin/agent_reach/agent_reach.py:13` |
+| 模块职责 | 只读 Agent-Reach helper toolkit。 |
+| 继承/协议 | `Toolkit` |
+| 导出状态 | 从 `unchain.toolkits` 导出。 |
+| 对象类型 | 类；公开。 |
 
-### 构造表面
+### 注册的工具
 
-该类主要通过构造函数定义必需输入和校验逻辑。
-
-- `__init__(self, *, workspace_root: str | Path | None=None)`
-
-### 公共方法
-
-#### `__init__(self, *, workspace_root: str | Path | None=None)`
-
-初始化实例，并在类有约束时校验或强制转换构造参数。
-
-- 类型：构造函数
-- 定义位置：`src/unchain/toolkits/builtin/external_api/external_api.py:15`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-
-#### `http_get(self, url: str, headers: dict[str, str] | None=None, timeout_seconds: int=30, max_response_chars: int=50000)`
-
-Send a GET request to an external API endpoint.
-
-- 类型：方法
-- 定义位置：`src/unchain/toolkits/builtin/external_api/external_api.py:29`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-- 补充：:param url: Full URL to send the GET request to.
-:param headers: Optional dictionary of HTTP headers to include.
-:param timeout_seconds: Maximum seconds to wait for response.
-:param max_response_chars: Maximum response body chars to return.
-
-#### `http_post(self, url: str, body: str | dict[str, Any], headers: dict[str, str] | None=None, timeout_seconds: int=30, max_response_chars: int=50000)`
-
-Send a POST request to an external API endpoint.
-
-- 类型：方法
-- 定义位置：`src/unchain/toolkits/builtin/external_api/external_api.py:90`
-- 返回形状：以源码签名和方法体为准；多数面对调用方的表面会返回 dict 载荷，或返回序列化后的 dataclass 内容。
-- 错误与校验：该表面可能把无效输入导致的 `ValueError`/`TypeError` 继续向上传播；工具式方法也可能返回 `{"error": ...}` 载荷。
-- 补充：:param url: Full URL to send the POST request to.
-:param body: Request body as string or dict (dict will be JSON-encoded).
-:param headers: Optional dictionary of HTTP headers to include.
-:param timeout_seconds: Maximum seconds to wait for response.
-:param max_response_chars: Maximum response body chars to return.
-
-### 协作关系与关联类型
-
-- `BuiltinToolkit`
-- `CoreToolkit`
-- `GitToolkit`
-- `PlanToolkit`
-
-### 最小调用示例
-
-```python
-obj = ExternalAPIToolkit(...)
-obj.http_get(...)
-```
-
-### `src/unchain/toolkits/mcp.py`
+- `agent_reach_status`
+- `agent_reach_read_web`
+- `agent_reach_youtube_metadata`
 
 ### `src/unchain/toolkits/mcp.py`
 
@@ -408,7 +307,6 @@ Execute a tool on the MCP server.
 
 - `BuiltinToolkit`
 - `CoreToolkit`
-- `ExternalAPIToolkit`
 
 ### 最小调用示例
 

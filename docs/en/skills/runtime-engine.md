@@ -4,22 +4,23 @@ Canonical English skill chapter for the `runtime-engine` topic.
 
 ## Role and boundaries
 
-This chapter explains the `KernelLoop` engine, the `RuntimeHarness` extension protocol, the `ModelIO` provider boundary, the canonical run-result types, and suspension/resume semantics.
+This chapter explains the run loop (`KernelLoop` internally), the `RuntimeHook` extension protocol, the `ModelAdapter` provider boundary, the canonical run-result types, and suspension/resume semantics.
 
 ## Dependency view
 
-- `KernelLoop` coordinates harness phases, model turns, tool execution, and run-result assembly.
-- `ModelIO` is the protocol that providers (OpenAI, Anthropic, Ollama, Gemini) satisfy. The kernel never imports a vendor SDK directly.
-- `RuntimeHarness` is the per-phase extension surface. Memory, optimizers, retry, subagents, tool execution, and tool prompting are all implemented as harnesses.
+- `KernelLoop` coordinates hook phases, model turns, tool execution, and run-result assembly.
+- `ModelAdapter` is the protocol that providers (OpenAI, Anthropic, Ollama, Gemini) satisfy. `ModelIO` remains a compatibility alias. The kernel never imports a vendor SDK directly.
+- `RuntimeHook` is the per-phase extension surface. `RuntimeHarness` remains a compatibility alias. Memory, optimizers, retry, subagents, tool execution, and tool prompting are all implemented as hooks.
 - `RunState` is the mutable per-run scratch space; `KernelRunResult` is the immutable return.
+- `RunDelta` is the structured effect envelope used by hooks and active tools to modify model context, conversation state, runtime state, artifacts, events, or suspension.
 
 ## Core objects
 
 - `KernelLoop`
-- `RuntimeHarness` / `RuntimePhase` / `HarnessContext`
-- `ModelIO` / `ModelTurnRequest`
+- `RuntimeHook` / `RuntimePhase` / `HarnessContext`
+- `ModelAdapter` / `ModelTurnRequest`
+- `RunDelta`
 - `ToolCall` / `ModelTurnResult` / `TokenUsage` / `KernelRunResult`
-- `LegacyBrothModelIO` (compat)
 
 ## Execution and state flow
 
@@ -31,16 +32,16 @@ This chapter explains the `KernelLoop` engine, the `RuntimeHarness` extension pr
 
 ## Configuration surface
 
-- Provider/model selection happens at `ModelIO` construction.
+- Provider/model selection happens at `ModelAdapter` construction.
 - Per-run options come through the kernel's `run()` arguments (max iterations, response format, callbacks, payload defaults).
-- Harness composition is done at `AgentBuilder` time when running through `Agent`; standalone kernel users register harnesses by hand.
+- Hook composition is done at `AgentBuilder` time when running through `Agent`; standalone kernel users register hooks by hand.
 
 ## Common gotchas
 
 - Observation turns count toward the iteration budget.
 - Callbacks run synchronously inside the loop; offload long work.
 - Provider SDK imports are lazy; missing SDK fails when `fetch_turn()` runs, not at import.
-- `Broth` is **not** a runtime anymore — it survives only as `LegacyBrothModelIO`, an adapter so old code paths can plug into the new kernel.
+- Provider calls go through `ModelAdapter` implementations; the old provider runtime compatibility layer has been removed.
 
 ## Related class references
 
@@ -54,7 +55,10 @@ This chapter explains the `KernelLoop` engine, the `RuntimeHarness` extension pr
 - `src/unchain/kernel/harness.py`
 - `src/unchain/kernel/state.py`
 - `src/unchain/kernel/types.py`
-- `src/unchain/providers/model_io.py`
+- `src/unchain/providers/base.py`
+- `src/unchain/providers/openai.py`
+- `src/unchain/providers/anthropic.py`
+- `src/unchain/providers/ollama.py`
 
 ## KernelLoop In Practice
 
@@ -76,24 +80,27 @@ For day-to-day use, prefer `Agent.run()`. Direct `KernelLoop` use is only needed
 ## Current Execution Flow
 
 1. `run()` normalizes incoming messages, validates modality support against model capabilities, and builds a `RunState` for this iteration.
-2. The loop dispatches harnesses across the eight phases (see `architecture-overview.md` for the full list) before and after each model turn.
-3. `ModelIO.fetch_turn(request)` returns a `ModelTurnResult` containing assistant messages, tool calls, and token counts.
-4. If the model emitted tool calls, `ToolExecutionHarness` runs them. Confirmation-gated tools cause the loop to return early with `status="awaiting_human_input"`.
+2. The loop dispatches hooks across the public extension phases (see `architecture-overview.md` for the full list) before and after each model turn, then crosses reserved durability barriers on suspension and finalization.
+3. `ModelAdapter.fetch_turn(request)` returns a `ModelTurnResult` containing assistant messages, tool calls, and token counts.
+4. If the model emitted tool calls, `ToolExecutionHook` runs them. Confirmation-gated tools cause the loop to return early with `status="awaiting_human_input"`.
 5. Tools marked with `observe=True` trigger an additional observation turn during `after_tool_batch`.
 6. When a turn no longer produces tool calls, the loop applies any structured-output parsing, commits memory, and returns a `KernelRunResult`.
 
 ## Design Notes
 
-- Memory is integrated as a harness pair (bootstrap/before-model recall + before-commit write). Runs without memory simply omit the `MemoryModule`.
-- Retry is a wrapper around `ModelIO.fetch_turn()` (see `unchain.retry`) and never retries content that has already been streamed downstream.
-- Provider-specific projection (canonical messages → SDK shape) lives entirely inside each `ModelIO` implementation, so the kernel stays vendor-agnostic.
+- Memory is integrated as hook components (bootstrap/before-model recall + before-commit write). Runs without memory simply omit the `MemoryModule`.
+- Retry is a wrapper around `ModelAdapter.fetch_turn()` (see `unchain.retry`). Debug-only request tracing events do not commit an attempt, so a transient failure may still retry; the first user-visible token/tool/reasoning event closes that gate to prevent duplicate output.
+- Provider-specific projection and native replay rehydration live in the provider layer (the context assembler plus model adapters), so the kernel stays vendor-agnostic.
+- The current semantic model context is authoritative for every request. Provider replay contributes only retained native reasoning/tool envelopes; it cannot overwrite new memory, prompt, optimizer, or user deltas. OpenAI remote continuation keeps a separate delta input and a complete local fallback.
+- A request-only model context that is still pending at a durable suspend boundary is stored in the execution checkpoint and restored before the next `before_model` phase.
+- Human-input continuations expose only an opaque, process-local replay handle; provider reasoning/signatures are not serialized into the public continuation. Use session memory/checkpoints when a continuation must survive a process restart.
 
 ## Provider Abstraction
 
-Providers implement `ModelIO`:
+Providers implement `ModelAdapter` (`ModelIO` compatibility alias):
 
 ```python
-class ModelIO(Protocol):
+class ModelAdapter(Protocol):
     provider: str
     def fetch_turn(self, request: ModelTurnRequest) -> ModelTurnResult: ...
 ```
@@ -126,15 +133,15 @@ Model capabilities are declared in JSON resource files under `src/unchain/runtim
 ### Adding a New Provider
 
 1. Create `src/unchain/providers/my_provider.py`.
-2. Implement a `ModelIO` subclass with `fetch_turn()`.
+2. Implement a `ModelAdapter` subclass with `fetch_turn()`.
 3. Add capabilities and default payloads under `src/unchain/runtime/resources/`.
 4. Either pass an instance directly to `Agent(model_io_factory=...)` or register a factory in `ModelIOFactoryRegistry`.
 
-The provider module is **lazy-loaded** — its SDK is only imported when the model IO is actually constructed.
+The provider module is **lazy-loaded** — its SDK is only imported when the model adapter is actually constructed.
 
 ## Callback Events
 
-Harnesses and the loop emit events through the `callback` passed into `Agent.run()` / `KernelLoop.run()`. This powers UI streaming, logging, and observability.
+Hooks and the loop emit events through the `callback` passed into `Agent.run()` / `KernelLoop.run()`. This powers UI streaming, logging, and observability.
 
 ```python
 def my_callback(event: dict) -> None:
@@ -230,7 +237,7 @@ result = agent.run("Analyze this code.", response_format=fmt)
 
 6. **Token counting is approximate** — Token usage in `KernelRunResult` depends on provider accuracy. Use it for budgeting, not billing.
 
-7. **`Broth` is gone from the runtime path** — If you grep for it, you'll find `LegacyBrothModelIO` in `kernel/model_io.py` and an old `runtime/` package. Both exist for migration only; new work should target `ModelIO` directly.
+7. **Provider boundaries are explicit** — New work should target `ModelIO` implementations directly; `runtime/` now holds resource loading, not a provider runtime.
 
 ## Related Skills
 

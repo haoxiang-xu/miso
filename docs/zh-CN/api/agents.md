@@ -7,7 +7,7 @@
 | 类数量 | 3 |
 | Dataclass | 5 |
 | 协议 | 1 |
-| Agent 模块 | 5 |
+| Agent 模块 | 6 |
 
 ## 覆盖地图
 
@@ -16,6 +16,8 @@
 | `AgentSpec` | `src/unchain/agent/spec.py` | subpackage | dataclass (frozen) |
 | `AgentState` | `src/unchain/agent/spec.py` | subpackage | dataclass |
 | `Agent` | `src/unchain/agent/agent.py` | top-level | class |
+| `CompletionEvaluation` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
+| `CompletionPolicy` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
 | `AgentCallContext` | `src/unchain/agent/builder.py` | subpackage | dataclass |
 | `PreparedAgent` | `src/unchain/agent/builder.py` | subpackage | dataclass |
 | `AgentBuilder` | `src/unchain/agent/builder.py` | subpackage | dataclass |
@@ -26,6 +28,7 @@
 | `PoliciesModule` | `src/unchain/agent/modules/policies.py` | subpackage | dataclass (frozen) |
 | `OptimizersModule` | `src/unchain/agent/modules/optimizers.py` | subpackage | dataclass (frozen) |
 | `SubagentModule` | `src/unchain/agent/modules/subagents.py` | subpackage | dataclass (frozen) |
+| `InteractionModule` | `src/unchain/agent/modules/interaction.py` | subpackage | dataclass (frozen) |
 
 ### `src/unchain/agent/spec.py`
 
@@ -114,9 +117,11 @@ Frozen dataclass，持有 Agent 实例的不可变配置。
 - 类型：方法
 - 返回：`KernelRunResult`
 
-#### `resume_human_input(self, *, conversation: list[dict[str, Any]], continuation: dict[str, Any], response: dict[str, Any] | Any, payload: dict[str, Any] | None=None, response_format: Any=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, on_tool_confirm: Callable[..., Any] | None=None, on_human_input: Callable[..., Any] | None=None, on_max_iterations: Callable[..., Any] | None=None, session_id: str | None=None, memory_namespace: str | None=None, run_id: str | None=None, tool_runtime_config: dict[str, Any] | None=None) -> KernelRunResult`
+#### `resume_human_input(self, *, conversation: list[dict[str, Any]] | None=None, continuation: dict[str, Any] | None=None, response: dict[str, Any] | Any, payload: dict[str, Any] | None=None, response_format: Any=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, on_tool_confirm: Callable[..., Any] | None=None, on_human_input: Callable[..., Any] | None=None, on_max_iterations: Callable[..., Any] | None=None, session_id: str | None=None, memory_namespace: str | None=None, run_id: str | None=None, tool_runtime_config: dict[str, Any] | None=None) -> KernelRunResult`
 
 在收集到人类输入后恢复暂停的运行。
+
+如果同时省略 `conversation` 和 `continuation`，则 memory-backed `session_id` 中必须存在 `awaiting_human_input` execution checkpoint；该方法会从 checkpoint 恢复两者。
 
 - 类型：方法
 - 返回：`KernelRunResult`
@@ -310,7 +315,8 @@ Dataclass，捕获传给 `Agent.run()` 或 `Agent.resume_human_input()` 的每�
 
 ## PoliciesModule
 
-设置默认 payload、响应格式、最大迭代数、上下文窗口 token 数和工具确认回调。
+设置默认 payload、响应格式、最大迭代数、上下文窗口 token 数、工具确认回调，
+以及可选 completion policy。
 
 | 项目 | 细节 |
 | --- | --- |
@@ -327,7 +333,35 @@ Dataclass，捕获传给 `Agent.run()` 或 `Agent.resume_human_input()` 的每�
 | `max_iterations` | `int \| None` | 默认值：`None`。 |
 | `max_context_window_tokens` | `int \| None` | 默认值：`None`。 |
 | `on_tool_confirm` | `Callable[..., Any] \| None` | 默认值：`None`。 |
+| `completion_policy` | `CompletionPolicy \| None` | 默认值：`None`；显式启用的有界 repair policy。 |
 | `name` | `str` | 默认值：`"policies"`。 |
+
+### Completion policy
+
+`completion_policy` 是显式启用能力。为 `None` 时，`PreparedAgent` 会直接返回
+第一次 completed 的 `KernelRunResult`，不会额外 validation 或 repair turn。传入
+policy 后，`PreparedAgent` 在 kernel run 完成后委托给 `CompletionPolicyRunner`；
+kernel loop 本身仍然是有界 run loop。
+
+```python
+from unchain.agent import CompletionEvaluation, CompletionPolicy, PoliciesModule
+
+def validate(result):
+    final_text = str(result.messages[-1].get("content") or "")
+    if "acceptance criteria" in final_text:
+        return CompletionEvaluation(complete=True)
+    return CompletionEvaluation(
+        complete=False,
+        feedback="Revise the answer and include acceptance criteria.",
+    )
+
+PoliciesModule(
+    completion_policy=CompletionPolicy(
+        validator=validate,
+        max_repair_turns=1,
+    )
+)
+```
 
 ## OptimizersModule
 
@@ -364,3 +398,39 @@ Dataclass，捕获传给 `Agent.run()` 或 `Agent.resume_human_input()` 的每�
 | `policy` | `SubagentPolicy` | 默认值：`SubagentPolicy()`。 |
 | `executor` | `SubagentExecutor \| None` | 默认值：`None`。 |
 | `name` | `str` | 默认值：`"subagents"`。 |
+
+## InteractionModule
+
+把 `FyiChannel` 接入 Agent 的唯一入口：`configure()` 在 `fyi_channel` 不为 `None` 时向 builder 注册 `FyiInjectionHarness(channel=fyi_channel)`（`before_model` 阶段，`order=180`），使 mid-run 的 fyi 消息在当前 iteration 就对模型可见。用法与三原语的完整语义见 [Interject 原语指南](../guides/interject.md)。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/agent/modules/interaction.py` |
+| 继承/协议 | `BaseAgentModule` |
+| 对象类型 | Dataclass (frozen)。 |
+
+### 字段
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `fyi_channel` | `FyiChannel \| None` | 默认值：`None`。为 `None` 时不注册任何 harness。 |
+| `name` | `str` | 默认值：`"interaction"`。 |
+
+### 示例
+
+```python
+from unchain import Agent
+from unchain.agent import InteractionModule
+from unchain.interaction import FyiChannel
+
+fyi_channel = FyiChannel()  # 每个 run 一个新实例
+
+agent = Agent(
+    name="assistant",
+    provider="openai",
+    model="gpt-5",
+    modules=(InteractionModule(fyi_channel=fyi_channel),),
+)
+```
+
+`QueuedTurnBuffer`（run 结束后合并追加请求）与 `ProgressDigest`/`build_btw_prompt`（旁路问答）不经过 `AgentModule`，由调用方在 `run()` 之外自行编排——同样在 [Interject 原语指南](../guides/interject.md) 中有完整示例。

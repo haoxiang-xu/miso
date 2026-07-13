@@ -16,6 +16,8 @@ Modular agent composition via the `Agent` class, `AgentBuilder` pipeline, immuta
 | `AgentSpec` | `src/unchain/agent/spec.py` | subpackage | dataclass (frozen) |
 | `AgentState` | `src/unchain/agent/spec.py` | subpackage | dataclass |
 | `Agent` | `src/unchain/agent/agent.py` | top-level | class |
+| `CompletionEvaluation` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
+| `CompletionPolicy` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
 | `AgentCallContext` | `src/unchain/agent/builder.py` | subpackage | dataclass |
 | `PreparedAgent` | `src/unchain/agent/builder.py` | subpackage | dataclass |
 | `AgentBuilder` | `src/unchain/agent/builder.py` | subpackage | dataclass |
@@ -114,9 +116,11 @@ Main entry point. Normalizes messages, prepares a `PreparedAgent` via `AgentBuil
 - Category: Method
 - Returns: `KernelRunResult`
 
-#### `resume_human_input(self, *, conversation: list[dict[str, Any]], continuation: dict[str, Any], response: dict[str, Any] | Any, payload: dict[str, Any] | None=None, response_format: Any=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, on_tool_confirm: Callable[..., Any] | None=None, on_human_input: Callable[..., Any] | None=None, on_max_iterations: Callable[..., Any] | None=None, session_id: str | None=None, memory_namespace: str | None=None, run_id: str | None=None, tool_runtime_config: dict[str, Any] | None=None) -> KernelRunResult`
+#### `resume_human_input(self, *, conversation: list[dict[str, Any]] | None=None, continuation: dict[str, Any] | None=None, response: dict[str, Any] | Any, payload: dict[str, Any] | None=None, response_format: Any=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, on_tool_confirm: Callable[..., Any] | None=None, on_human_input: Callable[..., Any] | None=None, on_max_iterations: Callable[..., Any] | None=None, session_id: str | None=None, memory_namespace: str | None=None, run_id: str | None=None, tool_runtime_config: dict[str, Any] | None=None) -> KernelRunResult`
 
 Resumes a suspended run after human input has been collected.
+
+When both `conversation` and `continuation` are omitted, a memory-backed `session_id` must contain an `awaiting_human_input` execution checkpoint; the method restores both values from that checkpoint.
 
 - Category: Method
 - Returns: `KernelRunResult`
@@ -310,7 +314,8 @@ Attaches memory to the builder. Accepts `KernelMemoryRuntime`, `MemoryManager`, 
 
 ## PoliciesModule
 
-Sets default payload, response format, max iterations, context window tokens, and tool confirmation callback.
+Sets default payload, response format, max iterations, context window tokens,
+tool confirmation callback, and optional completion policy.
 
 | Item | Details |
 | --- | --- |
@@ -327,7 +332,35 @@ Sets default payload, response format, max iterations, context window tokens, an
 | `max_iterations` | `int \| None` | Default: `None`. |
 | `max_context_window_tokens` | `int \| None` | Default: `None`. |
 | `on_tool_confirm` | `Callable[..., Any] \| None` | Default: `None`. |
+| `completion_policy` | `CompletionPolicy \| None` | Default: `None`; opt-in bounded repair policy. |
 | `name` | `str` | Default: `"policies"`. |
+
+### Completion policy
+
+`completion_policy` is opt-in. When it is `None`, `PreparedAgent` returns the
+first completed `KernelRunResult` without extra validation or repair turns. When
+provided, `PreparedAgent` delegates to `CompletionPolicyRunner` after the kernel
+run completes; the kernel loop itself remains a bounded run loop.
+
+```python
+from unchain.agent import CompletionEvaluation, CompletionPolicy, PoliciesModule
+
+def validate(result):
+    final_text = str(result.messages[-1].get("content") or "")
+    if "acceptance criteria" in final_text:
+        return CompletionEvaluation(complete=True)
+    return CompletionEvaluation(
+        complete=False,
+        feedback="Revise the answer and include acceptance criteria.",
+    )
+
+PoliciesModule(
+    completion_policy=CompletionPolicy(
+        validator=validate,
+        max_repair_turns=1,
+    )
+)
+```
 
 ## OptimizersModule
 

@@ -19,7 +19,6 @@
 - `RuntimeHarness` / `RuntimePhase` / `HarnessContext`
 - `ModelIO` / `ModelTurnRequest`
 - `ToolCall` / `ModelTurnResult` / `TokenUsage` / `KernelRunResult`
-- `LegacyBrothModelIO`（兼容用）
 
 ## 执行流与状态流
 
@@ -40,7 +39,7 @@
 - Observation turn 计入迭代预算。
 - callback 在 loop 内同步执行；耗时工作要外抛。
 - Provider SDK 懒加载；缺 SDK 时 `fetch_turn()` 才报错，不是 import 时。
-- `Broth` **不再**是 runtime —— 只剩 `LegacyBrothModelIO` 这个适配器，让老代码路径能挂进新 kernel。
+- Provider 调用统一通过 `ModelIO` 实现；旧的 provider runtime 兼容层已经移除。
 
 ## 关联 class 参考
 
@@ -54,7 +53,10 @@
 - `src/unchain/kernel/harness.py`
 - `src/unchain/kernel/state.py`
 - `src/unchain/kernel/types.py`
-- `src/unchain/providers/model_io.py`
+- `src/unchain/providers/base.py`
+- `src/unchain/providers/openai.py`
+- `src/unchain/providers/anthropic.py`
+- `src/unchain/providers/ollama.py`
 
 ## KernelLoop 实践
 
@@ -76,7 +78,7 @@ result = loop.run(messages=[{"role": "user", "content": "Hello"}])
 ## 当前执行流
 
 1. `run()` 规范化输入消息，按模型能力校验模态支持，并为这次迭代构造 `RunState`。
-2. loop 在每个模型 turn 前后 dispatch harness 走完 8 个阶段（完整列表见 `architecture-overview.md`）。
+2. loop 在每个模型 turn 前后 dispatch 对外扩展 phase（完整列表见 `architecture-overview.md`），并在 suspend/finalize 时跨过 runtime 保留的 durable barrier。
 3. `ModelIO.fetch_turn(request)` 返回 `ModelTurnResult`，含 assistant 消息、工具调用、token 计数。
 4. 如果模型发出工具调用，`ToolExecutionHarness` 执行它们。需要确认的工具会让 loop 提前返回 `status="awaiting_human_input"`。
 5. 标了 `observe=True` 的工具会在 `after_tool_batch` 触发额外的 observation turn。
@@ -85,8 +87,11 @@ result = loop.run(messages=[{"role": "user", "content": "Hello"}])
 ## 设计要点
 
 - Memory 以 harness 对的形式集成（bootstrap/before-model 召回 + before-commit 写）。不带 memory 的 run 直接省掉 `MemoryModule`。
-- Retry 是包在 `ModelIO.fetch_turn()` 外的（见 `unchain.retry`），从来不重试已经流到下游的内容。
-- Provider 特定投影（规范消息 → SDK 形状）完全在每个 `ModelIO` 实现内部，kernel 保持厂商无关。
+- Retry 包在 `ModelIO.fetch_turn()` 外（见 `unchain.retry`）。仅用于调试的 request trace event 不会锁死 attempt，因此瞬态失败仍可重试；第一个用户可见 token/tool/reasoning event 会关闭 retry gate，避免重复输出。
+- Provider 特定投影与原生 replay 回填都位于 provider 层（context assembler + model adapter），kernel 保持厂商无关。
+- 每次请求都以当前 semantic model context 为权威。Provider replay 只补回仍被保留的原生 reasoning/tool 外壳，不能覆盖新的 memory、prompt、optimizer 或用户 delta。OpenAI remote continuation 的增量输入与完整本地 fallback 分开保存。
+- durable suspend 边界仍待发送的 request-only model context 会写入 execution checkpoint，并在下一次 `before_model` 前恢复。
+- 人工输入 continuation 对外只暴露进程内的 opaque replay handle，不会把 provider reasoning/signature 序列化进公开 continuation。若 continuation 需要跨进程恢复，应启用 session memory/checkpoint。
 
 ## Provider 抽象
 
@@ -230,7 +235,7 @@ result = agent.run("Analyze this code.", response_format=fmt)
 
 6. **Token 计数是近似** —— `KernelRunResult` 里的 token 用量看 provider 准确度。用来做预算，别用来计费。
 
-7. **`Broth` 已经不在 runtime 路径上** —— 你 grep 它会找到 `kernel/model_io.py` 里的 `LegacyBrothModelIO` 和老的 `runtime/` 包。这两个只为迁移而存在；新代码直接面向 `ModelIO`。
+7. **Provider 边界是显式的** —— 新代码直接面向 `ModelIO` 实现；`runtime/` 现在负责 resource loading，不再是 provider runtime。
 
 ## 相关 skills
 

@@ -68,8 +68,10 @@ def test_fetch_model_turn_raises_when_retries_exhausted():
     assert io.call_count == 3  # 1 initial + 2 retries
 
 
-def test_observe_tool_batch_is_not_affected_by_retry_config():
+def test_tool_observation_runner_is_not_affected_by_retry_config():
     """The background observe path must keep its 'swallow exceptions, return empty' behavior."""
+
+    from unchain.tools.observation import ToolObservationRunner
 
     class _AlwaysFailIO:
         def __init__(self):
@@ -82,14 +84,14 @@ def test_observe_tool_batch_is_not_affected_by_retry_config():
     io = _AlwaysFailIO()
     kernel = KernelLoop(model_io=io, retry_config=_fast_retry_config(max_retries=5))
 
-    observation, _tokens = kernel.observe_tool_batch(
+    observation, _tokens = ToolObservationRunner(model_io=kernel.model_io).observe_tool_batch(
         full_messages=[{"role": "user", "content": "x"}],
         tool_messages=[],
         payload={},
         iteration=0,
     )
     assert observation == ""
-    # observe_tool_batch bypasses the retry wrapper: it still calls fetch_turn
+    # The tool observation runner bypasses the retry wrapper: it still calls fetch_turn
     # directly, so only 1 attempt should occur even with retry_config set.
     assert io.call_count == 1
 

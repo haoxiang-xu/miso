@@ -18,23 +18,26 @@ class MemoryModule(BaseAgentModule):
         runtime = self.memory
         if runtime is None:
             return
+        cache_key = f"memory_runtime:{id(self)}"
+        cached_runtime = builder.state.module_state.get(cache_key)
+        if isinstance(cached_runtime, KernelMemoryRuntime):
+            builder.attach_memory_runtime(cached_runtime)
+            return
         if isinstance(runtime, KernelMemoryRuntime):
-            builder.attach_memory_runtime(runtime)
-            return
-        if isinstance(runtime, MemoryManager):
-            builder.attach_memory_runtime(KernelMemoryRuntime.from_memory_manager(runtime))
-            return
-        if isinstance(runtime, MemoryConfig):
-            builder.attach_memory_runtime(
-                KernelMemoryRuntime.from_config(copy.deepcopy(runtime), store=self.store)
+            resolved_runtime = runtime
+        elif isinstance(runtime, MemoryManager):
+            resolved_runtime = KernelMemoryRuntime.from_memory_manager(runtime)
+        elif isinstance(runtime, MemoryConfig):
+            resolved_runtime = KernelMemoryRuntime.from_config(
+                copy.deepcopy(runtime),
+                store=self.store,
             )
-            return
-        if isinstance(runtime, dict):
-            builder.attach_memory_runtime(
-                KernelMemoryRuntime.from_config(
-                    MemoryConfig(**copy.deepcopy(runtime)),
-                    store=self.store,
-                )
+        elif isinstance(runtime, dict):
+            resolved_runtime = KernelMemoryRuntime.from_config(
+                MemoryConfig(**copy.deepcopy(runtime)),
+                store=self.store,
             )
-            return
-        raise TypeError(f"unsupported memory module value: {type(runtime).__name__}")
+        else:
+            raise TypeError(f"unsupported memory module value: {type(runtime).__name__}")
+        builder.state.module_state[cache_key] = resolved_runtime
+        builder.attach_memory_runtime(resolved_runtime)

@@ -73,6 +73,13 @@ class Agent:
         else:
             raise TypeError("messages must be a string or a list of dict messages")
         if self.instructions:
+            first = normalized[0] if normalized else None
+            if (
+                isinstance(first, dict)
+                and first.get("role") == "system"
+                and first.get("content") == self.instructions
+            ):
+                return normalized
             return [{"role": "system", "content": self.instructions}, *normalized]
         return normalized
 
@@ -199,8 +206,8 @@ class Agent:
     def resume_human_input(
         self,
         *,
-        conversation: list[dict[str, Any]],
-        continuation: dict[str, Any],
+        conversation: list[dict[str, Any]] | None = None,
+        continuation: dict[str, Any] | None = None,
         response: dict[str, Any] | Any,
         payload: dict[str, Any] | None = None,
         response_format: Any = None,
@@ -217,8 +224,16 @@ class Agent:
         prepared = self._prepare(
             AgentCallContext(
                 mode="resume_human_input",
-                conversation=copy.deepcopy(conversation),
-                continuation=copy.deepcopy(continuation),
+                conversation=(
+                    copy.deepcopy(conversation)
+                    if isinstance(conversation, list)
+                    else None
+                ),
+                continuation=(
+                    copy.deepcopy(continuation)
+                    if isinstance(continuation, dict)
+                    else None
+                ),
                 response=copy.deepcopy(response),
                 payload=copy.deepcopy(payload) if isinstance(payload, dict) else None,
                 response_format=response_format,

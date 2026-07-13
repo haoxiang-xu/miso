@@ -66,6 +66,14 @@ Public method `save` exposed by `SessionStore`.
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
+#### `load_with_revision(self, session_id: str) -> SessionSnapshot`
+
+Loads the complete state together with its monotonic CAS revision.
+
+#### `save_if_revision(self, session_id: str, state: dict[str, Any], expected_revision: int) -> int`
+
+Atomically saves and returns the next revision. A stale `expected_revision` raises `SessionRevisionConflictError`.
+
 ### Collaboration and related types
 
 - `VectorStoreAdapter`
@@ -716,7 +724,7 @@ Initializes the instance and validates/coerces construction-time inputs where th
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
-#### `ensure_long_term_components(self, *, broth_instance: Any | None=None)`
+#### `ensure_long_term_components(self, *, api_key_source: Any | None=None)`
 
 Public method `ensure_long_term_components` exposed by `MemoryManager`.
 
@@ -743,13 +751,13 @@ Public method `prepare_messages` exposed by `MemoryManager`.
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
-#### `commit_messages(self, session_id: str, full_conversation: list[dict[str, Any]], *, memory_namespace: str | None=None, model: str | None=None, long_term_extractor: LongTermExtractor | None=None)`
+#### `commit_messages(self, session_id: str, full_conversation: list[dict[str, Any]], *, memory_namespace: str | None=None, model: str | None=None, long_term_extractor: LongTermExtractor | None=None, expected_revision: int | None=None, summary_text: str | None=None, return_result: bool=False, clear_execution_checkpoint_id: str | None=None) -> MemoryCommitResult | None`
 
 Public method `commit_messages` exposed by `MemoryManager`.
 
 - Category: Method
 - Declared at: `src/unchain/memory/manager.py:2269`
-- Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
+- Return shape: backward-compatible `None` by default. With `return_result=True`, returns `MemoryCommitResult(commit_info, session_snapshot)`; `commit_info` includes the persisted revision and consistency mode.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
 
 ### Lifecycle and runtime role
@@ -787,7 +795,7 @@ Implementation class used by qdrant-backed vector adapters plus a json session-s
 | Source | `src/unchain/memory/qdrant.py:198` |
 | Module role | Qdrant-backed vector adapters plus a JSON session-store implementation. |
 | Inheritance | `-` |
-| Exposure | Not exported; treat as implementation detail. |
+| Exposure | Exported from `unchain.memory`. |
 | Kind | Class; public-facing or package-visible. |
 
 ### Constructor surface
@@ -942,6 +950,14 @@ Public method `save` exposed by `JsonFileSessionStore`.
 - Declared at: `src/unchain/memory/qdrant.py:438`
 - Return shape: see the source signature/body for the concrete payload; most user-facing surfaces return dict payloads or serialized dataclass content when applicable.
 - Errors and validation: this surface may raise propagated `ValueError`/`TypeError` for invalid construction/configuration inputs; tool-style methods may also return `{"error": ...}` payloads.
+
+#### `load_with_revision(self, session_id: str) -> SessionSnapshot`
+
+Loads JSON state under the per-session lock and returns its revision. Malformed JSON raises `SessionStoreCorruptionError`.
+
+#### `save_if_revision(self, session_id: str, state: dict[str, Any], expected_revision: int) -> int`
+
+Performs a cross-process CAS using a file lock, `fsync`, and atomic replacement.
 
 ### Collaboration and related types
 

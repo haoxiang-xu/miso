@@ -18,7 +18,8 @@ This chapter is the implementation guide for adding or maintaining builtin toolk
 - `Toolkit`
 - `ToolkitRegistry`
 - `CoreToolkit`
-- `ExternalAPIToolkit`
+- `PlanToolkit`
+- `AgentReachToolkit`
 - `MCPToolkit`
 
 ## Execution and state flow
@@ -240,7 +241,7 @@ return {"error": f"file not found: {target}"}
 return "some string"
 ```
 
-**Note**: There is no enforced `"ok"` key convention project-wide. Some toolkits use `{"ok": True, ...}` (ExternalAPI), others don't (Workspace). Pick one pattern per toolkit and stay consistent within it.
+**Note**: There is no enforced `"ok"` key convention project-wide. Pick one response shape per toolkit and stay consistent within it.
 
 ### Error Handling Pattern
 

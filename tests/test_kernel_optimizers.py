@@ -1,8 +1,10 @@
+import copy
 import json
 
 import pytest
 
 from unchain.kernel import KernelLoop, ModelTurnResult
+from unchain.kernel.provider_replay import set_provider_replay_frame
 from unchain.optimizers import (
     LastNOptimizer,
     LastNOptimizerConfig,
@@ -14,6 +16,7 @@ from unchain.optimizers import (
     ToolHistoryCompactionOptimizerConfig,
 )
 from unchain.tools import Toolkit
+from unchain.providers.model_turn_runtime import build_model_turn_request
 
 
 def _conversation_with_tool_turn() -> list[dict]:
@@ -188,6 +191,49 @@ def test_llm_summary_optimizer_falls_back_without_interrupting():
     assert state.transcript == history
 
 
+def test_failed_summary_blocks_destructive_last_n_only_for_that_pass():
+    summary = LlmSummaryOptimizer(
+        LlmSummaryOptimizerConfig(
+            summary_trigger_pct=0.2,
+            summary_target_pct=0.1,
+            max_summary_chars=200,
+            summary_generator=None,
+        )
+    )
+    loop = KernelLoop(
+        harnesses=[
+            summary,
+            LastNOptimizer(LastNOptimizerConfig(last_n_turns=1)),
+        ]
+    )
+    history = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "early " + ("U" * 1_000)},
+        {"role": "assistant", "content": "a1 " + ("A" * 1_000)},
+        {"role": "user", "content": "latest"},
+        {"role": "assistant", "content": "a2"},
+    ]
+    state = loop.seed_state(
+        history,
+        model="gpt-5",
+        max_context_window_tokens=500,
+    )
+
+    loop.dispatch_phase(state, phase="before_model", event={"toolkit": Toolkit()})
+
+    assert state.latest_messages() == history
+    assert state.optimizer_state["last_n"]["skip_reason"] == (
+        "upstream_summary_replacement_unavailable"
+    )
+
+    state.provider_state.max_context_window_tokens = 100_000
+    loop.dispatch_phase(state, phase="before_model", event={"toolkit": Toolkit()})
+
+    assert state.optimizer_state["llm_summary"]["source_preservation_required"] is False
+    assert state.optimizer_state["last_n"]["skipped"] is False
+    assert all("early" not in str(message.get("content", "")) for message in state.latest_messages())
+
+
 @pytest.mark.parametrize(
     ("provider", "builder"),
     [
@@ -226,6 +272,20 @@ def test_tool_history_compaction_optimizer_handles_all_provider_shapes(provider,
         + [{"role": "user", "content": "u2"}, {"role": "assistant", "content": "a2"}, {"role": "user", "content": "u3"}]
     )
     state = KernelLoop().seed_state(history, provider=provider, session_id=f"s_compact_{provider}")
+    replay_formats = {
+        "openai": "openai.responses.v1",
+        "anthropic": "anthropic.messages.v1",
+        "ollama": "ollama.chat.v1",
+    }
+    if provider in replay_formats:
+        set_provider_replay_frame(
+            state,
+            {
+                "format": replay_formats[provider],
+                "complete": True,
+                "items": copy.deepcopy(history),
+            },
+        )
     optimizer = ToolHistoryCompactionOptimizer()
     loop = KernelLoop(harnesses=[optimizer])
 
@@ -240,7 +300,11 @@ def test_tool_history_compaction_optimizer_handles_all_provider_shapes(provider,
         assert '"u3"' in item["messages"]
         assert '"u1"' not in item["messages"]
 
-    prepared = state.latest_messages()
+    prepared = (
+        build_model_turn_request(state, toolkit=toolkit).messages
+        if provider in replay_formats
+        else state.latest_messages()
+    )
     if provider == "openai":
         function_call = next(message for message in prepared if message.get("type") == "function_call" and message.get("call_id") == "call_old")
         function_output = next(message for message in prepared if message.get("type") == "function_call_output" and message.get("call_id") == "call_old")

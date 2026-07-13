@@ -50,7 +50,10 @@ LLM provider integrations (OpenAI, Anthropic, Gemini, Ollama).
 
 | File | Role |
 |------|------|
-| `src/unchain/providers/model_io.py` | Provider implementations and `_NativeModelIOBase` |
+| `src/unchain/providers/base.py` | Provider contract (`ModelIO`, `ModelTurnRequest`) |
+| `src/unchain/providers/native.py` | Shared native provider base/helpers |
+| `src/unchain/providers/openai.py`, `anthropic.py`, `ollama.py` | Provider implementations |
+| `src/unchain/providers/model_io.py` | Legacy compatibility shim |
 | `src/unchain/agent/model_io.py` | `ModelIOFactoryRegistry` -- provider name resolution |
 
 ### Agent Builder

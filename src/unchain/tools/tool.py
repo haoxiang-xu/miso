@@ -4,6 +4,7 @@ import inspect
 import json
 from typing import Any, Callable, get_type_hints
 
+from ..execution import ExecutionLeaseError
 from .models import (
     HistoryPayloadOptimizer,
     ToolConfirmationPolicy,
@@ -14,6 +15,10 @@ from .models import (
     _escape_control_chars_inside_json_strings,
     _parse_docstring,
 )
+
+
+class _InvalidToolArgumentsType(TypeError):
+    pass
 
 
 class Tool:
@@ -35,6 +40,9 @@ class Tool:
         history_result_optimizer: HistoryPayloadOptimizer | None = None,
         icon_path: str = "",
         icon: dict[str, Any] | None = None,
+        always_load: bool = False,
+        defer_by_default: bool = False,
+        search_hint: str = "",
     ):
         if callable(name) and func is None:
             func = name
@@ -52,6 +60,9 @@ class Tool:
         self.history_result_optimizer = history_result_optimizer
         self.icon_path = icon_path
         self.icon = dict(icon) if isinstance(icon, dict) else None
+        self.always_load = bool(always_load)
+        self.defer_by_default = bool(defer_by_default)
+        self.search_hint = str(search_hint or "")
         self.parameters = self._construct_parameters(parameters)
 
         if self.func is not None and not self.parameters:
@@ -81,12 +92,51 @@ class Tool:
                 history_result_optimizer=self.history_result_optimizer,
                 icon_path=self.icon_path,
                 icon=self.icon,
+                always_load=self.always_load,
+                defer_by_default=self.defer_by_default,
+                search_hint=self.search_hint,
             )
 
         if self.func is not None:
             return self.func(*args, **kwargs)
 
         raise TypeError("Tool object is not callable without a wrapped function")
+
+    def invoke(self, call: Any, context: Any = None):
+        del context
+        from ..capabilities import normalize_capability_outcome
+
+        if self.func is None:
+            return normalize_capability_outcome(
+                {"error": "tool function not implemented (Tool -> invoke)"},
+                created_by=f"tool.{self.name}",
+            )
+
+        arguments = call
+        if isinstance(call, dict) and "arguments" in call:
+            arguments = call.get("arguments")
+        elif hasattr(call, "arguments"):
+            arguments = getattr(call, "arguments")
+
+        try:
+            parsed_arguments = self._parse_arguments(arguments)
+            result = self.func(**parsed_arguments)
+            return normalize_capability_outcome(
+                result,
+                created_by=f"tool.{self.name}",
+            )
+        except _InvalidToolArgumentsType:
+            return normalize_capability_outcome(
+                {"error": "invalid tool arguments type"},
+                created_by=f"tool.{self.name}",
+            )
+        except ExecutionLeaseError:
+            raise
+        except Exception as exc:
+            return normalize_capability_outcome(
+                {"error": str(exc), "tool": self.name},
+                created_by=f"tool.{self.name}",
+            )
 
     @classmethod
     def from_callable(
@@ -108,6 +158,9 @@ class Tool:
         history_result_optimizer: HistoryPayloadOptimizer | None = None,
         icon_path: str = "",
         icon: dict[str, Any] | None = None,
+        always_load: bool = False,
+        defer_by_default: bool = False,
+        search_hint: str = "",
     ) -> "Tool":
         summary, _ = _parse_docstring(func)
         return cls(
@@ -124,6 +177,9 @@ class Tool:
             history_result_optimizer=history_result_optimizer,
             icon_path=icon_path,
             icon=icon,
+            always_load=always_load,
+            defer_by_default=defer_by_default,
+            search_hint=search_hint,
         )
 
     def _construct_parameters(
@@ -233,32 +289,36 @@ class Tool:
             "parameters": parameters,
         }
 
+    def _parse_arguments(self, arguments: dict[str, Any] | str | None) -> dict[str, Any]:
+        if arguments is None:
+            return {}
+        if isinstance(arguments, str):
+            stripped = arguments.strip()
+            if not stripped:
+                return {}
+            try:
+                return json.loads(stripped)
+            except json.JSONDecodeError:
+                repaired = _escape_control_chars_inside_json_strings(stripped)
+                return json.loads(repaired)
+        if isinstance(arguments, dict):
+            return arguments
+        raise _InvalidToolArgumentsType("invalid tool arguments type")
+
     def execute(self, arguments: dict[str, Any] | str | None) -> dict[str, Any]:
         if self.func is None:
             return {"error": "tool function not implemented (Tool -> execute)"}
 
         try:
-            if arguments is None:
-                parsed_arguments: dict[str, Any] = {}
-            elif isinstance(arguments, str):
-                stripped = arguments.strip()
-                if not stripped:
-                    parsed_arguments = {}
-                else:
-                    try:
-                        parsed_arguments = json.loads(stripped)
-                    except json.JSONDecodeError:
-                        repaired = _escape_control_chars_inside_json_strings(stripped)
-                        parsed_arguments = json.loads(repaired)
-            elif isinstance(arguments, dict):
-                parsed_arguments = arguments
-            else:
-                return {"error": "invalid tool arguments type"}
-
+            parsed_arguments = self._parse_arguments(arguments)
             result = self.func(**parsed_arguments)
             if isinstance(result, dict):
                 return result
             return {"result": result}
+        except _InvalidToolArgumentsType:
+            return {"error": "invalid tool arguments type"}
+        except ExecutionLeaseError:
+            raise
         except Exception as exc:
             return {"error": str(exc), "tool": self.name}
 

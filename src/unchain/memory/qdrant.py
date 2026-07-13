@@ -3,9 +3,13 @@ from __future__ import annotations
 import copy
 import json
 import os
+import threading
+import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
+from weakref import WeakValueDictionary
 
 from ..runtime.payloads import (
     DEFAULT_PAYLOADS_RESOURCE,
@@ -13,6 +17,24 @@ from ..runtime.payloads import (
     load_default_payloads,
     load_model_capabilities,
 )
+from ..execution import (
+    ActiveExecutionLeaseError,
+    ExecutionLease,
+    ExecutionLeaseConflictError,
+    ExecutionLeaseExpiredError,
+    ExecutionLeaseNotOwnedError,
+    StaleExecutionLeaseError,
+)
+from .revision import (
+    SessionRevisionConflictError,
+    SessionSnapshot,
+    SessionStoreCorruptionError,
+)
+
+if os.name == "nt":  # pragma: no cover - exercised on Windows
+    import msvcrt
+else:  # pragma: no cover - platform selection itself is trivial
+    import fcntl
 
 try:
     from qdrant_client import QdrantClient
@@ -23,6 +45,47 @@ except ImportError:  # pragma: no cover
 
 DEFAULT_PAYLOADS_FILE = DEFAULT_PAYLOADS_RESOURCE
 MODEL_CAPABILITIES_FILE = MODEL_CAPABILITIES_RESOURCE
+
+_SESSION_REVISION_FIELD = "__unchain_session_revision__"
+_JSON_SESSION_THREAD_LOCKS: WeakValueDictionary[str, threading.RLock] = WeakValueDictionary()
+_JSON_SESSION_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+def _json_session_thread_lock(path: Path) -> threading.RLock:
+    key = str(path.resolve())
+    with _JSON_SESSION_THREAD_LOCKS_GUARD:
+        lock = _JSON_SESSION_THREAD_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _JSON_SESSION_THREAD_LOCKS[key] = lock
+        return lock
+
+
+@contextmanager
+def _exclusive_json_session_lock(path: Path) -> Iterator[None]:
+    thread_lock = _json_session_thread_lock(path)
+    with thread_lock:
+        lock_path = path.with_name(f".{path.name}.lock")
+        with lock_path.open("a+b") as lock_file:
+            if os.name != "nt":
+                os.chmod(lock_path, 0o600)
+            if os.name == "nt":  # pragma: no cover - exercised on Windows
+                lock_file.seek(0, os.SEEK_END)
+                if lock_file.tell() == 0:
+                    lock_file.write(b"\0")
+                    lock_file.flush()
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if os.name == "nt":  # pragma: no cover - exercised on Windows
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _load_json_registry(path: str | Path) -> dict[str, dict[str, Any]]:
@@ -84,11 +147,11 @@ def _merged_embedding_payload(
     return defaults
 
 
-def _resolve_embedding_api_key(*, broth_instance: Any | None) -> str:
-    if broth_instance is not None:
-        broth_key = getattr(broth_instance, "api_key", None)
-        if isinstance(broth_key, str) and broth_key.strip():
-            return broth_key.strip()
+def _resolve_embedding_api_key(*, api_key_source: Any | None) -> str:
+    if api_key_source is not None:
+        source_key = getattr(api_key_source, "api_key", None)
+        if isinstance(source_key, str) and source_key.strip():
+            return source_key.strip()
 
     env_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if env_key:
@@ -96,14 +159,14 @@ def _resolve_embedding_api_key(*, broth_instance: Any | None) -> str:
 
     raise ValueError(
         "error: openai api key is required for embedding requests. "
-        "set broth.api_key or OPENAI_API_KEY."
+        "set api_key_source.api_key or OPENAI_API_KEY."
     )
 
 
 def build_openai_embed_fn(
     *,
     model: str,
-    broth_instance: Any | None = None,
+    api_key_source: Any | None = None,
     payload: dict[str, Any] | None = None,
 ) -> tuple[Callable[[list[str]], list[list[float]]], int]:
     """Build an OpenAI embedding function from model JSON config.
@@ -112,7 +175,7 @@ def build_openai_embed_fn(
         ``(embed_fn, vector_size)``
 
     Key resolution order:
-        1. ``broth_instance.api_key``
+        1. ``api_key_source.api_key``
         2. ``OPENAI_API_KEY`` env var
     """
     if not isinstance(model, str) or not model.strip():
@@ -168,7 +231,7 @@ def build_openai_embed_fn(
 
     from openai import OpenAI
 
-    api_key = _resolve_embedding_api_key(broth_instance=broth_instance)
+    api_key = _resolve_embedding_api_key(api_key_source=api_key_source)
     openai_client = OpenAI(api_key=api_key)
 
     def _embed(texts: list[str]) -> list[list[float]]:
@@ -430,32 +493,521 @@ class JsonFileSessionStore:
         {base_dir}/{sanitized_session_id}.json
     """
 
-    def __init__(self, base_dir: str | Path) -> None:
+    execution_lease_scope = "host_local"
+
+    def __init__(
+        self,
+        base_dir: str | Path,
+        *,
+        clock_ms: Callable[[], int] | None = None,
+    ) -> None:
         self._base = Path(base_dir)
-        self._base.mkdir(parents=True, exist_ok=True)
+        self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
+        self._base.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name != "nt":
+            os.chmod(self._base, 0o700)
 
     def _path(self, session_id: str) -> Path:
         safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in session_id)
         return self._base / f"{safe}.json"
 
-    def load(self, session_id: str) -> dict[str, Any]:
-        p = self._path(session_id)
-        if not p.exists():
-            return {}
+    @staticmethod
+    def _lease_path(path: Path) -> Path:
+        return path.with_name(f".{path.name}.lease")
+
+    def _now_ms(self) -> int:
+        now = self._clock_ms()
+        if isinstance(now, bool) or not isinstance(now, int):
+            raise TypeError("clock_ms must return an integer epoch timestamp")
+        return now
+
+    @staticmethod
+    def _validate_lease_request(
+        execution_id: str,
+        owner_id: str,
+        *,
+        ttl_ms: int | None = None,
+        fencing_token: int | None = None,
+    ) -> None:
+        if not isinstance(execution_id, str) or not execution_id.strip():
+            raise ValueError("execution_id must be a non-empty string")
+        if not isinstance(owner_id, str) or not owner_id.strip():
+            raise ValueError("owner_id must be a non-empty string")
+        if ttl_ms is not None and (
+            isinstance(ttl_ms, bool) or not isinstance(ttl_ms, int) or ttl_ms <= 0
+        ):
+            raise ValueError("ttl_ms must be a positive integer")
+        if fencing_token is not None and (
+            isinstance(fencing_token, bool)
+            or not isinstance(fencing_token, int)
+            or fencing_token <= 0
+        ):
+            raise ValueError("fencing_token must be a positive integer")
+
+    @staticmethod
+    def _validate_expected_revision(expected_revision: int | None) -> None:
+        if expected_revision is not None and (
+            isinstance(expected_revision, bool)
+            or not isinstance(expected_revision, int)
+            or expected_revision < 0
+        ):
+            raise ValueError("expected_revision must be a non-negative integer")
+
+    def _read_lease_unlocked(
+        self,
+        execution_id: str,
+        path: Path,
+    ) -> dict[str, Any]:
+        lease_path = self._lease_path(path)
+        if not lease_path.exists():
+            return {
+                "last_fencing_token": 0,
+                "last_owner_id": "",
+                "active": None,
+            }
         try:
-            return copy.deepcopy(json.loads(p.read_text(encoding="utf-8")))
-        except Exception:
-            return {}
+            raw = json.loads(lease_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise SessionStoreCorruptionError(
+                session_id=execution_id,
+                detail=f"cannot decode execution lease {lease_path.name}",
+            ) from exc
+        if not isinstance(raw, dict):
+            raise SessionStoreCorruptionError(
+                session_id=execution_id,
+                detail="execution lease must be a JSON object",
+            )
+        last_token = raw.get("last_fencing_token", 0)
+        last_owner_id = raw.get("last_owner_id", "")
+        if (
+            isinstance(last_token, bool)
+            or not isinstance(last_token, int)
+            or last_token < 0
+            or not isinstance(last_owner_id, str)
+        ):
+            raise SessionStoreCorruptionError(
+                session_id=execution_id,
+                detail="execution lease watermark is invalid",
+            )
+        active_raw = raw.get("active")
+        active = None
+        if active_raw is not None:
+            if not isinstance(active_raw, dict):
+                raise SessionStoreCorruptionError(
+                    session_id=execution_id,
+                    detail="active execution lease is invalid",
+                )
+            try:
+                active = ExecutionLease(
+                    execution_id=execution_id,
+                    owner_id=active_raw["owner_id"],
+                    fencing_token=active_raw["fencing_token"],
+                    acquired_at_ms=active_raw["acquired_at_ms"],
+                    expires_at_ms=active_raw["expires_at_ms"],
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise SessionStoreCorruptionError(
+                    session_id=execution_id,
+                    detail="active execution lease fields are invalid",
+                ) from exc
+            if (
+                not active.owner_id
+                or active.fencing_token <= 0
+                or active.acquired_at_ms < 0
+                or active.expires_at_ms <= active.acquired_at_ms
+                or active.fencing_token != last_token
+                or last_owner_id != active.owner_id
+            ):
+                raise SessionStoreCorruptionError(
+                    session_id=execution_id,
+                    detail="active execution lease does not match its watermark",
+                )
+        return {
+            "last_fencing_token": last_token,
+            "last_owner_id": last_owner_id,
+            "active": active,
+        }
+
+    def _write_lease_unlocked(
+        self,
+        path: Path,
+        record: dict[str, Any],
+    ) -> None:
+        active = record.get("active")
+        payload = {
+            "version": 1,
+            "last_fencing_token": int(record.get("last_fencing_token") or 0),
+            "last_owner_id": str(record.get("last_owner_id") or ""),
+            "active": (
+                {
+                    "owner_id": active.owner_id,
+                    "fencing_token": active.fencing_token,
+                    "acquired_at_ms": active.acquired_at_ms,
+                    "expires_at_ms": active.expires_at_ms,
+                }
+                if isinstance(active, ExecutionLease)
+                else None
+            ),
+        }
+        self._write_json_unlocked(path=self._lease_path(path), payload=payload)
+
+    def _assert_active_lease_unlocked(
+        self,
+        execution_id: str,
+        owner_id: str,
+        fencing_token: int,
+        path: Path,
+    ) -> ExecutionLease:
+        record = self._read_lease_unlocked(execution_id, path)
+        active = record.get("active")
+        last_token = int(record.get("last_fencing_token") or 0)
+        if not isinstance(active, ExecutionLease):
+            if fencing_token <= last_token:
+                raise StaleExecutionLeaseError(
+                    "execution lease has already been released or superseded",
+                    execution_id=execution_id,
+                    owner_id=owner_id,
+                    fencing_token=fencing_token,
+                )
+            raise ExecutionLeaseNotOwnedError(
+                "execution lease is not owned",
+                execution_id=execution_id,
+                owner_id=owner_id,
+                fencing_token=fencing_token,
+            )
+        if fencing_token != active.fencing_token:
+            error_type = (
+                StaleExecutionLeaseError
+                if fencing_token < active.fencing_token
+                else ExecutionLeaseNotOwnedError
+            )
+            raise error_type(
+                "execution fencing token is not current",
+                execution_id=execution_id,
+                owner_id=owner_id,
+                fencing_token=fencing_token,
+            )
+        if owner_id != active.owner_id:
+            raise ExecutionLeaseNotOwnedError(
+                "execution lease belongs to a different owner",
+                execution_id=execution_id,
+                owner_id=owner_id,
+                fencing_token=fencing_token,
+            )
+        if self._now_ms() >= active.expires_at_ms:
+            raise ExecutionLeaseExpiredError(
+                "execution lease has expired",
+                execution_id=execution_id,
+                owner_id=owner_id,
+                fencing_token=fencing_token,
+            )
+        return active
+
+    def _ensure_unfenced_write_allowed_unlocked(
+        self,
+        session_id: str,
+        path: Path,
+    ) -> None:
+        active = self._read_lease_unlocked(session_id, path).get("active")
+        if isinstance(active, ExecutionLease) and self._now_ms() < active.expires_at_ms:
+            raise ActiveExecutionLeaseError(
+                "unfenced session write is forbidden while an execution lease is active",
+                execution_id=session_id,
+                owner_id=active.owner_id,
+                fencing_token=active.fencing_token,
+            )
+
+    def _read_unlocked(self, session_id: str, path: Path) -> SessionSnapshot:
+        if not path.exists():
+            return SessionSnapshot(state={}, revision=0)
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise SessionStoreCorruptionError(
+                session_id=session_id,
+                detail=f"cannot decode {path.name}",
+            ) from exc
+        if not isinstance(raw, dict):
+            raise SessionStoreCorruptionError(
+                session_id=session_id,
+                detail=f"{path.name} must contain a JSON object",
+            )
+
+        revision = raw.pop(_SESSION_REVISION_FIELD, 0)
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+            raise SessionStoreCorruptionError(
+                session_id=session_id,
+                detail=f"{path.name} contains an invalid revision",
+            )
+        return SessionSnapshot(state=copy.deepcopy(raw), revision=revision)
+
+    def _write_unlocked(
+        self,
+        *,
+        path: Path,
+        state: dict[str, Any],
+        revision: int,
+    ) -> None:
+        payload = copy.deepcopy(state)
+        payload.pop(_SESSION_REVISION_FIELD, None)
+        payload[_SESSION_REVISION_FIELD] = revision
+        self._write_json_unlocked(path=path, payload=payload)
+
+    def _write_json_unlocked(self, *, path: Path, payload: dict[str, Any]) -> None:
+        serialized = json.dumps(payload, default=str, ensure_ascii=False)
+        temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temp_fd = os.open(
+                temp_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as temp_file:
+                temp_file.write(serialized)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+            os.replace(temp_path, path)
+            if os.name != "nt":
+                os.chmod(path, 0o600)
+                directory_fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    def load(self, session_id: str) -> dict[str, Any]:
+        return self.load_with_revision(session_id).state
 
     def save(self, session_id: str, state: dict[str, Any]) -> None:
-        p = self._path(session_id)
-        try:
-            p.write_text(
-                json.dumps(state, default=str, ensure_ascii=False),
-                encoding="utf-8",
+        path = self._path(session_id)
+        with _exclusive_json_session_lock(path):
+            self._ensure_unfenced_write_allowed_unlocked(session_id, path)
+            snapshot = self._read_unlocked(session_id, path)
+            self._write_unlocked(
+                path=path,
+                state=state,
+                revision=int(snapshot.revision or 0) + 1,
             )
-        except Exception:
-            pass
+
+    def load_with_revision(self, session_id: str) -> SessionSnapshot:
+        path = self._path(session_id)
+        with _exclusive_json_session_lock(path):
+            return self._read_unlocked(session_id, path)
+
+    def save_if_revision(
+        self,
+        session_id: str,
+        state: dict[str, Any],
+        expected_revision: int,
+    ) -> int:
+        if (
+            isinstance(expected_revision, bool)
+            or not isinstance(expected_revision, int)
+            or expected_revision < 0
+        ):
+            raise ValueError("expected_revision must be a non-negative integer")
+        path = self._path(session_id)
+        with _exclusive_json_session_lock(path):
+            self._ensure_unfenced_write_allowed_unlocked(session_id, path)
+            snapshot = self._read_unlocked(session_id, path)
+            actual_revision = int(snapshot.revision or 0)
+            if actual_revision != expected_revision:
+                raise SessionRevisionConflictError(
+                    session_id=session_id,
+                    expected_revision=expected_revision,
+                    actual_revision=actual_revision,
+                )
+            next_revision = actual_revision + 1
+            self._write_unlocked(
+                path=path,
+                state=state,
+                revision=next_revision,
+            )
+            return next_revision
+
+    def acquire_lease(
+        self,
+        execution_id: str,
+        owner_id: str,
+        ttl_ms: int,
+        *,
+        expected_revision: int | None = None,
+    ) -> ExecutionLease:
+        self._validate_lease_request(execution_id, owner_id, ttl_ms=ttl_ms)
+        self._validate_expected_revision(expected_revision)
+        path = self._path(execution_id)
+        with _exclusive_json_session_lock(path):
+            snapshot = self._read_unlocked(execution_id, path)
+            actual_revision = int(snapshot.revision or 0)
+            if expected_revision is not None and actual_revision != expected_revision:
+                raise SessionRevisionConflictError(
+                    session_id=execution_id,
+                    expected_revision=expected_revision,
+                    actual_revision=actual_revision,
+                )
+            now = self._now_ms()
+            record = self._read_lease_unlocked(execution_id, path)
+            active = record.get("active")
+            if isinstance(active, ExecutionLease) and now < active.expires_at_ms:
+                if active.owner_id == owner_id:
+                    return active
+                raise ExecutionLeaseConflictError(
+                    "execution is already leased by another owner",
+                    execution_id=execution_id,
+                    owner_id=owner_id,
+                    fencing_token=active.fencing_token,
+                )
+            token = int(record.get("last_fencing_token") or 0) + 1
+            lease = ExecutionLease(
+                execution_id=execution_id,
+                owner_id=owner_id,
+                fencing_token=token,
+                acquired_at_ms=now,
+                expires_at_ms=now + ttl_ms,
+            )
+            record.update(
+                {
+                    "last_fencing_token": token,
+                    "last_owner_id": owner_id,
+                    "active": lease,
+                }
+            )
+            self._write_lease_unlocked(path, record)
+            return lease
+
+    def verify_lease(
+        self,
+        execution_id: str,
+        owner_id: str,
+        fencing_token: int,
+    ) -> ExecutionLease:
+        self._validate_lease_request(
+            execution_id,
+            owner_id,
+            fencing_token=fencing_token,
+        )
+        path = self._path(execution_id)
+        with _exclusive_json_session_lock(path):
+            return self._assert_active_lease_unlocked(
+                execution_id,
+                owner_id,
+                fencing_token,
+                path,
+            )
+
+    def renew_lease(
+        self,
+        execution_id: str,
+        owner_id: str,
+        fencing_token: int,
+        ttl_ms: int,
+    ) -> ExecutionLease:
+        self._validate_lease_request(
+            execution_id,
+            owner_id,
+            ttl_ms=ttl_ms,
+            fencing_token=fencing_token,
+        )
+        path = self._path(execution_id)
+        with _exclusive_json_session_lock(path):
+            active = self._assert_active_lease_unlocked(
+                execution_id,
+                owner_id,
+                fencing_token,
+                path,
+            )
+            record = self._read_lease_unlocked(execution_id, path)
+            renewed = ExecutionLease(
+                execution_id=active.execution_id,
+                owner_id=active.owner_id,
+                fencing_token=active.fencing_token,
+                acquired_at_ms=active.acquired_at_ms,
+                expires_at_ms=max(active.expires_at_ms, self._now_ms() + ttl_ms),
+            )
+            record["active"] = renewed
+            self._write_lease_unlocked(path, record)
+            return renewed
+
+    def release_lease(
+        self,
+        execution_id: str,
+        owner_id: str,
+        fencing_token: int,
+    ) -> None:
+        self._validate_lease_request(
+            execution_id,
+            owner_id,
+            fencing_token=fencing_token,
+        )
+        path = self._path(execution_id)
+        with _exclusive_json_session_lock(path):
+            record = self._read_lease_unlocked(execution_id, path)
+            active = record.get("active")
+            if not isinstance(active, ExecutionLease):
+                if (
+                    int(record.get("last_fencing_token") or 0) == fencing_token
+                    and str(record.get("last_owner_id") or "") == owner_id
+                ):
+                    return
+                self._assert_active_lease_unlocked(
+                    execution_id,
+                    owner_id,
+                    fencing_token,
+                    path,
+                )
+                return
+            self._assert_active_lease_unlocked(
+                execution_id,
+                owner_id,
+                fencing_token,
+                path,
+            )
+            record["active"] = None
+            self._write_lease_unlocked(path, record)
+
+    def save_if_revision_and_fence(
+        self,
+        session_id: str,
+        state: dict[str, Any],
+        expected_revision: int,
+        *,
+        execution_id: str,
+        owner_id: str,
+        fencing_token: int,
+    ) -> int:
+        if execution_id != session_id:
+            raise ValueError("execution_id must match session_id for fenced writes")
+        self._validate_expected_revision(expected_revision)
+        self._validate_lease_request(
+            execution_id,
+            owner_id,
+            fencing_token=fencing_token,
+        )
+        path = self._path(session_id)
+        with _exclusive_json_session_lock(path):
+            self._assert_active_lease_unlocked(
+                execution_id,
+                owner_id,
+                fencing_token,
+                path,
+            )
+            snapshot = self._read_unlocked(session_id, path)
+            actual_revision = int(snapshot.revision or 0)
+            if actual_revision != expected_revision:
+                raise SessionRevisionConflictError(
+                    session_id=session_id,
+                    expected_revision=expected_revision,
+                    actual_revision=actual_revision,
+                )
+            next_revision = actual_revision + 1
+            self._write_unlocked(
+                path=path,
+                state=state,
+                revision=next_revision,
+            )
+            return next_revision
 
 
 def build_embedded_qdrant_client(*, path: str | Path) -> "QdrantClient":
@@ -471,7 +1023,7 @@ def build_embedded_qdrant_client(*, path: str | Path) -> "QdrantClient":
 
 def build_default_long_term_qdrant_vector_adapter(
     *,
-    broth_instance: Any | None = None,
+    api_key_source: Any | None = None,
     model: str = "text-embedding-3-small",
     payload: dict[str, Any] | None = None,
     path: str | Path,
@@ -485,7 +1037,7 @@ def build_default_long_term_qdrant_vector_adapter(
     client = build_embedded_qdrant_client(path=path)
     embed_fn, vector_size = build_openai_embed_fn(
         model=model,
-        broth_instance=broth_instance,
+        api_key_source=api_key_source,
         payload=payload,
     )
     return QdrantLongTermVectorAdapter(

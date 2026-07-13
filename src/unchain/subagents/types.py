@@ -36,6 +36,15 @@ class SubagentPolicy:
     allow_dynamic_workers: bool = False
     allow_dynamic_delegate: bool = False
     handoff_requires_template: bool = True
+    max_open_threads: int = 10
+    max_mailbox_messages: int = 100
+    max_message_chars: int = 8000
+    max_board_items: int = 200
+    max_board_item_chars: int = 12000
+    allow_child_to_child_messages: bool = False
+    allow_broadcast_messages: bool = False
+    allow_return_handoff: bool = True
+    retain_completed_threads: bool = True
 
 
 @dataclass
@@ -46,6 +55,10 @@ class SubagentState:
     handoff_stack: list[dict[str, Any]] = field(default_factory=list)
     lineage_counters: dict[str, int] = field(default_factory=dict)
     running_batches: dict[str, Any] = field(default_factory=dict)
+    threads: dict[str, dict[str, Any]] = field(default_factory=dict)
+    mailboxes: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    blackboards: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    return_handoff_stack: list[dict[str, Any]] = field(default_factory=list)
     blocked_clarifications: list[dict[str, Any]] = field(default_factory=list)
     spawn_stats: dict[str, int] = field(
         default_factory=lambda: {"delegate": 0, "handoff": 0, "worker": 0}
@@ -59,6 +72,10 @@ class SubagentState:
             handoff_stack=copy.deepcopy(self.handoff_stack),
             lineage_counters=dict(self.lineage_counters),
             running_batches=copy.deepcopy(self.running_batches),
+            threads=copy.deepcopy(self.threads),
+            mailboxes=copy.deepcopy(self.mailboxes),
+            blackboards=copy.deepcopy(self.blackboards),
+            return_handoff_stack=copy.deepcopy(self.return_handoff_stack),
             blocked_clarifications=copy.deepcopy(self.blocked_clarifications),
             spawn_stats=dict(self.spawn_stats),
         )
@@ -71,6 +88,10 @@ class SubagentState:
             "handoff_stack": copy.deepcopy(self.handoff_stack),
             "lineage_counters": dict(self.lineage_counters),
             "running_batches": copy.deepcopy(self.running_batches),
+            "threads": copy.deepcopy(self.threads),
+            "mailboxes": copy.deepcopy(self.mailboxes),
+            "blackboards": copy.deepcopy(self.blackboards),
+            "return_handoff_stack": copy.deepcopy(self.return_handoff_stack),
             "blocked_clarifications": copy.deepcopy(self.blocked_clarifications),
             "spawn_stats": dict(self.spawn_stats),
         }
@@ -103,6 +124,34 @@ class SubagentState:
         blocked = raw.get("blocked_clarifications")
         if isinstance(blocked, list):
             state.blocked_clarifications = [copy.deepcopy(item) for item in blocked if isinstance(item, dict)]
+        threads = raw.get("threads")
+        if isinstance(threads, dict):
+            state.threads = {
+                str(key): copy.deepcopy(value)
+                for key, value in threads.items()
+                if isinstance(key, str) and isinstance(value, dict)
+            }
+        mailboxes = raw.get("mailboxes")
+        if isinstance(mailboxes, dict):
+            state.mailboxes = {
+                str(key): [copy.deepcopy(item) for item in value if isinstance(item, dict)]
+                for key, value in mailboxes.items()
+                if isinstance(key, str) and isinstance(value, list)
+            }
+        blackboards = raw.get("blackboards")
+        if isinstance(blackboards, dict):
+            state.blackboards = {
+                str(key): [copy.deepcopy(item) for item in value if isinstance(item, dict)]
+                for key, value in blackboards.items()
+                if isinstance(key, str) and isinstance(value, list)
+            }
+        return_handoff_stack = raw.get("return_handoff_stack")
+        if isinstance(return_handoff_stack, list):
+            state.return_handoff_stack = [
+                copy.deepcopy(item)
+                for item in return_handoff_stack
+                if isinstance(item, dict)
+            ]
         spawn_stats = raw.get("spawn_stats")
         if isinstance(spawn_stats, dict):
             for mode in ("delegate", "handoff", "worker"):
@@ -111,6 +160,14 @@ class SubagentState:
         return state
 
     def merged(self, raw: Any) -> "SubagentState":
+        default_spawn_stats = SubagentState().spawn_stats
+        raw_spawn_stats = (
+            raw.spawn_stats
+            if isinstance(raw, SubagentState) and raw.spawn_stats != default_spawn_stats
+            else None
+        )
+        if isinstance(raw, dict):
+            raw_spawn_stats = raw.get("spawn_stats") if "spawn_stats" in raw else None
         update = SubagentState.from_raw(raw)
         current = self.copy()
         if update.root_agent_id:
@@ -127,8 +184,20 @@ class SubagentState:
             current.running_batches.update(copy.deepcopy(update.running_batches))
         if update.blocked_clarifications:
             current.blocked_clarifications.extend(copy.deepcopy(update.blocked_clarifications))
-        if update.spawn_stats:
-            for key, value in update.spawn_stats.items():
+        if update.threads:
+            current.threads.update(copy.deepcopy(update.threads))
+        if update.mailboxes:
+            for key, value in update.mailboxes.items():
+                current.mailboxes.setdefault(key, []).extend(copy.deepcopy(value))
+        if update.blackboards:
+            for key, value in update.blackboards.items():
+                current.blackboards.setdefault(key, []).extend(copy.deepcopy(value))
+        if update.return_handoff_stack:
+            current.return_handoff_stack.extend(copy.deepcopy(update.return_handoff_stack))
+        if isinstance(raw_spawn_stats, dict):
+            for key, value in raw_spawn_stats.items():
+                if key not in {"delegate", "handoff", "worker"} or not isinstance(value, int):
+                    continue
                 current.spawn_stats[key] = int(value)
         return current
 
@@ -145,6 +214,7 @@ class SubagentResult:
     lineage: list[str] = field(default_factory=list)
     clarification_request: dict[str, Any] | None = None
     error: str = ""
+    subagent_state: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -158,4 +228,5 @@ class SubagentResult:
             "lineage": list(self.lineage),
             "clarification_request": copy.deepcopy(self.clarification_request),
             "error": self.error,
+            "subagent_state": copy.deepcopy(self.subagent_state),
         }

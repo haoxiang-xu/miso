@@ -16,7 +16,10 @@ RuntimePhase = Literal[
     "after_tool_batch",
     "before_commit",
     "on_suspend",
+    "suspend_persist",
     "on_resume",
+    "run_finalizing",
+    "finalize_persist",
 ]
 
 
@@ -37,6 +40,8 @@ _PASSTHROUGH_EVENT_KEYS = frozenset({
     "on_max_iterations",
     "tool_runtime_plugins",
     "emit_stream",
+    "model_io",
+    "execution_guard",
 })
 
 
@@ -80,7 +85,10 @@ class RuntimeHarness(Protocol):
     def applies(self, context: HarnessContext) -> bool:
         ...
 
-    def build_delta(self, context: HarnessContext) -> HarnessDelta | None:
+    def build_delta(self, context: HarnessContext) -> Any:
+        ...
+
+    def apply(self, context: HarnessContext) -> Any:
         ...
 
 
@@ -92,6 +100,17 @@ class BaseRuntimeHarness:
 
     def applies(self, context: HarnessContext) -> bool:
         return context.phase in self.phases
+
+    def apply(self, context: HarnessContext):
+        from ..capabilities import normalize_capability_outcome
+
+        raw_outcome = self.build_delta(context)
+        if raw_outcome is None:
+            return None
+        return normalize_capability_outcome(
+            raw_outcome,
+            created_by=f"harness.{self.name}",
+        )
 
     def build_delta(self, context: HarnessContext) -> HarnessDelta | None:
         raise NotImplementedError

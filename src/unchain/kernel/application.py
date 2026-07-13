@@ -1,0 +1,448 @@
+from __future__ import annotations
+
+import copy
+from typing import Callable
+
+from ..artifacts import upsert_artifacts
+from ..capabilities import (
+    ContextTarget,
+    CreateArtifactOp,
+    DeleteMessagesOp,
+    EmitEventOp,
+    InsertMessagesOp,
+    MergeRuntimeStateOp,
+    PatchMessageOp,
+    ReplaceMessagesOp,
+    RequestSuspendOp,
+    RunDelta,
+    SetRuntimeStateOp,
+)
+from .delta import HarnessDelta
+from .state import RunState
+
+
+def _deepcopy_messages(messages: list[dict] | None) -> list[dict]:
+    return [copy.deepcopy(message) for message in (messages or []) if isinstance(message, dict)]
+
+
+def _suspend_payload_with_context_version(state: RunState, payload) -> dict:
+    enriched = copy.deepcopy(payload) if isinstance(payload, dict) else {}
+    if state.latest_version_id is not None and "context_version_id" not in enriched:
+        enriched["context_version_id"] = state.latest_version_id
+    return enriched
+
+
+def apply_run_delta(
+    state: RunState,
+    delta: RunDelta,
+    *,
+    emit_event: Callable[[EmitEventOp], None] | None = None,
+) -> str | None:
+    if isinstance(delta, HarnessDelta):
+        return state.apply_delta(delta)
+
+    version_id: str | None = state.latest_version_id
+    for op in delta.context_ops:
+        if isinstance(op, InsertMessagesOp):
+            version_id = _apply_insert_messages_op(state, delta, op)
+            continue
+        if isinstance(op, ReplaceMessagesOp):
+            version_id = _apply_replace_messages_op(state, delta, op)
+            continue
+        if isinstance(op, SetRuntimeStateOp):
+            _apply_runtime_state_op(state, op)
+            continue
+        if isinstance(op, MergeRuntimeStateOp):
+            _apply_merge_runtime_state_op(state, op)
+            continue
+        if isinstance(op, CreateArtifactOp):
+            _apply_create_artifact_op(state, delta, op, emit_event=emit_event)
+            continue
+        if isinstance(op, EmitEventOp):
+            if callable(emit_event):
+                emit_event(op)
+            continue
+        if isinstance(op, RequestSuspendOp):
+            state.suspend_state.signal_kind = op.kind
+            state.suspend_state.payload = _suspend_payload_with_context_version(state, op.payload)
+            continue
+        if isinstance(op, PatchMessageOp):
+            version_id = _apply_patch_message_op(state, delta, op)
+            continue
+        if isinstance(op, DeleteMessagesOp):
+            version_id = _apply_delete_messages_op(state, delta, op)
+            continue
+        raise TypeError(f"unsupported context op: {type(op).__name__}")
+
+    if delta.state_updates:
+        state._apply_state_updates(delta.state_updates)
+    if delta.suspend is not None:
+        state.suspend_state.signal_kind = delta.suspend.kind
+        state.suspend_state.payload = _suspend_payload_with_context_version(state, delta.suspend.payload)
+    return version_id
+
+
+def _apply_insert_messages_op(
+    state: RunState,
+    delta: RunDelta,
+    op: InsertMessagesOp,
+) -> str:
+    working_messages = _messages_for_target(state, op.target, type(op).__name__)
+    index = max(0, min(int(op.index), len(working_messages)))
+    working_messages[index:index] = _deepcopy_messages(op.messages)
+
+    return _commit_messages_for_target(
+        state,
+        delta,
+        op.target,
+        working_messages,
+        op_type=type(op).__name__,
+        reason=op.reason,
+    )
+
+
+def _apply_patch_message_op(
+    state: RunState,
+    delta: RunDelta,
+    op: PatchMessageOp,
+) -> str | None:
+    working_messages = _messages_for_target(state, op.target, type(op).__name__)
+    indices = _resolve_message_indices(working_messages, op.selector)
+    if not indices:
+        return state.latest_version_id
+
+    patch = copy.deepcopy(op.patch)
+    for index in indices:
+        working_messages[index] = {
+            **copy.deepcopy(working_messages[index]),
+            **patch,
+        }
+
+    return _commit_messages_for_target(
+        state,
+        delta,
+        op.target,
+        working_messages,
+        op_type=type(op).__name__,
+        reason=op.reason,
+    )
+
+
+def _apply_delete_messages_op(
+    state: RunState,
+    delta: RunDelta,
+    op: DeleteMessagesOp,
+) -> str | None:
+    working_messages = _messages_for_target(state, op.target, type(op).__name__)
+    indices = _resolve_message_indices(working_messages, op.selector)
+    if not indices:
+        return state.latest_version_id
+
+    for index in sorted(indices, reverse=True):
+        del working_messages[index]
+
+    return _commit_messages_for_target(
+        state,
+        delta,
+        op.target,
+        working_messages,
+        op_type=type(op).__name__,
+        reason=op.reason,
+    )
+
+
+def _messages_for_target(
+    state: RunState,
+    target: ContextTarget,
+    op_type: str,
+) -> list[dict]:
+    if target == ContextTarget.MODEL_CONTEXT:
+        return state.latest_messages()
+    if target == ContextTarget.CONVERSATION:
+        return _deepcopy_messages(state.transcript)
+    raise NotImplementedError(f"{op_type} target {target.value!r} is not supported")
+
+
+def _commit_messages_for_target(
+    state: RunState,
+    delta: RunDelta,
+    target: ContextTarget,
+    working_messages: list[dict],
+    *,
+    op_type: str,
+    reason: str,
+) -> str:
+    if target == ContextTarget.CONVERSATION:
+        state.transcript = _deepcopy_messages(working_messages)
+    if target == ContextTarget.MODEL_CONTEXT:
+        state.next_model_input = _deepcopy_messages(working_messages)
+
+    version = state.versions.create_version(
+        messages=working_messages,
+        parent_version_id=state.latest_version_id,
+        created_by=delta.created_by,
+        metadata={
+            "target": target.value,
+            "op_type": op_type,
+            "reason": reason,
+            "trace": copy.deepcopy(delta.trace),
+        },
+    )
+    state.latest_version_id = version.version_id
+    return version.version_id
+
+
+def _apply_replace_messages_op(
+    state: RunState,
+    delta: RunDelta,
+    op: ReplaceMessagesOp,
+) -> str:
+    working_messages = _messages_for_target(state, op.target, type(op).__name__)
+    start = max(0, min(int(op.start), len(working_messages)))
+    end = len(working_messages) if op.end is None else int(op.end)
+    if end < 0:
+        end += len(working_messages)
+    end = max(start, min(end, len(working_messages)))
+    working_messages[start:end] = _deepcopy_messages(op.messages)
+
+    return _commit_messages_for_target(
+        state,
+        delta,
+        op.target,
+        working_messages,
+        op_type=type(op).__name__,
+        reason=op.reason,
+    )
+
+
+def _resolve_message_indices(messages: list[dict], selector) -> list[int]:
+    if isinstance(selector, int):
+        return [_normalize_message_index(selector, len(messages))]
+
+    if isinstance(selector, dict):
+        if "index" in selector:
+            return [_normalize_message_index(int(selector["index"]), len(messages))]
+        if "indices" in selector:
+            return _unique_indices(
+                _normalize_message_index(int(index), len(messages))
+                for index in selector["indices"]
+            )
+        if "start" in selector or "end" in selector:
+            start = int(selector.get("start", 0))
+            end = int(selector.get("end", len(messages)))
+            if start < 0:
+                start += len(messages)
+            if end < 0:
+                end += len(messages)
+            start = max(0, min(start, len(messages)))
+            end = max(start, min(end, len(messages)))
+            return list(range(start, end))
+        return [
+            index
+            for index, message in enumerate(messages)
+            if all(message.get(key) == value for key, value in selector.items())
+        ]
+
+    if isinstance(selector, (list, tuple, set)):
+        return _unique_indices(
+            _normalize_message_index(int(index), len(messages))
+            for index in selector
+        )
+
+    raise TypeError(f"unsupported message selector: {type(selector).__name__}")
+
+
+def _normalize_message_index(index: int, length: int) -> int:
+    resolved_index = index + length if index < 0 else index
+    if resolved_index < 0 or resolved_index >= length:
+        raise IndexError(f"message index {index} is out of range")
+    return resolved_index
+
+
+def _unique_indices(indices) -> list[int]:
+    resolved: list[int] = []
+    seen: set[int] = set()
+    for index in indices:
+        if index in seen:
+            continue
+        seen.add(index)
+        resolved.append(index)
+    return resolved
+
+
+def _apply_runtime_state_op(state: RunState, op: SetRuntimeStateOp) -> None:
+    path = tuple(str(part) for part in op.path if str(part))
+    if not path:
+        raise ValueError("SetRuntimeStateOp.path must not be empty")
+
+    head = path[0]
+    value = copy.deepcopy(op.value)
+    if len(path) == 1 and head == "workspace_change_state":
+        # RunState mirrors workspace state into component_state for harnesses
+        # that consume the generic component bucket.  Preserve that invariant
+        # when a structured runtime op replaces the root value.
+        state._apply_state_updates({head: value})
+        return
+    if len(path) == 1 and hasattr(state, head):
+        setattr(state, head, value)
+        return
+
+    if hasattr(state, head):
+        root = getattr(state, head)
+        if isinstance(root, dict):
+            _set_nested_value(root, path[1:], value)
+            return
+
+    bucket = state.component_bucket(head)
+    if len(path) == 1:
+        bucket["value"] = value
+        return
+    _set_nested_value(bucket, path[1:], value)
+
+
+def _apply_merge_runtime_state_op(state: RunState, op: MergeRuntimeStateOp) -> None:
+    path = tuple(str(part) for part in op.path if str(part))
+    if not path:
+        raise ValueError("MergeRuntimeStateOp.path must not be empty")
+
+    value = copy.deepcopy(op.value) if isinstance(op.value, dict) else {}
+    if not value:
+        return
+
+    head = path[0]
+    if len(path) == 1 and head == "memory_state":
+        state.memory_state.update(value)
+        state.component_bucket("memory")["state"] = copy.deepcopy(state.memory_state)
+        return
+    if len(path) == 1 and head == "memory_prepare_info":
+        state.memory_prepare_info.update(value)
+        state.component_bucket("memory")["prepare_info"] = copy.deepcopy(state.memory_prepare_info)
+        return
+    if len(path) == 1 and head == "memory_commit_info":
+        state.memory_commit_info.update(value)
+        state.component_bucket("memory")["commit_info"] = copy.deepcopy(state.memory_commit_info)
+        return
+    if len(path) == 1 and head == "optimizer_state":
+        for optimizer_name, optimizer_value in value.items():
+            if not isinstance(optimizer_name, str):
+                continue
+            if isinstance(optimizer_value, dict):
+                state.optimizer_state[optimizer_name] = copy.deepcopy(optimizer_value)
+            else:
+                state.optimizer_state[optimizer_name] = {"value": copy.deepcopy(optimizer_value)}
+        state.component_state["optimizers"] = copy.deepcopy(state.optimizer_state)
+        return
+
+    if hasattr(state, head):
+        root = getattr(state, head)
+        if isinstance(root, dict):
+            _merge_nested_value(root, path[1:], value)
+            return
+        if len(path) == 1:
+            unknown_keys = [key for key in value if not hasattr(root, key)]
+            if unknown_keys:
+                raise ValueError(
+                    f"cannot merge unknown {head} fields: {', '.join(unknown_keys)}"
+                )
+            for key, item in value.items():
+                setattr(root, key, copy.deepcopy(item))
+            return
+
+    bucket = state.component_bucket(head)
+    if len(path) == 1:
+        if isinstance(bucket.get("value"), dict):
+            bucket["value"].update(value)
+        else:
+            bucket["value"] = value
+        return
+    _merge_nested_value(bucket, path[1:], value)
+
+
+def _apply_create_artifact_op(
+    state: RunState,
+    delta: RunDelta,
+    op: CreateArtifactOp,
+    *,
+    emit_event: Callable[[EmitEventOp], None] | None = None,
+) -> None:
+    artifact = copy.deepcopy(op.artifact) if isinstance(op.artifact, dict) else {}
+    artifact_id = artifact.get("artifact_id") if isinstance(artifact, dict) else None
+    if not isinstance(artifact_id, str) or not artifact_id:
+        state.artifacts.append(artifact)
+        return
+
+    existing_ids = {
+        item.get("artifact_id")
+        for item in state.artifacts
+        if isinstance(item, dict) and isinstance(item.get("artifact_id"), str)
+    }
+    event_type = "artifact_updated" if artifact_id in existing_ids else "artifact_created"
+    state.artifacts = upsert_artifacts(state.artifacts, [artifact])
+
+    if not callable(emit_event):
+        return
+
+    snapshot = artifact.get("snapshot") if isinstance(artifact.get("snapshot"), dict) else {}
+    plan_id = snapshot.get("plan_id") if isinstance(snapshot, dict) else None
+    trace = copy.deepcopy(delta.trace) if isinstance(delta.trace, dict) else {}
+    payload: dict[str, object] = {
+        "artifact_id": artifact_id,
+        "artifact": artifact,
+        "created_by": delta.created_by,
+    }
+    if op.reason:
+        payload["reason"] = op.reason
+    if isinstance(plan_id, str) and plan_id:
+        payload["plan_id"] = plan_id
+
+    tool_name = trace.get("tool_name") or trace.get("tool_call")
+    if isinstance(tool_name, str) and tool_name:
+        payload["tool_name"] = tool_name
+    call_id = trace.get("call_id")
+    if isinstance(call_id, str) and call_id:
+        payload["call_id"] = call_id
+    capability_created_by = trace.get("capability_created_by")
+    if isinstance(capability_created_by, str) and capability_created_by:
+        payload["capability_created_by"] = capability_created_by
+    applied_by = trace.get("applied_by")
+    if isinstance(applied_by, str) and applied_by:
+        payload["applied_by"] = applied_by
+
+    emit_event(
+        EmitEventOp(
+            type=event_type,
+            payload=payload,
+            reason=op.reason,
+        )
+    )
+
+
+def _set_nested_value(root: dict, path: tuple[str, ...], value) -> None:
+    if not path:
+        raise ValueError("nested state path must not be empty")
+    cursor = root
+    for key in path[:-1]:
+        child = cursor.get(key)
+        if not isinstance(child, dict):
+            child = {}
+            cursor[key] = child
+        cursor = child
+    cursor[path[-1]] = value
+
+
+def _merge_nested_value(root: dict, path: tuple[str, ...], value: dict) -> None:
+    if not path:
+        root.update(copy.deepcopy(value))
+        return
+    cursor = root
+    for key in path[:-1]:
+        child = cursor.get(key)
+        if not isinstance(child, dict):
+            child = {}
+            cursor[key] = child
+        cursor = child
+    leaf = cursor.get(path[-1])
+    if isinstance(leaf, dict):
+        leaf.update(copy.deepcopy(value))
+    else:
+        cursor[path[-1]] = copy.deepcopy(value)

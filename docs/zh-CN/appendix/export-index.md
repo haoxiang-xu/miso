@@ -22,6 +22,9 @@
 | `AgentSpec` | `src/unchain/agent/spec.py:8` | 非 class 导出 |
 | `AgentState` | `src/unchain/agent/spec.py:19` | 非 class 导出 |
 | `BaseAgentModule` | `src/unchain/agent/modules/base.py:18` | 非 class 导出 |
+| `CompletionEvaluation` | `src/unchain/runtime/completion.py:13` | `../api/runtime.md#completionevaluation` |
+| `CompletionPolicy` | `src/unchain/runtime/completion.py:24` | `../api/runtime.md#completionpolicy` |
+| `CompletionValidator` | `src/unchain/runtime/completion.py:19` | 非 class 导出 |
 | `MemoryModule` | `src/unchain/agent/modules/memory.py:12` | 非 class 导出 |
 | `ModelIOFactoryRegistry` | `src/unchain/agent/model_io.py:10` | 非 class 导出 |
 | `OptimizersModule` | `src/unchain/agent/modules/optimizers.py:9` | 非 class 导出 |
@@ -50,8 +53,16 @@
 | --- | --- | --- |
 | `BaseMemoryHarness` | `src/unchain/memory/base.py:89` | 非 class 导出 |
 | `ContextStrategy` | `src/unchain/memory/manager.py:84` | `../api/memory.md#contextstrategy` |
+| `ExecutionCheckpointCompatibilityError` | `src/unchain/memory/checkpoint_state.py` | 非 class 导出 |
+| `ExecutionCheckpointError` | `src/unchain/memory/checkpoint_state.py` | 非 class 导出 |
+| `ExecutionCheckpointHarness` | `src/unchain/memory/checkpoint.py` | 非 class 导出 |
+| `ExecutionCheckpointIntegrityError` | `src/unchain/memory/checkpoint_state.py` | 非 class 导出 |
+| `ExecutionCheckpointPersistenceError` | `src/unchain/memory/checkpoint_state.py` | 非 class 导出 |
+| `ExecutionCheckpointReplayUnavailableError` | `src/unchain/memory/checkpoint_state.py` | 非 class 导出 |
+| `ExecutionCheckpointResumeRequiredError` | `src/unchain/memory/checkpoint_state.py` | 非 class 导出 |
 | `HybridContextStrategy` | `src/unchain/memory/manager.py:1779` | `../api/memory.md#hybridcontextstrategy` |
 | `InMemorySessionStore` | `src/unchain/memory/manager.py:104` | `../api/memory.md#inmemorysessionstore` |
+| `JsonFileSessionStore` | `src/unchain/memory/qdrant.py` | `../api/memory.md#jsonfilesessionstore` |
 | `JsonFileLongTermProfileStore` | `src/unchain/memory/manager.py:117` | `../api/memory.md#jsonfilelongtermprofilestore` |
 | `KernelMemoryRuntime` | `src/unchain/memory/runtime.py:59` | 非 class 导出 |
 | `LastNTurnsStrategy` | `src/unchain/memory/manager.py:1642` | `../api/memory.md#lastnturnsstrategy` |
@@ -62,15 +73,24 @@
 | `LongTermVectorAdapter` | `src/unchain/memory/manager.py:61` | `../api/memory.md#longtermvectoradapter` |
 | `MemoryBootstrapHarness` | `src/unchain/memory/bootstrap.py:10` | 非 class 导出 |
 | `MemoryCommitHarness` | `src/unchain/memory/commit.py:10` | 非 class 导出 |
+| `MemoryCommitResult` | `src/unchain/memory/manager.py` | 非 class 导出 |
 | `MemoryConfig` | `src/unchain/memory/manager.py:167` | `../api/memory.md#memoryconfig` |
 | `MemoryContext` | `src/unchain/memory/base.py:14` | 非 class 导出 |
 | `MemoryHarness` | `src/unchain/memory/base.py:84` | 非 class 导出 |
 | `MemoryManager` | `src/unchain/memory/manager.py:1866` | `../api/memory.md#memorymanager` |
+| `RevisionedSessionStore` | `src/unchain/memory/revision.py` | 非 class 导出 |
+| `SessionConsistency` | `src/unchain/memory/revision.py` | 非 class 导出 |
+| `SessionHistoryOwnershipError` | `src/unchain/memory/ownership.py` | 非 class 导出 |
+| `SessionRevisionConflictError` | `src/unchain/memory/revision.py` | 非 class 导出 |
+| `SessionSnapshot` | `src/unchain/memory/revision.py` | 非 class 导出 |
 | `SessionStore` | `src/unchain/memory/manager.py:21` | `../api/memory.md#sessionstore` |
+| `SessionStoreCorruptionError` | `src/unchain/memory/revision.py` | 非 class 导出 |
 | `ShortTermRecallMemoryHarness` | `src/unchain/memory/short_term.py:12` | 非 class 导出 |
 | `SummaryGenerator` | `-` | 非 class 导出 |
 | `SummaryTokenStrategy` | `src/unchain/memory/manager.py:1675` | `../api/memory.md#summarytokenstrategy` |
 | `VectorStoreAdapter` | `src/unchain/memory/manager.py:30` | `../api/memory.md#vectorstoreadapter` |
+| `load_session_snapshot` | `src/unchain/memory/revision.py` | 非 class 导出 |
+| `save_session_snapshot` | `src/unchain/memory/revision.py` | 非 class 导出 |
 
 ## `src/unchain/runtime/__init__.py`
 
@@ -78,6 +98,11 @@
 | --- | --- | --- |
 | `DEFAULT_PAYLOADS_RESOURCE` | `-` | 非 class 导出 |
 | `MODEL_CAPABILITIES_RESOURCE` | `-` | 非 class 导出 |
+| `CompletionEvaluation` | `src/unchain/runtime/completion.py:13` | `../api/runtime.md#completionevaluation` |
+| `CompletionPolicy` | `src/unchain/runtime/completion.py:24` | `../api/runtime.md#completionpolicy` |
+| `CompletionPolicyRunner` | `src/unchain/runtime/completion.py:47` | `../api/runtime.md#completionpolicyrunner` |
+| `CompletionRunOnce` | `src/unchain/runtime/completion.py:20` | 非 class 导出 |
+| `CompletionValidator` | `src/unchain/runtime/completion.py:19` | 非 class 导出 |
 | `load_default_payloads` | `-` | 非 class 导出 |
 | `load_model_capabilities` | `-` | 非 class 导出 |
 
@@ -106,9 +131,8 @@
 | 名称 | 源码 | 参考 |
 | --- | --- | --- |
 | `BuiltinToolkit` | `src/unchain/toolkits/base.py:14` | `../api/toolkits.md#builtintoolkit` |
+| `AgentReachToolkit` | `src/unchain/toolkits/builtin/agent_reach/agent_reach.py:13` | `../api/toolkits.md#agentreachtoolkit` |
 | `CoreToolkit` | `src/unchain/toolkits/builtin/core/core.py:30` | `../api/toolkits.md#coretoolkit` |
-| `ExternalAPIToolkit` | `src/unchain/toolkits/builtin/external_api/external_api.py:13` | `../api/toolkits.md#externalapitoolkit` |
-| `GitToolkit` | `src/unchain/toolkits/builtin/git/git.py:14` | `../api/toolkits.md#gittoolkit` |
 | `PlanToolkit` | `src/unchain/toolkits/builtin/plan/plan.py:192` | `../api/toolkits.md#plantoolkit` |
 | `MCPToolkit` | `src/unchain/toolkits/mcp.py:62` | `../api/toolkits.md#mcptoolkit` |
 

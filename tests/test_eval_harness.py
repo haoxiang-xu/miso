@@ -2,15 +2,23 @@ import json
 import os
 from pathlib import Path
 
+from unchain.kernel import KernelRunResult
+
 from tests.evals.cases import build_eval_case, get_eval_case
 from tests.evals.env import filter_model_specs, load_root_env
 from tests.evals.judge import build_judge_messages
 from tests.evals.notebook_sessions import describe_pending_request, load_notebook_session, resume_notebook_session, start_notebook_session
-from tests.evals.runner import run_benchmark_suite, run_single_model_eval
+from tests.evals.runner import (
+    _build_standard_payload,
+    _coerce_agent_run_output,
+    _max_context_window_tokens,
+    run_benchmark_suite,
+    run_single_model_eval,
+)
 from tests.evals.scoring import score_run_artifact
 from tests.evals.serialization import persist_judge_report, persist_run_artifact
-from tests.evals.types import JudgeReport, RunArtifact
-from tests.evals.workspace import prepare_workspace
+from tests.evals.types import JudgeReport, ModelSpec, RunArtifact
+from tests.evals.workspace import diff_workspace_snapshots, prepare_workspace, snapshot_workspace
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +61,67 @@ def test_filter_model_specs_skips_missing_keys(monkeypatch):
     assert skipped[0]["label"] == "claude"
 
 
+def test_filter_model_specs_uses_current_provider_and_auth_policy():
+    ready, skipped = filter_model_specs(
+        [
+            {"provider": "ollama", "model": "qwen3", "label": "local"},
+            {"provider": "gemini", "model": "gemini-2.5", "label": "unsupported"},
+            {"provider": "hyperspace", "model": "hyperspace--claude", "label": "hyperspace"},
+        ],
+        env={},
+    )
+
+    assert [(spec.label, api_key) for spec, api_key, _ in ready] == [("local", None)]
+    skipped_by_label = {item["label"]: item["reason"] for item in skipped}
+    assert "unsupported provider" in skipped_by_label["unsupported"]
+    assert "HYPERSPACE_API_KEY" in skipped_by_label["hyperspace"]
+
+
+def test_eval_model_capabilities_resolve_snapshot_names():
+    openai_snapshot = ModelSpec(
+        provider="openai",
+        model="gpt-5-2025-08-07",
+        label="openai-snapshot",
+    )
+    anthropic_snapshot = ModelSpec(
+        provider="anthropic",
+        model="claude-opus-4-6-20260301",
+        label="anthropic-snapshot",
+    )
+
+    assert _max_context_window_tokens(openai_snapshot, REPO_ROOT) == 1_047_576
+    assert _max_context_window_tokens(anthropic_snapshot, REPO_ROOT) == 200_000
+    assert _build_standard_payload(
+        model_spec=openai_snapshot,
+        repo_root=REPO_ROOT,
+        max_output_tokens=321,
+    ) == {
+        "max_output_tokens": 321,
+        "store": False,
+        "reasoning": {"effort": "medium"},
+    }
+
+
+def test_legacy_agent_tuple_receives_current_bundle_metadata():
+    messages, bundle = _coerce_agent_run_output(
+        ([{"role": "assistant", "content": "done"}], {"status": "completed"}),
+        callback_events=[
+            {
+                "type": "run_completed",
+                "bundle": {"consumed_tokens": 8, "last_turn_tokens": 3},
+            }
+        ],
+        model="gpt-5-snapshot",
+        max_context_window_tokens=1_000,
+    )
+
+    assert messages[-1]["content"] == "done"
+    assert bundle["model"] == "gpt-5-snapshot"
+    assert bundle["consumed_tokens"] == 8
+    assert bundle["max_context_window_tokens"] == 1_000
+    assert bundle["context_window_used_pct"] == 0.3
+
+
 def test_prepare_workspace_creates_isolated_fixture_copies():
     case = get_eval_case("fixture_debug", REPO_ROOT)
 
@@ -65,6 +134,27 @@ def test_prepare_workspace_creates_isolated_fixture_copies():
     with prepare_workspace(case, repo_root=REPO_ROOT) as second_workspace:
         target = second_workspace / "src" / "reporting.py"
         assert "# mutated" not in target.read_text(encoding="utf-8")
+
+
+def test_workspace_snapshot_diff_reports_source_changes_and_ignores_caches(tmp_path):
+    source = tmp_path / "src" / "module.py"
+    source.parent.mkdir()
+    source.write_text("before\n", encoding="utf-8")
+    before = snapshot_workspace(tmp_path)
+
+    source.write_text("after\n", encoding="utf-8")
+    created = tmp_path / "notes.txt"
+    created.write_text("new\n", encoding="utf-8")
+    cache = tmp_path / "__pycache__" / "module.pyc"
+    cache.parent.mkdir()
+    cache.write_bytes(b"cache")
+
+    changes = diff_workspace_snapshots(before, snapshot_workspace(tmp_path))
+    assert changes == {
+        "created_paths": ["notes.txt"],
+        "modified_paths": ["src/module.py"],
+        "deleted_paths": [],
+    }
 
 
 def test_artifact_serialization_writes_json_files(tmp_path):
@@ -128,15 +218,15 @@ def test_rule_based_scorer_rewards_expected_evidence():
             "The bug is floor division in format_success_rate, so 3/4 becomes 0 before multiplying."
         ),
         callback_events=[
-            {"type": "tool_call", "tool_name": "terminal_exec", "arguments": {"command": "pytest -q"}},
-            {"type": "tool_call", "tool_name": "read_files", "arguments": {"paths": ["src/reporting.py"]}},
-            {"type": "tool_result", "tool_name": "terminal_exec", "result": {"error": "assertion failed"}},
+            {"type": "tool_call", "tool_name": "shell", "arguments": {"command": "pytest -q"}},
+            {"type": "tool_call", "tool_name": "read", "arguments": {"path": "src/reporting.py"}},
+            {"type": "tool_result", "tool_name": "shell", "result": {"error": "assertion failed"}},
         ],
     )
     run_artifact.tool_usage = {
         "total_calls": 2,
-        "by_tool": {"terminal_exec": 1, "read_files": 1},
-        "failed_calls": [{"tool": "terminal_exec", "error": "assertion failed"}],
+        "by_tool": {"shell": 1, "read": 1},
+        "failed_calls": [{"tool": "shell", "error": "assertion failed"}],
         "blocked_attempts": [],
         "denied_tools": [],
         "terminal_commands": ["pytest -q"],
@@ -145,7 +235,24 @@ def test_rule_based_scorer_rewards_expected_evidence():
     result = score_run_artifact(run_artifact, case)
 
     assert result["score_pct"] >= 80
-    assert any(check["name"] == "tool:terminal_exec" and check["passed"] for check in result["checks"])
+    assert any(check["name"] == "tool:shell" and check["passed"] for check in result["checks"])
+    assert not next(
+        check["passed"]
+        for check in result["checks"]
+        if check["name"] == "path:tests/test_reporting.py"
+    )
+
+    run_artifact.status = "max_iterations"
+    ineligible = score_run_artifact(run_artifact, case)
+    assert ineligible["raw_score_pct"] >= 80
+    assert ineligible["score_pct"] == 0
+    assert ineligible["eligible"] is False
+
+    run_artifact.status = "completed"
+    run_artifact.tool_usage["workspace_changes"] = ["src/reporting.py"]
+    changed_workspace = score_run_artifact(run_artifact, case)
+    assert changed_workspace["score_pct"] == 0
+    assert changed_workspace["eligibility_failures"] == ["workspace_changed"]
 
 
 def test_build_judge_messages_embeds_message_list():
@@ -163,8 +270,8 @@ def test_build_judge_messages_embeds_message_list():
         duration_seconds=1.0,
         workspace_mode=case.workspace_mode,
         workspace_source=case.workspace_source,
-        final_answer="See src/miso/agents/agent.py and src/miso/runtime/engine.py.",
-        messages=[{"role": "assistant", "content": "See src/miso/agents/agent.py and src/miso/runtime/engine.py."}],
+        final_answer="See src/unchain/agent/agent.py and src/unchain/kernel/loop.py.",
+        messages=[{"role": "assistant", "content": "See src/unchain/agent/agent.py and src/unchain/kernel/loop.py."}],
     )
 
     messages = build_judge_messages(case=case, run_artifact=run_artifact, rubric_weights=case.rubric_weights)
@@ -198,8 +305,8 @@ class FakeAgent:
         del payload, max_iterations, kwargs
         if self.name.startswith("candidate-"):
             if callback is not None:
-                callback({"type": "tool_call", "tool_name": "terminal_exec", "arguments": {"command": "pytest -q"}})
-                callback({"type": "tool_result", "tool_name": "terminal_exec", "result": {"ok": False, "error": "assertion failed"}})
+                callback({"type": "tool_call", "tool_name": "shell", "arguments": {"command": "pytest -q"}})
+                callback({"type": "tool_result", "tool_name": "shell", "result": {"ok": False, "error": "assertion failed"}})
             return list(self.candidate_messages), {
                 "status": "completed",
                 "consumed_tokens": 42,
@@ -230,7 +337,7 @@ class FakeAgent:
                         "debug_notes": ["The diagnosis is grounded."],
                         "recommendations": ["Keep the root-cause explanation concise."],
                         "prompt_suggestions": ["Ask for explicit failing command output."],
-                        "tooling_suggestions": ["Use read_lines for tighter evidence snippets."],
+                        "tooling_suggestions": ["Use read for tighter evidence snippets."],
                     }
                 ),
             }
@@ -271,6 +378,39 @@ def test_run_benchmark_suite_passes_saved_message_list_to_judge(monkeypatch, tmp
     assert saved_run_payload["token_usage"]["output_tokens"] == 12
     assert result["leaderboard_rows"][0]["input_tokens"] == 30
     assert result["leaderboard_rows"][0]["output_tokens"] == 12
+
+
+def test_run_single_model_eval_runs_ollama_without_api_key(tmp_path):
+    case = build_eval_case(
+        case_id="ollama_no_key",
+        title="Ollama Without API Key",
+        task_prompt="Inspect the fixture.",
+        workspace_mode="fixture_copy",
+        workspace_source="tests/evals/fixtures/fixture_debug",
+        rule_checks={"min_tool_calls": 0},
+    )
+
+    result = run_single_model_eval(
+        repo_root=REPO_ROOT,
+        case=case,
+        model_spec={
+            "provider": "ollama",
+            "model": "qwen3",
+            "label": "local-candidate",
+        },
+        judge_model_spec={
+            "provider": "ollama",
+            "model": "qwen3",
+            "label": "local-judge",
+        },
+        artifacts_root=tmp_path / "ollama-no-key",
+        candidate_agent_cls=FakeAgent,
+        judge_agent_cls=FakeAgent,
+    )
+
+    assert result["run_artifact"]["status"] == "completed"
+    assert result["run_artifact"]["skip_reason"] is None
+    assert result["judge_report"]["status"] == "completed"
 
 
 def test_run_single_model_eval_supports_notebook_defined_case(monkeypatch, tmp_path):
@@ -345,6 +485,9 @@ def test_run_single_model_eval_uses_central_default_judge_model(monkeypatch, tmp
 
 
 class FakeInteractiveAgent:
+    last_run_tool_runtime_config = None
+    last_resume_tool_runtime_config = None
+
     def __init__(self, *, name, provider, model, api_key=None, instructions="", tools=None, **kwargs):
         self.name = name
         self.provider = provider
@@ -354,6 +497,7 @@ class FakeInteractiveAgent:
         self.tools = tools or []
 
     def run(self, messages, payload=None, callback=None, max_iterations=None, session_id=None, memory_namespace=None, **kwargs):
+        type(self).last_run_tool_runtime_config = kwargs.get("tool_runtime_config")
         del messages, payload, max_iterations, kwargs
         assert session_id == memory_namespace
         if callback is not None:
@@ -367,11 +511,12 @@ class FakeInteractiveAgent:
                     },
                 }
             )
-        return [
-            {"role": "assistant", "content": "I need to confirm the visual direction first."}
-        ], {
-            "status": "awaiting_human_input",
-            "human_input_request": {
+        return KernelRunResult(
+            messages=[
+                {"role": "assistant", "content": "I need to confirm the visual direction first."}
+            ],
+            status="awaiting_human_input",
+            human_input_request={
                 "request_id": "req_1",
                 "title": "Theme",
                 "question": "Pick a visual direction",
@@ -384,7 +529,7 @@ class FakeInteractiveAgent:
                 "min_selected": 1,
                 "max_selected": 1,
             },
-            "continuation": {
+            continuation={
                 "type": "human_input_continuation",
                 "request": {
                     "request_id": "req_1",
@@ -408,12 +553,14 @@ class FakeInteractiveAgent:
                 "session_id": session_id,
                 "memory_namespace": memory_namespace,
             },
-            "consumed_tokens": 7,
-            "input_tokens": 4,
-            "output_tokens": 3,
-            "context_window_used_pct": 0.1,
-            "max_context_window_tokens": 1000,
-        }
+            consumed_tokens=7,
+            input_tokens=4,
+            output_tokens=3,
+            last_turn_tokens=7,
+            last_turn_input_tokens=4,
+            last_turn_output_tokens=3,
+            iteration=1,
+        )
 
     def resume_human_input(
         self,
@@ -426,25 +573,30 @@ class FakeInteractiveAgent:
         memory_namespace=None,
         **kwargs,
     ):
+        type(self).last_resume_tool_runtime_config = kwargs.get("tool_runtime_config")
         del continuation, kwargs
         assert session_id == memory_namespace
         assert response["request_id"] == "req_1"
         assert response["selected_values"] == ["arcade"]
         if callback is not None:
-            callback({"type": "tool_call", "tool_name": "write_file", "arguments": {"path": "app/index.html"}})
-        return conversation + [
-            {
-                "role": "assistant",
-                "content": "Done. Created app/index.html, app/style.css, and app/game.js.",
-            }
-        ], {
-            "status": "completed",
-            "consumed_tokens": 18,
-            "input_tokens": 11,
-            "output_tokens": 7,
-            "context_window_used_pct": 0.2,
-            "max_context_window_tokens": 1000,
-        }
+            callback({"type": "tool_call", "tool_name": "write", "arguments": {"path": "app/index.html"}})
+        return KernelRunResult(
+            messages=conversation
+            + [
+                {
+                    "role": "assistant",
+                    "content": "Done. Created app/index.html, app/style.css, and app/game.js.",
+                }
+            ],
+            status="completed",
+            consumed_tokens=18,
+            input_tokens=11,
+            output_tokens=7,
+            last_turn_tokens=11,
+            last_turn_input_tokens=7,
+            last_turn_output_tokens=4,
+            iteration=2,
+        )
 
 
 def test_notebook_session_start_and_resume_round_trip(monkeypatch, tmp_path):
@@ -460,6 +612,7 @@ def test_notebook_session_start_and_resume_round_trip(monkeypatch, tmp_path):
         workspace_mode="persistent_test_folder",
         workspace_source=str(test_dir),
         allowed_toolkits=["core"],
+        toolkit_options={"tool_result_budget": {"max_result_chars": 1_234}},
         rule_checks={"required_tool_names": ["ask_user_question"]},
         candidate_instructions="Ask before deciding.",
     )
@@ -492,3 +645,6 @@ def test_notebook_session_start_and_resume_round_trip(monkeypatch, tmp_path):
     assert resumed_state["run_artifact"]["status"] == "completed"
     assert "app/index.html" in resumed_state["run_artifact"]["final_answer"]
     assert saved["run_artifact"]["status"] == "completed"
+    expected_runtime_config = {"tool_result_budget": {"max_result_chars": 1_234}}
+    assert FakeInteractiveAgent.last_run_tool_runtime_config == expected_runtime_config
+    assert FakeInteractiveAgent.last_resume_tool_runtime_config == expected_runtime_config

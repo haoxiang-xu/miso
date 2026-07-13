@@ -7,13 +7,13 @@ errors (connection drops, 5xx, 429, 529) consistently — anthropic has no
 retry, openai's built-in retry is not wired up here, ollama's raw httpx has
 none. This module adds a unified, SDK-agnostic retry layer.
 
-First-event gate
-----------------
+First-visible-event gate
+------------------------
 Every provider streams via ``request.callback``. If a call fails *after* the
-callback has already emitted content, we must NOT retry — retrying would
-deliver the partial content twice. The wrapper detects the first callback
-invocation via a proxy callback; once committed, it re-raises the error
-instead of retrying.
+callback has emitted user-visible model output, we must NOT retry — retrying
+would deliver the partial content twice. The wrapper distinguishes visible
+output from debug-only events such as ``request_messages``; only visible output
+commits the attempt.
 
 Consequences:
   - A network failure before any token is produced → retried (ideal case).
@@ -26,7 +26,7 @@ Non-goals (handled elsewhere / deferred)
     specific work and a separate plan.
   - Retry budget across many requests (circuit breaker).
   - Model fallback (Opus → Sonnet on repeated 529).
-  - ``observe_tool_batch`` is intentionally bypassed: it has its own
+  - ``ToolObservationRunner.observe_tool_batch`` is intentionally bypassed: it has its own
     swallow-on-error semantics for background observations.
 
 Public API

@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
+from ..capabilities import CapabilityOutcome, RunContext
+from ..execution import ExecutionGuard, ExecutionLeaseError
 from ..toolkits.base import BuiltinToolkit
 from .models import (
     ToolConfirmationPolicy,
@@ -25,6 +27,7 @@ class ToolExecutionOutcome:
     deny_reason: str = ""
     effective_arguments: Any = None
     confirmation_policy: ToolConfirmationPolicy | None = None
+    capability_outcome: CapabilityOutcome | None = None
 
 
 def _resolve_builtin_toolkit_owner(toolkit: Toolkit, tool_name: str) -> BuiltinToolkit | None:
@@ -54,6 +57,18 @@ def _tool_execution_scope(
         owner.pop_execution_context()
 
 
+def _tool_result_from_capability_outcome(
+    outcome: CapabilityOutcome,
+    *,
+    tool_name: str,
+) -> dict[str, Any]:
+    del tool_name
+    value = outcome.value
+    if isinstance(value, dict):
+        return value
+    return {"result": value}
+
+
 def execute_confirmable_tool_call(
     *,
     toolkit: Toolkit,
@@ -64,6 +79,7 @@ def execute_confirmable_tool_call(
     run_id: str,
     iteration: int,
     execution_context: ToolExecutionContext | None = None,
+    execution_guard: ExecutionGuard | None = None,
 ) -> ToolExecutionOutcome:
     tool_obj = toolkit.get(tool_call.name)
     should_observe = bool(tool_obj is not None and tool_obj.observe)
@@ -78,6 +94,8 @@ def execute_confirmable_tool_call(
             confirmation_policy = ToolConfirmationPolicy.from_raw(
                 tool_obj.confirmation_resolver(resolver_arguments, execution_context)
             )
+        except ExecutionLeaseError:
+            raise
         except Exception as exc:
             return ToolExecutionOutcome(
                 tool_result={
@@ -88,6 +106,8 @@ def execute_confirmable_tool_call(
                 effective_arguments=effective_arguments,
                 confirmation_policy=confirmation_policy,
             )
+        if execution_guard is not None:
+            execution_guard.assert_active()
 
     requires_confirmation = bool(tool_obj is not None and tool_obj.requires_confirmation)
     if confirmation_policy is not None:
@@ -131,6 +151,8 @@ def execute_confirmable_tool_call(
             render_component=effective_render,
         )
         response = ToolConfirmationResponse.from_raw(on_tool_confirm(confirmation_request))
+        if execution_guard is not None:
+            execution_guard.renew()
         if not response.approved:
             denied = True
             deny_reason = response.reason
@@ -163,12 +185,39 @@ def execute_confirmable_tool_call(
             "reason": deny_reason or "User denied execution.",
         }
     else:
+        if execution_guard is not None:
+            execution_guard.renew()
         with _tool_execution_scope(
             toolkit=toolkit,
             tool_name=tool_call.name,
             execution_context=execution_context,
         ):
-            tool_result = toolkit.execute(tool_call.name, effective_arguments)
+            if tool_obj is None:
+                tool_result = toolkit.execute(tool_call.name, effective_arguments)
+            else:
+                capability_outcome = tool_obj.invoke(
+                    {
+                        "tool_name": tool_call.name,
+                        "call_id": tool_call.call_id,
+                        "arguments": effective_arguments,
+                    },
+                    RunContext(
+                        phase="on_tool_call",
+                        event={
+                            "tool_call": tool_call,
+                            "execution_context": execution_context,
+                        },
+                    ),
+                )
+                tool_result = _tool_result_from_capability_outcome(
+                    capability_outcome,
+                    tool_name=tool_call.name,
+                )
+        if execution_guard is not None:
+            execution_guard.assert_active()
+
+    if execution_guard is not None:
+        execution_guard.assert_active()
 
     return ToolExecutionOutcome(
         tool_result=tool_result,
@@ -177,4 +226,5 @@ def execute_confirmable_tool_call(
         deny_reason=deny_reason,
         effective_arguments=effective_arguments,
         confirmation_policy=confirmation_policy,
+        capability_outcome=capability_outcome if not denied and tool_obj is not None else None,
     )

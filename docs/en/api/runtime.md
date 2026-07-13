@@ -4,9 +4,9 @@ Core execution types: kernel loop, provider abstraction (`ModelIO`), model turn 
 
 | Metric | Value |
 | --- | --- |
-| Classes | 2 |
-| Dataclasses | 5 |
-| Protocols | 1 |
+| Classes | 5 |
+| Dataclasses | 10 |
+| Protocols | 2 |
 | Internal-only types | 0 |
 
 ## Coverage map
@@ -17,9 +17,22 @@ Core execution types: kernel loop, provider abstraction (`ModelIO`), model turn 
 | `TokenUsage` | `src/unchain/kernel/types.py` | subpackage | dataclass (frozen) |
 | `ModelTurnResult` | `src/unchain/kernel/types.py` | subpackage | dataclass (frozen) |
 | `KernelRunResult` | `src/unchain/kernel/types.py` | subpackage | dataclass (frozen) |
-| `ModelTurnRequest` | `src/unchain/providers/model_io.py` | subpackage | dataclass (frozen) |
-| `ModelIO` | `src/unchain/providers/model_io.py` | subpackage | protocol |
+| `ModelTurnRequest` | `src/unchain/providers/base.py` | subpackage | dataclass (frozen) |
+| `ModelIO` | `src/unchain/providers/base.py` | subpackage | protocol |
 | `KernelLoop` | `src/unchain/kernel/loop.py` | subpackage | class |
+| `CompletionEvaluation` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
+| `CompletionPolicy` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
+| `CompletionPolicyRunner` | `src/unchain/runtime/completion.py` | subpackage | dataclass |
+| `ExecutionFence` | `src/unchain/execution.py` | subpackage | dataclass (frozen) |
+| `ExecutionLease` | `src/unchain/execution.py` | subpackage | dataclass (frozen) |
+| `ExecutionLeaseConfig` | `src/unchain/execution.py` | subpackage | dataclass (frozen) |
+| `ExecutionLeaseStore` | `src/unchain/execution.py` | subpackage | protocol |
+| `ExecutionRuntime` | `src/unchain/execution.py` | subpackage | class |
+| `ExecutionGuard` | `src/unchain/execution.py` | subpackage | class |
+
+### Execution ownership
+
+`ExecutionRuntime` acquires an `ExecutionGuard` from an `ExecutionLeaseStore`. The guard owns a time-bounded `ExecutionLease`; its `ExecutionFence` is passed to atomic session writes. `ExecutionLeaseConfig` controls the TTL and heartbeat interval. Memory-backed built-in stores are wired automatically by `build_runtime_loop`; callers may also inject an explicit runtime when constructing a loop. Lease conflicts and stale fencing tokens fail closed through the exported `ExecutionLeaseError` hierarchy.
 
 ### `src/unchain/kernel/types.py`
 
@@ -124,8 +137,78 @@ Frozen dataclass returned by `Agent.run()` and `PreparedAgent.run()` with the fi
 | `cache_creation_input_tokens` | `int` | Default: `0`. |
 | `previous_response_id` | `str \| None` | Default: `None`. |
 | `iteration` | `int` | Default: `0`. |
+| `provider_replay_handle` | `dict[str, Any] \| None` | Opaque process-local replay capability used internally for safe repair/resume handoff. Its serialized form contains only `id` and `scope`, never provider reasoning/signatures. Default: `None`. |
 
-### `src/unchain/providers/model_io.py`
+### `src/unchain/runtime/completion.py`
+
+An opt-in completion policy runtime. Completion policy is not part of the
+`KernelLoop` self-loop; it runs only when an agent is explicitly configured with
+`PoliciesModule(completion_policy=...)`.
+
+## CompletionEvaluation
+
+Frozen dataclass returned by a completion validator.
+
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/runtime/completion.py` |
+| Inheritance | `-` |
+| Exposure | Exported from `unchain.runtime` and re-exported from `unchain.agent`. |
+| Kind | Dataclass (frozen). |
+
+### Fields
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `complete` | `bool` | Whether the result satisfies the validator. |
+| `feedback` | `str` | Repair prompt appended as a new user message when incomplete. |
+| `reason` | `str` | Optional diagnostic reason emitted with evaluation events. |
+
+## CompletionPolicy
+
+Frozen dataclass configuring bounded completion repair.
+
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/runtime/completion.py` |
+| Inheritance | `-` |
+| Exposure | Exported from `unchain.runtime` and re-exported from `unchain.agent`. |
+| Kind | Dataclass (frozen). |
+
+### Fields
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `validator` | `CompletionValidator` | Required callback; returns `CompletionEvaluation`, `bool`, or a dict. |
+| `max_repair_turns` | `int` | Default: `1`. |
+| `repair_max_iterations` | `int \| None` | Optional max-iteration override for repair runs. |
+| `max_total_tokens` | `int \| None` | Optional aggregate token budget. |
+| `max_elapsed_seconds` | `float \| None` | Optional wall-time budget. |
+| `stop_on_no_progress` | `bool` | Default: `True`. |
+
+## CompletionPolicyRunner
+
+Runtime policy runner that evaluates a completed result and may perform bounded
+repair turns through the provided `run_once` callback.
+
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/runtime/completion.py` |
+| Inheritance | `-` |
+| Exposure | Exported from `unchain.runtime`. |
+| Kind | Dataclass. |
+
+### opt-in boundary
+
+- `policy=None` returns the original `KernelRunResult` unchanged.
+- Non-completed runs are returned unchanged.
+- Repair attempts are capped by policy fields and emit
+  `completion_policy_evaluated`, `completion_policy_retry`, and
+  `completion_policy_exhausted` events through the configured callback.
+- Agent users enable this through `PoliciesModule(completion_policy=...)`; the
+  kernel loop never hard-codes completion repair behavior.
+
+### `src/unchain/providers/base.py`
 
 Provider abstraction layer. `ModelIO` is the protocol that all provider implementations satisfy; `ModelTurnRequest` is the frozen input.
 
@@ -135,7 +218,7 @@ Frozen dataclass packaging messages, payload, format, and toolkit for a single m
 
 | Item | Details |
 | --- | --- |
-| Source | `src/unchain/providers/model_io.py` |
+| Source | `src/unchain/providers/base.py` |
 | Inheritance | `-` |
 | Exposure | Exported from `unchain.providers`. |
 | Kind | Dataclass (frozen). |
@@ -155,6 +238,7 @@ Frozen dataclass packaging messages, payload, format, and toolkit for a single m
 | `emit_stream` | `bool` | Default: `False`. |
 | `previous_response_id` | `str \| None` | Default: `None`. |
 | `openai_text_format` | `dict[str, Any] \| None` | Default: `None`. |
+| `fallback_messages` | `list[dict[str, Any]] \| None` | Complete local context used only when an OpenAI remote continuation cannot be resumed. Default: `None`. |
 
 ### Public methods
 
@@ -168,7 +252,7 @@ Provider-facing boundary used by the kernel loop. All provider implementations (
 
 | Item | Details |
 | --- | --- |
-| Source | `src/unchain/providers/model_io.py` |
+| Source | `src/unchain/providers/base.py` |
 | Kind | Protocol (runtime-checkable). |
 
 ### Required interface
@@ -205,7 +289,7 @@ The main execution engine. Runs a step-once loop: dispatch harness phases, fetch
 
 ```python
 from unchain.kernel.loop import KernelLoop
-from unchain.providers.model_io import ModelIO
+from unchain.providers import ModelIO
 
 loop = KernelLoop(model_io=my_model_io)
 loop.register_harness(my_harness)

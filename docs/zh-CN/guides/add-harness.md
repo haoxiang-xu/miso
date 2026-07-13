@@ -58,6 +58,7 @@ class MyHarness(BaseRuntimeHarness):
 ### 要点
 
 - **`phases`**：该 harness 参与的阶段名称元组。常见阶段：`bootstrap`、`before_model`、`on_tool_call`、`after_tool_batch`。
+- **保留 phase**：`suspend_persist` 与 `finalize_persist` 是 runtime 独占的 durable barrier。普通自定义 harness 应通过 `on_suspend` 或 `run_finalizing` 提交状态。
 - **`order`**：整数，控制同一阶段内的执行优先级。数值越小越先执行。
 - **`build_delta`**：核心方法。返回 `None` 表示不做操作，或返回 `HarnessDelta` 来变更运行状态。
 

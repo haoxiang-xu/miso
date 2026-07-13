@@ -4,9 +4,9 @@
 
 | 指标 | 值 |
 | --- | --- |
-| 类数量 | 2 |
-| Dataclass | 5 |
-| 协议 | 1 |
+| 类数量 | 5 |
+| Dataclass | 10 |
+| 协议 | 2 |
 | 仅内部类型 | 0 |
 
 ## 覆盖地图
@@ -17,9 +17,22 @@
 | `TokenUsage` | `src/unchain/kernel/types.py` | subpackage | dataclass (frozen) |
 | `ModelTurnResult` | `src/unchain/kernel/types.py` | subpackage | dataclass (frozen) |
 | `KernelRunResult` | `src/unchain/kernel/types.py` | subpackage | dataclass (frozen) |
-| `ModelTurnRequest` | `src/unchain/providers/model_io.py` | subpackage | dataclass (frozen) |
-| `ModelIO` | `src/unchain/providers/model_io.py` | subpackage | protocol |
+| `ModelTurnRequest` | `src/unchain/providers/base.py` | subpackage | dataclass (frozen) |
+| `ModelIO` | `src/unchain/providers/base.py` | subpackage | protocol |
 | `KernelLoop` | `src/unchain/kernel/loop.py` | subpackage | class |
+| `CompletionEvaluation` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
+| `CompletionPolicy` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
+| `CompletionPolicyRunner` | `src/unchain/runtime/completion.py` | subpackage | dataclass |
+| `ExecutionFence` | `src/unchain/execution.py` | subpackage | dataclass (frozen) |
+| `ExecutionLease` | `src/unchain/execution.py` | subpackage | dataclass (frozen) |
+| `ExecutionLeaseConfig` | `src/unchain/execution.py` | subpackage | dataclass (frozen) |
+| `ExecutionLeaseStore` | `src/unchain/execution.py` | subpackage | protocol |
+| `ExecutionRuntime` | `src/unchain/execution.py` | subpackage | class |
+| `ExecutionGuard` | `src/unchain/execution.py` | subpackage | class |
+
+### 执行所有权
+
+`ExecutionRuntime` 从 `ExecutionLeaseStore` 获取 `ExecutionGuard`。Guard 持有有时限的 `ExecutionLease`，并把其中的 `ExecutionFence` 传给原子 session 写入。`ExecutionLeaseConfig` 控制 TTL 与 heartbeat 间隔。`build_runtime_loop` 会为 memory-backed 内置 store 自动接线；构造 loop 时也可显式注入 runtime。Lease 冲突和过期 fencing token 会通过导出的 `ExecutionLeaseError` 异常体系 fail closed。
 
 ### `src/unchain/kernel/types.py`
 
@@ -124,8 +137,78 @@ Frozen dataclass，由 `Agent.run()` 和 `PreparedAgent.run()` 返回，包含�
 | `cache_creation_input_tokens` | `int` | 默认值：`0`。 |
 | `previous_response_id` | `str \| None` | 默认值：`None`。 |
 | `iteration` | `int` | 默认值：`0`。 |
+| `provider_replay_handle` | `dict[str, Any] \| None` | 内部用于安全交接 repair/resume 的 opaque 进程内 replay capability。序列化后只含 `id` 和 `scope`，不会包含 provider reasoning/signature。默认值：`None`。 |
 
-### `src/unchain/providers/model_io.py`
+### `src/unchain/runtime/completion.py`
+
+显式启用的 completion policy runtime。Completion policy 不是
+`KernelLoop` 内置的自循环；只有 agent 显式配置
+`PoliciesModule(completion_policy=...)` 时才会运行。
+
+## CompletionEvaluation
+
+Completion validator 返回的 frozen dataclass。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/runtime/completion.py` |
+| 继承/协议 | `-` |
+| 导出状态 | 通过 `unchain.runtime` 导出，并从 `unchain.agent` 重新导出。 |
+| 对象类型 | Dataclass (frozen)。 |
+
+### 字段
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `complete` | `bool` | 结果是否满足 validator。 |
+| `feedback` | `str` | 不完整时追加为新 user message 的修复提示。 |
+| `reason` | `str` | 可选诊断原因，会随 evaluation 事件发出。 |
+
+## CompletionPolicy
+
+配置有界 completion repair 的 frozen dataclass。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/runtime/completion.py` |
+| 继承/协议 | `-` |
+| 导出状态 | 通过 `unchain.runtime` 导出，并从 `unchain.agent` 重新导出。 |
+| 对象类型 | Dataclass (frozen)。 |
+
+### 字段
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `validator` | `CompletionValidator` | 必填 callback；返回 `CompletionEvaluation`、`bool` 或 dict。 |
+| `max_repair_turns` | `int` | 默认值：`1`。 |
+| `repair_max_iterations` | `int \| None` | repair run 的可选 max-iteration 覆盖。 |
+| `max_total_tokens` | `int \| None` | 可选总 token 预算。 |
+| `max_elapsed_seconds` | `float \| None` | 可选 wall-time 预算。 |
+| `stop_on_no_progress` | `bool` | 默认值：`True`。 |
+
+## CompletionPolicyRunner
+
+Runtime policy runner，会评估 completed result，并可通过传入的 `run_once`
+callback 执行有界 repair turn。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/runtime/completion.py` |
+| 继承/协议 | `-` |
+| 导出状态 | 通过 `unchain.runtime` 导出。 |
+| 对象类型 | Dataclass。 |
+
+### 显式启用边界
+
+- `policy=None` 会原样返回 `KernelRunResult`。
+- 非 completed run 会原样返回。
+- repair 次数受 policy 字段约束，并通过配置的 callback 发出
+  `completion_policy_evaluated`、`completion_policy_retry` 和
+  `completion_policy_exhausted` 事件。
+- Agent 用户通过 `PoliciesModule(completion_policy=...)` 启用；kernel loop
+  不硬编码 completion repair 行为。
+
+### `src/unchain/providers/base.py`
 
 Provider 抽象层。`ModelIO` 是所有 provider 实现必须满足的协议；`ModelTurnRequest` 是 frozen 输入。
 
@@ -135,7 +218,7 @@ Frozen dataclass，打包单次模型 turn 的消息、payload、格式和 toolk
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/unchain/providers/model_io.py` |
+| 源码 | `src/unchain/providers/base.py` |
 | 继承/协议 | `-` |
 | 导出状态 | 通过 `unchain.providers` 导出。 |
 | 对象类型 | Dataclass (frozen)。 |
@@ -155,6 +238,7 @@ Frozen dataclass，打包单次模型 turn 的消息、payload、格式和 toolk
 | `emit_stream` | `bool` | 默认值：`False`。 |
 | `previous_response_id` | `str \| None` | 默认值：`None`。 |
 | `openai_text_format` | `dict[str, Any] \| None` | 默认值：`None`。 |
+| `fallback_messages` | `list[dict[str, Any]] \| None` | OpenAI 远端 continuation 无法恢复时使用的完整本地上下文。默认值：`None`。 |
 
 ### 公共方法
 
@@ -168,7 +252,7 @@ Kernel loop 使用的 provider 边界。所有 provider 实现（OpenAI、Anthro
 
 | 项目 | 细节 |
 | --- | --- |
-| 源码 | `src/unchain/providers/model_io.py` |
+| 源码 | `src/unchain/providers/base.py` |
 | 对象类型 | 协议（runtime-checkable）。 |
 
 ### 必需接口
@@ -205,7 +289,7 @@ Harness 驱动的执行循环，编排模型 turn、工具执行、memory 提交
 
 ```python
 from unchain.kernel.loop import KernelLoop
-from unchain.providers.model_io import ModelIO
+from unchain.providers import ModelIO
 
 loop = KernelLoop(model_io=my_model_io)
 loop.register_harness(my_harness)

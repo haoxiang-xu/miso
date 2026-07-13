@@ -122,14 +122,26 @@ def test_builtin_registry_lists_expected_toolkits_and_tools():
     registry = ToolkitRegistry()
     toolkit_ids = {item["id"] for item in registry.list_toolkits(include_tools=False)}
 
-    assert toolkit_ids == {"agent_reach", "core", "external_api", "git", "plan"}
+    assert toolkit_ids == {
+        "agent_reach",
+        "core",
+        "plan",
+    }
     agent_reach_summary = registry.require("agent_reach").to_summary()
     assert agent_reach_summary["tool_count"] == 3
     assert agent_reach_summary["icon"] == {"type": "emoji", "emoji": "👁️"}
     assert registry.require("core").to_summary()["tool_count"] == 9
-    assert registry.require("external_api").to_summary()["tool_count"] == 2
-    assert registry.require("git").to_summary()["tool_count"] == 5
     assert registry.require("plan").to_summary()["tool_count"] == 5
+
+
+def test_only_public_builtin_toolkits_ship_registry_manifests():
+    builtin_root = Path(__file__).resolve().parents[1] / "src" / "unchain" / "toolkits" / "builtin"
+    manifest_dirs = {
+        manifest_path.parent.name
+        for manifest_path in builtin_root.rglob("toolkit.toml")
+    }
+
+    assert manifest_dirs == {"agent_reach", "core", "plan"}
 
 
 def test_registry_instantiated_agent_reach_tools_include_emoji_icon_metadata():

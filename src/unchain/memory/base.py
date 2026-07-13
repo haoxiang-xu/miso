@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from ..execution import ExecutionFence, ExecutionGuard
 from ..tools.toolkit import Toolkit
-from ..kernel.delta import HarnessDelta
 from ..kernel.harness import BaseRuntimeHarness, HarnessContext, RuntimeHarness, RuntimePhase
 from ..kernel.state import RunState
 from .runtime import KernelMemoryRuntime
@@ -62,6 +62,16 @@ class MemoryContext:
         return self.event.get("loop")
 
     @property
+    def execution_guard(self) -> ExecutionGuard | None:
+        guard = self.harness_context.event.get("execution_guard")
+        return guard if isinstance(guard, ExecutionGuard) else None
+
+    @property
+    def execution_fence(self) -> ExecutionFence | None:
+        guard = self.execution_guard
+        return guard.fence if guard is not None else None
+
+    @property
     def callback(self) -> Any:
         return self.event.get("callback")
 
@@ -93,7 +103,7 @@ class BaseMemoryHarness(BaseRuntimeHarness):
     def created_by(self) -> str:
         return f"memory.{self.name}"
 
-    def build_delta(self, context: HarnessContext) -> HarnessDelta | None:
+    def build_delta(self, context: HarnessContext) -> Any | None:
         memory_context = MemoryContext(
             harness_context=context,
             memory_name=self.name,
@@ -101,5 +111,5 @@ class BaseMemoryHarness(BaseRuntimeHarness):
         )
         return self.build_memory_delta(memory_context)
 
-    def build_memory_delta(self, context: MemoryContext) -> HarnessDelta | None:
+    def build_memory_delta(self, context: MemoryContext) -> Any | None:
         raise NotImplementedError

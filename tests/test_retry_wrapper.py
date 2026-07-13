@@ -82,8 +82,7 @@ def test_retries_on_connect_error_before_any_emit():
 
 
 def test_does_not_retry_after_callback_has_emitted():
-    """If the stream emitted any event to the caller's callback, retrying
-    would duplicate user-visible output. Re-raise immediately."""
+    """After visible output reaches the callback, re-raise instead of duplicating it."""
     callback_events: list = []
     io = _FakeModelIO(
         script=[
@@ -97,6 +96,39 @@ def test_does_not_retry_after_callback_has_emitted():
 
     assert len(io.requests_seen) == 1
     assert callback_events == [{"type": "text.delta", "value": "hi"}]
+
+
+@pytest.mark.parametrize(
+    "debug_event_type",
+    ["request_messages", "previous_response_id_fallback"],
+)
+def test_retries_after_debug_event_without_visible_output(debug_event_type):
+    callback_events: list = []
+    result = _FakeResult(final_text="later")
+
+    class _RequestTraceThenRetryIO:
+        def __init__(self):
+            self.calls = 0
+
+        def fetch_turn(self, request):
+            self.calls += 1
+            if request.callback is not None:
+                request.callback({"type": debug_event_type, "messages": request.messages})
+            if self.calls == 1:
+                raise httpx.ConnectError("before visible output")
+            return result
+
+    io = _RequestTraceThenRetryIO()
+    req = _FakeRequest(messages=[], callback=callback_events.append)
+
+    got = fetch_turn_with_retry(io, req, _config(), _ctx(), sleep=_noop_sleep)
+
+    assert got is result
+    assert io.calls == 2
+    assert [event["type"] for event in callback_events] == [
+        debug_event_type,
+        debug_event_type,
+    ]
 
 
 def test_forwards_events_to_original_callback():

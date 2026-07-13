@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from unchain.kernel import KernelLoop, ModelTurnResult
+from unchain.kernel import ModelTurnResult
 from unchain.kernel.types import ToolCall as KernelToolCall
+from unchain.runtime import build_runtime_loop
 from unchain.memory.manager import InMemorySessionStore
 from unchain.toolkits import PlanToolkit
 from unchain.tools import ToolkitRegistry
@@ -301,7 +302,7 @@ def test_kernel_runs_plan_tools_and_finalize_requires_confirmation(tmp_path: Pat
     )
     confirmations = []
 
-    result = KernelLoop(model_io=model_io).run(
+    result = build_runtime_loop(model_io=model_io).run(
         [{"role": "user", "content": "plan this"}],
         provider="openai",
         model="gpt-4.1",
@@ -335,7 +336,7 @@ def test_kernel_injects_plan_toolkit_operating_policy_before_model(tmp_path: Pat
         ]
     )
 
-    KernelLoop(model_io=model_io).run(
+    build_runtime_loop(model_io=model_io).run(
         [{"role": "user", "content": "plan this"}],
         provider="openai",
         model="gpt-4.1",
@@ -384,7 +385,7 @@ def test_kernel_plan_finalize_denial_returns_standard_denied_result():
         ]
     )
 
-    result = KernelLoop(model_io=model_io).run(
+    result = build_runtime_loop(model_io=model_io).run(
         [{"role": "user", "content": "finalize"}],
         provider="openai",
         model="gpt-4.1",

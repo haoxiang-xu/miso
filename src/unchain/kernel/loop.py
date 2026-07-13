@@ -2,27 +2,47 @@ from __future__ import annotations
 
 import copy
 import uuid
-from typing import Any
+from contextlib import nullcontext
+from functools import partial
+from typing import Any, Callable
 
-from ..memory import KernelMemoryRuntime
-from ..retry import RetryConfig, RetryContext, fetch_turn_with_retry
-from ..schemas import ResponseFormat
-from ..artifacts import upsert_artifacts
-from ..tools import (
-    HumanInputResumeHarness,
-    OBSERVATION_MAX_OUTPUT_TOKENS,
-    OBSERVATION_RECENT_MESSAGES,
-    OBSERVATION_SYSTEM_PROMPT,
-    ToolExecutionHarness,
-    ToolPromptHarness,
+from ..execution import (
+    ExecutionGuard,
+    ExecutionLeaseNotOwnedError,
+    ExecutionRuntime,
 )
-from ..workspace_changes import WorkspaceChangeTracker
+from ..providers.model_turn_runtime import apply_model_turn_result, fetch_model_turn
+from ..retry import RetryConfig
+from ..schemas import ResponseFormat
 from ..tools.toolkit import Toolkit
 from .delta import HarnessDelta
 from .harness import HarnessContext, RuntimeHarness, RuntimePhase
-from .model_io import ModelIO, ModelTurnRequest
+from .lifecycle_events import (
+    build_iteration_completed_payload,
+    build_iteration_started_payload,
+    build_response_received_payload,
+    build_run_started_payload,
+)
+from .model_io import ModelIO
+from .provider_replay import set_provider_replay_frame
+from .run_limits import resolve_max_iterations_boundary
+from .run_outcomes import (
+    finish_awaiting_human_input_run,
+    finish_completed_run,
+    finish_max_iterations_run,
+)
+from .run_preparation import (
+    infer_model,
+    infer_provider,
+    prepare_fresh_run_invocation,
+    prepare_resume_run_invocation,
+    prepare_state_for_execution,
+)
 from .state import RunState
-from .types import KernelRunResult, ModelTurnResult, TokenUsage
+from .types import KernelRunResult, ModelTurnResult
+
+
+_DURABLE_BARRIER_PHASES = frozenset({"suspend_persist", "finalize_persist"})
 
 
 class KernelLoop:
@@ -34,11 +54,12 @@ class KernelLoop:
         harnesses: list[RuntimeHarness] | None = None,
         model_io: ModelIO | None = None,
         retry_config: RetryConfig | None = None,
+        execution_runtime: ExecutionRuntime | None = None,
     ) -> None:
         self._harnesses: list[RuntimeHarness] = []
         self._model_io = model_io
-        self._memory_runtime: KernelMemoryRuntime | None = None
         self._retry_config: RetryConfig = retry_config if retry_config is not None else RetryConfig()
+        self._execution_runtime = execution_runtime
         for harness in harnesses or []:
             self.register_harness(harness)
 
@@ -47,26 +68,86 @@ class KernelLoop:
         return list(self._harnesses)
 
     def register_harness(self, harness: RuntimeHarness) -> None:
+        harness_phases = set(getattr(harness, "phases", ()))
+        reserved_phases = harness_phases & _DURABLE_BARRIER_PHASES
+        if reserved_phases and getattr(harness, "durable_barrier", False) is not True:
+            phase_list = ", ".join(sorted(reserved_phases))
+            raise ValueError(
+                f"harness '{harness.name}' cannot register reserved durable "
+                f"phase(s): {phase_list}"
+            )
+        for phase in reserved_phases:
+            existing = next(
+                (
+                    item
+                    for item in self._harnesses
+                    if phase in getattr(item, "phases", ())
+                ),
+                None,
+            )
+            if existing is not None:
+                raise ValueError(
+                    f"durable phase '{phase}' already belongs to harness "
+                    f"'{existing.name}'"
+                )
         self._harnesses.append(harness)
         self._harnesses.sort(key=lambda item: (item.order, item.name))
 
     def register_context_optimizer(self, optimizer: RuntimeHarness) -> None:
         self.register_harness(optimizer)
 
-    def register_memory_harness(self, memory_harness: RuntimeHarness) -> None:
-        self.register_harness(memory_harness)
-
-    def attach_memory(self, memory_runtime: KernelMemoryRuntime) -> None:
-        self._memory_runtime = memory_runtime
-        self._ensure_memory_components()
-
     @property
     def model_io(self) -> ModelIO | None:
         return self._model_io
 
+    @property
+    def execution_runtime(self) -> ExecutionRuntime | None:
+        return self._execution_runtime
+
     @model_io.setter
     def model_io(self, value: ModelIO | None) -> None:
         self._model_io = value
+
+    def _validate_execution_guard(
+        self,
+        state: RunState,
+        execution_guard: ExecutionGuard | None,
+    ) -> ExecutionGuard | None:
+        session_id = str(state.session_state.session_id or "")
+        if execution_guard is None:
+            if self._execution_runtime is not None and session_id:
+                raise ExecutionLeaseNotOwnedError(
+                    "execution-lease-enabled KernelLoop requires an active guard",
+                    execution_id=session_id,
+                )
+            return None
+        if session_id and execution_guard.lease.execution_id != session_id:
+            raise ValueError(
+                "execution guard does not belong to the RunState session_id"
+            )
+        execution_guard.assert_active()
+        return execution_guard
+
+    def _scope_for_session(
+        self,
+        *,
+        session_id: str | None,
+        execution_guard: ExecutionGuard | None,
+    ):
+        normalized_session_id = str(session_id or "")
+        if execution_guard is not None:
+            if (
+                normalized_session_id
+                and execution_guard.lease.execution_id != normalized_session_id
+            ):
+                raise ValueError(
+                    "execution guard does not belong to the requested session_id"
+                )
+            execution_guard.assert_active()
+            return nullcontext(execution_guard)
+        if self._execution_runtime is not None and normalized_session_id:
+            return self._execution_runtime.scope(normalized_session_id)
+        return nullcontext(None)
 
     def seed_state(
         self,
@@ -98,14 +179,42 @@ class KernelLoop:
         for harness in self._iter_phase_harnesses(phase):
             if not harness.applies(context):
                 continue
-            delta = harness.build_delta(context)
+            apply = getattr(harness, "apply", None)
+            raw_outcome = apply(context) if callable(apply) else harness.build_delta(context)
+            if raw_outcome is None:
+                continue
+
+            from ..capabilities import normalize_capability_outcome
+            from .application import apply_run_delta
+
+            outcome = normalize_capability_outcome(
+                raw_outcome,
+                created_by=f"harness.{harness.name}",
+            )
+            delta = outcome.delta
             if delta is None:
                 continue
-            if not isinstance(delta, HarnessDelta):
+            if not isinstance(delta, HarnessDelta) and not getattr(delta, "context_ops", ()):
                 raise TypeError(
-                    f"harness '{harness.name}' returned {type(delta).__name__}, expected HarnessDelta"
+                    f"harness '{harness.name}' returned {type(delta).__name__}, expected RunDelta"
                 )
-            state.apply_delta(delta)
+
+            def emit_structured_event(op):
+                payload = op.payload if isinstance(op.payload, dict) else {}
+                raw_iteration = (event or {}).get("iteration", state.iteration)
+                try:
+                    iteration = int(raw_iteration)
+                except (TypeError, ValueError):
+                    iteration = int(state.iteration)
+                self.emit_event(
+                    (event or {}).get("callback"),
+                    op.type,
+                    str((event or {}).get("run_id") or "kernel"),
+                    iteration=iteration,
+                    **copy.deepcopy(payload),
+                )
+
+            apply_run_delta(state, delta, emit_event=emit_structured_event)
             context = HarnessContext(state=state, phase=phase, event=event or {})
         return state
 
@@ -121,37 +230,25 @@ class KernelLoop:
         emit_stream: bool = False,
         response_format: Any = None,
         openai_text_format: dict[str, Any] | None = None,
+        execution_guard: ExecutionGuard | None = None,
     ):
-        if self._model_io is None:
-            raise RuntimeError("KernelLoop.model_io is not configured")
-        request_messages = (
-            copy.deepcopy(state.next_model_input)
-            if isinstance(state.next_model_input, list)
-            else state.latest_messages()
-        )
-        request = ModelTurnRequest(
-            messages=request_messages,
-            payload=dict(payload or {}),
-            response_format=response_format,
+        return fetch_model_turn(
+            model_io=self._model_io,
+            retry_config=self._retry_config,
+            state=state,
+            payload=payload,
+            toolkit=toolkit,
             callback=callback,
             verbose=verbose,
             run_id=run_id,
-            iteration=state.iteration,
-            toolkit=toolkit if toolkit is not None else Toolkit(),
             emit_stream=emit_stream,
-            previous_response_id=state.provider_state.previous_response_id,
+            response_format=response_format,
             openai_text_format=openai_text_format,
-        )
-        ctx = RetryContext(
-            run_id=run_id,
-            iteration=state.iteration,
-            is_background=(run_id == "observe"),
-        )
-        return fetch_turn_with_retry(
-            model_io=self._model_io,
-            request=request,
-            config=self._retry_config,
-            context=ctx,
+            before_attempt=(
+                (lambda _attempt: execution_guard.renew())
+                if execution_guard is not None
+                else None
+            ),
         )
 
     def apply_model_turn(
@@ -161,40 +258,7 @@ class KernelLoop:
         *,
         created_by: str = "kernel.model_turn",
     ) -> RunState:
-        state.apply_delta(
-            HarnessDelta.append(
-                created_by=created_by,
-                messages=turn.assistant_messages,
-                state_updates={
-                    "transcript_append": turn.assistant_messages,
-                    "pending_tool_calls": list(turn.tool_calls),
-                    "last_model_turn": turn,
-                    "provider_state": {
-                        "previous_response_id": turn.response_id,
-                    },
-                    "next_model_input": None,
-                    "run_status": "running",
-                    "token_state": {
-                        "consumed_tokens": state.token_state.consumed_tokens + int(turn.consumed_tokens or 0),
-                        "input_tokens": state.token_state.input_tokens + int(turn.input_tokens or 0),
-                        "output_tokens": state.token_state.output_tokens + int(turn.output_tokens or 0),
-                        "cache_read_input_tokens": state.token_state.cache_read_input_tokens + int(turn.cache_read_input_tokens or 0),
-                        "cache_creation_input_tokens": state.token_state.cache_creation_input_tokens + int(turn.cache_creation_input_tokens or 0),
-                        "last_turn_tokens": int(turn.consumed_tokens or 0),
-                        "last_turn_input_tokens": int(turn.input_tokens or 0),
-                        "last_turn_output_tokens": int(turn.output_tokens or 0),
-                        "last_turn_cache_read_input_tokens": int(turn.cache_read_input_tokens or 0),
-                        "last_turn_cache_creation_input_tokens": int(turn.cache_creation_input_tokens or 0),
-                    },
-                },
-                trace={
-                    "response_id": turn.response_id,
-                    "assistant_message_count": len(turn.assistant_messages),
-                    "tool_call_count": len(turn.tool_calls),
-                },
-            )
-        )
-        return state
+        return apply_model_turn_result(state, turn, created_by=created_by)
 
     def step_once(
         self,
@@ -213,14 +277,28 @@ class KernelLoop:
         max_iterations: int = 0,
         tool_runtime_plugins: list[Any] | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
+        execution_guard: ExecutionGuard | None = None,
     ) -> ModelTurnResult:
+        execution_guard = self._validate_execution_guard(state, execution_guard)
         runtime_toolkit = toolkit if toolkit is not None else Toolkit()
         current_iteration = int(state.iteration)
-        state.rebuild_working_version_from_transcript(
+        local_next_context = (
+            state.next_model_input
+            if isinstance(state.next_model_input, list)
+            else state.transcript
+        )
+        state.rebuild_working_version(
+            local_next_context,
+            created_by="kernel.model_context_snapshot",
             metadata={
                 "iteration": current_iteration,
                 "transcript_message_count": len(state.transcript),
-            }
+                "source": (
+                    "next_model_input"
+                    if local_next_context is state.next_model_input
+                    else "transcript"
+                ),
+            },
         )
         phase_event = {
             "payload": dict(payload or {}),
@@ -236,22 +314,17 @@ class KernelLoop:
             "max_iterations": max_iterations,
             "supports_tools": True,
             "loop": self,
+            "model_io": self._model_io,
             "tool_runtime_plugins": list(tool_runtime_plugins or []),
             "tool_runtime_config": copy.deepcopy(tool_runtime_config or {}),
+            "execution_guard": execution_guard,
         }
 
-        if self._memory_runtime is not None and current_iteration > 0:
-            state.memory_prepare_info = {}
-            state.component_bucket("memory")["prepare_info"] = {}
+        if execution_guard is not None:
+            execution_guard.renew()
         self.dispatch_phase(state, phase="before_model", event=phase_event)
-        if self._memory_runtime is not None and state.memory_prepare_info:
-            self.emit_event(
-                callback,
-                "memory_prepare",
-                run_id,
-                iteration=current_iteration,
-                **copy.deepcopy(state.memory_prepare_info),
-            )
+        if execution_guard is not None:
+            execution_guard.assert_active()
         turn = self.fetch_model_turn(
             state,
             payload=payload,
@@ -262,7 +335,10 @@ class KernelLoop:
             emit_stream=emit_stream,
             response_format=response_format,
             openai_text_format=openai_text_format,
+            execution_guard=execution_guard,
         )
+        if execution_guard is not None:
+            execution_guard.assert_active()
         self.apply_model_turn(state, turn)
 
         after_model_event = {
@@ -270,10 +346,14 @@ class KernelLoop:
             "turn_result": turn,
         }
         self.dispatch_phase(state, phase="after_model", event=after_model_event)
+        if execution_guard is not None:
+            execution_guard.assert_active()
 
         tool_calls = list(state.pending_tool_calls)
         if tool_calls:
             for index, tool_call in enumerate(tool_calls):
+                if execution_guard is not None:
+                    execution_guard.renew()
                 self.dispatch_phase(
                     state,
                     phase="on_tool_call",
@@ -284,6 +364,8 @@ class KernelLoop:
                         "tool_calls": tool_calls,
                     },
                 )
+                if execution_guard is not None:
+                    execution_guard.assert_active()
             self.dispatch_phase(
                 state,
                 phase="after_tool_batch",
@@ -292,44 +374,20 @@ class KernelLoop:
                     "tool_calls": tool_calls,
                 },
             )
+            if execution_guard is not None:
+                execution_guard.assert_active()
         else:
-            if self._memory_runtime is not None:
-                state.memory_commit_info = {}
-                state.component_bucket("memory")["commit_info"] = {}
+            if execution_guard is not None:
+                execution_guard.renew()
             self.dispatch_phase(state, phase="before_commit", event=after_model_event)
-            if self._memory_runtime is not None and state.memory_commit_info:
-                self.emit_event(
-                    callback,
-                    "memory_commit",
-                    run_id,
-                    iteration=current_iteration,
-                    **copy.deepcopy(state.memory_commit_info),
-                )
+            if execution_guard is not None:
+                execution_guard.assert_active()
 
         state.iteration = current_iteration + 1
         return turn
 
     def _iter_phase_harnesses(self, phase: RuntimePhase) -> list[RuntimeHarness]:
         return [harness for harness in self._harnesses if phase in harness.phases]
-
-    def _ensure_runtime_harnesses(self) -> None:
-        existing_names = {harness.name for harness in self._harnesses}
-        if "tool_prompt" not in existing_names:
-            self.register_harness(ToolPromptHarness())
-        if "tool_execution" not in existing_names:
-            self.register_harness(ToolExecutionHarness())
-        if "human_input_resume" not in existing_names:
-            self.register_harness(HumanInputResumeHarness())
-
-    def _ensure_memory_components(self) -> None:
-        if self._memory_runtime is None:
-            return
-        existing_names = {harness.name for harness in self._harnesses}
-        for component in self._memory_runtime.build_default_components():
-            if component.name in existing_names:
-                continue
-            self.register_harness(component)
-            existing_names.add(component.name)
 
     def _dispatch_bootstrap(
         self,
@@ -342,11 +400,13 @@ class KernelLoop:
         toolkit: Toolkit | None,
         run_id: str,
         resume_mode: bool,
+        continuation: dict[str, Any] | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
+        execution_guard: ExecutionGuard | None = None,
     ) -> None:
-        if self._memory_runtime is None:
-            return
         runtime_toolkit = toolkit if toolkit is not None else Toolkit()
+        if execution_guard is not None:
+            execution_guard.renew()
         self.dispatch_phase(
             state,
             phase="bootstrap",
@@ -359,10 +419,96 @@ class KernelLoop:
                 "response_format": response_format,
                 "supports_tools": True,
                 "resume_mode": resume_mode,
+                "continuation": copy.deepcopy(continuation),
                 "loop": self,
                 "tool_runtime_config": copy.deepcopy(tool_runtime_config or {}),
+                "execution_guard": execution_guard,
             },
         )
+        if execution_guard is not None:
+            execution_guard.assert_active()
+
+    def _dispatch_run_finalizing(
+        self,
+        state: RunState,
+        *,
+        callback: Any,
+        run_id: str,
+        iteration: int,
+        status: str,
+        execution_guard: ExecutionGuard | None = None,
+    ) -> None:
+        event = {
+            "callback": callback,
+            "run_id": run_id,
+            "iteration": int(iteration),
+            "status": status,
+            "loop": self,
+            "execution_guard": execution_guard,
+        }
+        if execution_guard is not None:
+            execution_guard.renew()
+        self.dispatch_phase(state, phase="run_finalizing", event=event)
+        if execution_guard is not None:
+            execution_guard.assert_active()
+        self.dispatch_phase(state, phase="finalize_persist", event=event)
+        if execution_guard is not None:
+            execution_guard.assert_active()
+
+    def _dispatch_on_suspend(
+        self,
+        state: RunState,
+        *,
+        callback: Any,
+        run_id: str,
+        iteration: int,
+        status: str,
+        execution_guard: ExecutionGuard | None = None,
+    ) -> None:
+        event = {
+            "callback": callback,
+            "run_id": run_id,
+            "iteration": int(iteration),
+            "status": status,
+            "loop": self,
+            "execution_guard": execution_guard,
+        }
+        if execution_guard is not None:
+            execution_guard.renew()
+        self.dispatch_phase(state, phase="on_suspend", event=event)
+        if execution_guard is not None:
+            execution_guard.assert_active()
+        self.dispatch_phase(state, phase="suspend_persist", event=event)
+        if execution_guard is not None:
+            execution_guard.assert_active()
+
+    def _dispatch_on_resume(
+        self,
+        state: RunState,
+        *,
+        continuation: dict[str, Any],
+        response: Any,
+        callback: Any,
+        run_id: str,
+        execution_guard: ExecutionGuard | None = None,
+    ) -> None:
+        if execution_guard is not None:
+            execution_guard.renew()
+        self.dispatch_phase(
+            state,
+            phase="on_resume",
+            event={
+                "continuation": copy.deepcopy(continuation),
+                "response": copy.deepcopy(response),
+                "callback": callback,
+                "run_id": run_id,
+                "iteration": int(state.iteration),
+                "loop": self,
+                "execution_guard": execution_guard,
+            },
+        )
+        if execution_guard is not None:
+            execution_guard.assert_active()
 
     def emit_event(
         self,
@@ -383,276 +529,48 @@ class KernelLoop:
         event.update(copy.deepcopy(extra))
         callback(event)
 
-    def _emit_workspace_change_set_artifact(
-        self,
-        state: RunState,
-        *,
-        callback: Any,
-        run_id: str,
-        iteration: int,
-    ) -> None:
-        if not isinstance(state.workspace_change_state, dict) or not state.workspace_change_state:
-            return
-        tracker = WorkspaceChangeTracker.from_state(
-            state.workspace_change_state,
-            run_id=run_id,
-            workspace_roots=[],
-        )
-        artifact = tracker.to_artifact()
-        if artifact is None:
-            return
-        artifact_id = str(artifact.get("artifact_id") or "")
-        if not artifact_id:
-            return
-        existing_ids = {
-            item.get("artifact_id")
-            for item in state.artifacts
-            if isinstance(item, dict) and isinstance(item.get("artifact_id"), str)
-        }
-        self.emit_event(
-            callback,
-            "artifact_updated" if artifact_id in existing_ids else "artifact_created",
-            run_id,
-            iteration=iteration,
-            tool_name="workspace_change_tracker",
-            call_id="",
-            artifact_id=artifact_id,
-            artifact=copy.deepcopy(artifact),
-        )
-        state.artifacts = upsert_artifacts(state.artifacts, [artifact])
-
     def _infer_provider(self) -> str | None:
-        if self._model_io is None:
-            return None
-        provider = getattr(self._model_io, "provider", None)
-        if isinstance(provider, str) and provider.strip():
-            return provider.strip()
-        if hasattr(self._model_io, "engine"):
-            engine = getattr(self._model_io, "engine", None)
-            engine_provider = getattr(engine, "provider", None)
-            if isinstance(engine_provider, str) and engine_provider.strip():
-                return engine_provider.strip()
-        if self._model_io.__class__.__name__ == "OpenAIModelIO":
-            return "openai"
-        return None
+        return infer_provider(self._model_io)
 
     def _infer_model(self) -> str | None:
-        if self._model_io is None:
-            return None
-        model = getattr(self._model_io, "model", None)
-        if isinstance(model, str) and model.strip():
-            return model.strip()
-        if hasattr(self._model_io, "engine"):
-            engine = getattr(self._model_io, "engine", None)
-            engine_model = getattr(engine, "model", None)
-            if isinstance(engine_model, str) and engine_model.strip():
-                return engine_model.strip()
-        return None
-
-    def _serialize_response_format(
-        self,
-        response_format: ResponseFormat | None,
-    ) -> dict[str, Any] | None:
-        if response_format is None:
-            return None
-        return {
-            "name": response_format.name,
-            "schema": copy.deepcopy(response_format.schema),
-            "required": list(response_format.required),
-        }
-
-    def _deserialize_response_format(
-        self,
-        raw: dict[str, Any] | None,
-    ) -> ResponseFormat | None:
-        if not isinstance(raw, dict):
-            return None
-        name = raw.get("name")
-        schema = raw.get("schema")
-        required = raw.get("required")
-        if not isinstance(name, str) or not isinstance(schema, dict):
-            return None
-        required_list = required if isinstance(required, list) else None
-        return ResponseFormat(name=name, schema=schema, required=required_list)
+        return infer_model(self._model_io)
 
     @staticmethod
-    def _ensure_json_safe(obj: Any) -> Any:
-        if obj is None or isinstance(obj, (str, int, float, bool)):
-            return obj
-        if isinstance(obj, dict):
-            return {
-                k: KernelLoop._ensure_json_safe(v)
-                for k, v in obj.items()
-                if isinstance(k, str) and isinstance(v, (str, int, float, bool, type(None), dict, list, tuple))
-            }
-        if isinstance(obj, (list, tuple)):
-            return [
-                KernelLoop._ensure_json_safe(item)
-                for item in obj
-                if isinstance(item, (str, int, float, bool, type(None), dict, list, tuple))
-            ]
-        return str(obj)
-
-    def build_human_input_continuation(
-        self,
+    def _wrap_max_iterations_callback(
+        callback: Any,
         *,
-        request: Any,
-        payload: dict[str, Any],
-        response_format: ResponseFormat | None,
-        next_iteration: int,
-        max_iterations: int,
-        state: RunState,
-        run_id: str | None = None,
-    ) -> dict[str, Any]:
-        return {
-            "type": "human_input_continuation",
-            "kind": getattr(request, "kind", None),
-            "run_id": run_id,
-            "provider": state.provider_state.provider,
-            "model": state.provider_state.model,
-            "request_id": getattr(request, "request_id", None),
-            "call_id": getattr(request, "request_id", None),
-            "request": request.to_dict(),
-            "payload": self._ensure_json_safe(copy.deepcopy(payload)),
-            "response_format": self._ensure_json_safe(self._serialize_response_format(response_format)),
-            "iteration": int(next_iteration),
-            "max_iterations": int(max_iterations),
-            "previous_response_id": state.provider_state.previous_response_id,
-            "use_openai_previous_response_chain": bool(state.provider_state.use_previous_response_chain),
-            "session_id": state.session_state.session_id,
-            "memory_namespace": state.session_state.memory_namespace,
-            "max_context_window_tokens": int(state.provider_state.max_context_window_tokens or 0),
-            "consumed_tokens": int(state.token_state.consumed_tokens or 0),
-            "input_tokens": int(state.token_state.input_tokens or 0),
-            "output_tokens": int(state.token_state.output_tokens or 0),
-            "last_turn_tokens": int(state.token_state.last_turn_tokens or 0),
-            "last_turn_input_tokens": int(state.token_state.last_turn_input_tokens or 0),
-            "last_turn_output_tokens": int(state.token_state.last_turn_output_tokens or 0),
-            "workspace_change_state": copy.deepcopy(state.workspace_change_state),
-        }
+        execution_guard: ExecutionGuard | None,
+        expected_revision: Callable[[], int | None],
+    ) -> Any:
+        if execution_guard is None or not callable(callback):
+            return callback
 
-    def _last_assistant_text(self, messages: list[dict[str, Any]]) -> str:
-        for message in reversed(messages or []):
-            if not isinstance(message, dict) or message.get("role") != "assistant":
-                continue
-            content = message.get("content")
-            if isinstance(content, str) and content.strip():
-                return content.strip()
-        return ""
+        def guarded_callback(decision: Any) -> Any:
+            response = callback(decision)
+            revision = expected_revision()
+            if revision is not None:
+                execution_guard.reacquire(expected_revision=revision)
+            else:
+                execution_guard.assert_active()
+            return response
 
-    def observe_tool_batch(
-        self,
+        return guarded_callback
+
+    @staticmethod
+    def _guard_terminal_emitter(
+        emit_event: Callable[..., None],
         *,
-        full_messages: list[dict[str, Any]],
-        tool_messages: list[dict[str, Any]],
-        payload: dict[str, Any],
-        callback: Any = None,
-        iteration: int = 0,
-        provider: str | None = None,
-    ) -> tuple[str, TokenUsage]:
-        if self._model_io is None:
-            return "", TokenUsage()
-        observe_messages = [
-            {"role": "system", "content": OBSERVATION_SYSTEM_PROMPT},
-            *copy.deepcopy(list(full_messages or [])[-OBSERVATION_RECENT_MESSAGES:]),
-            *copy.deepcopy(tool_messages),
-            {
-                "role": "user",
-                "content": "Review the LAST tool result above and provide one brief actionable observation.",
-            },
-        ]
-        observe_payload = self._build_observation_payload(
-            payload or {},
-            provider=provider or self._infer_provider(),
-        )
-        try:
-            turn = self._model_io.fetch_turn(
-                ModelTurnRequest(
-                    messages=observe_messages,
-                    payload=observe_payload,
-                    response_format=None,
-                    callback=None,
-                    verbose=False,
-                    run_id="observe",
-                    iteration=iteration,
-                    toolkit=Toolkit(),
-                    emit_stream=False,
-                    previous_response_id=None,
-                )
-            )
-        except Exception:
-            return "", TokenUsage()
-        observation = (turn.final_text or self._last_assistant_text(turn.assistant_messages)).strip()
-        return observation, TokenUsage(
-            consumed_tokens=int(turn.consumed_tokens or 0),
-            input_tokens=int(turn.input_tokens or 0),
-            output_tokens=int(turn.output_tokens or 0),
-        )
+        execution_guard: ExecutionGuard | None,
+    ) -> Callable[..., None]:
+        if execution_guard is None:
+            return emit_event
 
-    def _build_observation_payload(
-        self,
-        payload: dict[str, Any],
-        *,
-        provider: str | None,
-    ) -> dict[str, Any]:
-        observe_payload = dict(payload or {})
-        observe_payload["temperature"] = 0.2
-        normalized_provider = str(provider or "").strip().lower()
-        if normalized_provider == "anthropic":
-            observe_payload["max_tokens"] = OBSERVATION_MAX_OUTPUT_TOKENS
-            observe_payload.pop("max_output_tokens", None)
-            observe_payload.pop("num_predict", None)
-            return observe_payload
-        if normalized_provider == "ollama":
-            observe_payload["num_predict"] = OBSERVATION_MAX_OUTPUT_TOKENS
-            observe_payload.pop("max_output_tokens", None)
-            observe_payload.pop("max_tokens", None)
-            return observe_payload
-        observe_payload["max_output_tokens"] = OBSERVATION_MAX_OUTPUT_TOKENS
-        observe_payload.pop("max_tokens", None)
-        observe_payload.pop("num_predict", None)
-        return observe_payload
+        def guarded_emit(*args: Any, **kwargs: Any) -> None:
+            execution_guard.assert_active()
+            emit_event(*args, **kwargs)
+            execution_guard.assert_active()
 
-    def _build_result(self, state: RunState, *, status: str) -> KernelRunResult:
-        request = state.tool_batch_state.human_input_request
-        return KernelRunResult(
-            messages=copy.deepcopy(state.transcript),
-            status=status,
-            continuation=copy.deepcopy(state.last_continuation) if isinstance(state.last_continuation, dict) else None,
-            human_input_request=request.to_dict() if request is not None else None,
-            consumed_tokens=int(state.token_state.consumed_tokens or 0),
-            input_tokens=int(state.token_state.input_tokens or 0),
-            output_tokens=int(state.token_state.output_tokens or 0),
-            last_turn_tokens=int(state.token_state.last_turn_tokens or 0),
-            last_turn_input_tokens=int(state.token_state.last_turn_input_tokens or 0),
-            last_turn_output_tokens=int(state.token_state.last_turn_output_tokens or 0),
-            cache_read_input_tokens=int(state.token_state.cache_read_input_tokens or 0),
-            cache_creation_input_tokens=int(state.token_state.cache_creation_input_tokens or 0),
-            previous_response_id=state.provider_state.previous_response_id,
-            iteration=int(state.iteration),
-        )
-
-    def _build_legacy_bundle(self, state: RunState, *, status: str) -> dict[str, Any]:
-        max_ctx = max(0, int(state.provider_state.max_context_window_tokens or 0))
-        last_turn_tokens = int(state.token_state.last_turn_tokens or 0)
-        pct = (last_turn_tokens / max_ctx * 100.0) if max_ctx > 0 else 0.0
-        request = state.tool_batch_state.human_input_request
-        return {
-            "model": state.provider_state.model,
-            "consumed_tokens": int(state.token_state.consumed_tokens or 0),
-            "input_tokens": int(state.token_state.input_tokens or 0),
-            "output_tokens": int(state.token_state.output_tokens or 0),
-            "last_turn_tokens": last_turn_tokens,
-            "last_turn_input_tokens": int(state.token_state.last_turn_input_tokens or 0),
-            "last_turn_output_tokens": int(state.token_state.last_turn_output_tokens or 0),
-            "max_context_window_tokens": max_ctx,
-            "context_window_used_pct": round(pct, 2),
-            "status": status,
-            "human_input_request": request.to_dict() if request is not None else None,
-            "continuation": copy.deepcopy(state.last_continuation) if isinstance(state.last_continuation, dict) else None,
-            "previous_response_id": state.provider_state.previous_response_id,
-            "iteration": int(state.iteration),
-        }
+        return guarded_emit
 
     def _run_state(
         self,
@@ -671,21 +589,12 @@ class KernelLoop:
         skip_bootstrap: bool = False,
         tool_runtime_plugins: list[Any] | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
+        execution_guard: ExecutionGuard | None = None,
     ) -> KernelRunResult:
         if self._model_io is None:
             raise RuntimeError("KernelLoop.model_io is not configured")
-        provider = str(state.provider_state.provider or self._infer_provider() or "")
-        if provider not in {"openai", "anthropic", "ollama", "hyperspace"}:
-            raise NotImplementedError(
-                "KernelLoop.run currently supports only provider in "
-                "{'openai', 'anthropic', 'ollama', 'hyperspace'}, "
-                f"got {provider!r}"
-            )
-        state.provider_state.provider = provider
-        if not state.provider_state.model:
-            state.provider_state.model = self._infer_model()
-        self._ensure_runtime_harnesses()
-        self._ensure_memory_components()
+        prepare_state_for_execution(state, model_io=self._model_io)
+        execution_guard = self._validate_execution_guard(state, execution_guard)
         run_id = str(run_id or uuid.uuid4())
         runtime_toolkit = toolkit if toolkit is not None else Toolkit()
         if not skip_bootstrap:
@@ -699,64 +608,93 @@ class KernelLoop:
                 run_id=run_id,
                 resume_mode=False,
                 tool_runtime_config=tool_runtime_config,
+                execution_guard=execution_guard,
             )
         self.emit_event(
             callback,
             "run_started",
             run_id,
-            iteration=int(state.iteration),
-            provider=state.provider_state.provider,
-            model=state.provider_state.model,
+            **build_run_started_payload(state),
         )
         effective_max = int(max_iterations)
+        if (
+            state.memory_state.get("execution_checkpoint_restored") is True
+            and state.memory_state.get("execution_checkpoint_status")
+            == "max_iterations"
+        ):
+            # A fresh run that restores a max-iterations checkpoint treats its
+            # limit as budget for this invocation.  ``state.iteration`` remains
+            # cumulative so telemetry and checkpoint diagnostics stay honest.
+            effective_max += int(state.iteration)
+        terminal_emit_event = self._guard_terminal_emitter(
+            self.emit_event,
+            execution_guard=execution_guard,
+        )
         while True:
-            if int(state.iteration) >= effective_max:
-                if callable(on_max_iterations):
-                    self.emit_event(
-                        callback,
-                        "run_max_iterations",
-                        run_id,
-                        iteration=int(state.iteration),
-                        bundle=self._build_legacy_bundle(state, status="max_iterations"),
-                    )
-                    mi_response = on_max_iterations({
-                        "iteration": int(state.iteration),
-                        "max_iterations": effective_max,
-                        "consumed_tokens": int(state.token_state.consumed_tokens),
-                    })
-                    if isinstance(mi_response, dict) and mi_response.get("approved"):
-                        effective_max += max(1, int(mi_response.get("extra_iterations", effective_max)))
-                    else:
-                        state.run_status = "max_iterations"
-                        self._emit_workspace_change_set_artifact(
-                            state,
-                            callback=callback,
-                            run_id=run_id,
-                            iteration=int(state.iteration),
-                        )
-                        return self._build_result(state, status="max_iterations")
-                else:
-                    state.run_status = "max_iterations"
-                    self._emit_workspace_change_set_artifact(
-                        state,
-                        callback=callback,
-                        run_id=run_id,
-                        iteration=int(state.iteration),
-                    )
-                    self.emit_event(
-                        callback,
-                        "run_max_iterations",
-                        run_id,
-                        iteration=int(state.iteration),
-                        bundle=self._build_legacy_bundle(state, status="max_iterations"),
-                    )
-                    return self._build_result(state, status="max_iterations")
+            def current_session_revision() -> int | None:
+                revision = state.memory_state.get("session_revision")
+                if isinstance(revision, bool) or not isinstance(revision, int):
+                    return None
+                return revision
+
+            dispatch_run_finalizing = partial(
+                self._dispatch_run_finalizing,
+                execution_guard=execution_guard,
+            )
+            dispatch_on_suspend = partial(
+                self._dispatch_on_suspend,
+                execution_guard=execution_guard,
+            )
+
+            max_wait_revision: int | None = None
+
+            def persist_before_max_iterations_wait() -> None:
+                nonlocal max_wait_revision
+                state.run_status = "max_iterations"
+                dispatch_on_suspend(
+                    state,
+                    callback=callback,
+                    run_id=run_id,
+                    iteration=int(state.iteration),
+                    status="max_iterations",
+                )
+                max_wait_revision = current_session_revision()
+                if execution_guard is not None and max_wait_revision is not None:
+                    execution_guard.release_for_wait()
+
+            guarded_on_max_iterations = self._wrap_max_iterations_callback(
+                on_max_iterations,
+                execution_guard=execution_guard,
+                expected_revision=lambda: max_wait_revision,
+            )
+
+            boundary = resolve_max_iterations_boundary(
+                state,
+                effective_max=effective_max,
+                on_max_iterations=guarded_on_max_iterations,
+                callback=callback,
+                run_id=run_id,
+                emit_event=self.emit_event,
+                before_wait=persist_before_max_iterations_wait,
+            )
+            effective_max = boundary.effective_max
+            if boundary.should_finish:
+                return finish_max_iterations_run(
+                    state,
+                    callback=callback,
+                    run_id=run_id,
+                    emit_run_max_iterations=boundary.emit_run_max_iterations_on_finish,
+                    emit_event=terminal_emit_event,
+                    dispatch_run_finalizing=dispatch_run_finalizing,
+                )
+            if state.run_status == "max_iterations":
+                state.run_status = "running"
 
             self.emit_event(
                 callback,
                 "iteration_started",
                 run_id,
-                iteration=int(state.iteration),
+                **build_iteration_started_payload(state),
             )
             turn = self.step_once(
                 state,
@@ -772,78 +710,84 @@ class KernelLoop:
                 max_iterations=effective_max,
                 tool_runtime_plugins=tool_runtime_plugins,
                 tool_runtime_config=tool_runtime_config,
+                execution_guard=execution_guard,
             )
+            if state.run_status == "awaiting_human_input":
+                suspended = finish_awaiting_human_input_run(
+                    state,
+                    callback=callback,
+                    run_id=run_id,
+                    dispatch_on_suspend=dispatch_on_suspend,
+                )
+                request = state.tool_batch_state.human_input_request
+                continuation = suspended.continuation
+                self.emit_event(
+                    callback,
+                    "response_received",
+                    run_id,
+                    **build_response_received_payload(state, turn),
+                )
+                if request is not None:
+                    self.emit_event(
+                        callback,
+                        "human_input_requested",
+                        run_id,
+                        iteration=max(0, int(state.iteration) - 1),
+                        **request.to_dict(),
+                    )
+                if not callable(on_human_input) or request is None or continuation is None:
+                    return suspended
+                wait_revision = current_session_revision()
+                released_for_wait = (
+                    execution_guard is not None and wait_revision is not None
+                )
+                if released_for_wait:
+                    execution_guard.release_for_wait()
+                response = on_human_input(request)
+                if released_for_wait:
+                    execution_guard.reacquire(
+                        expected_revision=wait_revision,
+                    )
+                elif execution_guard is not None:
+                    execution_guard.assert_active()
+                self._dispatch_on_resume(
+                    state,
+                    continuation=continuation,
+                    response=response,
+                    callback=callback,
+                    run_id=run_id,
+                    execution_guard=execution_guard,
+                )
+                continue
             self.emit_event(
                 callback,
                 "response_received",
                 run_id,
-                iteration=max(0, int(state.iteration) - 1),
-                response_id=turn.response_id,
-                has_tool_calls=bool(turn.tool_calls),
-                status=state.run_status,
-                bundle=self._build_legacy_bundle(
-                    state,
-                    status="running" if turn.tool_calls else "completed",
-                ),
+                **build_response_received_payload(state, turn),
             )
-            if state.run_status == "awaiting_human_input":
-                return self._build_result(state, status="awaiting_human_input")
             if state.run_status == "completed":
-                final_text = self._last_assistant_text(state.transcript)
-                self.emit_event(
-                    callback,
-                    "final_message",
-                    run_id,
-                    iteration=max(0, int(state.iteration) - 1),
-                    content=final_text,
-                )
-                self._emit_workspace_change_set_artifact(
+                return finish_completed_run(
                     state,
                     callback=callback,
                     run_id=run_id,
-                    iteration=max(0, int(state.iteration) - 1),
+                    emit_event=terminal_emit_event,
+                    dispatch_run_finalizing=dispatch_run_finalizing,
                 )
-                self.emit_event(
-                    callback,
-                    "run_completed",
-                    run_id,
-                    iteration=max(0, int(state.iteration) - 1),
-                    status="completed",
-                    bundle=self._build_legacy_bundle(state, status="completed"),
-                )
-                return self._build_result(state, status="completed")
             if turn.tool_calls:
                 self.emit_event(
                     callback,
                     "iteration_completed",
                     run_id,
-                    iteration=max(0, int(state.iteration) - 1),
-                    has_tool_calls=True,
+                    **build_iteration_completed_payload(state, has_tool_calls=True),
                 )
                 continue
-            final_text = self._last_assistant_text(state.transcript)
-            self.emit_event(
-                callback,
-                "final_message",
-                run_id,
-                iteration=max(0, int(state.iteration) - 1),
-                content=final_text,
-            )
-            self._emit_workspace_change_set_artifact(
+            return finish_completed_run(
                 state,
                 callback=callback,
                 run_id=run_id,
-                iteration=max(0, int(state.iteration) - 1),
+                emit_event=terminal_emit_event,
+                dispatch_run_finalizing=dispatch_run_finalizing,
             )
-            self.emit_event(
-                callback,
-                "run_completed",
-                run_id,
-                iteration=max(0, int(state.iteration) - 1),
-                status="completed",
-                bundle=self._build_legacy_bundle(state, status="completed"),
-            )
-            return self._build_result(state, status="completed")
 
     def run(
         self,
@@ -867,45 +811,44 @@ class KernelLoop:
         run_id: str | None = None,
         tool_runtime_plugins: list[Any] | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
+        _provider_replay_frame: dict[str, Any] | None = None,
+        _execution_guard: ExecutionGuard | None = None,
     ) -> KernelRunResult:
-        resolved_payload = dict(payload or {})
-        resolved_provider = provider or self._infer_provider() or "openai"
-        resolved_model = model or self._infer_model()
-        resolved_run_id = str(run_id or uuid.uuid4())
-        state = self.seed_state(
-            messages,
-            provider=resolved_provider,
-            model=resolved_model,
+        plan = prepare_fresh_run_invocation(
+            messages=messages,
+            payload=payload,
+            model_io=self._model_io,
+            provider=provider,
+            model=model,
+            previous_response_id=previous_response_id,
             session_id=session_id,
             memory_namespace=memory_namespace,
             max_context_window_tokens=max_context_window_tokens,
+            run_id=run_id,
+            run_id_factory=lambda: str(uuid.uuid4()),
         )
-        effective_store = resolved_payload.get("store")
-        if effective_store is None and self._model_io is not None:
-            try:
-                merged = self._model_io._merged_payload(resolved_payload)
-                effective_store = merged.get("store")
-            except Exception:
-                pass
-        use_previous_response_chain = resolved_provider == "openai" and effective_store is not False
-        state.provider_state.previous_response_id = previous_response_id
-        state.provider_state.use_previous_response_chain = use_previous_response_chain
-        state.run_status = "running"
-        return self._run_state(
-            state,
-            payload=resolved_payload,
-            response_format=response_format,
-            callback=callback,
-            verbose=verbose,
-            max_iterations=max_iterations,
-            on_tool_confirm=on_tool_confirm,
-            on_human_input=on_human_input,
-            on_max_iterations=on_max_iterations,
-            toolkit=toolkit,
-            run_id=resolved_run_id,
-            tool_runtime_plugins=tool_runtime_plugins,
-            tool_runtime_config=tool_runtime_config,
-        )
+        if isinstance(_provider_replay_frame, dict):
+            set_provider_replay_frame(plan.state, _provider_replay_frame)
+        with self._scope_for_session(
+            session_id=session_id,
+            execution_guard=_execution_guard,
+        ) as execution_guard:
+            return self._run_state(
+                plan.state,
+                payload=plan.payload,
+                response_format=response_format,
+                callback=callback,
+                verbose=verbose,
+                max_iterations=max_iterations,
+                on_tool_confirm=on_tool_confirm,
+                on_human_input=on_human_input,
+                on_max_iterations=on_max_iterations,
+                toolkit=toolkit,
+                run_id=plan.run_id,
+                tool_runtime_plugins=tool_runtime_plugins,
+                tool_runtime_config=tool_runtime_config,
+                execution_guard=execution_guard,
+            )
 
     def resume_human_input(
         self,
@@ -926,93 +869,59 @@ class KernelLoop:
         run_id: str | None = None,
         tool_runtime_plugins: list[Any] | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
+        _execution_guard: ExecutionGuard | None = None,
     ) -> KernelRunResult:
-        if not isinstance(conversation, list):
-            raise TypeError("conversation must be a list of provider-projected messages")
-        if not isinstance(continuation, dict):
-            raise TypeError("continuation must be a dict returned by KernelRunResult.continuation")
-        resolved_provider = str(continuation.get("provider") or self._infer_provider() or "")
-        if resolved_provider not in {"openai", "anthropic", "ollama", "hyperspace"}:
-            raise NotImplementedError(
-                "KernelLoop.resume_human_input currently supports only provider in "
-                "{'openai', 'anthropic', 'ollama', 'hyperspace'}, "
-                f"got {resolved_provider!r}"
+        plan = prepare_resume_run_invocation(
+            conversation=conversation,
+            continuation=continuation,
+            payload=payload,
+            response_format=response_format,
+            fallback_provider=self._infer_provider(),
+            fallback_model=self._infer_model(),
+            session_id=session_id,
+            memory_namespace=memory_namespace,
+            run_id=run_id,
+            run_id_factory=lambda: str(uuid.uuid4()),
+        )
+        with self._scope_for_session(
+            session_id=session_id,
+            execution_guard=_execution_guard,
+        ) as execution_guard:
+            self._dispatch_bootstrap(
+                plan.state,
+                payload=plan.payload,
+                response_format=plan.response_format,
+                callback=callback,
+                verbose=verbose,
+                toolkit=toolkit,
+                run_id=plan.run_id,
+                resume_mode=True,
+                continuation=continuation,
+                tool_runtime_config=tool_runtime_config,
+                execution_guard=execution_guard,
             )
-        expected_session_id = continuation.get("session_id")
-        if isinstance(expected_session_id, str) and session_id is not None and session_id != expected_session_id:
-            raise ValueError("resume_human_input requires the same session_id as the suspended run")
-        resolved_session_id = session_id if session_id is not None else expected_session_id
-        resolved_memory_namespace = (
-            memory_namespace if memory_namespace is not None else continuation.get("memory_namespace")
-        )
-        resolved_payload = dict(payload) if payload is not None else copy.deepcopy(continuation.get("payload") or {})
-        resolved_response_format = (
-            response_format
-            if response_format is not None
-            else self._deserialize_response_format(continuation.get("response_format"))
-        )
-        resolved_run_id = str(run_id or continuation.get("run_id") or uuid.uuid4())
-        state = self.seed_state(
-            conversation,
-            provider=resolved_provider,
-            model=continuation.get("model") or self._infer_model(),
-            session_id=resolved_session_id if isinstance(resolved_session_id, str) else None,
-            memory_namespace=resolved_memory_namespace if isinstance(resolved_memory_namespace, str) else None,
-            max_context_window_tokens=int(continuation.get("max_context_window_tokens") or 0),
-        )
-        state.iteration = int(continuation.get("iteration") or 0)
-        state.provider_state.previous_response_id = continuation.get("previous_response_id")
-        state.provider_state.use_previous_response_chain = bool(
-            continuation.get("use_openai_previous_response_chain", False)
-        )
-        state.token_state.consumed_tokens = int(continuation.get("consumed_tokens") or 0)
-        state.token_state.input_tokens = int(continuation.get("input_tokens") or 0)
-        state.token_state.output_tokens = int(continuation.get("output_tokens") or 0)
-        state.token_state.last_turn_tokens = int(continuation.get("last_turn_tokens") or 0)
-        state.token_state.last_turn_input_tokens = int(continuation.get("last_turn_input_tokens") or 0)
-        state.token_state.last_turn_output_tokens = int(continuation.get("last_turn_output_tokens") or 0)
-        workspace_change_state = continuation.get("workspace_change_state")
-        if isinstance(workspace_change_state, dict):
-            state.workspace_change_state = copy.deepcopy(workspace_change_state)
-            state.component_bucket("workspace_changes")["state"] = copy.deepcopy(workspace_change_state)
-        state.run_status = "running"
-        self._ensure_runtime_harnesses()
-        self._ensure_memory_components()
-        self._dispatch_bootstrap(
-            state,
-            payload=resolved_payload,
-            response_format=resolved_response_format,
-            callback=callback,
-            verbose=verbose,
-            toolkit=toolkit,
-            run_id=resolved_run_id,
-            resume_mode=True,
-            tool_runtime_config=tool_runtime_config,
-        )
-        self.dispatch_phase(
-            state,
-            phase="on_resume",
-            event={
-                "continuation": copy.deepcopy(continuation),
-                "response": copy.deepcopy(response),
-                "callback": callback,
-                "run_id": resolved_run_id,
-                "loop": self,
-            },
-        )
-        return self._run_state(
-            state,
-            payload=resolved_payload,
-            response_format=resolved_response_format,
-            callback=callback,
-            verbose=verbose,
-            max_iterations=int(continuation.get("max_iterations") or 6),
-            on_tool_confirm=on_tool_confirm,
-            on_human_input=on_human_input,
-            on_max_iterations=on_max_iterations,
-            toolkit=toolkit,
-            run_id=resolved_run_id,
-            skip_bootstrap=True,
-            tool_runtime_plugins=tool_runtime_plugins,
-            tool_runtime_config=tool_runtime_config,
-        )
+            self._dispatch_on_resume(
+                plan.state,
+                continuation=continuation,
+                response=response,
+                callback=callback,
+                run_id=plan.run_id,
+                execution_guard=execution_guard,
+            )
+            return self._run_state(
+                plan.state,
+                payload=plan.payload,
+                response_format=plan.response_format,
+                callback=callback,
+                verbose=verbose,
+                max_iterations=plan.max_iterations,
+                on_tool_confirm=on_tool_confirm,
+                on_human_input=on_human_input,
+                on_max_iterations=on_max_iterations,
+                toolkit=toolkit,
+                run_id=plan.run_id,
+                skip_bootstrap=True,
+                tool_runtime_plugins=tool_runtime_plugins,
+                tool_runtime_config=tool_runtime_config,
+                execution_guard=execution_guard,
+            )

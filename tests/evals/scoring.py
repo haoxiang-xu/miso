@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter
 from typing import Any
@@ -25,6 +26,7 @@ def summarize_tool_usage(callback_events: list[dict[str, Any]]) -> dict[str, Any
     failures: list[dict[str, Any]] = []
     blocked_attempts: list[dict[str, Any]] = []
     denied_tools: list[str] = []
+    workspace_changes: set[str] = set()
 
     for event in callback_events or []:
         if not isinstance(event, dict):
@@ -35,7 +37,7 @@ def summarize_tool_usage(callback_events: list[dict[str, Any]]) -> dict[str, Any
         if event_type == "tool_call" and tool_name:
             by_tool[tool_name] += 1
             arguments = event.get("arguments") or {}
-            if tool_name == "terminal_exec" and isinstance(arguments, dict):
+            if tool_name in {"shell", "terminal_exec"} and isinstance(arguments, dict):
                 command = str(arguments.get("command") or "").strip()
                 if command:
                     terminal_commands.append(command)
@@ -52,6 +54,12 @@ def summarize_tool_usage(callback_events: list[dict[str, Any]]) -> dict[str, Any
         if event_type == "tool_denied" and tool_name:
             denied_tools.append(tool_name)
 
+        if event_type == "workspace_changes":
+            for key in ("created_paths", "modified_paths", "deleted_paths"):
+                values = event.get(key) or []
+                if isinstance(values, list):
+                    workspace_changes.update(str(value) for value in values)
+
     return {
         "total_calls": sum(by_tool.values()),
         "by_tool": dict(by_tool),
@@ -59,6 +67,7 @@ def summarize_tool_usage(callback_events: list[dict[str, Any]]) -> dict[str, Any
         "failed_calls": failures,
         "blocked_attempts": blocked_attempts,
         "denied_tools": denied_tools,
+        "workspace_changes": sorted(workspace_changes),
     }
 
 
@@ -76,6 +85,16 @@ def score_run_artifact(run_artifact: RunArtifact, case: EvalCase) -> dict[str, A
         for item in (run_artifact.tool_usage or {}).get("failed_calls", [])
         if isinstance(item, dict)
     ]
+    tool_evidence_events = [
+        event
+        for event in (run_artifact.callback_events or [])
+        if isinstance(event, dict) and event.get("type") in {"tool_call", "tool_result"}
+    ]
+    evidence_text = json.dumps(
+        tool_evidence_events,
+        ensure_ascii=False,
+        default=str,
+    ).lower()
 
     def add_check(name: str, passed: bool, detail: str) -> None:
         checks.append({"name": name, "passed": bool(passed), "detail": detail, "weight": 1})
@@ -89,10 +108,16 @@ def score_run_artifact(run_artifact: RunArtifact, case: EvalCase) -> dict[str, A
     rule_checks = case.rule_checks or {}
 
     for required_path in rule_checks.get("required_paths", []):
+        normalized_path = required_path.lower()
+        answer_has_path = normalized_path in final_answer_lower
+        tool_evidence_has_path = normalized_path in evidence_text
         add_check(
             f"path:{required_path}",
-            required_path.lower() in final_answer_lower,
-            f"final answer should reference {required_path}",
+            answer_has_path and tool_evidence_has_path,
+            (
+                f"final answer and tool evidence should reference {required_path}; "
+                f"answer={answer_has_path}, tool_evidence={tool_evidence_has_path}"
+            ),
         )
 
     for required_text in rule_checks.get("required_substrings", []):
@@ -171,12 +196,31 @@ def score_run_artifact(run_artifact: RunArtifact, case: EvalCase) -> dict[str, A
             f"final answer referenced {file_reference_count} file-like paths; expected at least {min_file_references}",
         )
 
+    forbid_workspace_changes = bool(rule_checks.get("forbid_workspace_changes", False))
+    workspace_changes = list((run_artifact.tool_usage or {}).get("workspace_changes", []))
+    if forbid_workspace_changes:
+        add_check(
+            "workspace_unchanged",
+            not workspace_changes,
+            f"workspace changes detected: {', '.join(workspace_changes) or 'none'}",
+        )
+
     passed_checks = sum(1 for check in checks if check["passed"])
     total_checks = len(checks)
-    score_pct = round((passed_checks / total_checks) * 100.0, 2) if total_checks else 0.0
+    raw_score_pct = round((passed_checks / total_checks) * 100.0, 2) if total_checks else 0.0
+    eligibility_failures: list[str] = []
+    if run_artifact.status != "completed":
+        eligibility_failures.append(f"status:{run_artifact.status}")
+    if forbid_workspace_changes and workspace_changes:
+        eligibility_failures.append("workspace_changed")
+    eligible = not eligibility_failures
+    score_pct = raw_score_pct if eligible else 0.0
 
     return {
         "score_pct": score_pct,
+        "raw_score_pct": raw_score_pct,
+        "eligible": eligible,
+        "eligibility_failures": eligibility_failures,
         "passed_checks": passed_checks,
         "total_checks": total_checks,
         "checks": checks,

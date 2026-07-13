@@ -4,6 +4,7 @@ import copy
 from dataclasses import dataclass
 from typing import Any
 
+from ..capabilities import CapabilityOutcome, CreateArtifactOp, RunDelta
 from ..artifacts import (
     ArtifactOwner,
     artifacts_from_code_diff_policy,
@@ -11,21 +12,26 @@ from ..artifacts import (
     extract_authored_artifacts,
     is_failed_tool_result,
     plan_artifact_from_tool_result,
-    upsert_artifacts,
 )
-from ..input.human_input import HumanInputResponse, is_human_input_tool_name
+from ..input.human_input import is_human_input_tool_name
+from ..interaction import (
+    INTERACTION_EFFECT_CREATED_BY,
+    build_human_input_continuation,
+    build_human_input_suspend_request,
+)
 from ..toolkits.base import BuiltinToolkit
 from ..workspace_changes import WorkspaceChangeTracker
 from .toolkit import Toolkit
-from ..kernel.delta import HarnessDelta, SuspendSignal
+from ..kernel.delta import HarnessDelta
 from ..kernel.types import ToolCall
 from .base import BaseToolHarness, ToolContext
 from .common import append_executed_call_id, copy_messages, emit_loop_event
 from .confirmation import execute_confirmable_tool_call
 from .human_input import parse_human_input_request
-from .messages import get_provider_message_builder
+from .messages import coalesce_provider_tool_result_messages, get_provider_message_builder
 from .models import ToolExecutionContext
-from .observation import inject_observation, observation_token_state
+from .observation import ToolObservationRunner, inject_observation, observation_token_state
+from .result_budget import ToolResultBudgetConfig, ToolResultBudgetController
 from .runtime import run_tool_runtime_plugins
 from .types import ToolBatchState
 
@@ -100,6 +106,14 @@ def _emit_artifact_events(
             plan_id=plan_id if isinstance(plan_id, str) and plan_id else None,
             artifact=copy.deepcopy(artifact),
         )
+
+
+def _create_artifact_ops(artifacts: list[dict], *, reason: str) -> tuple[CreateArtifactOp, ...]:
+    return tuple(
+        CreateArtifactOp(artifact=copy.deepcopy(artifact), reason=reason)
+        for artifact in artifacts
+        if isinstance(artifact, dict)
+    )
 
 
 def _canonical_artifacts_for_tool_result(
@@ -266,7 +280,10 @@ class ToolExecutionHarness(BaseToolHarness):
             context.tool_runtime_plugins,
             tool_call=tool_call,
             context=context,
+            execution_guard=context.execution_guard,
         )
+        if context.execution_guard is not None:
+            context.execution_guard.assert_active()
         if plugin_outcome is not None:
             builder = get_provider_message_builder(context.provider)
             result_messages = copy_messages(batch_state.result_messages)
@@ -298,7 +315,10 @@ class ToolExecutionHarness(BaseToolHarness):
                     call_id=tool_call.call_id,
                     result=copy.deepcopy(visible_tool_result),
                 )
-                _emit_artifact_events(context, tool_call, emitted_artifacts)
+            artifact_ops = _create_artifact_ops(
+                emitted_artifacts,
+                reason="tool_runtime_plugin_artifact",
+            )
             state_updates = copy.deepcopy(plugin_outcome.state_updates)
             if workspace_change_tracker is not None:
                 workspace_change_tracker.record_text_snapshot_changes(
@@ -308,11 +328,6 @@ class ToolExecutionHarness(BaseToolHarness):
                     turn_id=f"{context.run_id}:turn-{context.iteration}",
                 )
                 state_updates.update(_workspace_change_state_update(workspace_change_tracker))
-            if emitted_artifacts:
-                state_updates["artifacts"] = upsert_artifacts(
-                    context.state.artifacts,
-                    emitted_artifacts,
-                )
             state_updates["tool_batch_state"] = ToolBatchState(
                 result_messages=result_messages,
                 should_observe=batch_state.should_observe or bool(plugin_outcome.should_observe),
@@ -321,6 +336,19 @@ class ToolExecutionHarness(BaseToolHarness):
                 human_input_tool_call_id=batch_state.human_input_tool_call_id,
                 executed_call_ids=append_executed_call_id(batch_state, tool_call.call_id),
             )
+            if artifact_ops:
+                return CapabilityOutcome(
+                    delta=RunDelta(
+                        created_by=self.created_by,
+                        context_ops=artifact_ops,
+                        state_updates=state_updates,
+                        trace={
+                            "tool_call": tool_call.name,
+                            "call_id": tool_call.call_id,
+                        },
+                        suspend=plugin_outcome.suspend_override,
+                    )
+                )
             return HarnessDelta(
                 created_by=self.created_by,
                 state_updates=state_updates,
@@ -364,122 +392,24 @@ class ToolExecutionHarness(BaseToolHarness):
                     },
                 )
 
-            on_human_input = context.event.get("on_human_input")
-            if callable(on_human_input):
-                emit_loop_event(
-                    context.loop,
-                    context.callback,
-                    "human_input_requested",
-                    context.run_id,
-                    iteration=context.iteration,
-                    request_id=request.request_id,
-                    kind=request.kind,
-                    title=request.title,
-                    question=request.question,
-                    selection_mode=request.selection_mode,
-                    options=[option.to_dict() for option in request.options],
-                    allow_other=request.allow_other,
-                    other_label=request.other_label,
-                    other_placeholder=request.other_placeholder,
-                    min_selected=request.min_selected,
-                    max_selected=request.max_selected,
-                )
-                try:
-                    raw_response = on_human_input(request)
-                except Exception as cb_exc:
-                    builder = get_provider_message_builder(context.provider)
-                    tool_result = {
-                        "error": f"human input callback failed: {cb_exc}",
-                        "tool": tool_call.name,
-                    }
-                    result_messages = copy_messages(batch_state.result_messages)
-                    result_messages.append(
-                        builder.build_tool_result_message(tool_call=tool_call, tool_result=tool_result)
-                    )
-                    emit_loop_event(
-                        context.loop,
-                        context.callback,
-                        "tool_result",
-                        context.run_id,
-                        iteration=context.iteration,
-                        tool_name=tool_call.name,
-                        call_id=tool_call.call_id,
-                        result=tool_result,
-                    )
-                    return HarnessDelta(
-                        created_by=self.created_by,
-                        state_updates={
-                            "tool_batch_state": ToolBatchState(
-                                result_messages=result_messages,
-                                should_observe=False,
-                                awaiting_human_input=False,
-                                human_input_request=None,
-                                human_input_tool_call_id=None,
-                                executed_call_ids=append_executed_call_id(batch_state, tool_call.call_id),
-                            ),
-                        },
-                    )
-                human_response = HumanInputResponse.from_raw(raw_response, request=request)
-                builder = get_provider_message_builder(context.provider)
-                tool_result = human_response.to_tool_result()
-                result_messages = copy_messages(batch_state.result_messages)
-                result_messages.append(
-                    builder.build_tool_result_message(tool_call=tool_call, tool_result=tool_result)
-                )
-                emit_loop_event(
-                    context.loop,
-                    context.callback,
-                    "tool_result",
-                    context.run_id,
-                    iteration=context.iteration,
-                    tool_name=tool_call.name,
-                    call_id=tool_call.call_id,
-                    result=copy.deepcopy(tool_result),
-                )
-                return HarnessDelta(
-                    created_by=self.created_by,
+            return CapabilityOutcome(
+                delta=HarnessDelta(
+                    created_by=INTERACTION_EFFECT_CREATED_BY,
                     state_updates={
                         "tool_batch_state": ToolBatchState(
-                            result_messages=result_messages,
+                            result_messages=copy_messages(batch_state.result_messages),
                             should_observe=False,
-                            awaiting_human_input=False,
-                            human_input_request=None,
-                            human_input_tool_call_id=None,
+                            awaiting_human_input=True,
+                            human_input_request=request,
+                            human_input_tool_call_id=tool_call.call_id,
                             executed_call_ids=append_executed_call_id(batch_state, tool_call.call_id),
                         ),
                     },
-                )
-
-            emit_loop_event(
-                context.loop,
-                context.callback,
-                "human_input_requested",
-                context.run_id,
-                iteration=context.iteration,
-                request_id=request.request_id,
-                kind=request.kind,
-                title=request.title,
-                question=request.question,
-                selection_mode=request.selection_mode,
-                options=[option.to_dict() for option in request.options],
-                allow_other=request.allow_other,
-                other_label=request.other_label,
-                other_placeholder=request.other_placeholder,
-                min_selected=request.min_selected,
-                max_selected=request.max_selected,
-            )
-            return HarnessDelta(
-                created_by=self.created_by,
-                state_updates={
-                    "tool_batch_state": ToolBatchState(
-                        result_messages=copy_messages(batch_state.result_messages),
-                        should_observe=False,
-                        awaiting_human_input=True,
-                        human_input_request=request,
-                        human_input_tool_call_id=tool_call.call_id,
-                        executed_call_ids=append_executed_call_id(batch_state, tool_call.call_id),
-                    ),
-                },
+                    trace={
+                        "tool_call": tool_call.name,
+                        "call_id": tool_call.call_id,
+                    },
+                ),
             )
 
         outcome = execute_confirmable_tool_call(
@@ -505,7 +435,10 @@ class ToolExecutionHarness(BaseToolHarness):
                 turn_id=f"{context.run_id}:turn-{context.iteration}",
                 workspace_changes=workspace_change_tracker,
             ),
+            execution_guard=context.execution_guard,
         )
+        if context.execution_guard is not None:
+            context.execution_guard.assert_active()
         if workspace_change_tracker is not None:
             workspace_change_tracker.record_text_snapshot_changes(
                 workspace_snapshot_before,
@@ -540,7 +473,10 @@ class ToolExecutionHarness(BaseToolHarness):
             call_id=tool_call.call_id,
             result=copy.deepcopy(visible_tool_result),
         )
-        _emit_artifact_events(context, tool_call, emitted_artifacts)
+        artifact_ops = _create_artifact_ops(
+            emitted_artifacts,
+            reason="tool_result_artifact",
+        )
         state_updates = {
             "tool_batch_state": ToolBatchState(
                 result_messages=result_messages,
@@ -552,10 +488,50 @@ class ToolExecutionHarness(BaseToolHarness):
             ),
             **_workspace_change_state_update(workspace_change_tracker),
         }
-        if emitted_artifacts:
-            state_updates["artifacts"] = upsert_artifacts(
-                context.state.artifacts,
-                emitted_artifacts,
+        capability_delta = (
+            outcome.capability_outcome.delta
+            if outcome.capability_outcome is not None
+            else None
+        )
+        capability_state_updates: dict[str, Any] = {}
+        context_ops = artifact_ops
+        created_by = (
+            outcome.capability_outcome.created_by
+            if outcome.capability_outcome is not None
+            else self.created_by
+        )
+        trace: dict[str, Any] = {
+            "tool_call": tool_call.name,
+            "call_id": tool_call.call_id,
+        }
+        suspend = None
+        if isinstance(capability_delta, RunDelta):
+            capability_state_updates = copy.deepcopy(capability_delta.state_updates)
+            context_ops = tuple(capability_delta.context_ops) + artifact_ops
+            created_by = capability_delta.created_by or created_by or self.created_by
+            trace = {
+                **copy.deepcopy(capability_delta.trace),
+                "tool_call": tool_call.name,
+                "call_id": tool_call.call_id,
+            }
+            if capability_delta.created_by:
+                trace["capability_created_by"] = capability_delta.created_by
+            if created_by != self.created_by:
+                trace["applied_by"] = self.created_by
+            suspend = capability_delta.suspend
+
+        if context_ops or capability_state_updates or suspend is not None:
+            return CapabilityOutcome(
+                delta=RunDelta(
+                    created_by=created_by,
+                    context_ops=context_ops,
+                    state_updates={
+                        **capability_state_updates,
+                        **state_updates,
+                    },
+                    trace=trace,
+                    suspend=suspend,
+                ),
             )
         return HarnessDelta(
             created_by=self.created_by,
@@ -568,54 +544,58 @@ class ToolExecutionHarness(BaseToolHarness):
         batch_state = context.state.tool_batch_state.copy()
 
         if batch_state.awaiting_human_input and batch_state.human_input_request is not None:
-            continuation = None
-            if context.loop is not None and hasattr(context.loop, "build_human_input_continuation"):
-                continuation = context.loop.build_human_input_continuation(
-                    request=batch_state.human_input_request,
-                    payload=payload,
-                    response_format=response_format,
-                    next_iteration=context.iteration + 1,
-                    max_iterations=int(context.event.get("max_iterations") or 0),
-                    state=context.state,
-                    run_id=context.run_id,
-                )
-            return HarnessDelta(
-                created_by=self.created_by,
-                state_updates={
-                    "run_status": "awaiting_human_input",
-                    "last_continuation": continuation,
-                    "pending_tool_calls": [],
-                    "next_model_input": None,
-                    "tool_batch_state": batch_state,
-                },
-                suspend=(
-                    SuspendSignal(
-                        kind="human_input",
-                        payload={
-                            "continuation": copy.deepcopy(continuation) if isinstance(continuation, dict) else {},
-                            "request": batch_state.human_input_request.to_dict(),
-                        },
-                    )
-                    if isinstance(continuation, dict)
-                    else None
+            continuation = build_human_input_continuation(
+                request=batch_state.human_input_request,
+                payload=payload,
+                response_format=response_format,
+                next_iteration=context.iteration + 1,
+                max_iterations=int(context.event.get("max_iterations") or 0),
+                state=context.state,
+                run_id=context.run_id,
+            )
+            suspend_ops = (
+                build_human_input_suspend_request(
+                    batch_state.human_input_request,
+                    continuation=continuation,
                 ),
-                trace={"awaiting_human_input": True},
+            )
+            return CapabilityOutcome(
+                delta=RunDelta(
+                    created_by=INTERACTION_EFFECT_CREATED_BY,
+                    context_ops=suspend_ops,
+                    state_updates={
+                        "run_status": "awaiting_human_input",
+                        "last_continuation": continuation,
+                        "pending_tool_calls": [],
+                        "next_model_input": None,
+                        "remote_continuation_input": None,
+                        "tool_batch_state": batch_state,
+                    },
+                    trace={"awaiting_human_input": True},
+                ),
             )
 
         result_messages = copy_messages(batch_state.result_messages)
         token_state = {}
         if batch_state.should_observe and result_messages:
             observation = ""
-            observe_usage = None
-            if context.loop is not None and hasattr(context.loop, "observe_tool_batch"):
-                observation, observe_usage = context.loop.observe_tool_batch(
-                    full_messages=context.state.transcript,
-                    tool_messages=result_messages,
-                    payload=payload,
-                    callback=context.callback,
-                    iteration=context.iteration,
-                    provider=context.provider,
+            observation_model_io = context.model_io
+            if context.execution_guard is not None and observation_model_io is not None:
+                observation_model_io = context.execution_guard.guard_model_io(
+                    observation_model_io,
+                    "model.tool_observation",
                 )
+            observation, observe_usage = ToolObservationRunner(
+                model_io=observation_model_io,
+            ).observe_tool_batch(
+                full_messages=context.state.transcript,
+                tool_messages=result_messages,
+                payload=payload,
+                iteration=context.iteration,
+                provider=context.provider,
+            )
+            if context.execution_guard is not None:
+                context.execution_guard.assert_active()
             token_state = observation_token_state(
                 consumed_tokens=context.state.token_state.consumed_tokens,
                 input_tokens=context.state.token_state.input_tokens,
@@ -633,6 +613,29 @@ class ToolExecutionHarness(BaseToolHarness):
                     content=observation,
                 )
 
+        budget_stats: dict[str, Any] | None = None
+        tool_runtime_config = context.event.get("tool_runtime_config")
+        raw_budget_config = (
+            tool_runtime_config.get("tool_result_budget")
+            if isinstance(tool_runtime_config, dict)
+            else None
+        )
+        budget_config = ToolResultBudgetConfig.from_raw(raw_budget_config)
+        budget_outcome = ToolResultBudgetController(budget_config).budget_messages(
+            provider=context.provider,
+            toolkit=context.toolkit,
+            tool_calls=list(context.event.get("tool_calls") or []),
+            result_messages=result_messages,
+            session_id=context.session_id,
+            latest_messages=context.state.transcript,
+        )
+        result_messages = budget_outcome.messages
+        result_messages = coalesce_provider_tool_result_messages(
+            context.provider,
+            result_messages,
+        )
+        budget_stats = budget_outcome.stats.to_dict()
+
         if not result_messages:
             return HarnessDelta(
                 created_by=self.created_by,
@@ -642,13 +645,21 @@ class ToolExecutionHarness(BaseToolHarness):
                     "run_status": context.state.run_status,
                     "last_continuation": None,
                     "next_model_input": None,
+                    "remote_continuation_input": None,
                 },
             )
 
         next_model_input = None
+        remote_continuation_input = None
         if context.provider == "openai" and context.state.provider_state.use_previous_response_chain:
             if context.state.provider_state.previous_response_id:
-                next_model_input = copy_messages(result_messages)
+                remote_continuation_input = copy_messages(result_messages)
+            if isinstance(context.state.next_model_input, list):
+                next_model_input = copy_messages(context.state.next_model_input)
+                next_model_input.extend(copy_messages(result_messages))
+        elif isinstance(context.state.next_model_input, list):
+            next_model_input = copy_messages(context.state.next_model_input)
+            next_model_input.extend(copy_messages(result_messages))
 
         return HarnessDelta.append(
             created_by=self.created_by,
@@ -660,14 +671,18 @@ class ToolExecutionHarness(BaseToolHarness):
                 "run_status": "running",
                 "last_continuation": None,
                 "next_model_input": next_model_input,
+                "remote_continuation_input": remote_continuation_input,
+                "provider_replay_append": result_messages,
                 "token_state": token_state,
                 "suspend_state": {
                     "signal_kind": None,
                     "payload": {},
                 },
+                **({"optimizer_state": {"tool_result_budget": budget_stats}} if budget_stats is not None else {}),
             },
             trace={
                 "result_message_count": len(result_messages),
                 "observed": bool(batch_state.should_observe),
+                **({"tool_result_budget": budget_stats} if budget_stats is not None else {}),
             },
         )

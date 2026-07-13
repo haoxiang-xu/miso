@@ -22,7 +22,7 @@ __all__ = [
     "InsertMessagesOp",
     "KernelLoop",
     "KernelRunResult",
-    "LegacyBrothModelIO",
+    "ModelAdapter",
     "MessageVersion",
     "MessageVersionGraph",
     "ModelIO",
@@ -46,7 +46,7 @@ def __getattr__(name):
     if name == "KernelLoop":
         from .loop import KernelLoop
         return KernelLoop
-    if name in ("LegacyBrothModelIO", "ModelIO", "ModelTurnRequest"):
+    if name in ("ModelAdapter", "ModelIO", "ModelTurnRequest"):
         from . import model_io
         return getattr(model_io, name)
     raise AttributeError(name)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable, TYPE_CHECKING
 
+from ..execution import ExecutionGuard
 from .toolkit import Toolkit
 from ..kernel.delta import HarnessDelta
 from ..kernel.harness import BaseRuntimeHarness, HarnessContext, RuntimeHarness, RuntimePhase
@@ -61,6 +62,15 @@ class ToolContext:
     @property
     def loop(self) -> Any:
         return self.raw_event.get("loop")
+
+    @property
+    def model_io(self) -> Any:
+        return self.raw_event.get("model_io")
+
+    @property
+    def execution_guard(self) -> ExecutionGuard | None:
+        guard = self.raw_event.get("execution_guard")
+        return guard if isinstance(guard, ExecutionGuard) else None
 
     @property
     def tool_runtime_plugins(self) -> list[ToolRuntimePlugin]:

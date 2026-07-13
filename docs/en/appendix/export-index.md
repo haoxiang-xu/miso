@@ -22,6 +22,9 @@ Exports declared by package `__init__` files and where to read their reference.
 | `AgentSpec` | `src/unchain/agent/spec.py:8` | non-class export |
 | `AgentState` | `src/unchain/agent/spec.py:19` | non-class export |
 | `BaseAgentModule` | `src/unchain/agent/modules/base.py:18` | non-class export |
+| `CompletionEvaluation` | `src/unchain/runtime/completion.py:13` | `../api/runtime.md#completionevaluation` |
+| `CompletionPolicy` | `src/unchain/runtime/completion.py:24` | `../api/runtime.md#completionpolicy` |
+| `CompletionValidator` | `src/unchain/runtime/completion.py:19` | non-class export |
 | `MemoryModule` | `src/unchain/agent/modules/memory.py:12` | non-class export |
 | `ModelIOFactoryRegistry` | `src/unchain/agent/model_io.py:10` | non-class export |
 | `OptimizersModule` | `src/unchain/agent/modules/optimizers.py:9` | non-class export |
@@ -50,8 +53,16 @@ Exports declared by package `__init__` files and where to read their reference.
 | --- | --- | --- |
 | `BaseMemoryHarness` | `src/unchain/memory/base.py:89` | non-class export |
 | `ContextStrategy` | `src/unchain/memory/manager.py:84` | `../api/memory.md#contextstrategy` |
+| `ExecutionCheckpointCompatibilityError` | `src/unchain/memory/checkpoint_state.py` | non-class export |
+| `ExecutionCheckpointError` | `src/unchain/memory/checkpoint_state.py` | non-class export |
+| `ExecutionCheckpointHarness` | `src/unchain/memory/checkpoint.py` | non-class export |
+| `ExecutionCheckpointIntegrityError` | `src/unchain/memory/checkpoint_state.py` | non-class export |
+| `ExecutionCheckpointPersistenceError` | `src/unchain/memory/checkpoint_state.py` | non-class export |
+| `ExecutionCheckpointReplayUnavailableError` | `src/unchain/memory/checkpoint_state.py` | non-class export |
+| `ExecutionCheckpointResumeRequiredError` | `src/unchain/memory/checkpoint_state.py` | non-class export |
 | `HybridContextStrategy` | `src/unchain/memory/manager.py:1779` | `../api/memory.md#hybridcontextstrategy` |
 | `InMemorySessionStore` | `src/unchain/memory/manager.py:104` | `../api/memory.md#inmemorysessionstore` |
+| `JsonFileSessionStore` | `src/unchain/memory/qdrant.py` | `../api/memory.md#jsonfilesessionstore` |
 | `JsonFileLongTermProfileStore` | `src/unchain/memory/manager.py:117` | `../api/memory.md#jsonfilelongtermprofilestore` |
 | `KernelMemoryRuntime` | `src/unchain/memory/runtime.py:59` | non-class export |
 | `LastNTurnsStrategy` | `src/unchain/memory/manager.py:1642` | `../api/memory.md#lastnturnsstrategy` |
@@ -62,15 +73,24 @@ Exports declared by package `__init__` files and where to read their reference.
 | `LongTermVectorAdapter` | `src/unchain/memory/manager.py:61` | `../api/memory.md#longtermvectoradapter` |
 | `MemoryBootstrapHarness` | `src/unchain/memory/bootstrap.py:10` | non-class export |
 | `MemoryCommitHarness` | `src/unchain/memory/commit.py:10` | non-class export |
+| `MemoryCommitResult` | `src/unchain/memory/manager.py` | non-class export |
 | `MemoryConfig` | `src/unchain/memory/manager.py:167` | `../api/memory.md#memoryconfig` |
 | `MemoryContext` | `src/unchain/memory/base.py:14` | non-class export |
 | `MemoryHarness` | `src/unchain/memory/base.py:84` | non-class export |
 | `MemoryManager` | `src/unchain/memory/manager.py:1866` | `../api/memory.md#memorymanager` |
+| `RevisionedSessionStore` | `src/unchain/memory/revision.py` | non-class export |
+| `SessionConsistency` | `src/unchain/memory/revision.py` | non-class export |
+| `SessionHistoryOwnershipError` | `src/unchain/memory/ownership.py` | non-class export |
+| `SessionRevisionConflictError` | `src/unchain/memory/revision.py` | non-class export |
+| `SessionSnapshot` | `src/unchain/memory/revision.py` | non-class export |
 | `SessionStore` | `src/unchain/memory/manager.py:21` | `../api/memory.md#sessionstore` |
+| `SessionStoreCorruptionError` | `src/unchain/memory/revision.py` | non-class export |
 | `ShortTermRecallMemoryHarness` | `src/unchain/memory/short_term.py:12` | non-class export |
 | `SummaryGenerator` | `-` | non-class export |
 | `SummaryTokenStrategy` | `src/unchain/memory/manager.py:1675` | `../api/memory.md#summarytokenstrategy` |
 | `VectorStoreAdapter` | `src/unchain/memory/manager.py:30` | `../api/memory.md#vectorstoreadapter` |
+| `load_session_snapshot` | `src/unchain/memory/revision.py` | non-class export |
+| `save_session_snapshot` | `src/unchain/memory/revision.py` | non-class export |
 
 ## `src/unchain/runtime/__init__.py`
 
@@ -78,6 +98,11 @@ Exports declared by package `__init__` files and where to read their reference.
 | --- | --- | --- |
 | `DEFAULT_PAYLOADS_RESOURCE` | `-` | non-class export |
 | `MODEL_CAPABILITIES_RESOURCE` | `-` | non-class export |
+| `CompletionEvaluation` | `src/unchain/runtime/completion.py:13` | `../api/runtime.md#completionevaluation` |
+| `CompletionPolicy` | `src/unchain/runtime/completion.py:24` | `../api/runtime.md#completionpolicy` |
+| `CompletionPolicyRunner` | `src/unchain/runtime/completion.py:47` | `../api/runtime.md#completionpolicyrunner` |
+| `CompletionRunOnce` | `src/unchain/runtime/completion.py:20` | non-class export |
+| `CompletionValidator` | `src/unchain/runtime/completion.py:19` | non-class export |
 | `load_default_payloads` | `-` | non-class export |
 | `load_model_capabilities` | `-` | non-class export |
 
@@ -106,9 +131,8 @@ Exports declared by package `__init__` files and where to read their reference.
 | Name | Source | Reference |
 | --- | --- | --- |
 | `BuiltinToolkit` | `src/unchain/toolkits/base.py:14` | `../api/toolkits.md#builtintoolkit` |
+| `AgentReachToolkit` | `src/unchain/toolkits/builtin/agent_reach/agent_reach.py:13` | `../api/toolkits.md#agentreachtoolkit` |
 | `CoreToolkit` | `src/unchain/toolkits/builtin/core/core.py:30` | `../api/toolkits.md#coretoolkit` |
-| `ExternalAPIToolkit` | `src/unchain/toolkits/builtin/external_api/external_api.py:13` | `../api/toolkits.md#externalapitoolkit` |
-| `GitToolkit` | `src/unchain/toolkits/builtin/git/git.py:14` | `../api/toolkits.md#gittoolkit` |
 | `PlanToolkit` | `src/unchain/toolkits/builtin/plan/plan.py:192` | `../api/toolkits.md#plantoolkit` |
 | `MCPToolkit` | `src/unchain/toolkits/mcp.py:62` | `../api/toolkits.md#mcptoolkit` |
 

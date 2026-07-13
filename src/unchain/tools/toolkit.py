@@ -55,6 +55,9 @@ class Toolkit:
         parameters: list[ToolParameter | dict[str, Any]] | None = None,
         history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
         history_result_optimizer: HistoryPayloadOptimizer | None = None,
+        always_load: bool | None = None,
+        defer_by_default: bool | None = None,
+        search_hint: str | None = None,
     ) -> Tool:
         if isinstance(tool_obj, Tool):
             if name is not None:
@@ -77,6 +80,12 @@ class Toolkit:
                 tool_obj.history_arguments_optimizer = history_arguments_optimizer
             if history_result_optimizer is not None:
                 tool_obj.history_result_optimizer = history_result_optimizer
+            if always_load is not None:
+                tool_obj.always_load = bool(always_load)
+            if defer_by_default is not None:
+                tool_obj.defer_by_default = bool(defer_by_default)
+            if search_hint is not None:
+                tool_obj.search_hint = str(search_hint or "")
             self.tools[tool_obj.name] = tool_obj
             return tool_obj
 
@@ -93,6 +102,9 @@ class Toolkit:
                 prompt_spec=prompt_spec,
                 history_arguments_optimizer=history_arguments_optimizer,
                 history_result_optimizer=history_result_optimizer,
+                always_load=bool(always_load),
+                defer_by_default=bool(defer_by_default),
+                search_hint=str(search_hint or ""),
             )
             self.tools[wrapped.name] = wrapped
             return wrapped
@@ -121,6 +133,9 @@ class Toolkit:
         parameters: list[ToolParameter | dict[str, Any]] | None = None,
         history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
         history_result_optimizer: HistoryPayloadOptimizer | None = None,
+        always_load: bool = False,
+        defer_by_default: bool = False,
+        search_hint: str = "",
     ):
         if func is not None:
             return self.register(
@@ -134,6 +149,9 @@ class Toolkit:
                 parameters=parameters,
                 history_arguments_optimizer=history_arguments_optimizer,
                 history_result_optimizer=history_result_optimizer,
+                always_load=always_load,
+                defer_by_default=defer_by_default,
+                search_hint=search_hint,
             )
 
         def decorator(inner: Callable[..., Any]) -> Tool:
@@ -148,6 +166,9 @@ class Toolkit:
                 parameters=parameters,
                 history_arguments_optimizer=history_arguments_optimizer,
                 history_result_optimizer=history_result_optimizer,
+                always_load=always_load,
+                defer_by_default=defer_by_default,
+                search_hint=search_hint,
             )
 
         return decorator

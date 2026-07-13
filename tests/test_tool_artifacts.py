@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import json
 import hashlib
-import subprocess
 from pathlib import Path
 
 from unchain import artifacts
 from unchain.events.bridge import RuntimeEventBridge
 from unchain.input import ASK_USER_QUESTION_TOOL_NAME
-from unchain.kernel import KernelLoop, ModelTurnResult
+from unchain.kernel import ModelTurnResult
 from unchain.kernel.types import ToolCall as KernelToolCall
+from unchain.runtime import build_runtime_loop
 from unchain.toolkits.base import BuiltinToolkit
-from unchain.toolkits import CoreToolkit, GitToolkit, PlanToolkit
+from unchain.toolkits import CoreToolkit, PlanToolkit
 from unchain.tools._diff_helpers import build_code_diff_payload
 from unchain.tools import Toolkit
 
@@ -76,8 +76,7 @@ def _run_tool_turn(
             ),
         ]
     )
-    loop = KernelLoop(model_io=model_io)
-    loop._ensure_runtime_harnesses()
+    loop = build_runtime_loop(model_io=model_io)
     state = loop.seed_state(
         [{"role": "user", "content": "start"}],
         provider="openai",
@@ -374,7 +373,7 @@ def test_workspace_change_state_survives_human_input_resume(tmp_path: Path):
         "options": [{"label": "Continue", "value": "continue"}],
     }
     toolkit = CoreToolkit(workspace_root=tmp_path)
-    initial_loop = KernelLoop(
+    initial_loop = build_runtime_loop(
         model_io=_QueueModelIO(
             [
                 ModelTurnResult(
@@ -433,7 +432,7 @@ def test_workspace_change_state_survives_human_input_resume(tmp_path: Path):
     )
 
     resumed_events: list[dict] = []
-    resumed_loop = KernelLoop(
+    resumed_loop = build_runtime_loop(
         model_io=_QueueModelIO(
             [
                 ModelTurnResult(
@@ -536,83 +535,6 @@ def test_modified_write_confirmation_artifact_matches_effective_arguments(tmp_pa
     assert "+original" not in unified_diff
     assert artifact in state.artifacts
     assert any(item["kind"] == "workspace_change_set" for item in state.artifacts)
-
-
-def test_git_commit_emits_file_diff_artifact_from_captured_staged_diff(tmp_path: Path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-
-    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
-    (repo / "app.py").write_text("print('hi')\n", encoding="utf-8")
-    subprocess.run(["git", "add", "app.py"], cwd=repo, check=True)
-
-    toolkit = GitToolkit(workspace_root=tmp_path)
-    _, state, raw_events, _ = _run_tool_turn(
-        tool_calls=[
-            KernelToolCall(
-                call_id="call-commit",
-                name="git_commit",
-                arguments={"cwd": str(repo), "message": "add app"},
-            )
-        ],
-        toolkit=toolkit,
-        tmp_path=tmp_path,
-    )
-
-    artifact_event = next(event for event in raw_events if event["type"] == "artifact_created")
-    artifact = artifact_event["artifact"]
-    assert artifact["kind"] == "file_diff"
-    assert artifact["artifact_id"] == "file_diff:call-commit"
-    assert artifact["snapshot"]["files"][0]["path"] == "app.py"
-    assert "+print('hi')" in artifact["snapshot"]["files"][0]["unified_diff"]
-    assert state.artifacts == [artifact]
-
-
-def test_git_commit_large_staged_diff_artifact_hashes_full_staged_diff(tmp_path: Path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
-    content = "\n".join(f"line {index}" for index in range(500)) + "\n"
-    (repo / "big.py").write_text(content, encoding="utf-8")
-    subprocess.run(["git", "add", "big.py"], cwd=repo, check=True)
-    staged_diff = subprocess.run(
-        ["git", "diff", "--staged", "--no-ext-diff", "--unified=5"],
-        cwd=repo,
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout
-
-    toolkit = GitToolkit(workspace_root=tmp_path)
-    _, state, raw_events, _ = _run_tool_turn(
-        tool_calls=[
-            KernelToolCall(
-                call_id="call-commit-large",
-                name="git_commit",
-                arguments={"cwd": str(repo), "message": "add big"},
-            )
-        ],
-        toolkit=toolkit,
-        tmp_path=tmp_path,
-    )
-
-    artifact_event = next(event for event in raw_events if event["type"] == "artifact_created")
-    artifact = artifact_event["artifact"]
-    file_snapshot = artifact["snapshot"]["files"][0]
-    displayed_diff = file_snapshot["unified_diff"]
-
-    assert artifact["snapshot"]["truncated"] is True
-    assert artifact["snapshot"]["total_lines"] == len(staged_diff.splitlines())
-    assert artifact["snapshot"]["displayed_lines"] == 400
-    assert artifact["snapshot"]["sha256"] == hashlib.sha256(staged_diff.encode("utf-8")).hexdigest()
-    assert artifact["snapshot"]["sha256"] != hashlib.sha256(displayed_diff.encode("utf-8")).hexdigest()
-    assert file_snapshot["total_lines"] == len(staged_diff.splitlines())
-    assert file_snapshot["displayed_lines"] == 400
-    assert state.artifacts == [artifact]
 
 
 def test_plan_tools_emit_stable_plan_artifact_updates(tmp_path: Path):

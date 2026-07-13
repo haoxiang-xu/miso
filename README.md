@@ -171,7 +171,8 @@ GEMINI_API_KEY=...
 | Toolkit | Description |
 |---------|-------------|
 | **CoreToolkit** | File read/write, directory listing, text search, line editing, shell execution, LSP, web fetch, structured user questions |
-| **ExternalAPIToolkit** | HTTP GET/POST, git operations (read-only and destructive) |
+| **PlanToolkit** | Workspace-backed structured planning with draft, update, read, list, and finalize tools |
+| **AgentReachToolkit** | Read-only Agent Reach helpers for status checks, web pages, and YouTube metadata |
 | **MCPToolkit** | Bridge MCP (Model Context Protocol) servers as native toolkits |
 
 Toolkits are also discoverable from local directories and entry-point plugins.
@@ -269,7 +270,7 @@ src/
     kernel/                   # KernelLoop, RuntimeHarness, RuntimePhase, types
     providers/                # OpenAI, Anthropic, Ollama ModelIO
     tools/                    # Tool, Toolkit, registry, catalog, discovery, execution
-    toolkits/                 # CoreToolkit, ExternalAPIToolkit, MCPToolkit
+    toolkits/                 # CoreToolkit, PlanToolkit, AgentReachToolkit, MCPToolkit
     memory/                   # MemoryManager, KernelMemoryRuntime, harnesses
     optimizers/               # Context window / token compaction harnesses
     subagents/                # Subagent executor + delegation tools
@@ -313,7 +314,7 @@ from unchain.tools import (
 from unchain.providers import OpenAIModelIO, AnthropicModelIO, OllamaModelIO
 
 # Toolkits
-from unchain.toolkits import CoreToolkit, ExternalAPIToolkit, MCPToolkit
+from unchain.toolkits import AgentReachToolkit, CoreToolkit, MCPToolkit, PlanToolkit
 
 # Memory
 from unchain.memory import MemoryConfig, MemoryManager, KernelMemoryRuntime

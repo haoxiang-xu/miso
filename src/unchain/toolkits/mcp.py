@@ -16,24 +16,22 @@ Supports three transport modes:
 
 Usage::
 
-    # Broth removed
+    from unchain.agent import Agent, ToolsModule
     from unchain.toolkits import MCPToolkit
 
     server = MCPToolkit(command="npx", args=["-y", "@modelcontextprotocol/server-filesystem", "/tmp"])
     server.connect()
 
-    b = Broth()
-    b.add_toolkit(server)
-    messages, bundle = b.run(...)
+    agent = Agent(name="developer", modules=(ToolsModule(tools=(server,)),))
+    result = agent.run(...)
 
     server.disconnect()
 
 Or as a context manager::
 
     with MCPToolkit(command="npx", args=[...]) as server:
-        b = Broth()
-        b.add_toolkit(server)
-        messages, bundle = b.run(...)
+        agent = Agent(name="developer", modules=(ToolsModule(tools=(server,)),))
+        result = agent.run(...)
 """
 
 from __future__ import annotations

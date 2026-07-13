@@ -49,7 +49,7 @@
 
 - 顶层公共 API 故意保持极小：只有 `Agent`。其他一切都在子包里。
 - 每次 `Agent.run()` 都构造新的 `KernelLoop`；module 状态存在 `AgentState`，不存在 loop 上。
-- `Broth` 已经**不再**是引擎 —— 只剩 `LegacyBrothModelIO` 这一个 `ModelIO` 适配器，给老代码路径用。
+- Provider 调用统一通过 `providers/` 下的 `ModelIO` 实现；旧的 provider 兼容层已经移除。
 
 ## 关联 class 参考
 
@@ -83,12 +83,15 @@ src/unchain/
 │   ├── harness.py       #   RuntimeHarness 协议 + RuntimePhase + HarnessContext
 │   ├── state.py         #   RunState — 单次 run 的可变状态
 │   ├── types.py         #   ToolCall, TokenUsage, ModelTurnResult, KernelRunResult
-│   └── model_io.py      #   LegacyBrothModelIO（兼容垫片）
-├── providers/           # ModelIO 实现
-│   ├── model_io.py      #   ModelIO 协议 + ModelTurnRequest
+│   └── model_io.py      #   ModelIO 协议 + ModelTurnRequest
+├── providers/           # ModelIO adapter
+│   ├── base.py          #   ModelIO 协议 + ModelTurnRequest
+│   ├── native.py        #   共享 native adapter 底座
+│   ├── model_io.py      #   legacy compatibility shim
 │   ├── openai.py        #   OpenAIModelIO
 │   ├── anthropic.py     #   AnthropicModelIO
-│   └── ollama.py        #   OllamaModelIO
+│   ├── ollama.py        #   OllamaModelIO
+│   └── hyperspace.py    #   HyperspaceModelIO
 ├── tools/               # Tool 原语 + 发现
 │   ├── tool.py          #   Tool — 带元数据的 callable 包装
 │   ├── toolkit.py       #   Toolkit — Tool 字典容器
@@ -102,7 +105,7 @@ src/unchain/
 ├── toolkits/            # Builtin + MCP toolkits
 │   ├── base.py          #   BuiltinToolkit — workspace-safe 基类
 │   ├── mcp.py           #   MCPToolkit — MCP server bridge
-│   └── builtin/         #   CoreToolkit, ExternalAPIToolkit, GitToolkit, PlanToolkit
+│   └── builtin/         #   CoreToolkit, PlanToolkit, AgentReachToolkit
 ├── memory/              # 两层记忆
 │   ├── manager.py       #   MemoryManager — 调度 store + strategy
 │   ├── runtime.py       #   KernelMemoryRuntime — kernel 端 facade
@@ -121,8 +124,8 @@ src/unchain/
 │   ├── backoff.py       #   compute_delay_ms
 │   ├── executor.py      #   execute_with_retry
 │   └── wrapper.py       #   fetch_turn_with_retry
-├── runtime/             # 遗留 Broth runtime（兼容用）
-│   └── ...              #   仅 LegacyBrothModelIO 用，新代码直接用 providers/
+├── runtime/             # Model resource 与默认 payload 加载
+│   └── resources/       #   Model capability/default payload JSON
 ├── input/               # 人类输入 + media
 ├── character/           # Agent persona / instruction 工具
 ├── schemas/             # ResponseFormat（结构化输出）
@@ -176,7 +179,8 @@ KernelLoop.run(messages, ...)
   │      └─ memory.commit_messages()
   │
   │    暂停时：
-  │      dispatch_phase("on_suspend")              ─ checkpoint state
+  │      dispatch_phase("on_suspend")              ─ 汇总状态 contribution
+  │      dispatch_phase("suspend_persist")         ─ 保留的持久化 barrier
   │      return KernelRunResult(status="awaiting_human_input", continuation=...)
   │
   ▼
@@ -190,7 +194,8 @@ KernelRunResult
 
 ## RuntimePhase 速查
 
-kernel 把 harness 工作分成 8 个有序阶段：
+kernel 对外提供 9 个有序扩展阶段；另外两个 phase 是 runtime 独占的持久化
+barrier，普通 harness 不能注册。
 
 | 阶段 | 时机 | 典型用途 |
 | --- | --- | --- |
@@ -202,6 +207,12 @@ kernel 把 harness 工作分成 8 个有序阶段：
 | `before_commit` | 迭代末尾 memory commit 前。 | memory 写 hook、摘要触发。 |
 | `on_suspend` | loop 把控制权交还给调用方时。 | checkpoint catalog/discovery state，保存 resume token。 |
 | `on_resume` | `resume_human_input()` 重新进入 loop 时。 | 从 continuation payload 恢复状态。 |
+| `run_finalizing` | 已决定终态、但尚未 durable finalize 时。 | 补充最终状态与 artifact。 |
+
+每次 `on_suspend` 全部执行完后，保留的 `suspend_persist` barrier 才会把所有
+contribution 写入 checkpoint；每次 `run_finalizing` 完成后，保留的
+`finalize_persist` barrier 才执行最终 semantic commit 或 checkpoint 转换。
+因此高 order 的扩展 harness 不会在“已经宣称持久化”之后继续改状态。
 
 ## 组件关系
 

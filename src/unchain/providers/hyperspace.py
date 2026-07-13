@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 import httpx
 
-from .model_io import AnthropicModelIO
+from .anthropic import AnthropicModelIO
 
 DEFAULT_HYPERSPACE_BASE_URL = "http://localhost:6655/anthropic"
 
