@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..artifacts import extract_authored_artifacts, upsert_artifacts
+from ..execution import ExecutionLeaseError
 from ..kernel.model_io import ModelIO, ModelTurnRequest
 from ..kernel.types import ModelTurnResult, ToolCall
 from ..schemas import ResponseFormat
@@ -207,6 +208,7 @@ class DeferredToolExecutionPlugin:
                 turn_id=f"{context.run_id}:turn-{context.iteration}",
                 workspace_changes=workspace_tracker,
             ),
+            execution_guard=context.execution_guard,
         )
         state_updates: dict[str, Any] = {}
         if workspace_tracker is not None:
@@ -365,6 +367,8 @@ class ToolExposureRuntime:
     def _select_tool_names(self) -> tuple[list[str], str, str]:
         try:
             selector_names = self._run_selector()
+        except ExecutionLeaseError:
+            raise
         except Exception as exc:
             fallback = f"selector_failed: {type(exc).__name__}: {exc}"
             return self._fallback_tool_names(), "fallback", fallback

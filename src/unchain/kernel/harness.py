@@ -41,6 +41,7 @@ _PASSTHROUGH_EVENT_KEYS = frozenset({
     "tool_runtime_plugins",
     "emit_stream",
     "model_io",
+    "execution_guard",
 })
 
 

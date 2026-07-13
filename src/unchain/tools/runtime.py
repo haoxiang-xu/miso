@@ -43,11 +43,18 @@ def run_tool_runtime_plugins(
     *,
     tool_call: ToolCall,
     context: Any,
+    execution_guard: Any = None,
 ) -> ToolRuntimeOutcome | None:
     for plugin in plugins:
+        if execution_guard is not None:
+            execution_guard.renew()
         if not plugin.can_handle(tool_call=tool_call, context=context):
             continue
+        if execution_guard is not None:
+            execution_guard.renew()
         outcome = plugin.execute(tool_call=tool_call, context=context)
+        if execution_guard is not None:
+            execution_guard.assert_active()
         if isinstance(outcome, ToolRuntimeOutcome) and outcome.handled:
             return ToolRuntimeOutcome(
                 handled=True,

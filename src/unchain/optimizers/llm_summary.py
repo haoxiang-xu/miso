@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from ..execution import ExecutionLeaseError
 from .base import BaseContextOptimizer, OptimizerContext
 from .common import estimate_tokens, replace_non_system_span, split_system_and_non_system, split_turns
 
@@ -98,6 +99,8 @@ class LlmSummaryOptimizer(BaseContextOptimizer):
                 int(self.config.max_summary_chars),
                 context.model,
             )
+        except ExecutionLeaseError:
+            raise
         except Exception as exc:
             bucket["summary_fallback_reason"] = f"summary_generation_failed: {exc}"
             bucket["source_preservation_required"] = True

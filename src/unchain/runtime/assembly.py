@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..execution import ExecutionRuntime
 from ..interaction import HumanInputResumeHarness
 from ..kernel.harness import RuntimeHarness
 from ..kernel.loop import KernelLoop
@@ -46,13 +47,58 @@ def build_runtime_loop(
     harnesses: list[RuntimeHarness] | None = None,
     model_io: ModelIO | None = None,
     memory_runtime: KernelMemoryRuntime | None = None,
+    execution_runtime: ExecutionRuntime | None = None,
     retry_config: RetryConfig | None = None,
     **kwargs: Any,
 ) -> KernelLoop:
+    if memory_runtime is not None:
+        store = memory_runtime.store
+        lease_methods = (
+            "acquire_lease",
+            "verify_lease",
+            "renew_lease",
+            "release_lease",
+            "save_if_revision_and_fence",
+        )
+        lease_capability = {
+            name: callable(getattr(store, name, None))
+            for name in lease_methods
+        }
+        if any(lease_capability.values()) and not all(lease_capability.values()):
+            missing = ", ".join(
+                name for name, present in lease_capability.items() if not present
+            )
+            raise TypeError(
+                "memory session store execution fencing capability is incomplete: "
+                + missing
+            )
+        if all(lease_capability.values()):
+            revision_methods = ("load_with_revision", "save_if_revision")
+            missing_revision_methods = [
+                name
+                for name in revision_methods
+                if not callable(getattr(store, name, None))
+            ]
+            if missing_revision_methods:
+                raise TypeError(
+                    "memory session store execution fencing requires revisioned "
+                    "load/CAS support; missing callable "
+                    + ", ".join(missing_revision_methods)
+                )
+            if execution_runtime is None:
+                execution_runtime = ExecutionRuntime(store)
+        if (
+            execution_runtime is not None
+            and execution_runtime.store is not store
+        ):
+            raise ValueError(
+                "execution_runtime and memory_runtime must share the same session store"
+            )
     loop = KernelLoop(
         harnesses=harnesses,
         model_io=model_io,
         retry_config=retry_config,
+        execution_runtime=execution_runtime,
         **kwargs,
     )
     attach_default_runtime_components(loop)

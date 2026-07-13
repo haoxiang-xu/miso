@@ -187,6 +187,16 @@ Replay frame 是 provider-native 且有序的：OpenAI 保留 encrypted reasonin
 
 每个内置 session store 还会为整份 session state 维护单调 revision。Bootstrap 捕获 revision；semantic commit、checkpoint 保存/清除、workspace pin 修改以及 edit/resend 替换都通过 compare-and-swap（CAS）写入。过期 worker 会抛出 `SessionRevisionConflictError`，不会覆盖较新的 messages 或 checkpoint；重复写入同一个确定性 checkpoint 是幂等的。
 
+Memory-backed agent run 还会使用以 `session_id` 为键的 execution lease。`PreparedAgent` 在 tool exposure、全部 kernel turn、completion-policy repair 与 run hook 结束前始终持有同一份 lease。模型 retry、工具确认/执行、observation 调用、checkpoint 持久化和 finalization 都校验同一个单调递增的 fencing token。长模型或工具调用期间由 heartbeat 续租；human-input 或 max-iteration checkpoint 已经可靠落盘后，阻塞 callback 会在 lease 已释放的状态下执行，继续运行前必须在 session revision 未变化的前提下拿到更大的 token。
+
+`InMemorySessionStore` 只保证共享同一个 store 对象的进程内线程互斥。`JsonFileSessionStore` 使用稳定的 sidecar 文件锁和 lease 记录，因此同一 OS user 下、共享同一私有目录的本机多进程会竞争同一份 lease；这不代表跨主机 distributed lock。只实现旧式 `load`/`save` 的 store 仍是 best effort。自定义 store 必须同时实现完整 lease 生命周期，以及原子的“fencing token 校验 + revision CAS + state 写入”；框架会拒绝把独立的 `verify_lease()` 和 `save_if_revision()` 拼起来，因为二者之间存在接管竞态。
+
+Lease 生效期间，内置 store 会拒绝该 session 的直接 `save()` 和无 fence 的 `save_if_revision()`。扩展必须通过能够携带当前 fence 的框架路径写入；普通 tool 与 run hook 目前还拿不到通用的 fenced session writer，因此不能绕过框架直接修改 canonical session state。
+
+Fencing 能阻止已经被接管的 worker 开始下一项受保护操作或继续写 durable session state。但如果远程系统已经接受工具请求，随后进程断网或崩溃，它并不能自动让任意外部副作用 exactly-once。此类工具仍需要 idempotency key、intent/receipt journal 或 transactional outbox。
+
+这份 lease 的作用域是 session，而不是 memory namespace。两个使用不同 `session_id` 的合法 run 仍可能并发更新同一个长期 profile 或 vector namespace。因此，在 profile store 与外部 vector adapter 获得独立的 namespace revision/lease 或原子 merge 合约之前，它们仍属于 best-effort 的共享资源。
+
 ## 上下文策略
 
 策略决定 session store 中的哪些消息被包含在 LLM 的上下文窗口中。

@@ -5,11 +5,22 @@ import hashlib
 import inspect
 import json
 import math
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
 from typing import Any, Callable, Protocol, runtime_checkable
 
+from ..execution import (
+    ActiveExecutionLeaseError,
+    ExecutionFence,
+    ExecutionLease,
+    ExecutionLeaseConflictError,
+    ExecutionLeaseError,
+    ExecutionLeaseExpiredError,
+    ExecutionLeaseNotOwnedError,
+    StaleExecutionLeaseError,
+)
 from ..tools.models import NormalizedToolHistoryRecord, ToolHistoryOptimizationContext
 from .checkpoint_state import (
     EXECUTION_CHECKPOINT_KEY,
@@ -118,10 +129,124 @@ class ContextStrategy(Protocol):
 class InMemorySessionStore:
     """Process-local session state store."""
 
-    def __init__(self):
+    execution_lease_scope = "process_local"
+
+    def __init__(self, *, clock_ms: Callable[[], int] | None = None):
         self._sessions: dict[str, dict[str, Any]] = {}
         self._revisions: dict[str, int] = {}
+        self._execution_leases: dict[str, dict[str, Any]] = {}
+        self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
         self._lock = RLock()
+
+    def _now_ms(self) -> int:
+        now = self._clock_ms()
+        if isinstance(now, bool) or not isinstance(now, int):
+            raise TypeError("clock_ms must return an integer epoch timestamp")
+        return now
+
+    @staticmethod
+    def _validate_lease_request(
+        execution_id: str,
+        owner_id: str,
+        *,
+        ttl_ms: int | None = None,
+        fencing_token: int | None = None,
+    ) -> None:
+        if not isinstance(execution_id, str) or not execution_id.strip():
+            raise ValueError("execution_id must be a non-empty string")
+        if not isinstance(owner_id, str) or not owner_id.strip():
+            raise ValueError("owner_id must be a non-empty string")
+        if ttl_ms is not None and (
+            isinstance(ttl_ms, bool) or not isinstance(ttl_ms, int) or ttl_ms <= 0
+        ):
+            raise ValueError("ttl_ms must be a positive integer")
+        if fencing_token is not None and (
+            isinstance(fencing_token, bool)
+            or not isinstance(fencing_token, int)
+            or fencing_token <= 0
+        ):
+            raise ValueError("fencing_token must be a positive integer")
+
+    @staticmethod
+    def _validate_expected_revision(expected_revision: int | None) -> None:
+        if expected_revision is not None and (
+            isinstance(expected_revision, bool)
+            or not isinstance(expected_revision, int)
+            or expected_revision < 0
+        ):
+            raise ValueError("expected_revision must be a non-negative integer")
+
+    def _lease_record_unlocked(self, execution_id: str) -> dict[str, Any]:
+        return self._execution_leases.setdefault(
+            execution_id,
+            {
+                "last_fencing_token": 0,
+                "last_owner_id": "",
+                "active": None,
+            },
+        )
+
+    def _assert_active_lease_unlocked(
+        self,
+        execution_id: str,
+        owner_id: str,
+        fencing_token: int,
+    ) -> ExecutionLease:
+        record = self._execution_leases.get(execution_id)
+        active = record.get("active") if isinstance(record, dict) else None
+        last_token = int(record.get("last_fencing_token") or 0) if record else 0
+        if not isinstance(active, ExecutionLease):
+            if fencing_token <= last_token:
+                raise StaleExecutionLeaseError(
+                    "execution lease has already been released or superseded",
+                    execution_id=execution_id,
+                    owner_id=owner_id,
+                    fencing_token=fencing_token,
+                )
+            raise ExecutionLeaseNotOwnedError(
+                "execution lease is not owned",
+                execution_id=execution_id,
+                owner_id=owner_id,
+                fencing_token=fencing_token,
+            )
+        if fencing_token != active.fencing_token:
+            error_type = (
+                StaleExecutionLeaseError
+                if fencing_token < active.fencing_token
+                else ExecutionLeaseNotOwnedError
+            )
+            raise error_type(
+                "execution fencing token is not current",
+                execution_id=execution_id,
+                owner_id=owner_id,
+                fencing_token=fencing_token,
+            )
+        if owner_id != active.owner_id:
+            raise ExecutionLeaseNotOwnedError(
+                "execution lease belongs to a different owner",
+                execution_id=execution_id,
+                owner_id=owner_id,
+                fencing_token=fencing_token,
+            )
+        if self._now_ms() >= active.expires_at_ms:
+            raise ExecutionLeaseExpiredError(
+                "execution lease has expired",
+                execution_id=execution_id,
+                owner_id=owner_id,
+                fencing_token=fencing_token,
+            )
+        return active
+
+    def _ensure_unfenced_write_allowed_unlocked(self, session_id: str) -> None:
+        record = self._execution_leases.get(session_id)
+        active = record.get("active") if isinstance(record, dict) else None
+        if isinstance(active, ExecutionLease) and self._now_ms() < active.expires_at_ms:
+            raise ActiveExecutionLeaseError(
+                "unfenced session write is forbidden while an execution lease is active",
+                execution_id=session_id,
+                owner_id=active.owner_id,
+                fencing_token=active.fencing_token,
+            )
 
     def load(self, session_id: str) -> dict[str, Any]:
         with self._lock:
@@ -129,6 +254,7 @@ class InMemorySessionStore:
 
     def save(self, session_id: str, state: dict[str, Any]) -> None:
         with self._lock:
+            self._ensure_unfenced_write_allowed_unlocked(session_id)
             self._sessions[session_id] = copy.deepcopy(state)
             self._revisions[session_id] = self._revisions.get(session_id, 0) + 1
 
@@ -152,6 +278,171 @@ class InMemorySessionStore:
         ):
             raise ValueError("expected_revision must be a non-negative integer")
         with self._lock:
+            self._ensure_unfenced_write_allowed_unlocked(session_id)
+            actual_revision = self._revisions.get(session_id, 0)
+            if actual_revision != expected_revision:
+                raise SessionRevisionConflictError(
+                    session_id=session_id,
+                    expected_revision=expected_revision,
+                    actual_revision=actual_revision,
+                )
+            next_revision = actual_revision + 1
+            self._sessions[session_id] = copy.deepcopy(state)
+            self._revisions[session_id] = next_revision
+            return next_revision
+
+    def acquire_lease(
+        self,
+        execution_id: str,
+        owner_id: str,
+        ttl_ms: int,
+        *,
+        expected_revision: int | None = None,
+    ) -> ExecutionLease:
+        self._validate_lease_request(execution_id, owner_id, ttl_ms=ttl_ms)
+        self._validate_expected_revision(expected_revision)
+        with self._lock:
+            actual_revision = self._revisions.get(execution_id, 0)
+            if expected_revision is not None and actual_revision != expected_revision:
+                raise SessionRevisionConflictError(
+                    session_id=execution_id,
+                    expected_revision=expected_revision,
+                    actual_revision=actual_revision,
+                )
+            now = self._now_ms()
+            record = self._lease_record_unlocked(execution_id)
+            active = record.get("active")
+            if isinstance(active, ExecutionLease) and now < active.expires_at_ms:
+                if active.owner_id == owner_id:
+                    return active
+                raise ExecutionLeaseConflictError(
+                    "execution is already leased by another owner",
+                    execution_id=execution_id,
+                    owner_id=owner_id,
+                    fencing_token=active.fencing_token,
+                )
+            token = int(record.get("last_fencing_token") or 0) + 1
+            lease = ExecutionLease(
+                execution_id=execution_id,
+                owner_id=owner_id,
+                fencing_token=token,
+                acquired_at_ms=now,
+                expires_at_ms=now + ttl_ms,
+            )
+            record.update(
+                {
+                    "last_fencing_token": token,
+                    "last_owner_id": owner_id,
+                    "active": lease,
+                }
+            )
+            return lease
+
+    def verify_lease(
+        self,
+        execution_id: str,
+        owner_id: str,
+        fencing_token: int,
+    ) -> ExecutionLease:
+        self._validate_lease_request(
+            execution_id,
+            owner_id,
+            fencing_token=fencing_token,
+        )
+        with self._lock:
+            return self._assert_active_lease_unlocked(
+                execution_id,
+                owner_id,
+                fencing_token,
+            )
+
+    def renew_lease(
+        self,
+        execution_id: str,
+        owner_id: str,
+        fencing_token: int,
+        ttl_ms: int,
+    ) -> ExecutionLease:
+        self._validate_lease_request(
+            execution_id,
+            owner_id,
+            ttl_ms=ttl_ms,
+            fencing_token=fencing_token,
+        )
+        with self._lock:
+            active = self._assert_active_lease_unlocked(
+                execution_id,
+                owner_id,
+                fencing_token,
+            )
+            renewed = ExecutionLease(
+                execution_id=active.execution_id,
+                owner_id=active.owner_id,
+                fencing_token=active.fencing_token,
+                acquired_at_ms=active.acquired_at_ms,
+                expires_at_ms=max(active.expires_at_ms, self._now_ms() + ttl_ms),
+            )
+            self._lease_record_unlocked(execution_id)["active"] = renewed
+            return renewed
+
+    def release_lease(
+        self,
+        execution_id: str,
+        owner_id: str,
+        fencing_token: int,
+    ) -> None:
+        self._validate_lease_request(
+            execution_id,
+            owner_id,
+            fencing_token=fencing_token,
+        )
+        with self._lock:
+            record = self._execution_leases.get(execution_id)
+            active = record.get("active") if isinstance(record, dict) else None
+            if not isinstance(active, ExecutionLease):
+                if (
+                    isinstance(record, dict)
+                    and int(record.get("last_fencing_token") or 0) == fencing_token
+                    and str(record.get("last_owner_id") or "") == owner_id
+                ):
+                    return
+                self._assert_active_lease_unlocked(
+                    execution_id,
+                    owner_id,
+                    fencing_token,
+                )
+                return
+            self._assert_active_lease_unlocked(
+                execution_id,
+                owner_id,
+                fencing_token,
+            )
+            record["active"] = None
+
+    def save_if_revision_and_fence(
+        self,
+        session_id: str,
+        state: dict[str, Any],
+        expected_revision: int,
+        *,
+        execution_id: str,
+        owner_id: str,
+        fencing_token: int,
+    ) -> int:
+        if execution_id != session_id:
+            raise ValueError("execution_id must match session_id for fenced writes")
+        self._validate_expected_revision(expected_revision)
+        self._validate_lease_request(
+            execution_id,
+            owner_id,
+            fencing_token=fencing_token,
+        )
+        with self._lock:
+            self._assert_active_lease_unlocked(
+                execution_id,
+                owner_id,
+                fencing_token,
+            )
             actual_revision = self._revisions.get(session_id, 0)
             if actual_revision != expected_revision:
                 raise SessionRevisionConflictError(
@@ -1110,6 +1401,8 @@ def _compact_tool_history_messages(
 
         try:
             optimized = optimizer(copy.deepcopy(record.payload), context) if callable(optimizer) else _generic_compact_tool_payload(record.payload, context)
+        except ExecutionLeaseError:
+            raise
         except Exception:
             optimized = _generic_compact_tool_payload(record.payload, context)
 
@@ -1804,6 +2097,8 @@ class SummaryTokenStrategy:
                 self.max_summary_chars,
                 model,
             )
+        except ExecutionLeaseError:
+            raise
         except Exception as exc:
             memory_meta["summary_fallback_reason"] = f"summary_generation_failed: {exc}"
             return output
@@ -1891,6 +2186,8 @@ class HybridContextStrategy:
                 k=self.vector_top_k,
                 min_score=self.vector_min_score,
             )
+        except ExecutionLeaseError:
+            raise
         except Exception as exc:
             memory_meta["vector_fallback_reason"] = f"vector_search_failed: {exc}"
             return output
@@ -1952,6 +2249,21 @@ class MemoryManager:
     @property
     def last_commit_info(self) -> dict[str, Any]:
         return copy.deepcopy(self._last_commit_info)
+
+    def _verify_execution_fence(
+        self,
+        execution_fence: ExecutionFence | None,
+    ) -> None:
+        if execution_fence is None:
+            return
+        verify_lease = getattr(self.store, "verify_lease", None)
+        if not callable(verify_lease):
+            raise TypeError("execution fence requires a lease-aware session store")
+        verify_lease(
+            execution_fence.execution_id,
+            execution_fence.owner_id,
+            execution_fence.fencing_token,
+        )
 
     @staticmethod
     def _normalize_top_k(candidate: Any, default: int) -> int:
@@ -2015,6 +2327,8 @@ class MemoryManager:
                 k=resolved_top_k,
                 min_score=self.config.vector_min_score,
             )
+        except ExecutionLeaseError:
+            raise
         except Exception as exc:
             result["fallback_reason"] = f"vector_search_failed: {exc}"
             return result
@@ -2065,6 +2379,8 @@ class MemoryManager:
 
         try:
             profile = _normalize_profile_document(profile_store.load(namespace))
+        except ExecutionLeaseError:
+            raise
         except Exception as exc:
             result["fallback_reason"] = f"profile_load_failed: {exc}"
             return result
@@ -2153,6 +2469,8 @@ class MemoryManager:
                 filters={"memory_type": memory_type},
                 min_score=float(min_score) if min_score is not None else None,
             )
+        except ExecutionLeaseError:
+            raise
         except Exception as exc:
             result["fallback_reason"] = f"{memory_type}_search_failed: {exc}"
             return result
@@ -2530,6 +2848,7 @@ class MemoryManager:
         memory_namespace: str | None,
         model: str | None,
         long_term_extractor: LongTermExtractor | None,
+        execution_fence: ExecutionFence | None,
     ) -> None:
         long_term = self.config.long_term
         if long_term is None:
@@ -2578,9 +2897,12 @@ class MemoryManager:
 
         try:
             previous_profile = _normalize_profile_document(profile_store.load(namespace))
+        except ExecutionLeaseError:
+            raise
         except Exception as exc:
             commit_info["long_term_profile_fallback_reason"] = f"profile_load_failed: {exc}"
             return
+        self._verify_execution_fence(execution_fence)
 
         extraction_messages = _flatten_turn_messages(turn_metadatas)
         try:
@@ -2591,9 +2913,12 @@ class MemoryManager:
                 long_term=long_term,
                 model=model or "",
             )
+        except ExecutionLeaseError:
+            raise
         except Exception as exc:
             commit_info["long_term_extractor_fallback_reason"] = f"long_term_extraction_failed: {exc}"
             return
+        self._verify_execution_fence(execution_fence)
 
         extraction = extraction if isinstance(extraction, dict) else {}
         profile_patch = _normalize_profile_document(extraction.get("profile_patch"))
@@ -2607,13 +2932,17 @@ class MemoryManager:
         if profile_patch:
             did_write = True
             merged_profile = _merge_profile_documents(previous_profile, profile_patch)
+            self._verify_execution_fence(execution_fence)
             try:
                 profile_store.save(namespace, merged_profile)
                 commit_info["long_term_profile_updated"] = True
                 commit_info["long_term_profile_key_count"] = len(merged_profile)
+            except ExecutionLeaseError:
+                raise
             except Exception as exc:
                 commit_info["long_term_profile_fallback_reason"] = f"profile_save_failed: {exc}"
                 advance_cursor = False
+            self._verify_execution_fence(execution_fence)
 
         if (facts or episodes or playbooks) and long_term.vector_adapter is not None:
             did_write = True
@@ -2626,6 +2955,7 @@ class MemoryManager:
                 turn_metadatas=turn_metadatas,
             )
             if texts:
+                self._verify_execution_fence(execution_fence)
                 try:
                     long_term.vector_adapter.add_texts(
                         namespace=namespace,
@@ -2639,9 +2969,12 @@ class MemoryManager:
                     commit_info["long_term_episode_indexed_count"] = episode_count
                     commit_info["long_term_playbook_indexed_count"] = playbook_count
                     commit_info["long_term_memory_indexed_count"] = len(texts)
+                except ExecutionLeaseError:
+                    raise
                 except Exception as exc:
                     commit_info["long_term_vector_fallback_reason"] = f"vector_index_failed: {exc}"
                     advance_cursor = False
+                self._verify_execution_fence(execution_fence)
 
         if not did_write:
             commit_info["long_term_noop"] = True
@@ -2663,7 +2996,16 @@ class MemoryManager:
         summary_text: str | None = None,
         return_result: bool = False,
         clear_execution_checkpoint_id: str | None = None,
+        execution_fence: ExecutionFence | None = None,
     ) -> MemoryCommitResult | None:
+        if (
+            execution_fence is not None
+            and execution_fence.execution_id != session_id
+        ):
+            raise ValueError(
+                "execution_fence.execution_id must match the target session_id"
+            )
+        self._verify_execution_fence(execution_fence)
         session_snapshot = (
             load_session_snapshot(self.store, session_id)
             if session_id
@@ -2735,6 +3077,7 @@ class MemoryManager:
             )
 
             if texts:
+                self._verify_execution_fence(execution_fence)
                 try:
                     adapter.add_texts(
                         session_id=session_id,
@@ -2744,8 +3087,11 @@ class MemoryManager:
                     state["vector_indexed_until"] = next_indexed_until
                     commit_info["vector_indexed_count"] = len(texts)
                     commit_info["vector_indexed_turn_count"] = indexed_turn_count
+                except ExecutionLeaseError:
+                    raise
                 except Exception as exc:
                     commit_info["vector_fallback_reason"] = f"vector_index_failed: {exc}"
+                self._verify_execution_fence(execution_fence)
             else:
                 state["vector_indexed_until"] = next_indexed_until
 
@@ -2757,6 +3103,7 @@ class MemoryManager:
             memory_namespace=memory_namespace,
             model=model,
             long_term_extractor=long_term_extractor,
+            execution_fence=execution_fence,
         )
 
         persisted_snapshot = session_snapshot
@@ -2770,6 +3117,7 @@ class MemoryManager:
                     if expected_revision is not None
                     else session_snapshot.revision
                 ),
+                execution_fence=execution_fence,
             )
         else:
             persisted_snapshot = SessionSnapshot(state=copy.deepcopy(state), revision=None)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import json
 from dataclasses import replace
-from typing import Any
+from typing import Any, Callable
 
 from ..kernel.delta import HarnessDelta
 from ..kernel.provider_replay import (
@@ -286,6 +286,7 @@ def fetch_model_turn(
     emit_stream: bool = False,
     response_format: Any = None,
     openai_text_format: dict[str, Any] | None = None,
+    before_attempt: Callable[[int], None] | None = None,
 ) -> ModelTurnResult:
     if model_io is None:
         raise RuntimeError("KernelLoop.model_io is not configured")
@@ -310,6 +311,7 @@ def fetch_model_turn(
         request=request,
         config=retry_config,
         context=context,
+        before_attempt=before_attempt,
     )
     return _with_fallback_replay_frame(
         state=state,

@@ -35,6 +35,7 @@ def fetch_turn_with_retry(
     context: RetryContext,
     *,
     sleep: Callable[[float], None] = time.sleep,
+    before_attempt: Callable[[int], None] | None = None,
 ) -> Any:
     """Call `model_io.fetch_turn(request)` with transparent retry on transient errors.
 
@@ -51,6 +52,7 @@ def fetch_turn_with_retry(
             config,
             context,
             sleep=sleep,
+            before_attempt=before_attempt,
         )
 
     committed = {"value": False}
@@ -68,4 +70,5 @@ def fetch_turn_with_retry(
         context,
         sleep=sleep,
         should_stop=lambda: committed["value"],
+        before_attempt=before_attempt,
     )

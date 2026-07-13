@@ -59,6 +59,7 @@ class ExecutionCheckpointHarness(BaseMemoryHarness):
             context.session_id,
             checkpoint,
             expected_revision=context.state.memory_state.get("session_revision"),
+            execution_fence=context.execution_fence,
         )
         replay_frame = persisted.get("replay_frame")
         replay_complete = bool(
@@ -115,6 +116,7 @@ class ExecutionCheckpointHarness(BaseMemoryHarness):
                 summary_text=summary_text,
                 expected_revision=expected_revision,
                 expected_checkpoint_id=expected_checkpoint_id or None,
+                execution_fence=context.execution_fence,
             )
             expected_revision = commit_info.get("session_revision")
 
@@ -122,6 +124,7 @@ class ExecutionCheckpointHarness(BaseMemoryHarness):
             context.session_id,
             expected_checkpoint_id=expected_checkpoint_id or None,
             expected_revision=expected_revision,
+            execution_fence=context.execution_fence,
         )
 
         memory_state = {

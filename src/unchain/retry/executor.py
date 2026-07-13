@@ -18,6 +18,7 @@ def execute_with_retry(
     *,
     sleep: Callable[[float], None] = time.sleep,
     should_stop: Optional[Callable[[], bool]] = None,
+    before_attempt: Optional[Callable[[int], None]] = None,
 ) -> T:
     """Run `operation` with retry on transient errors.
 
@@ -31,6 +32,8 @@ def execute_with_retry(
 
     for attempt_number in range(config.max_retries + 1):
         try:
+            if before_attempt is not None:
+                before_attempt(attempt_number)
             return operation()
         except BaseException as exc:  # noqa: BLE001
             if not is_retryable(exc):

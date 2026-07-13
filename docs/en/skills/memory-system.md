@@ -187,6 +187,16 @@ The current execution checkpoint restores the built-in continuation boundary: se
 
 Every built-in session store also attaches a monotonic revision to the whole session state. Bootstrap captures that revision, and semantic commit, checkpoint save/clear, workspace-pin mutation, and edit/resend replacement use compare-and-swap (CAS). A stale worker raises `SessionRevisionConflictError` instead of overwriting newer messages or a newer checkpoint. Repeating the same deterministic checkpoint write is idempotent.
 
+Memory-backed agent runs also use an execution lease keyed by `session_id`. `PreparedAgent` holds one lease across tool exposure, every kernel turn, completion-policy repairs, and run hooks. Model retries, tool confirmation/execution, observation calls, checkpoint persistence, and finalization all verify the same monotonically increasing fencing token. A heartbeat renews the lease during long model or tool calls; after a durable human-input or max-iteration checkpoint, the blocking callback runs with the lease released, and continuation must reacquire a newer token while the session revision is still unchanged.
+
+`InMemorySessionStore` provides this guarantee only between threads sharing that store object. `JsonFileSessionStore` uses a stable sidecar file lock and lease record, so separate local processes running as the same OS user and sharing the same private directory participate in the same lease; it is not a multi-host distributed-lock claim. Stores that expose only legacy `load`/`save` remain best effort. A custom store must implement the complete lease lifecycle plus an atomic `fencing token + revision CAS + state write` operation; a separate `verify_lease()` followed by `save_if_revision()` is rejected because it has a takeover race.
+
+While a lease is active, the built-in stores reject direct `save()` and unfenced `save_if_revision()` calls for that session. Extensions must use a framework path that carries the current fence; ordinary tools and run hooks do not yet receive a general-purpose fenced session writer and must not mutate canonical session state through the raw store.
+
+Fencing prevents a superseded worker from starting its next guarded step or writing durable session state. It does not make an arbitrary remote tool side effect exactly once if the process loses connectivity or crashes after the remote system accepts the request. Such tools still need an idempotency key, intent/receipt journal, or transactional outbox.
+
+The lease is session-scoped, not memory-namespace-scoped. Two valid runs using different `session_id` values can still update the same long-term profile or vector namespace concurrently. The built-in profile store and external vector adapters therefore remain best-effort shared resources until they gain their own namespace revision/lease or atomic merge contract.
+
 ## Context Strategies
 
 Strategies determine which messages from the session store are included in the LLM's context window.

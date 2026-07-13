@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from ..execution import ExecutionLeaseError
 from ..kernel.model_io import ModelTurnRequest
 from ..kernel.types import TokenUsage
 from .toolkit import Toolkit
@@ -123,6 +124,8 @@ class ToolObservationRunner:
                     previous_response_id=None,
                 )
             )
+        except ExecutionLeaseError:
+            raise
         except Exception:
             return "", TokenUsage()
         observation = (turn.final_text or _last_assistant_text(turn.assistant_messages)).strip()

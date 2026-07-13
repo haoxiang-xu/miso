@@ -4,6 +4,8 @@ import copy
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
 
+from ..execution import ExecutionFence
+
 
 SessionConsistency = Literal["compare_and_swap", "best_effort"]
 
@@ -72,6 +74,23 @@ class RevisionedSessionStore(Protocol):
         ...
 
 
+@runtime_checkable
+class FencedRevisionedSessionStore(RevisionedSessionStore, Protocol):
+    """Revisioned store that validates an execution fence in the CAS write."""
+
+    def save_if_revision_and_fence(
+        self,
+        session_id: str,
+        state: dict[str, Any],
+        expected_revision: int,
+        *,
+        execution_id: str,
+        owner_id: str,
+        fencing_token: int,
+    ) -> int:
+        ...
+
+
 def _validate_revision(revision: object, *, session_id: str) -> int:
     if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
         raise SessionStoreCorruptionError(
@@ -107,6 +126,27 @@ def _has_revision_capability(store: object) -> bool:
     return has_revision_load
 
 
+def _has_fenced_revision_capability(store: object) -> bool:
+    method_names = (
+        "acquire_lease",
+        "verify_lease",
+        "renew_lease",
+        "release_lease",
+        "save_if_revision_and_fence",
+    )
+    supported = {
+        name: callable(getattr(store, name, None))
+        for name in method_names
+    }
+    if any(supported.values()) and not all(supported.values()):
+        missing = ", ".join(name for name, present in supported.items() if not present)
+        raise TypeError(
+            "execution lease store capability is incomplete; these methods must "
+            f"be implemented together: {missing}"
+        )
+    return all(supported.values())
+
+
 def load_session_snapshot(store: object, session_id: str) -> SessionSnapshot:
     """Load a revisioned snapshot, falling back to legacy best-effort stores."""
 
@@ -132,21 +172,54 @@ def save_session_snapshot(
     state: dict[str, Any],
     *,
     expected_revision: int | None,
+    execution_fence: ExecutionFence | None = None,
 ) -> SessionSnapshot:
-    """Persist state with CAS when available, otherwise use a legacy save."""
+    """Persist state, atomically validating ``execution_fence`` when supplied."""
 
     if not isinstance(state, dict):
         raise TypeError("session state must be a dict")
+    if execution_fence is not None and not isinstance(
+        execution_fence,
+        ExecutionFence,
+    ):
+        raise TypeError("execution_fence must be an ExecutionFence")
 
     saved_state = copy.deepcopy(state)
+    if execution_fence is not None and execution_fence.execution_id != session_id:
+        raise ValueError(
+            "execution_fence.execution_id must match the target session_id"
+        )
     if _has_revision_capability(store):
         if expected_revision is None:
             raise ValueError(
                 "expected_revision is required for a revisioned session store"
             )
         expected = _validate_revision(expected_revision, session_id=session_id)
-        save_if_revision = getattr(store, "save_if_revision")
-        next_revision = save_if_revision(session_id, saved_state, expected)
+        if execution_fence is None:
+            save_if_revision = getattr(store, "save_if_revision")
+            next_revision = save_if_revision(session_id, saved_state, expected)
+        else:
+            if not _has_fenced_revision_capability(store):
+                raise TypeError(
+                    "execution_fence requires an atomic fenced revisioned session store"
+                )
+            save_if_revision_and_fence = getattr(
+                store,
+                "save_if_revision_and_fence",
+                None,
+            )
+            if not callable(save_if_revision_and_fence):
+                raise TypeError(
+                    "execution_fence requires an atomic fenced revisioned session store"
+                )
+            next_revision = save_if_revision_and_fence(
+                session_id,
+                saved_state,
+                expected,
+                execution_id=execution_fence.execution_id,
+                owner_id=execution_fence.owner_id,
+                fencing_token=execution_fence.fencing_token,
+            )
         revision = _validate_revision(next_revision, session_id=session_id)
         if revision <= expected:
             raise SessionStoreCorruptionError(
@@ -155,6 +228,10 @@ def save_session_snapshot(
             )
         return SessionSnapshot(state=copy.deepcopy(saved_state), revision=revision)
 
+    if execution_fence is not None:
+        raise TypeError(
+            "execution_fence requires an atomic fenced revisioned session store"
+        )
     save = getattr(store, "save", None)
     if not callable(save):
         raise TypeError("session store must define save(session_id, state)")
@@ -163,6 +240,7 @@ def save_session_snapshot(
 
 
 __all__ = [
+    "FencedRevisionedSessionStore",
     "RevisionedSessionStore",
     "SessionConsistency",
     "SessionRevisionConflictError",
