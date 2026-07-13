@@ -5,6 +5,7 @@ import pytest
 
 from unchain.input.human_input import ASK_USER_QUESTION_TOOL_NAME
 from unchain.kernel import BaseRuntimeHarness, KernelLoop, ModelTurnResult
+from unchain.kernel.provider_replay import set_provider_replay_frame
 from unchain.memory import KernelMemoryRuntime
 from unchain.kernel.types import ToolCall as KernelToolCall
 from unchain.memory import (
@@ -16,6 +17,7 @@ from unchain.memory import (
     MemoryManager,
 )
 from unchain.runtime import attach_memory_runtime_components, build_runtime_loop
+from unchain.providers.model_turn_runtime import build_model_turn_request
 from unchain.tools import Toolkit
 
 
@@ -409,6 +411,15 @@ def test_short_term_recall_memory_harness_injects_recall_messages():
     attach_memory_runtime_components(loop, runtime)
     original = [{"role": "user", "content": "new question"}]
     state = loop.seed_state(copy.deepcopy(original), session_id="short-term-session")
+    state.provider_state.provider = "openai"
+    set_provider_replay_frame(
+        state,
+        {
+            "format": "openai.responses.v1",
+            "complete": True,
+            "items": copy.deepcopy(original),
+        },
+    )
 
     loop.dispatch_phase(
         state,
@@ -423,6 +434,12 @@ def test_short_term_recall_memory_harness_injects_recall_messages():
     )
     assert state.transcript == original
     assert state.memory_prepare_info["short_term_recall_count"] == 2
+    request = build_model_turn_request(state, toolkit=Toolkit())
+    assert any(
+        message.get("role") == "system"
+        and str(message.get("content", "")).startswith("[Recall messages]")
+        for message in request.messages
+    )
 
 
 def test_long_term_recall_injects_profile_and_query_hint_memories():

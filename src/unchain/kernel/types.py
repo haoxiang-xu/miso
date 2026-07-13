@@ -49,3 +49,4 @@ class KernelRunResult:
     cache_creation_input_tokens: int = 0
     previous_response_id: str | None = None
     iteration: int = 0
+    provider_replay_handle: dict[str, Any] | None = None

@@ -484,7 +484,9 @@ class JsonFileSessionStore:
 
     def __init__(self, base_dir: str | Path) -> None:
         self._base = Path(base_dir)
-        self._base.mkdir(parents=True, exist_ok=True)
+        self._base.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name != "nt":
+            os.chmod(self._base, 0o700)
 
     def _path(self, session_id: str) -> Path:
         safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in session_id)
@@ -527,12 +529,18 @@ class JsonFileSessionStore:
         serialized = json.dumps(payload, default=str, ensure_ascii=False)
         temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
         try:
-            with temp_path.open("x", encoding="utf-8") as temp_file:
+            temp_fd = os.open(
+                temp_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as temp_file:
                 temp_file.write(serialized)
                 temp_file.flush()
                 os.fsync(temp_file.fileno())
             os.replace(temp_path, path)
             if os.name != "nt":
+                os.chmod(path, 0o600)
                 directory_fd = os.open(path.parent, os.O_RDONLY)
                 try:
                     os.fsync(directory_fd)

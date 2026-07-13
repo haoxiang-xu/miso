@@ -1,8 +1,10 @@
+import copy
 import json
 
 import pytest
 
 from unchain.kernel import KernelLoop, ModelTurnResult
+from unchain.kernel.provider_replay import set_provider_replay_frame
 from unchain.optimizers import (
     LastNOptimizer,
     LastNOptimizerConfig,
@@ -14,6 +16,7 @@ from unchain.optimizers import (
     ToolHistoryCompactionOptimizerConfig,
 )
 from unchain.tools import Toolkit
+from unchain.providers.model_turn_runtime import build_model_turn_request
 
 
 def _conversation_with_tool_turn() -> list[dict]:
@@ -269,6 +272,20 @@ def test_tool_history_compaction_optimizer_handles_all_provider_shapes(provider,
         + [{"role": "user", "content": "u2"}, {"role": "assistant", "content": "a2"}, {"role": "user", "content": "u3"}]
     )
     state = KernelLoop().seed_state(history, provider=provider, session_id=f"s_compact_{provider}")
+    replay_formats = {
+        "openai": "openai.responses.v1",
+        "anthropic": "anthropic.messages.v1",
+        "ollama": "ollama.chat.v1",
+    }
+    if provider in replay_formats:
+        set_provider_replay_frame(
+            state,
+            {
+                "format": replay_formats[provider],
+                "complete": True,
+                "items": copy.deepcopy(history),
+            },
+        )
     optimizer = ToolHistoryCompactionOptimizer()
     loop = KernelLoop(harnesses=[optimizer])
 
@@ -283,7 +300,11 @@ def test_tool_history_compaction_optimizer_handles_all_provider_shapes(provider,
         assert '"u3"' in item["messages"]
         assert '"u1"' not in item["messages"]
 
-    prepared = state.latest_messages()
+    prepared = (
+        build_model_turn_request(state, toolkit=toolkit).messages
+        if provider in replay_formats
+        else state.latest_messages()
+    )
     if provider == "openai":
         function_call = next(message for message in prepared if message.get("type") == "function_call" and message.get("call_id") == "call_old")
         function_output = next(message for message in prepared if message.get("type") == "function_call_output" and message.get("call_id") == "call_old")

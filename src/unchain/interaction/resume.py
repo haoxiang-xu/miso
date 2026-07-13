@@ -7,6 +7,11 @@ from typing import Any, Callable
 
 from ..input.human_input import ASK_USER_QUESTION_TOOL_NAME, HumanInputRequest, HumanInputResponse
 from ..kernel.delta import HarnessDelta
+from ..kernel.provider_replay import (
+    set_provider_replay_frame,
+    validate_provider_replay_frame,
+)
+from ..kernel.replay_handle import load_provider_replay_handle
 from ..kernel.state import RunState
 from ..kernel.types import ToolCall
 from ..schemas import ResponseFormat
@@ -40,6 +45,8 @@ class HumanInputResumePlan:
     last_turn_input_tokens: int
     last_turn_output_tokens: int
     workspace_change_state: dict[str, Any] | None
+    provider_replay_frame: dict[str, Any] | None = None
+    provider_replay_required: bool = False
 
 
 def parse_human_input_request(tool_call: ToolCall) -> HumanInputRequest:
@@ -101,6 +108,15 @@ def prepare_human_input_resume_plan(
 
     resolved_run_id = str(run_id or continuation.get("run_id") or (run_id_factory or (lambda: str(uuid.uuid4())))())
     resolved_workspace_change_state = continuation.get("workspace_change_state")
+    raw_replay_frame = continuation.get("provider_replay_frame")
+    replay_handle = continuation.get("provider_replay_handle")
+    replay_frame = (
+        validate_provider_replay_frame(raw_replay_frame)
+        if isinstance(raw_replay_frame, dict)
+        else load_provider_replay_handle(replay_handle)
+    )
+    if isinstance(replay_frame, dict):
+        replay_frame = validate_provider_replay_frame(replay_frame)
 
     return HumanInputResumePlan(
         conversation=copy.deepcopy(conversation),
@@ -133,6 +149,14 @@ def prepare_human_input_resume_plan(
             if isinstance(resolved_workspace_change_state, dict)
             else None
         ),
+        provider_replay_frame=replay_frame,
+        provider_replay_required=bool(
+            replay_handle
+            or (
+                continuation.get("use_openai_previous_response_chain", False)
+                and continuation.get("previous_response_id")
+            )
+        ),
     )
 
 
@@ -154,6 +178,11 @@ def hydrate_human_input_resume_state(state: RunState, plan: HumanInputResumePlan
     if plan.workspace_change_state is not None:
         state.workspace_change_state = copy.deepcopy(plan.workspace_change_state)
         state.component_bucket("workspace_changes")["state"] = copy.deepcopy(plan.workspace_change_state)
+    replay_frame = plan.provider_replay_frame
+    if isinstance(replay_frame, dict):
+        set_provider_replay_frame(state, replay_frame)
+    elif plan.provider_replay_required:
+        state.metadata["provider_replay_required"] = True
     state.run_status = "running"
     return state
 
@@ -205,7 +234,7 @@ class HumanInputResumeHarness(BaseToolHarness):
         previous_response_id = (
             None if checkpoint_restored else continuation.get("previous_response_id")
         )
-        next_model_input = (
+        remote_continuation_input = (
             [copy.deepcopy(tool_message)]
             if context.provider == "openai"
             and use_previous_response_chain
@@ -223,7 +252,8 @@ class HumanInputResumeHarness(BaseToolHarness):
                 "tool_batch_state": ToolBatchState(),
                 "run_status": "running",
                 "last_continuation": None,
-                "next_model_input": next_model_input,
+                "next_model_input": None,
+                "remote_continuation_input": remote_continuation_input,
                 "provider_replay_append": [tool_message],
                 "provider_state": {
                     "previous_response_id": previous_response_id,

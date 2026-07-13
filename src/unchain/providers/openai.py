@@ -9,9 +9,11 @@ from openai import OpenAI
 from .base import ModelTurnRequest
 from .native import _NativeModelIOBase, _translate_content_blocks_for_openai
 from ..kernel.provider_replay import (
+    ProviderReplayFrameError,
     redact_provider_replay_secrets,
     strict_json_copy,
     tool_schema_digest,
+    tool_schema_manifest,
 )
 from ..kernel.types import ModelTurnResult, TokenUsage, ToolCall
 
@@ -98,8 +100,14 @@ class OpenAIModelIO(_NativeModelIOBase):
             return self._fetch_turn_streaming(openai_client, request, request_kwargs)
         except Exception as exc:
             if request_kwargs.get("previous_response_id") and self._is_previous_response_error(exc):
+                if not isinstance(request.fallback_messages, list):
+                    raise ProviderReplayFrameError(
+                        "previous_response_id failed without a complete local replay fallback"
+                    ) from exc
                 request_kwargs.pop("previous_response_id", None)
-                request_kwargs["input"] = normalized_messages
+                request_kwargs["input"] = self._normalize_input_messages(
+                    request.fallback_messages
+                )
                 if request.callback:
                     self._emit(
                         request.callback,
@@ -108,6 +116,16 @@ class OpenAIModelIO(_NativeModelIOBase):
                         iteration=request.iteration,
                         provider="openai",
                     )
+                self._emit_request_messages(
+                    callback=request.callback,
+                    run_id=request.run_id,
+                    iteration=request.iteration,
+                    messages=redact_provider_replay_secrets(
+                        request_kwargs["input"]
+                    ),
+                    previous_response_id=None,
+                    tool_names=self._tool_names_for_trace(tools_json),
+                )
                 return self._fetch_turn_streaming(openai_client, request, request_kwargs)
             raise
 
@@ -227,6 +245,13 @@ class OpenAIModelIO(_NativeModelIOBase):
                 if text:
                     assistant_messages.append({"role": "assistant", "content": text})
                     final_text_parts.append(text)
+                    continue
+                refusal = self._extract_openai_message_refusal(item)
+                if refusal:
+                    assistant_messages.append(
+                        {"role": "assistant", "content": refusal}
+                    )
+                    final_text_parts.append(refusal)
                 continue
             if item_type == "reasoning":
                 reasoning_items.append(item)
@@ -242,11 +267,15 @@ class OpenAIModelIO(_NativeModelIOBase):
             provider_replay_frame = {
                 "format": "openai.responses.v1",
                 "complete": False,
-                "items": raw_output_items,
+                "items": [*normalized_replay_input, *raw_output_items],
                 "response_items": raw_output_items,
                 "mode": "append_response",
                 "source": "openai_response_output",
                 "tool_schema_digest": tool_schema_digest(
+                    request.toolkit,
+                    self.provider,
+                ),
+                "tool_schema_manifest": tool_schema_manifest(
                     request.toolkit,
                     self.provider,
                 ),
@@ -262,6 +291,10 @@ class OpenAIModelIO(_NativeModelIOBase):
                 "mode": "replace",
                 "source": "openai_response_output",
                 "tool_schema_digest": tool_schema_digest(
+                    request.toolkit,
+                    self.provider,
+                ),
+                "tool_schema_manifest": tool_schema_manifest(
                     request.toolkit,
                     self.provider,
                 ),
@@ -310,6 +343,21 @@ class OpenAIModelIO(_NativeModelIOBase):
                 if text:
                     text_parts.append(text if isinstance(text, str) else str(text))
         return "".join(text_parts)
+
+    def _extract_openai_message_refusal(self, item: dict[str, Any]) -> str:
+        content = item.get("content")
+        if not isinstance(content, list):
+            return ""
+        refusal_parts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "refusal":
+                continue
+            refusal = block.get("refusal", "")
+            if refusal:
+                refusal_parts.append(
+                    refusal if isinstance(refusal, str) else str(refusal)
+                )
+        return "".join(refusal_parts)
 
     def _extract_openai_token_usage(self, usage: Any) -> tuple[TokenUsage, int]:
         """Return (TokenUsage, cached_input_tokens) from an OpenAI usage object."""

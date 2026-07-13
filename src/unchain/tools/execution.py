@@ -562,6 +562,7 @@ class ToolExecutionHarness(BaseToolHarness):
                         "last_continuation": continuation,
                         "pending_tool_calls": [],
                         "next_model_input": None,
+                        "remote_continuation_input": None,
                         "tool_batch_state": batch_state,
                     },
                     trace={"awaiting_human_input": True},
@@ -630,13 +631,18 @@ class ToolExecutionHarness(BaseToolHarness):
                     "run_status": context.state.run_status,
                     "last_continuation": None,
                     "next_model_input": None,
+                    "remote_continuation_input": None,
                 },
             )
 
         next_model_input = None
+        remote_continuation_input = None
         if context.provider == "openai" and context.state.provider_state.use_previous_response_chain:
             if context.state.provider_state.previous_response_id:
-                next_model_input = copy_messages(result_messages)
+                remote_continuation_input = copy_messages(result_messages)
+            if isinstance(context.state.next_model_input, list):
+                next_model_input = copy_messages(context.state.next_model_input)
+                next_model_input.extend(copy_messages(result_messages))
         elif isinstance(context.state.next_model_input, list):
             next_model_input = copy_messages(context.state.next_model_input)
             next_model_input.extend(copy_messages(result_messages))
@@ -651,6 +657,7 @@ class ToolExecutionHarness(BaseToolHarness):
                 "run_status": "running",
                 "last_continuation": None,
                 "next_model_input": next_model_input,
+                "remote_continuation_input": remote_continuation_input,
                 "provider_replay_append": result_messages,
                 "token_state": token_state,
                 "suspend_state": {

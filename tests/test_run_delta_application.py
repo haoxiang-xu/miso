@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 
 from unchain.capabilities import (
@@ -15,6 +16,7 @@ from unchain.capabilities import (
     SetRuntimeStateOp,
 )
 from unchain.kernel import BaseRuntimeHarness, KernelLoop, ModelTurnResult, ToolCall
+from unchain.interaction.fyi import FyiChannel, FyiInjectionHarness
 from unchain.runtime import build_runtime_loop
 from unchain.tools import Toolkit
 
@@ -173,6 +175,117 @@ def test_tool_structured_delta_uses_same_application_layer_for_next_model_contex
     assert {"role": "system", "content": "tool memory"} not in result.messages
     assert json.loads(tool_message["output"]) == {"ok": True}
     assert any(event["type"] == "tool_delta_event" and event["source"] == "tool" for event in events)
+
+
+def test_remote_tool_context_switches_to_complete_local_replay_instead_of_losing_delta():
+    fyi_channel = FyiChannel()
+
+    class ReplayModelIO:
+        provider = "openai"
+
+        def __init__(self):
+            self.requests = []
+
+        def fetch_turn(self, request):
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                fyi_channel.post("keep the tool memory too")
+                raw_call = {
+                    "type": "function_call",
+                    "id": "fc-1",
+                    "call_id": "call-1",
+                    "name": "delta_tool",
+                    "arguments": "{}",
+                    "status": "completed",
+                }
+                return ModelTurnResult(
+                    assistant_messages=[
+                        {
+                            "type": "function_call",
+                            "call_id": "call-1",
+                            "name": "delta_tool",
+                            "arguments": "{}",
+                        }
+                    ],
+                    tool_calls=[
+                        ToolCall(
+                            call_id="call-1",
+                            name="delta_tool",
+                            arguments={},
+                        )
+                    ],
+                    response_id="resp-1",
+                    provider_replay_frame={
+                        "format": "openai.responses.v1",
+                        "complete": True,
+                        "items": [
+                            *copy.deepcopy(request.messages),
+                            {
+                                "type": "reasoning",
+                                "id": "rs-1",
+                                "encrypted_content": "opaque-ciphertext",
+                                "summary": [],
+                            },
+                            raw_call,
+                        ],
+                    },
+                )
+            return ModelTurnResult(
+                assistant_messages=[{"role": "assistant", "content": "done"}],
+                tool_calls=[],
+                final_text="done",
+                response_id="resp-2",
+            )
+
+    model_io = ReplayModelIO()
+    toolkit = Toolkit()
+
+    @toolkit.tool(name="delta_tool")
+    def delta_tool() -> CapabilityOutcome:
+        return CapabilityOutcome(
+            value={"ok": True},
+            delta=RunDelta(
+                created_by="tool.delta_tool",
+                context_ops=(
+                    InsertMessagesOp(
+                        target=ContextTarget.MODEL_CONTEXT,
+                        index=0,
+                        messages=[{"role": "system", "content": "tool memory"}],
+                        reason="test_remote_tool_context",
+                    ),
+                ),
+            ),
+        )
+
+    result = build_runtime_loop(
+        model_io=model_io,
+        harnesses=[FyiInjectionHarness(channel=fyi_channel)],
+    ).run(
+        [{"role": "user", "content": "start"}],
+        provider="openai",
+        model="gpt-5",
+        toolkit=toolkit,
+        max_iterations=3,
+    )
+
+    assert result.status == "completed"
+    second_request = model_io.requests[1]
+    assert second_request.previous_response_id is None
+    assert {"role": "system", "content": "tool memory"} in second_request.messages
+    assert sum(
+        "keep the tool memory too" in str(item.get("content", ""))
+        for item in second_request.messages
+    ) == 1
+    assert any(
+        item.get("type") == "reasoning"
+        and item.get("encrypted_content") == "opaque-ciphertext"
+        for item in second_request.messages
+    )
+    assert any(
+        item.get("type") == "function_call_output"
+        and item.get("call_id") == "call-1"
+        for item in second_request.messages
+    )
 
 
 def test_patch_and_delete_messages_update_model_context_without_touching_transcript():

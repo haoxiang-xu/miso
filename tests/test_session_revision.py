@@ -225,6 +225,24 @@ def test_json_store_rejects_cross_instance_stale_writer(tmp_path: Path) -> None:
     assert second.load("shared") == {"owner": "first"}
 
 
+def test_json_store_keeps_session_directory_and_files_private(tmp_path: Path) -> None:
+    import os
+    import stat
+
+    if os.name == "nt":
+        pytest.skip("POSIX permission modes are not available on Windows")
+
+    base_dir = tmp_path / "private-sessions"
+    store = JsonFileSessionStore(base_dir)
+    store.save(
+        "sensitive",
+        {"replay_frame": {"thinking": "private provider reasoning"}},
+    )
+
+    assert stat.S_IMODE(base_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE((base_dir / "sensitive.json").stat().st_mode) == 0o600
+
+
 def test_json_store_file_lock_allows_exactly_one_process_winner(tmp_path: Path) -> None:
     context = multiprocessing.get_context("spawn")
     start = context.Event()

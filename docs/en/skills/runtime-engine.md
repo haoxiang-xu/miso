@@ -90,7 +90,10 @@ For day-to-day use, prefer `Agent.run()`. Direct `KernelLoop` use is only needed
 
 - Memory is integrated as hook components (bootstrap/before-model recall + before-commit write). Runs without memory simply omit the `MemoryModule`.
 - Retry is a wrapper around `ModelAdapter.fetch_turn()` (see `unchain.retry`). Debug-only request tracing events do not commit an attempt, so a transient failure may still retry; the first user-visible token/tool/reasoning event closes that gate to prevent duplicate output.
-- Provider-specific projection (canonical messages → SDK shape) lives entirely inside each model adapter implementation, so the kernel stays vendor-agnostic.
+- Provider-specific projection and native replay rehydration live in the provider layer (the context assembler plus model adapters), so the kernel stays vendor-agnostic.
+- The current semantic model context is authoritative for every request. Provider replay contributes only retained native reasoning/tool envelopes; it cannot overwrite new memory, prompt, optimizer, or user deltas. OpenAI remote continuation keeps a separate delta input and a complete local fallback.
+- A request-only model context that is still pending at a durable suspend boundary is stored in the execution checkpoint and restored before the next `before_model` phase.
+- Human-input continuations expose only an opaque, process-local replay handle; provider reasoning/signatures are not serialized into the public continuation. Use session memory/checkpoints when a continuation must survive a process restart.
 
 ## Provider Abstraction
 

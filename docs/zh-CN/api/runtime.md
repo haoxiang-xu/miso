@@ -127,6 +127,7 @@ Frozen dataclass，由 `Agent.run()` 和 `PreparedAgent.run()` 返回，包含�
 | `cache_creation_input_tokens` | `int` | 默认值：`0`。 |
 | `previous_response_id` | `str \| None` | 默认值：`None`。 |
 | `iteration` | `int` | 默认值：`0`。 |
+| `provider_replay_handle` | `dict[str, Any] \| None` | 内部用于安全交接 repair/resume 的 opaque 进程内 replay capability。序列化后只含 `id` 和 `scope`，不会包含 provider reasoning/signature。默认值：`None`。 |
 
 ### `src/unchain/runtime/completion.py`
 
@@ -227,6 +228,7 @@ Frozen dataclass，打包单次模型 turn 的消息、payload、格式和 toolk
 | `emit_stream` | `bool` | 默认值：`False`。 |
 | `previous_response_id` | `str \| None` | 默认值：`None`。 |
 | `openai_text_format` | `dict[str, Any] \| None` | 默认值：`None`。 |
+| `fallback_messages` | `list[dict[str, Any]] \| None` | OpenAI 远端 continuation 无法恢复时使用的完整本地上下文。默认值：`None`。 |
 
 ### 公共方法
 

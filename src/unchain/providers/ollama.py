@@ -13,6 +13,7 @@ from ..kernel.provider_replay import (
     redact_provider_replay_secrets,
     strict_json_copy,
     tool_schema_digest,
+    tool_schema_manifest,
 )
 from ..kernel.types import ModelTurnResult, ToolCall
 
@@ -165,6 +166,10 @@ class OllamaModelIO(_NativeModelIOBase):
                             request.toolkit,
                             self.provider,
                         ),
+                        "tool_schema_manifest": tool_schema_manifest(
+                            request.toolkit,
+                            self.provider,
+                        ),
                     }
 
                     return ModelTurnResult(
@@ -211,6 +216,10 @@ class OllamaModelIO(_NativeModelIOBase):
                             "mode": "replace",
                             "source": "ollama_chat_message",
                             "tool_schema_digest": tool_schema_digest(
+                                request.toolkit,
+                                self.provider,
+                            ),
+                            "tool_schema_manifest": tool_schema_manifest(
                                 request.toolkit,
                                 self.provider,
                             ),

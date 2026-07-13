@@ -13,6 +13,7 @@ from ..kernel.provider_replay import (
     redact_provider_replay_secrets,
     strict_json_copy,
     tool_schema_digest,
+    tool_schema_manifest,
 )
 from ..kernel.types import ModelTurnResult, ToolCall
 
@@ -56,7 +57,7 @@ class AnthropicModelIO(_NativeModelIOBase):
         system_parts: list[str] = []
         chat_messages: list[dict[str, Any]] = []
         for message in request.messages:
-            if isinstance(message, dict) and message.get("role") == "system":
+            if isinstance(message, dict) and message.get("role") in {"system", "developer"}:
                 content = message.get("content", "")
                 if isinstance(content, str) and content.strip():
                     system_parts.append(content.strip())
@@ -383,6 +384,10 @@ class AnthropicModelIO(_NativeModelIOBase):
             "mode": "replace",
             "source": "anthropic_final_message_content",
             "tool_schema_digest": tool_schema_digest(
+                request.toolkit,
+                self.provider,
+            ),
+            "tool_schema_manifest": tool_schema_manifest(
                 request.toolkit,
                 self.provider,
             ),

@@ -127,6 +127,7 @@ Frozen dataclass returned by `Agent.run()` and `PreparedAgent.run()` with the fi
 | `cache_creation_input_tokens` | `int` | Default: `0`. |
 | `previous_response_id` | `str \| None` | Default: `None`. |
 | `iteration` | `int` | Default: `0`. |
+| `provider_replay_handle` | `dict[str, Any] \| None` | Opaque process-local replay capability used internally for safe repair/resume handoff. Its serialized form contains only `id` and `scope`, never provider reasoning/signatures. Default: `None`. |
 
 ### `src/unchain/runtime/completion.py`
 
@@ -227,6 +228,7 @@ Frozen dataclass packaging messages, payload, format, and toolkit for a single m
 | `emit_stream` | `bool` | Default: `False`. |
 | `previous_response_id` | `str \| None` | Default: `None`. |
 | `openai_text_format` | `dict[str, Any] \| None` | Default: `None`. |
+| `fallback_messages` | `list[dict[str, Any]] \| None` | Complete local context used only when an OpenAI remote continuation cannot be resumed. Default: `None`. |
 
 ### Public methods
 

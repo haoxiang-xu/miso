@@ -1,5 +1,7 @@
 import threading
 
+import pytest
+
 from unchain.agent import Agent, InteractionModule, ToolsModule
 from unchain.capabilities import ContextTarget, InsertMessagesOp
 from unchain.events.normalizer import RuntimeEventNormalizerContext, normalize_raw_event
@@ -13,6 +15,8 @@ from unchain.kernel.provider_replay import (
     set_provider_replay_frame,
 )
 from unchain.kernel.state import RunState
+from unchain.providers.model_turn_runtime import build_model_turn_request
+from unchain.providers.context_assembler import ProviderContextProjectionError
 
 
 def test_fyi_channel_post_and_drain_preserves_fifo_order():
@@ -73,7 +77,7 @@ def test_harness_returns_none_when_channel_empty():
     assert harness.build_delta(_make_context()) is None
 
 
-def test_harness_drains_channel_into_conversation_insert_delta_with_event():
+def test_harness_drains_channel_into_model_context_delta_with_persistence_and_event():
     channel = FyiChannel()
     mid = channel.post("new requirement")
     harness = FyiInjectionHarness(channel=channel)
@@ -83,7 +87,7 @@ def test_harness_drains_channel_into_conversation_insert_delta_with_event():
     assert channel.pending_count() == 0
     insert_ops = [op for op in delta.context_ops if isinstance(op, InsertMessagesOp)]
     assert len(insert_ops) == 1
-    assert insert_ops[0].target == ContextTarget.CONVERSATION
+    assert insert_ops[0].target == ContextTarget.MODEL_CONTEXT
     assert insert_ops[0].messages[0]["role"] == "user"
     assert "new requirement" in insert_ops[0].messages[0]["content"]
 
@@ -91,6 +95,7 @@ def test_harness_drains_channel_into_conversation_insert_delta_with_event():
     assert len(event_ops) == 1
     assert event_ops[0].payload["count"] == 1
     assert event_ops[0].payload["messages"][0]["message_id"] == mid
+    assert "new requirement" in delta.state_updates["transcript_append"][0]["content"]
 
     assert harness.name == "fyi_injection"
     assert harness.phases == ("before_model",)
@@ -160,16 +165,28 @@ def test_fyi_injection_updates_stateful_delta_and_lossless_provider_replay():
     channel.post("also support Chinese")
     harness = FyiInjectionHarness(channel=channel)
     loop = KernelLoop(harnesses=[harness])
-    state = loop.seed_state([{"role": "user", "content": "original task"}])
     tool_output = {
         "type": "function_call_output",
         "call_id": "call_1",
         "output": '{"ok":true}',
     }
+    semantic_call = {
+        "type": "function_call",
+        "call_id": "call_1",
+        "name": "demo_tool",
+        "arguments": "{}",
+    }
+    state = loop.seed_state(
+        [
+            {"role": "user", "content": "original task"},
+            semantic_call,
+            tool_output,
+        ]
+    )
     state.provider_state.provider = "openai"
     state.provider_state.use_previous_response_chain = True
     state.provider_state.previous_response_id = "resp_1"
-    state.next_model_input = [tool_output]
+    state.remote_continuation_input = [tool_output]
     set_provider_replay_frame(
         state,
         {
@@ -177,12 +194,7 @@ def test_fyi_injection_updates_stateful_delta_and_lossless_provider_replay():
             "complete": True,
             "items": [
                 {"role": "user", "content": "original task"},
-                {
-                    "type": "function_call",
-                    "call_id": "call_1",
-                    "name": "demo_tool",
-                    "arguments": "{}",
-                },
+                semantic_call,
                 tool_output,
             ],
             "source": "test",
@@ -191,12 +203,18 @@ def test_fyi_injection_updates_stateful_delta_and_lossless_provider_replay():
 
     loop.dispatch_phase(state, phase="before_model", event={"run_id": "run-1"})
 
-    assert state.next_model_input[0] == tool_output
-    assert "also support Chinese" in state.next_model_input[-1]["content"]
+    assert state.remote_continuation_input[0] == tool_output
+    assert "also support Chinese" in state.remote_continuation_input[-1]["content"]
     assert "also support Chinese" in state.transcript[-1]["content"]
     replay_frame = current_provider_replay_frame(state)
     assert replay_frame is not None
     assert "also support Chinese" in replay_frame["items"][-1]["content"]
+    request = build_model_turn_request(state)
+    assert request.previous_response_id == "resp_1"
+    assert sum(
+        "also support Chinese" in str(message.get("content", ""))
+        for message in request.messages
+    ) == 1
 
 
 def test_fyi_posted_mid_run_reaches_next_model_request():
@@ -257,6 +275,50 @@ def test_fyi_posted_mid_run_reaches_next_model_request():
     # it to "interaction.fyi_injected" is a separate opt-in step
     # (unchain.events.normalizer.normalize_raw_event), not applied here.
     assert any("fyi_injected" in str(e.get("type", "")) or "fyi_injected" in str(e.get("event", "")) for e in events)
+
+
+def test_external_previous_response_fyi_keeps_primary_user_delta():
+    channel = FyiChannel()
+    channel.post("side note")
+    loop = KernelLoop(harnesses=[FyiInjectionHarness(channel=channel)])
+    state = loop.seed_state([{"role": "user", "content": "PRIMARY INPUT"}])
+    state.provider_state.provider = "openai"
+    state.provider_state.previous_response_id = "resp_external"
+    state.provider_state.use_previous_response_chain = True
+
+    loop.dispatch_phase(state, phase="before_model", event={"run_id": "run-1"})
+    request = build_model_turn_request(state)
+
+    assert request.previous_response_id == "resp_external"
+    assert sum(
+        message.get("content") == "PRIMARY INPUT"
+        for message in request.messages
+    ) == 1
+    assert sum(
+        "side note" in str(message.get("content", ""))
+        for message in request.messages
+    ) == 1
+
+
+def test_external_previous_response_fyi_cannot_replay_full_history():
+    channel = FyiChannel()
+    channel.post("side note")
+    loop = KernelLoop(harnesses=[FyiInjectionHarness(channel=channel)])
+    state = loop.seed_state(
+        [
+            {"role": "user", "content": "old input"},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "user", "content": "new input"},
+        ]
+    )
+    state.provider_state.provider = "openai"
+    state.provider_state.previous_response_id = "resp_external"
+    state.provider_state.use_previous_response_chain = True
+
+    loop.dispatch_phase(state, phase="before_model", event={"run_id": "run-1"})
+
+    with pytest.raises(ProviderContextProjectionError, match="new user delta"):
+        build_model_turn_request(state)
 
 
 def test_fyi_injected_event_normalizes_to_interaction_namespace():

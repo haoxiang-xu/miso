@@ -89,19 +89,24 @@ class FyiInjectionHarness(BaseRuntimeHarness):
         state_updates = {}
         if isinstance(current_provider_replay_frame(context.state), dict):
             state_updates["provider_replay_append"] = copy.deepcopy(wrapped)
-        if (
-            context.state.provider_state.use_previous_response_chain
-            and isinstance(context.state.next_model_input, list)
-        ):
-            state_updates["next_model_input"] = [
-                *copy.deepcopy(context.state.next_model_input),
+        if context.state.provider_state.use_previous_response_chain:
+            state_updates["remote_continuation_input"] = [
+                *copy.deepcopy(
+                    context.state.remote_continuation_input
+                    if isinstance(context.state.remote_continuation_input, list)
+                    else context.latest_messages()
+                ),
                 *copy.deepcopy(wrapped),
             ]
-        # Append onto the CONVERSATION target: apply_run_delta both extends
-        # state.transcript (persistence into the final result) AND creates a
-        # new version graph node from it, becoming state.latest_version_id —
-        # so the injected message is visible to the model in *this* turn's
-        # state.latest_messages(), not just on the next iteration's rebuild.
+        state_updates["transcript_append"] = copy.deepcopy(wrapped)
+        state_updates["next_model_input"] = (
+            copy.deepcopy(context.state.next_model_input)
+            if isinstance(context.state.next_model_input, list)
+            else None
+        )
+        # Insert into the current MODEL_CONTEXT so a request-only context from
+        # the preceding tool turn is not replaced by a transcript snapshot.
+        # transcript_append persists the same FYI into the final conversation.
         # The state updates also preserve both provider context owners: a
         # stateful continuation gets the FYI in its next input delta, while a
         # manual/cold continuation gets it in the lossless provider replay.
@@ -109,8 +114,8 @@ class FyiInjectionHarness(BaseRuntimeHarness):
             created_by=FYI_CREATED_BY,
             context_ops=(
                 InsertMessagesOp(
-                    target=ContextTarget.CONVERSATION,
-                    index=len(context.state.transcript),
+                    target=ContextTarget.MODEL_CONTEXT,
+                    index=len(context.latest_messages()),
                     messages=wrapped,
                     reason=FYI_CREATED_BY,
                 ),
