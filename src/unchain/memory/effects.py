@@ -83,7 +83,7 @@ def _state_updates_to_context_ops(updates: dict[str, Any] | None) -> tuple[Conte
                 )
             )
             continue
-        if key in {"iteration", "workspace_change_state"}:
+        if key in {"iteration", "next_model_input", "workspace_change_state"}:
             context_ops.append(
                 SetRuntimeStateOp(
                     path=(key,),

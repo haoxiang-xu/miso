@@ -75,6 +75,7 @@ class RunState:
     run_status: str = "idle"
     last_continuation: dict[str, Any] | None = None
     next_model_input: list[dict[str, Any]] | None = None
+    remote_continuation_input: list[dict[str, Any]] | None = None
     memory_state: dict[str, Any] = field(default_factory=dict)
     memory_prepare_info: dict[str, Any] = field(default_factory=dict)
     memory_commit_info: dict[str, Any] = field(default_factory=dict)
@@ -136,8 +137,21 @@ class RunState:
         created_by: str = "kernel.transcript_snapshot",
         metadata: dict[str, Any] | None = None,
     ) -> str:
+        return self.rebuild_working_version(
+            self.transcript,
+            created_by=created_by,
+            metadata=metadata,
+        )
+
+    def rebuild_working_version(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        created_by: str = "kernel.context_snapshot",
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
         version = self.versions.create_version(
-            messages=self.transcript,
+            messages=messages,
             parent_version_id=self.latest_version_id,
             created_by=created_by,
             metadata=metadata,
@@ -310,6 +324,13 @@ class RunState:
                 self.next_model_input = _deepcopy_messages(value if isinstance(value, list) else [])
                 if not self.next_model_input:
                     self.next_model_input = None
+                continue
+            if key == "remote_continuation_input":
+                self.remote_continuation_input = _deepcopy_messages(
+                    value if isinstance(value, list) else []
+                )
+                if not self.remote_continuation_input:
+                    self.remote_continuation_input = None
                 continue
             if key == "provider_state" and isinstance(value, dict):
                 for inner_key, inner_value in value.items():

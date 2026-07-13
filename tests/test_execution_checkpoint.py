@@ -405,3 +405,52 @@ def test_max_checkpoint_cold_restore_preserves_runtime_counters_and_adds_run_bud
     assert result.cache_read_input_tokens == 20
     assert result.cache_creation_input_tokens == 14
     assert "execution_checkpoint" not in store.load("checkpoint-session")
+
+
+def test_max_checkpoint_cold_restore_preserves_pending_model_context_and_new_input():
+    class _CaptureModelIO:
+        provider = "ollama"
+        model = "fake"
+
+        def __init__(self):
+            self.requests = []
+
+        def fetch_turn(self, request):
+            self.requests.append(request)
+            return ModelTurnResult(
+                assistant_messages=[{"role": "assistant", "content": "done"}],
+                tool_calls=[],
+                final_text="done",
+            )
+
+    checkpoint_state = _checkpoint_state()
+    checkpoint_state.next_model_input = [
+        {"role": "system", "content": "PERSIST-ME"},
+        {"role": "user", "content": "start"},
+    ]
+    store = InMemorySessionStore()
+    runtime = KernelMemoryRuntime.from_config(store=store)
+    runtime.save_execution_checkpoint(
+        "checkpoint-session",
+        build_execution_checkpoint(
+            checkpoint_state,
+            status="max_iterations",
+            run_id="run-before-restart",
+        ),
+    )
+    model_io = _CaptureModelIO()
+    loop = build_runtime_loop(model_io=model_io, memory_runtime=runtime)
+
+    result = loop.run(
+        [{"role": "user", "content": "continue"}],
+        session_id="checkpoint-session",
+        provider="ollama",
+        model="fake",
+        max_iterations=1,
+    )
+
+    assert result.status == "completed"
+    request_messages = model_io.requests[0].messages
+    assert {"role": "system", "content": "PERSIST-ME"} in request_messages
+    assert {"role": "user", "content": "start"} in request_messages
+    assert {"role": "user", "content": "continue"} in request_messages

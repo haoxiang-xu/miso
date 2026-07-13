@@ -8,7 +8,7 @@ import pytest
 
 from unchain.agent import Agent, InteractionModule, MemoryModule, ToolsModule
 from unchain.input.human_input import ASK_USER_QUESTION_TOOL_NAME
-from unchain.kernel import ModelTurnRequest
+from unchain.kernel import ModelTurnRequest, ModelTurnResult, ToolCall
 from unchain.kernel.provider_replay import ProviderReplayFrameError
 from unchain.memory import JsonFileSessionStore, MemoryManager
 from unchain.providers import AnthropicModelIO, OllamaModelIO, OpenAIModelIO
@@ -54,6 +54,33 @@ def _openai_factory(outputs_by_turn, captured_requests):
         def __init__(self, api_key):
             self.api_key = api_key
             self.responses = responses
+
+    return _Client
+
+
+def _openai_previous_response_fallback_factory(captured_requests):
+    class _Responses:
+        def create(self, **kwargs):
+            captured_requests.append(copy.deepcopy(kwargs))
+            if kwargs.get("previous_response_id"):
+                raise ValueError("previous_response not_found")
+            response = SimpleNamespace(
+                id="resp_fallback",
+                output=[
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "done"}],
+                    }
+                ],
+                usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+            return _FakeOpenAIStream(response)
+
+    class _Client:
+        def __init__(self, api_key):
+            self.api_key = api_key
+            self.responses = _Responses()
 
     return _Client
 
@@ -287,6 +314,365 @@ def test_openai_request_trace_redacts_encrypted_reasoning_content():
     assert captured_requests[0]["input"][0]["encrypted_content"] == "do-not-log-this"
 
 
+def test_openai_refusal_is_semantic_and_replayable_without_silent_loss():
+    captured_requests = []
+    outputs_by_turn = [
+        [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "refusal", "refusal": "cannot comply"}
+                ],
+                "status": "completed",
+            }
+        ]
+    ]
+    model_io = OpenAIModelIO(
+        model="gpt-5",
+        api_key="test-key",
+        client_factory=_openai_factory(outputs_by_turn, captured_requests),
+    )
+
+    turn = model_io.fetch_turn(
+        ModelTurnRequest(
+            messages=[{"role": "user", "content": "unsafe request"}],
+            toolkit=Toolkit(),
+        )
+    )
+
+    assert turn.assistant_messages == [
+        {"role": "assistant", "content": "cannot comply"}
+    ]
+    assert turn.final_text == "cannot comply"
+    raw_refusal = turn.provider_replay_frame["items"][-1]
+    assert raw_refusal["content"][0]["type"] == "refusal"
+
+
+def test_openai_previous_response_failure_uses_complete_local_fallback():
+    captured_requests = []
+    events = []
+    delta = {
+        "type": "function_call_output",
+        "call_id": "call_1",
+        "output": '{"value":2}',
+    }
+    full_fallback = [
+        {"role": "user", "content": "call the tool"},
+        {
+            "type": "reasoning",
+            "id": "rs_1",
+            "encrypted_content": "opaque-ciphertext",
+            "summary": [],
+        },
+        {
+            "type": "function_call",
+            "id": "fc_1",
+            "call_id": "call_1",
+            "name": "demo_tool",
+            "arguments": "{}",
+            "status": "completed",
+        },
+        delta,
+    ]
+    model_io = OpenAIModelIO(
+        model="gpt-5",
+        api_key="test-key",
+        client_factory=_openai_previous_response_fallback_factory(captured_requests),
+    )
+
+    turn = model_io.fetch_turn(
+        ModelTurnRequest(
+            messages=[delta],
+            previous_response_id="missing_response",
+            fallback_messages=full_fallback,
+            callback=events.append,
+            toolkit=Toolkit(),
+        )
+    )
+
+    assert len(captured_requests) == 2
+    assert captured_requests[0]["input"] == [delta]
+    assert captured_requests[1]["input"] == full_fallback
+    assert "previous_response_id" not in captured_requests[1]
+    request_events = [event for event in events if event["type"] == "request_messages"]
+    assert len(request_events) == 2
+    assert request_events[0]["previous_response_id"] == "missing_response"
+    assert request_events[1].get("previous_response_id") is None
+    assert request_events[1]["messages"][-1] == delta
+    assert turn.provider_replay_frame["complete"] is True
+    assert turn.provider_replay_frame["items"][:4] == full_fallback
+
+
+def test_openai_previous_response_failure_without_local_fallback_fails_closed():
+    captured_requests = []
+    model_io = OpenAIModelIO(
+        model="gpt-5",
+        api_key="test-key",
+        client_factory=_openai_previous_response_fallback_factory(captured_requests),
+    )
+
+    with pytest.raises(ProviderReplayFrameError, match="complete local replay fallback"):
+        model_io.fetch_turn(
+            ModelTurnRequest(
+                messages=[
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_1",
+                        "output": '{"value":2}',
+                    }
+                ],
+                previous_response_id="missing_response",
+                toolkit=Toolkit(),
+            )
+        )
+
+    assert len(captured_requests) == 1
+
+
+def test_openai_external_previous_response_chain_survives_multiple_tool_hops():
+    captured_requests = []
+    outputs_by_turn = [
+        [
+            {
+                "type": "function_call",
+                "id": "fc_1",
+                "call_id": "call_1",
+                "name": "step_tool",
+                "arguments": '{"step":1}',
+                "status": "completed",
+            }
+        ],
+        [
+            {
+                "type": "function_call",
+                "id": "fc_2",
+                "call_id": "call_2",
+                "name": "step_tool",
+                "arguments": '{"step":2}',
+                "status": "completed",
+            }
+        ],
+        [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "done"}],
+                "status": "completed",
+            }
+        ],
+    ]
+    model_io = OpenAIModelIO(
+        model="gpt-5",
+        api_key="test-key",
+        client_factory=_openai_factory(outputs_by_turn, captured_requests),
+    )
+    toolkit = Toolkit()
+    executed_steps = []
+
+    def step_tool(step: int):
+        executed_steps.append(step)
+        return {"step": step, "ok": True}
+
+    toolkit.register(step_tool, name="step_tool")
+    loop = build_runtime_loop(model_io=model_io)
+
+    result = loop.run(
+        [{"role": "user", "content": "continue the remote task"}],
+        payload={"store": True},
+        provider="openai",
+        model="gpt-5",
+        toolkit=toolkit,
+        previous_response_id="resp_external",
+        max_iterations=4,
+    )
+
+    assert result.status == "completed"
+    assert executed_steps == [1, 2]
+    assert [request.get("previous_response_id") for request in captured_requests] == [
+        "resp_external",
+        "resp_1",
+        "resp_2",
+    ]
+    assert [item.get("type") for item in captured_requests[1]["input"]] == [
+        "function_call_output"
+    ]
+    assert [item.get("type") for item in captured_requests[2]["input"]] == [
+        "function_call_output"
+    ]
+
+
+def test_custom_openai_adapter_external_chain_survives_multiple_tool_hops():
+    class CustomModelIO:
+        provider = "openai"
+        model = "gpt-5"
+
+        def __init__(self):
+            self.requests = []
+
+        def fetch_turn(self, request):
+            self.requests.append(request)
+            turn = len(self.requests)
+            if turn <= 2:
+                return ModelTurnResult(
+                    assistant_messages=[{"role": "assistant", "content": ""}],
+                    tool_calls=[
+                        ToolCall(
+                            call_id=f"call_{turn}",
+                            name="step_tool",
+                            arguments={"step": turn},
+                        )
+                    ],
+                    final_text="",
+                    response_id=f"resp_{turn}",
+                )
+            return ModelTurnResult(
+                assistant_messages=[{"role": "assistant", "content": "done"}],
+                tool_calls=[],
+                final_text="done",
+                response_id="resp_3",
+            )
+
+    model_io = CustomModelIO()
+    executed_steps = []
+
+    def step_tool(step: int):
+        executed_steps.append(step)
+        return {"step": step, "ok": True}
+
+    agent = Agent(
+        name="custom-openai-external-multihop",
+        provider="openai",
+        model="gpt-5",
+        modules=(ToolsModule(tools=(step_tool,)),),
+        model_io_factory=lambda spec, context: model_io,
+    )
+
+    result = agent.run(
+        "continue the custom remote task",
+        payload={"store": True},
+        previous_response_id="resp_external",
+        max_iterations=4,
+    )
+
+    assert result.status == "completed"
+    assert executed_steps == [1, 2]
+    assert [request.previous_response_id for request in model_io.requests] == [
+        "resp_external",
+        "resp_1",
+        "resp_2",
+    ]
+    assert [item.get("type") for item in model_io.requests[1].messages] == [
+        "function_call_output"
+    ]
+    assert [item.get("type") for item in model_io.requests[2].messages] == [
+        "function_call_output"
+    ]
+
+
+def test_openai_external_chain_survives_human_resume_then_another_tool():
+    captured_requests = []
+    ask_arguments = json.dumps(
+        {
+            "title": "Continue?",
+            "question": "Should I continue?",
+            "selection_mode": "single",
+            "options": [
+                {"label": "Yes", "value": "yes"},
+                {"label": "No", "value": "no"},
+            ],
+        }
+    )
+    outputs_by_turn = [
+        [
+            {
+                "type": "function_call",
+                "id": "fc_human",
+                "call_id": "call_human",
+                "name": ASK_USER_QUESTION_TOOL_NAME,
+                "arguments": ask_arguments,
+                "status": "completed",
+            }
+        ],
+        [
+            {
+                "type": "function_call",
+                "id": "fc_demo",
+                "call_id": "call_demo",
+                "name": "demo_tool",
+                "arguments": '{"value":7}',
+                "status": "completed",
+            }
+        ],
+        [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "done"}],
+                "status": "completed",
+            }
+        ],
+    ]
+    model_io = OpenAIModelIO(
+        model="gpt-5",
+        api_key="test-key",
+        client_factory=_openai_factory(outputs_by_turn, captured_requests),
+    )
+    executed = []
+
+    def demo_tool(value: int):
+        executed.append(value)
+        return {"value": value, "ok": True}
+
+    agent = Agent(
+        name="external-human-multihop",
+        provider="openai",
+        model="gpt-5",
+        modules=(
+            InteractionModule(),
+            ToolsModule(tools=(demo_tool,)),
+        ),
+        model_io_factory=lambda spec, context: model_io,
+    )
+
+    suspended = agent.run(
+        "continue a remote task",
+        payload={"store": True},
+        previous_response_id="resp_external",
+        max_iterations=4,
+    )
+
+    assert suspended.status == "awaiting_human_input"
+    assert suspended.continuation is not None
+    assert suspended.continuation["provider_replay_handle"]["id"].startswith(
+        "provider_replay_"
+    )
+    assert "provider_replay_frame" not in suspended.continuation
+
+    completed = agent.resume_human_input(
+        conversation=suspended.messages,
+        continuation=suspended.continuation,
+        response={
+            "request_id": "call_human",
+            "selected_values": ["yes"],
+        },
+    )
+
+    assert completed.status == "completed"
+    assert executed == [7]
+    assert [request.get("previous_response_id") for request in captured_requests] == [
+        "resp_external",
+        "resp_1",
+        "resp_2",
+    ]
+    assert [item.get("type") for item in captured_requests[1]["input"]] == [
+        "function_call_output"
+    ]
+    assert [item.get("type") for item in captured_requests[2]["input"]] == [
+        "function_call_output"
+    ]
+
+
 def test_openai_reasoning_checkpoint_cold_restart_does_not_reexecute_tool(tmp_path):
     tool_calls = {"count": 0}
 
@@ -353,6 +739,8 @@ def test_openai_reasoning_checkpoint_cold_restart_does_not_reexecute_tool(tmp_pa
         tool_calls["count"] += 1
         return {"value": x + 1}
 
+    demo_tool_with_changed_schema.__name__ = "demo_tool"
+
     mismatched_agent = Agent(
         name="openai-cold-replay",
         provider="openai",
@@ -418,7 +806,7 @@ def test_openai_reasoning_checkpoint_cold_restart_does_not_reexecute_tool(tmp_pa
     )
 
     completed = resumed_agent.run(
-        [],
+        "continue with the saved result",
         payload={"store": False, "reasoning": {"effort": "medium"}},
         session_id="openai-cold-session",
         max_iterations=1,
@@ -427,7 +815,17 @@ def test_openai_reasoning_checkpoint_cold_restart_does_not_reexecute_tool(tmp_pa
     assert completed.status == "completed"
     assert tool_calls["count"] == 1
     assert "previous_response_id" not in resumed_requests[0]
-    assert resumed_requests[0]["input"][-3]["encrypted_content"] == "cold-ciphertext"
+    assert next(
+        item
+        for item in resumed_requests[0]["input"]
+        if item.get("type") == "reasoning"
+    )["encrypted_content"] == "cold-ciphertext"
+    assert sum(
+        1
+        for item in resumed_requests[0]["input"]
+        if item.get("role") == "user"
+        and item.get("content") == "continue with the saved result"
+    ) == 1
     assert "execution_checkpoint" not in resumed_memory.store.load("openai-cold-session")
 
 
@@ -471,6 +869,43 @@ def test_anthropic_thinking_signature_is_preserved_only_in_provider_replay():
         "thinking": "plan",
         "signature": "opaque-signature",
     }
+
+
+def test_anthropic_projects_developer_contributions_into_the_system_field():
+    captured_requests = []
+    model_io = AnthropicModelIO(
+        model="claude-sonnet-4",
+        api_key="test-key",
+        client_factory=_anthropic_factory(
+            [
+                [
+                    SimpleNamespace(
+                        type="content_block_delta",
+                        index=0,
+                        delta=SimpleNamespace(type="text_delta", text="done"),
+                    ),
+                    SimpleNamespace(type="content_block_stop", index=0),
+                ]
+            ],
+            captured_requests,
+        ),
+    )
+
+    model_io.fetch_turn(
+        ModelTurnRequest(
+            messages=[
+                {"role": "developer", "content": "developer policy"},
+                {"role": "user", "content": "hello"},
+            ],
+            toolkit=Toolkit(),
+        )
+    )
+
+    assert captured_requests[0]["system"][0]["text"] == "developer policy"
+    assert all(
+        message.get("role") != "developer"
+        for message in captured_requests[0]["messages"]
+    )
 
 
 def test_anthropic_missing_thinking_signature_fails_before_tool_execution():
@@ -636,15 +1071,36 @@ def test_anthropic_thinking_checkpoint_cold_restart_preserves_signature(tmp_path
     )
 
     completed = resumed_agent.run(
-        [],
+        "continue with the saved result",
         session_id="anthropic-cold-session",
         max_iterations=1,
     )
 
     assert completed.status == "completed"
     assert tool_calls["count"] == 1
-    replayed_assistant = resumed_requests[0]["messages"][-2]
+    replayed_assistant = next(
+        item
+        for item in resumed_requests[0]["messages"]
+        if item.get("role") == "assistant"
+        and isinstance(item.get("content"), list)
+        and item["content"]
+        and item["content"][0].get("type") == "thinking"
+    )
     assert replayed_assistant["content"][0]["signature"] == "opaque-signature"
+    assert sum(
+        1
+        for item in resumed_requests[0]["messages"]
+        if item.get("role") == "user"
+        and (
+            item.get("content") == "continue with the saved result"
+            or (
+                isinstance(item.get("content"), list)
+                and item["content"]
+                and item["content"][0].get("text")
+                == "continue with the saved result"
+            )
+        )
+    ) == 1
     assert "execution_checkpoint" not in resumed_memory.store.load(
         "anthropic-cold-session"
     )

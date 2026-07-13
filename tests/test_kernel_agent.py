@@ -543,10 +543,353 @@ def test_completion_policy_retries_completed_run_until_validator_passes():
         "role": "user",
         "content": "Revise the answer and include a checklist.",
     }
+    assert fake_model_io.requests[1].messages == [
+        {
+            "role": "user",
+            "content": "Revise the answer and include a checklist.",
+        }
+    ]
+    assert fake_model_io.requests[1].previous_response_id == "resp_draft"
+    assert fake_model_io.requests[1].fallback_messages == [
+        {"role": "user", "content": "produce an answer"},
+        {"role": "assistant", "content": "draft answer"},
+        {
+            "role": "user",
+            "content": "Revise the answer and include a checklist.",
+        },
+    ]
+    assert result.messages == [
+        {"role": "user", "content": "produce an answer"},
+        {"role": "assistant", "content": "draft answer"},
+        {
+            "role": "user",
+            "content": "Revise the answer and include a checklist.",
+        },
+        {"role": "assistant", "content": "final answer with checklist"},
+    ]
     assert [event["type"] for event in events if event["type"].startswith("completion_policy_")] == [
         "completion_policy_evaluated",
         "completion_policy_retry",
         "completion_policy_evaluated",
+    ]
+
+
+def test_completion_policy_repairs_external_response_chain_from_delta_only():
+    class FakeModelIO:
+        provider = "openai"
+        model = "gpt-5"
+
+        def __init__(self):
+            self.requests = []
+            self.results = [
+                ModelTurnResult(
+                    assistant_messages=[
+                        {"role": "assistant", "content": "draft one"}
+                    ],
+                    tool_calls=[],
+                    final_text="draft one",
+                    response_id="resp_1",
+                ),
+                ModelTurnResult(
+                    assistant_messages=[
+                        {"role": "assistant", "content": "draft two"}
+                    ],
+                    tool_calls=[],
+                    final_text="draft two",
+                    response_id="resp_2",
+                ),
+                ModelTurnResult(
+                    assistant_messages=[
+                        {"role": "assistant", "content": "final"}
+                    ],
+                    tool_calls=[],
+                    final_text="final",
+                    response_id="resp_3",
+                ),
+            ]
+
+        def fetch_turn(self, request):
+            self.requests.append(request)
+            return self.results.pop(0)
+
+    model_io = FakeModelIO()
+
+    def validate(result):
+        final_text = result.messages[-1].get("content")
+        if final_text == "final":
+            return CompletionEvaluation(complete=True)
+        return CompletionEvaluation(
+            complete=False,
+            feedback=f"repair after {final_text}",
+        )
+
+    agent = Agent(
+        name="completion-external-response-chain",
+        modules=(
+            PoliciesModule(
+                completion_policy=CompletionPolicy(
+                    validator=validate,
+                    max_repair_turns=2,
+                )
+            ),
+        ),
+        model_io_factory=lambda spec, context: model_io,
+    )
+
+    result = agent.run(
+        "new delta",
+        previous_response_id="external_resp",
+        max_iterations=1,
+    )
+
+    assert result.status == "completed"
+    assert [request.previous_response_id for request in model_io.requests] == [
+        "external_resp",
+        "resp_1",
+        "resp_2",
+    ]
+    assert model_io.requests[0].messages == [
+        {"role": "user", "content": "new delta"}
+    ]
+    assert model_io.requests[1].messages == [
+        {"role": "user", "content": "repair after draft one"}
+    ]
+    assert model_io.requests[2].messages == [
+        {"role": "user", "content": "repair after draft two"}
+    ]
+    assert model_io.requests[1].fallback_messages is None
+    assert model_io.requests[2].fallback_messages is None
+    assert result.messages == [
+        {"role": "user", "content": "new delta"},
+        {"role": "assistant", "content": "draft one"},
+        {"role": "user", "content": "repair after draft one"},
+        {"role": "assistant", "content": "draft two"},
+        {"role": "user", "content": "repair after draft two"},
+        {"role": "assistant", "content": "final"},
+    ]
+
+
+def test_completion_policy_store_false_repairs_from_full_local_history():
+    class FakeModelIO:
+        provider = "openai"
+        model = "gpt-5"
+
+        def __init__(self):
+            self.requests = []
+
+        def fetch_turn(self, request):
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                return ModelTurnResult(
+                    assistant_messages=[
+                        {"role": "assistant", "content": "draft answer"}
+                    ],
+                    tool_calls=[],
+                    final_text="draft answer",
+                    response_id="resp_draft",
+                )
+            return ModelTurnResult(
+                assistant_messages=[
+                    {"role": "assistant", "content": "final answer"}
+                ],
+                tool_calls=[],
+                final_text="final answer",
+                response_id="resp_final",
+            )
+
+    model_io = FakeModelIO()
+
+    def validate(result):
+        if result.messages[-1].get("content") == "final answer":
+            return CompletionEvaluation(complete=True)
+        return CompletionEvaluation(
+            complete=False,
+            feedback="repair with the original requirements",
+        )
+
+    agent = Agent(
+        name="completion-local-repair",
+        instructions="SYS",
+        modules=(
+            PoliciesModule(
+                payload={"store": False},
+                completion_policy=CompletionPolicy(
+                    validator=validate,
+                    max_repair_turns=1,
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, context: model_io,
+    )
+
+    result = agent.run("ORIGINAL", max_iterations=1)
+
+    assert result.status == "completed"
+    assert len(model_io.requests) == 2
+    assert model_io.requests[1].previous_response_id is None
+    assert model_io.requests[1].messages == [
+        {"role": "system", "content": "SYS"},
+        {"role": "user", "content": "ORIGINAL"},
+        {"role": "assistant", "content": "draft answer"},
+        {"role": "user", "content": "repair with the original requirements"},
+    ]
+    assert result.messages[:4] == model_io.requests[1].messages
+
+
+def test_completion_policy_remote_repairs_keep_linear_transcript_and_fallback():
+    class FakeModelIO:
+        provider = "openai"
+        model = "gpt-5"
+
+        def __init__(self):
+            self.requests = []
+            self.results = [
+                ("draft one", "resp_1"),
+                ("draft two", "resp_2"),
+                ("final", "resp_3"),
+            ]
+
+        def fetch_turn(self, request):
+            self.requests.append(request)
+            text, response_id = self.results.pop(0)
+            return ModelTurnResult(
+                assistant_messages=[{"role": "assistant", "content": text}],
+                tool_calls=[],
+                final_text=text,
+                response_id=response_id,
+            )
+
+    model_io = FakeModelIO()
+
+    def validate(result):
+        final_text = result.messages[-1].get("content")
+        if final_text == "final":
+            return CompletionEvaluation(complete=True)
+        return CompletionEvaluation(
+            complete=False,
+            feedback=f"repair after {final_text}",
+        )
+
+    agent = Agent(
+        name="completion-remote-multiple-repairs",
+        modules=(
+            PoliciesModule(
+                completion_policy=CompletionPolicy(
+                    validator=validate,
+                    max_repair_turns=2,
+                )
+            ),
+        ),
+        model_io_factory=lambda spec, context: model_io,
+    )
+
+    result = agent.run("start", max_iterations=1)
+
+    assert result.status == "completed"
+    assert [request.previous_response_id for request in model_io.requests] == [
+        None,
+        "resp_1",
+        "resp_2",
+    ]
+    assert model_io.requests[1].messages == [
+        {"role": "user", "content": "repair after draft one"}
+    ]
+    assert model_io.requests[2].messages == [
+        {"role": "user", "content": "repair after draft two"}
+    ]
+    assert model_io.requests[2].fallback_messages == [
+        {"role": "user", "content": "start"},
+        {"role": "assistant", "content": "draft one"},
+        {"role": "user", "content": "repair after draft one"},
+        {"role": "assistant", "content": "draft two"},
+        {"role": "user", "content": "repair after draft two"},
+    ]
+    assert result.messages == [
+        *model_io.requests[2].fallback_messages,
+        {"role": "assistant", "content": "final"},
+    ]
+
+
+def test_completion_policy_native_remote_repairs_keep_each_request_delta():
+    class NativeFrameModelIO:
+        provider = "openai"
+        model = "gpt-5"
+
+        def __init__(self):
+            self.requests = []
+            self.results = [
+                ("draft one", "resp_1"),
+                ("draft two", "resp_2"),
+                ("final", "resp_3"),
+            ]
+
+        def fetch_turn(self, request):
+            self.requests.append(request)
+            text, response_id = self.results.pop(0)
+            output_item = {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": text}],
+            }
+            remote = bool(request.previous_response_id)
+            return ModelTurnResult(
+                assistant_messages=[{"role": "assistant", "content": text}],
+                tool_calls=[],
+                final_text=text,
+                response_id=response_id,
+                provider_replay_frame={
+                    "format": "openai.responses.v1",
+                    "complete": not remote,
+                    "items": [*request.messages, output_item],
+                    "response_items": [output_item],
+                    "mode": "append_response" if remote else "replace",
+                    "tool_schema_manifest": {},
+                },
+            )
+
+    model_io = NativeFrameModelIO()
+
+    def validate(result):
+        final_text = result.messages[-1].get("content")
+        if final_text == "final":
+            return CompletionEvaluation(complete=True)
+        return CompletionEvaluation(
+            complete=False,
+            feedback=f"repair after {final_text}",
+        )
+
+    agent = Agent(
+        name="completion-native-remote-multiple-repairs",
+        modules=(
+            PoliciesModule(
+                completion_policy=CompletionPolicy(
+                    validator=validate,
+                    max_repair_turns=2,
+                )
+            ),
+        ),
+        model_io_factory=lambda spec, context: model_io,
+    )
+
+    result = agent.run("start", max_iterations=1)
+
+    assert result.status == "completed"
+    assert [request.previous_response_id for request in model_io.requests] == [
+        None,
+        "resp_1",
+        "resp_2",
+    ]
+    assert [request.messages for request in model_io.requests[1:]] == [
+        [{"role": "user", "content": "repair after draft one"}],
+        [{"role": "user", "content": "repair after draft two"}],
+    ]
+    assert result.messages == [
+        {"role": "user", "content": "start"},
+        {"role": "assistant", "content": "draft one"},
+        {"role": "user", "content": "repair after draft one"},
+        {"role": "assistant", "content": "draft two"},
+        {"role": "user", "content": "repair after draft two"},
+        {"role": "assistant", "content": "final"},
     ]
 
 

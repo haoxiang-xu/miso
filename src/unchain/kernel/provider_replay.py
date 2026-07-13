@@ -43,12 +43,49 @@ def tool_schema_digest(toolkit: Any, provider: str) -> str:
     return stable_json_digest(tools or [])
 
 
+def tool_schema_manifest(toolkit: Any, provider: str) -> dict[str, str]:
+    to_provider_json = getattr(toolkit, "to_provider_json", None)
+    tools = to_provider_json(provider) if callable(to_provider_json) else []
+    manifest: dict[str, str] = {}
+    for schema in tools or []:
+        if not isinstance(schema, dict):
+            raise ProviderReplayFrameError(
+                "provider tool schema entries must be dictionaries"
+            )
+        function = schema.get("function")
+        name = (
+            function.get("name")
+            if isinstance(function, dict)
+            else schema.get("name")
+        )
+        normalized_name = str(name or "").strip()
+        if not normalized_name or normalized_name in manifest:
+            raise ProviderReplayFrameError(
+                "provider tool schemas require unique non-empty names"
+            )
+        manifest[normalized_name] = stable_json_digest(schema)
+    return manifest
+
+
 def ensure_replay_tool_schema_compatible(
     frame: dict[str, Any],
     *,
     toolkit: Any,
     provider: str,
 ) -> None:
+    expected_manifest = frame.get("tool_schema_manifest")
+    if isinstance(expected_manifest, dict):
+        actual_manifest = tool_schema_manifest(toolkit, provider)
+        incompatible = [
+            name
+            for name, digest in expected_manifest.items()
+            if name in actual_manifest and actual_manifest.get(name) != digest
+        ]
+        if incompatible:
+            raise ProviderReplayFrameError(
+                "provider replay tool schema does not match previously captured tools"
+            )
+        return
     expected = frame.get("tool_schema_digest")
     if not isinstance(expected, str) or not expected:
         return
@@ -96,6 +133,18 @@ def validate_provider_replay_frame(raw: Any) -> dict[str, Any]:
         raise ProviderReplayFrameError(
             "provider replay frame.tool_schema_digest must be a non-empty string"
         )
+    if "tool_schema_manifest" in frame:
+        manifest = frame.get("tool_schema_manifest")
+        if not isinstance(manifest, dict) or any(
+            not isinstance(name, str)
+            or not name
+            or not isinstance(digest, str)
+            or not digest
+            for name, digest in manifest.items()
+        ):
+            raise ProviderReplayFrameError(
+                "provider replay frame.tool_schema_manifest must map tool names to digests"
+            )
     return frame
 
 
@@ -128,6 +177,33 @@ def merge_model_turn_replay_frame(
             for key, value in incoming.items()
             if key not in {"mode", "response_items"}
         }
+        existing = current_provider_replay_frame(state)
+        if (
+            isinstance(existing, dict)
+            and existing.get("format") == clean.get("format")
+        ):
+            existing_manifest = existing.get("tool_schema_manifest")
+            incoming_manifest = clean.get("tool_schema_manifest")
+            if isinstance(existing_manifest, dict):
+                if isinstance(incoming_manifest, dict):
+                    incompatible = [
+                        name
+                        for name, digest in existing_manifest.items()
+                        if name in incoming_manifest
+                        and incoming_manifest.get(name) != digest
+                    ]
+                    if incompatible:
+                        raise ProviderReplayFrameError(
+                            "provider replay tool schema changed while replacing context"
+                        )
+                clean["tool_schema_manifest"] = {
+                    **copy.deepcopy(existing_manifest),
+                    **copy.deepcopy(
+                        incoming_manifest
+                        if isinstance(incoming_manifest, dict)
+                        else {}
+                    ),
+                }
         return validate_provider_replay_frame(clean)
 
     if mode != "append_response":
@@ -137,16 +213,48 @@ def merge_model_turn_replay_frame(
         raise ProviderReplayFrameError(
             "append_response provider replay frame requires response_items"
         )
+    incoming_items = strict_json_copy(incoming.get("items"))
+    if not isinstance(incoming_items, list):
+        raise ProviderReplayFrameError(
+            "append_response provider replay frame requires items"
+        )
+    if response_items:
+        if (
+            len(incoming_items) < len(response_items)
+            or incoming_items[-len(response_items) :] != response_items
+        ):
+            raise ProviderReplayFrameError(
+                "append_response provider replay items must end with response_items"
+            )
+        request_items = incoming_items[: -len(response_items)]
+    else:
+        request_items = incoming_items
     existing = current_provider_replay_frame(state)
     incoming_format = str(incoming.get("format") or "")
     if (
         isinstance(existing, dict)
-        and existing.get("complete") is True
         and existing.get("format") == incoming_format
     ):
         existing_schema_digest = existing.get("tool_schema_digest")
         incoming_schema_digest = incoming.get("tool_schema_digest")
-        if (
+        existing_manifest = existing.get("tool_schema_manifest")
+        incoming_manifest = incoming.get("tool_schema_manifest")
+        merged_manifest: dict[str, str] | None = None
+        if isinstance(existing_manifest, dict) and isinstance(incoming_manifest, dict):
+            incompatible = [
+                name
+                for name, digest in existing_manifest.items()
+                if name in incoming_manifest and incoming_manifest.get(name) != digest
+            ]
+            if incompatible:
+                raise ProviderReplayFrameError(
+                    "provider replay tool schema changed during remote continuation"
+                )
+            merged_manifest = {
+                **copy.deepcopy(existing_manifest),
+                **copy.deepcopy(incoming_manifest),
+            }
+        elif (
             isinstance(existing_schema_digest, str)
             and isinstance(incoming_schema_digest, str)
             and existing_schema_digest != incoming_schema_digest
@@ -155,22 +263,35 @@ def merge_model_turn_replay_frame(
                 "provider replay tool schema changed during remote continuation"
             )
         merged = copy.deepcopy(existing)
+        if request_items and (
+            len(merged["items"]) < len(request_items)
+            or merged["items"][-len(request_items) :] != request_items
+        ):
+            merged["items"].extend(request_items)
         merged["items"].extend(response_items)
         merged["source"] = str(incoming.get("source") or merged.get("source") or "")
+        if isinstance(merged_manifest, dict):
+            merged["tool_schema_manifest"] = merged_manifest
+        elif isinstance(incoming_manifest, dict):
+            merged["tool_schema_manifest"] = copy.deepcopy(incoming_manifest)
+        if isinstance(incoming_schema_digest, str):
+            merged["tool_schema_digest"] = incoming_schema_digest
         return validate_provider_replay_frame(merged)
 
     fallback_items = strict_json_copy(incoming.get("items") or response_items)
-    return validate_provider_replay_frame(
-        {
-            "format": incoming_format,
-            "complete": False,
-            "items": fallback_items,
-            "source": str(incoming.get("source") or "provider_response_fragment"),
-            "incomplete_reason": (
-                "provider response used remote continuation without a complete local replay prefix"
-            ),
-        }
-    )
+    fallback_frame = {
+        "format": incoming_format,
+        "complete": False,
+        "items": fallback_items,
+        "source": str(incoming.get("source") or "provider_response_fragment"),
+        "incomplete_reason": (
+            "provider response used remote continuation without a complete local replay prefix"
+        ),
+    }
+    for schema_key in ("tool_schema_digest", "tool_schema_manifest"):
+        if schema_key in incoming:
+            fallback_frame[schema_key] = copy.deepcopy(incoming[schema_key])
+    return validate_provider_replay_frame(fallback_frame)
 
 
 def set_provider_replay_frame(state: Any, frame: dict[str, Any]) -> None:
@@ -201,5 +322,6 @@ __all__ = [
     "strict_json_copy",
     "stable_json_digest",
     "tool_schema_digest",
+    "tool_schema_manifest",
     "validate_provider_replay_frame",
 ]

@@ -4,6 +4,8 @@ import copy
 from typing import Any
 
 from ..capabilities import EmitEventOp, RequestSuspendOp
+from ..kernel.provider_replay import current_provider_replay_frame
+from ..kernel.replay_handle import store_provider_replay_handle
 from .human_input import HumanInputRequest
 
 
@@ -89,6 +91,9 @@ def build_human_input_continuation(
     state: Any,
     run_id: str | None = None,
 ) -> dict[str, Any]:
+    replay_handle = store_provider_replay_handle(
+        current_provider_replay_frame(state)
+    )
     return {
         "type": "human_input_continuation",
         "kind": getattr(request, "kind", None),
@@ -105,6 +110,7 @@ def build_human_input_continuation(
         "max_iterations": int(max_iterations),
         "previous_response_id": state.provider_state.previous_response_id,
         "use_openai_previous_response_chain": bool(state.provider_state.use_previous_response_chain),
+        "provider_replay_handle": replay_handle,
         "session_id": state.session_state.session_id,
         "memory_namespace": state.session_state.memory_namespace,
         "max_context_window_tokens": int(state.provider_state.max_context_window_tokens or 0),

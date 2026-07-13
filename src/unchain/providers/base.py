@@ -26,6 +26,7 @@ class ModelTurnRequest:
     emit_stream: bool = False
     previous_response_id: str | None = None
     openai_text_format: dict[str, Any] | None = None
+    fallback_messages: list[dict[str, Any]] | None = None
 
     def copied_messages(self) -> list[dict[str, Any]]:
         return _deepcopy_messages(self.messages)

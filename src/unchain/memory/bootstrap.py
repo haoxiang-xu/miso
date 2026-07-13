@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .base import BaseMemoryHarness, MemoryContext
-from .checkpoint_state import EXECUTION_CHECKPOINT_KEY
+from .checkpoint_state import (
+    EXECUTION_CHECKPOINT_KEY,
+    merge_checkpoint_transcript_with_incoming,
+)
 from .effects import build_memory_delta, memory_prepare_update, memory_state_update
 from .ownership import ensure_no_external_provider_history
 
@@ -86,6 +89,16 @@ class MemoryBootstrapHarness(BaseMemoryHarness):
             if isinstance(replay_frame, dict):
                 state_updates["provider_replay_frame"] = replay_frame
             if isinstance(raw_checkpoint, dict):
+                pending_model_context = raw_checkpoint.get("pending_model_context")
+                if isinstance(pending_model_context, list):
+                    state_updates["next_model_input"] = (
+                        pending_model_context
+                        if resume_mode
+                        else merge_checkpoint_transcript_with_incoming(
+                            pending_model_context,
+                            context.state.transcript,
+                        )
+                    )
                 state_updates["iteration"] = int(
                     raw_checkpoint.get("iteration") or 0
                 )

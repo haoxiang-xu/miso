@@ -144,6 +144,7 @@ def build_execution_checkpoint(
                 else None
             ),
             "transcript": copy.deepcopy(state.transcript),
+            "pending_model_context": copy.deepcopy(state.next_model_input),
             "replay_frame": replay_frame_from_state(state),
             "continuation": copy.deepcopy(state.last_continuation),
             "human_input_request": _human_input_request(state),
@@ -253,6 +254,14 @@ def validate_execution_checkpoint(raw: Any) -> dict[str, Any]:
     if not isinstance(checkpoint.get("workspace_change_state"), dict):
         raise ExecutionCheckpointIntegrityError(
             "execution checkpoint workspace_change_state must be a dict"
+        )
+    pending_model_context = checkpoint.get("pending_model_context")
+    if pending_model_context is not None and (
+        not isinstance(pending_model_context, list)
+        or any(not isinstance(message, dict) for message in pending_model_context)
+    ):
+        raise ExecutionCheckpointIntegrityError(
+            "execution checkpoint pending_model_context must be a message list or null"
         )
     replay_frame = checkpoint.get("replay_frame")
     if not isinstance(replay_frame, dict):

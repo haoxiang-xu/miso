@@ -88,7 +88,10 @@ result = loop.run(messages=[{"role": "user", "content": "Hello"}])
 
 - Memory 以 harness 对的形式集成（bootstrap/before-model 召回 + before-commit 写）。不带 memory 的 run 直接省掉 `MemoryModule`。
 - Retry 包在 `ModelIO.fetch_turn()` 外（见 `unchain.retry`）。仅用于调试的 request trace event 不会锁死 attempt，因此瞬态失败仍可重试；第一个用户可见 token/tool/reasoning event 会关闭 retry gate，避免重复输出。
-- Provider 特定投影（规范消息 → SDK 形状）完全在每个 `ModelIO` 实现内部，kernel 保持厂商无关。
+- Provider 特定投影与原生 replay 回填都位于 provider 层（context assembler + model adapter），kernel 保持厂商无关。
+- 每次请求都以当前 semantic model context 为权威。Provider replay 只补回仍被保留的原生 reasoning/tool 外壳，不能覆盖新的 memory、prompt、optimizer 或用户 delta。OpenAI remote continuation 的增量输入与完整本地 fallback 分开保存。
+- durable suspend 边界仍待发送的 request-only model context 会写入 execution checkpoint，并在下一次 `before_model` 前恢复。
+- 人工输入 continuation 对外只暴露进程内的 opaque replay handle，不会把 provider reasoning/signature 序列化进公开 continuation。若 continuation 需要跨进程恢复，应启用 session memory/checkpoint。
 
 ## Provider 抽象
 

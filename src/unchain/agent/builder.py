@@ -14,6 +14,8 @@ from ..memory import (
 from ..memory.ownership import ensure_no_external_provider_history
 from ..kernel.loop import KernelLoop
 from ..kernel.model_io import ModelIO
+from ..kernel.replay_handle import load_provider_replay_handle
+from ..kernel.run_preparation import effective_payload_store
 from ..kernel.types import KernelRunResult
 from ..schemas import ResponseFormat
 from ..runtime import (
@@ -73,6 +75,11 @@ class PreparedAgent:
     tool_optimizer_config: ToolOptimizerConfig | None = None
     completion_policy: CompletionPolicy | None = None
     session_history_owned_by_memory: bool = False
+    _completion_replay_frame: dict[str, Any] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
 
     def _merge_payloads(self, *payloads: dict[str, Any] | None) -> dict[str, Any] | None:
         merged: dict[str, Any] = {}
@@ -164,7 +171,7 @@ class PreparedAgent:
             provider=self.spec.provider,
             model=self.spec.model,
         )
-        return self.loop.run(
+        result = self.loop.run(
             messages=messages,
             payload=payload,
             response_format=self._resolved_response_format(),
@@ -184,7 +191,14 @@ class PreparedAgent:
             run_id=self.call_context.run_id,
             tool_runtime_plugins=tool_runtime_plugins,
             tool_runtime_config=copy.deepcopy(self.call_context.tool_runtime_config or {}),
+            _provider_replay_frame=copy.deepcopy(
+                self._completion_replay_frame
+            ),
         )
+        self._completion_replay_frame = load_provider_replay_handle(
+            result.provider_replay_handle
+        )
+        return result
 
     def _run_completion_repair_once(
         self,
@@ -195,6 +209,23 @@ class PreparedAgent:
         max_iterations: int,
     ) -> KernelRunResult:
         if not self.session_history_owned_by_memory:
+            use_remote_repair = bool(
+                previous_response_id
+                and self.spec.provider == "openai"
+                and effective_payload_store(
+                    self.loop.model_io,
+                    dict(payload or {}),
+                )
+                is not False
+            )
+            if use_remote_repair:
+                feedback = copy.deepcopy(messages[-1]) if messages else None
+                if not isinstance(feedback, dict) or feedback.get("role") != "user":
+                    raise ValueError(
+                        "completion repair with previous_response_id must end with user feedback"
+                    )
+            else:
+                previous_response_id = None
             return self._run_once(
                 messages=messages,
                 payload=payload,

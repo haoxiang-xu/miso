@@ -17,6 +17,7 @@ from .lifecycle_events import (
     build_run_started_payload,
 )
 from .model_io import ModelIO
+from .provider_replay import set_provider_replay_frame
 from .run_limits import resolve_max_iterations_boundary
 from .run_outcomes import (
     finish_awaiting_human_input_run,
@@ -219,11 +220,23 @@ class KernelLoop:
     ) -> ModelTurnResult:
         runtime_toolkit = toolkit if toolkit is not None else Toolkit()
         current_iteration = int(state.iteration)
-        state.rebuild_working_version_from_transcript(
+        local_next_context = (
+            state.next_model_input
+            if isinstance(state.next_model_input, list)
+            else state.transcript
+        )
+        state.rebuild_working_version(
+            local_next_context,
+            created_by="kernel.model_context_snapshot",
             metadata={
                 "iteration": current_iteration,
                 "transcript_message_count": len(state.transcript),
-            }
+                "source": (
+                    "next_model_input"
+                    if local_next_context is state.next_model_input
+                    else "transcript"
+                ),
+            },
         )
         phase_event = {
             "payload": dict(payload or {}),
@@ -603,6 +616,7 @@ class KernelLoop:
         run_id: str | None = None,
         tool_runtime_plugins: list[Any] | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
+        _provider_replay_frame: dict[str, Any] | None = None,
     ) -> KernelRunResult:
         plan = prepare_fresh_run_invocation(
             messages=messages,
@@ -617,6 +631,8 @@ class KernelLoop:
             run_id=run_id,
             run_id_factory=lambda: str(uuid.uuid4()),
         )
+        if isinstance(_provider_replay_frame, dict):
+            set_provider_replay_frame(plan.state, _provider_replay_frame)
         return self._run_state(
             plan.state,
             payload=plan.payload,

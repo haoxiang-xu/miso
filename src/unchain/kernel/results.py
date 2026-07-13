@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from .provider_replay import current_provider_replay_frame
+from .replay_handle import store_provider_replay_handle
 from .state import RunState
 from .types import KernelRunResult
 
@@ -32,6 +34,9 @@ def build_kernel_run_result(state: RunState, *, status: str) -> KernelRunResult:
         cache_creation_input_tokens=int(state.token_state.cache_creation_input_tokens or 0),
         previous_response_id=state.provider_state.previous_response_id,
         iteration=int(state.iteration),
+        provider_replay_handle=store_provider_replay_handle(
+            current_provider_replay_frame(state)
+        ),
     )
 
 
