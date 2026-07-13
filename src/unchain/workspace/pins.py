@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..execution import ExecutionFence
 from ..memory.revision import (
     SessionRevisionConflictError,
     load_session_snapshot,
@@ -22,6 +23,7 @@ _SESSION_STATE_KEY = "workspace_pins"
 class WorkspacePinExecutionContext:
     session_id: str
     session_store: Any
+    execution_fence: ExecutionFence | None = None
 
 
 def load_workspace_pins(session_store: Any, session_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -37,6 +39,8 @@ def save_workspace_pins(
     session_id: str,
     state: dict[str, Any],
     pins: list[dict[str, Any]],
+    *,
+    execution_fence: ExecutionFence | None = None,
 ) -> None:
     if session_store is None or not session_id:
         return
@@ -51,6 +55,7 @@ def save_workspace_pins(
                 session_id,
                 next_state,
                 expected_revision=snapshot.revision,
+                execution_fence=execution_fence,
             )
             return
         except SessionRevisionConflictError:
@@ -143,7 +148,13 @@ def _load_session_state(session_store: Any, session_id: str) -> dict[str, Any]:
     return copy.deepcopy(load_session_snapshot(session_store, session_id).state)
 
 
-def _save_session_state(session_store: Any, session_id: str, state: dict[str, Any]) -> None:
+def _save_session_state(
+    session_store: Any,
+    session_id: str,
+    state: dict[str, Any],
+    *,
+    execution_fence: ExecutionFence | None = None,
+) -> None:
     if session_store is None or not session_id:
         return
     snapshot = load_session_snapshot(session_store, session_id)
@@ -152,6 +163,7 @@ def _save_session_state(session_store: Any, session_id: str, state: dict[str, An
         session_id,
         copy.deepcopy(state),
         expected_revision=snapshot.revision,
+        execution_fence=execution_fence,
     )
 
 

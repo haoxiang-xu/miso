@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import copy
 import uuid
-from typing import Any
+from contextlib import nullcontext
+from functools import partial
+from typing import Any, Callable
 
+from ..execution import (
+    ExecutionGuard,
+    ExecutionLeaseNotOwnedError,
+    ExecutionRuntime,
+)
 from ..providers.model_turn_runtime import apply_model_turn_result, fetch_model_turn
 from ..retry import RetryConfig
 from ..schemas import ResponseFormat
@@ -47,10 +54,12 @@ class KernelLoop:
         harnesses: list[RuntimeHarness] | None = None,
         model_io: ModelIO | None = None,
         retry_config: RetryConfig | None = None,
+        execution_runtime: ExecutionRuntime | None = None,
     ) -> None:
         self._harnesses: list[RuntimeHarness] = []
         self._model_io = model_io
         self._retry_config: RetryConfig = retry_config if retry_config is not None else RetryConfig()
+        self._execution_runtime = execution_runtime
         for harness in harnesses or []:
             self.register_harness(harness)
 
@@ -91,9 +100,54 @@ class KernelLoop:
     def model_io(self) -> ModelIO | None:
         return self._model_io
 
+    @property
+    def execution_runtime(self) -> ExecutionRuntime | None:
+        return self._execution_runtime
+
     @model_io.setter
     def model_io(self, value: ModelIO | None) -> None:
         self._model_io = value
+
+    def _validate_execution_guard(
+        self,
+        state: RunState,
+        execution_guard: ExecutionGuard | None,
+    ) -> ExecutionGuard | None:
+        session_id = str(state.session_state.session_id or "")
+        if execution_guard is None:
+            if self._execution_runtime is not None and session_id:
+                raise ExecutionLeaseNotOwnedError(
+                    "execution-lease-enabled KernelLoop requires an active guard",
+                    execution_id=session_id,
+                )
+            return None
+        if session_id and execution_guard.lease.execution_id != session_id:
+            raise ValueError(
+                "execution guard does not belong to the RunState session_id"
+            )
+        execution_guard.assert_active()
+        return execution_guard
+
+    def _scope_for_session(
+        self,
+        *,
+        session_id: str | None,
+        execution_guard: ExecutionGuard | None,
+    ):
+        normalized_session_id = str(session_id or "")
+        if execution_guard is not None:
+            if (
+                normalized_session_id
+                and execution_guard.lease.execution_id != normalized_session_id
+            ):
+                raise ValueError(
+                    "execution guard does not belong to the requested session_id"
+                )
+            execution_guard.assert_active()
+            return nullcontext(execution_guard)
+        if self._execution_runtime is not None and normalized_session_id:
+            return self._execution_runtime.scope(normalized_session_id)
+        return nullcontext(None)
 
     def seed_state(
         self,
@@ -176,6 +230,7 @@ class KernelLoop:
         emit_stream: bool = False,
         response_format: Any = None,
         openai_text_format: dict[str, Any] | None = None,
+        execution_guard: ExecutionGuard | None = None,
     ):
         return fetch_model_turn(
             model_io=self._model_io,
@@ -189,6 +244,11 @@ class KernelLoop:
             emit_stream=emit_stream,
             response_format=response_format,
             openai_text_format=openai_text_format,
+            before_attempt=(
+                (lambda _attempt: execution_guard.renew())
+                if execution_guard is not None
+                else None
+            ),
         )
 
     def apply_model_turn(
@@ -217,7 +277,9 @@ class KernelLoop:
         max_iterations: int = 0,
         tool_runtime_plugins: list[Any] | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
+        execution_guard: ExecutionGuard | None = None,
     ) -> ModelTurnResult:
+        execution_guard = self._validate_execution_guard(state, execution_guard)
         runtime_toolkit = toolkit if toolkit is not None else Toolkit()
         current_iteration = int(state.iteration)
         local_next_context = (
@@ -255,9 +317,14 @@ class KernelLoop:
             "model_io": self._model_io,
             "tool_runtime_plugins": list(tool_runtime_plugins or []),
             "tool_runtime_config": copy.deepcopy(tool_runtime_config or {}),
+            "execution_guard": execution_guard,
         }
 
+        if execution_guard is not None:
+            execution_guard.renew()
         self.dispatch_phase(state, phase="before_model", event=phase_event)
+        if execution_guard is not None:
+            execution_guard.assert_active()
         turn = self.fetch_model_turn(
             state,
             payload=payload,
@@ -268,7 +335,10 @@ class KernelLoop:
             emit_stream=emit_stream,
             response_format=response_format,
             openai_text_format=openai_text_format,
+            execution_guard=execution_guard,
         )
+        if execution_guard is not None:
+            execution_guard.assert_active()
         self.apply_model_turn(state, turn)
 
         after_model_event = {
@@ -276,10 +346,14 @@ class KernelLoop:
             "turn_result": turn,
         }
         self.dispatch_phase(state, phase="after_model", event=after_model_event)
+        if execution_guard is not None:
+            execution_guard.assert_active()
 
         tool_calls = list(state.pending_tool_calls)
         if tool_calls:
             for index, tool_call in enumerate(tool_calls):
+                if execution_guard is not None:
+                    execution_guard.renew()
                 self.dispatch_phase(
                     state,
                     phase="on_tool_call",
@@ -290,6 +364,8 @@ class KernelLoop:
                         "tool_calls": tool_calls,
                     },
                 )
+                if execution_guard is not None:
+                    execution_guard.assert_active()
             self.dispatch_phase(
                 state,
                 phase="after_tool_batch",
@@ -298,8 +374,14 @@ class KernelLoop:
                     "tool_calls": tool_calls,
                 },
             )
+            if execution_guard is not None:
+                execution_guard.assert_active()
         else:
+            if execution_guard is not None:
+                execution_guard.renew()
             self.dispatch_phase(state, phase="before_commit", event=after_model_event)
+            if execution_guard is not None:
+                execution_guard.assert_active()
 
         state.iteration = current_iteration + 1
         return turn
@@ -320,8 +402,11 @@ class KernelLoop:
         resume_mode: bool,
         continuation: dict[str, Any] | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
+        execution_guard: ExecutionGuard | None = None,
     ) -> None:
         runtime_toolkit = toolkit if toolkit is not None else Toolkit()
+        if execution_guard is not None:
+            execution_guard.renew()
         self.dispatch_phase(
             state,
             phase="bootstrap",
@@ -337,8 +422,11 @@ class KernelLoop:
                 "continuation": copy.deepcopy(continuation),
                 "loop": self,
                 "tool_runtime_config": copy.deepcopy(tool_runtime_config or {}),
+                "execution_guard": execution_guard,
             },
         )
+        if execution_guard is not None:
+            execution_guard.assert_active()
 
     def _dispatch_run_finalizing(
         self,
@@ -348,6 +436,7 @@ class KernelLoop:
         run_id: str,
         iteration: int,
         status: str,
+        execution_guard: ExecutionGuard | None = None,
     ) -> None:
         event = {
             "callback": callback,
@@ -355,9 +444,16 @@ class KernelLoop:
             "iteration": int(iteration),
             "status": status,
             "loop": self,
+            "execution_guard": execution_guard,
         }
+        if execution_guard is not None:
+            execution_guard.renew()
         self.dispatch_phase(state, phase="run_finalizing", event=event)
+        if execution_guard is not None:
+            execution_guard.assert_active()
         self.dispatch_phase(state, phase="finalize_persist", event=event)
+        if execution_guard is not None:
+            execution_guard.assert_active()
 
     def _dispatch_on_suspend(
         self,
@@ -367,6 +463,7 @@ class KernelLoop:
         run_id: str,
         iteration: int,
         status: str,
+        execution_guard: ExecutionGuard | None = None,
     ) -> None:
         event = {
             "callback": callback,
@@ -374,9 +471,16 @@ class KernelLoop:
             "iteration": int(iteration),
             "status": status,
             "loop": self,
+            "execution_guard": execution_guard,
         }
+        if execution_guard is not None:
+            execution_guard.renew()
         self.dispatch_phase(state, phase="on_suspend", event=event)
+        if execution_guard is not None:
+            execution_guard.assert_active()
         self.dispatch_phase(state, phase="suspend_persist", event=event)
+        if execution_guard is not None:
+            execution_guard.assert_active()
 
     def _dispatch_on_resume(
         self,
@@ -386,7 +490,10 @@ class KernelLoop:
         response: Any,
         callback: Any,
         run_id: str,
+        execution_guard: ExecutionGuard | None = None,
     ) -> None:
+        if execution_guard is not None:
+            execution_guard.renew()
         self.dispatch_phase(
             state,
             phase="on_resume",
@@ -397,8 +504,11 @@ class KernelLoop:
                 "run_id": run_id,
                 "iteration": int(state.iteration),
                 "loop": self,
+                "execution_guard": execution_guard,
             },
         )
+        if execution_guard is not None:
+            execution_guard.assert_active()
 
     def emit_event(
         self,
@@ -425,6 +535,43 @@ class KernelLoop:
     def _infer_model(self) -> str | None:
         return infer_model(self._model_io)
 
+    @staticmethod
+    def _wrap_max_iterations_callback(
+        callback: Any,
+        *,
+        execution_guard: ExecutionGuard | None,
+        expected_revision: Callable[[], int | None],
+    ) -> Any:
+        if execution_guard is None or not callable(callback):
+            return callback
+
+        def guarded_callback(decision: Any) -> Any:
+            response = callback(decision)
+            revision = expected_revision()
+            if revision is not None:
+                execution_guard.reacquire(expected_revision=revision)
+            else:
+                execution_guard.assert_active()
+            return response
+
+        return guarded_callback
+
+    @staticmethod
+    def _guard_terminal_emitter(
+        emit_event: Callable[..., None],
+        *,
+        execution_guard: ExecutionGuard | None,
+    ) -> Callable[..., None]:
+        if execution_guard is None:
+            return emit_event
+
+        def guarded_emit(*args: Any, **kwargs: Any) -> None:
+            execution_guard.assert_active()
+            emit_event(*args, **kwargs)
+            execution_guard.assert_active()
+
+        return guarded_emit
+
     def _run_state(
         self,
         state: RunState,
@@ -442,10 +589,12 @@ class KernelLoop:
         skip_bootstrap: bool = False,
         tool_runtime_plugins: list[Any] | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
+        execution_guard: ExecutionGuard | None = None,
     ) -> KernelRunResult:
         if self._model_io is None:
             raise RuntimeError("KernelLoop.model_io is not configured")
         prepare_state_for_execution(state, model_io=self._model_io)
+        execution_guard = self._validate_execution_guard(state, execution_guard)
         run_id = str(run_id or uuid.uuid4())
         runtime_toolkit = toolkit if toolkit is not None else Toolkit()
         if not skip_bootstrap:
@@ -459,6 +608,7 @@ class KernelLoop:
                 run_id=run_id,
                 resume_mode=False,
                 tool_runtime_config=tool_runtime_config,
+                execution_guard=execution_guard,
             )
         self.emit_event(
             callback,
@@ -476,21 +626,52 @@ class KernelLoop:
             # limit as budget for this invocation.  ``state.iteration`` remains
             # cumulative so telemetry and checkpoint diagnostics stay honest.
             effective_max += int(state.iteration)
+        terminal_emit_event = self._guard_terminal_emitter(
+            self.emit_event,
+            execution_guard=execution_guard,
+        )
         while True:
+            def current_session_revision() -> int | None:
+                revision = state.memory_state.get("session_revision")
+                if isinstance(revision, bool) or not isinstance(revision, int):
+                    return None
+                return revision
+
+            dispatch_run_finalizing = partial(
+                self._dispatch_run_finalizing,
+                execution_guard=execution_guard,
+            )
+            dispatch_on_suspend = partial(
+                self._dispatch_on_suspend,
+                execution_guard=execution_guard,
+            )
+
+            max_wait_revision: int | None = None
+
             def persist_before_max_iterations_wait() -> None:
+                nonlocal max_wait_revision
                 state.run_status = "max_iterations"
-                self._dispatch_on_suspend(
+                dispatch_on_suspend(
                     state,
                     callback=callback,
                     run_id=run_id,
                     iteration=int(state.iteration),
                     status="max_iterations",
                 )
+                max_wait_revision = current_session_revision()
+                if execution_guard is not None and max_wait_revision is not None:
+                    execution_guard.release_for_wait()
+
+            guarded_on_max_iterations = self._wrap_max_iterations_callback(
+                on_max_iterations,
+                execution_guard=execution_guard,
+                expected_revision=lambda: max_wait_revision,
+            )
 
             boundary = resolve_max_iterations_boundary(
                 state,
                 effective_max=effective_max,
-                on_max_iterations=on_max_iterations,
+                on_max_iterations=guarded_on_max_iterations,
                 callback=callback,
                 run_id=run_id,
                 emit_event=self.emit_event,
@@ -503,8 +684,8 @@ class KernelLoop:
                     callback=callback,
                     run_id=run_id,
                     emit_run_max_iterations=boundary.emit_run_max_iterations_on_finish,
-                    emit_event=self.emit_event,
-                    dispatch_run_finalizing=self._dispatch_run_finalizing,
+                    emit_event=terminal_emit_event,
+                    dispatch_run_finalizing=dispatch_run_finalizing,
                 )
             if state.run_status == "max_iterations":
                 state.run_status = "running"
@@ -529,13 +710,14 @@ class KernelLoop:
                 max_iterations=effective_max,
                 tool_runtime_plugins=tool_runtime_plugins,
                 tool_runtime_config=tool_runtime_config,
+                execution_guard=execution_guard,
             )
             if state.run_status == "awaiting_human_input":
                 suspended = finish_awaiting_human_input_run(
                     state,
                     callback=callback,
                     run_id=run_id,
-                    dispatch_on_suspend=self._dispatch_on_suspend,
+                    dispatch_on_suspend=dispatch_on_suspend,
                 )
                 request = state.tool_batch_state.human_input_request
                 continuation = suspended.continuation
@@ -555,13 +737,26 @@ class KernelLoop:
                     )
                 if not callable(on_human_input) or request is None or continuation is None:
                     return suspended
+                wait_revision = current_session_revision()
+                released_for_wait = (
+                    execution_guard is not None and wait_revision is not None
+                )
+                if released_for_wait:
+                    execution_guard.release_for_wait()
                 response = on_human_input(request)
+                if released_for_wait:
+                    execution_guard.reacquire(
+                        expected_revision=wait_revision,
+                    )
+                elif execution_guard is not None:
+                    execution_guard.assert_active()
                 self._dispatch_on_resume(
                     state,
                     continuation=continuation,
                     response=response,
                     callback=callback,
                     run_id=run_id,
+                    execution_guard=execution_guard,
                 )
                 continue
             self.emit_event(
@@ -575,8 +770,8 @@ class KernelLoop:
                     state,
                     callback=callback,
                     run_id=run_id,
-                    emit_event=self.emit_event,
-                    dispatch_run_finalizing=self._dispatch_run_finalizing,
+                    emit_event=terminal_emit_event,
+                    dispatch_run_finalizing=dispatch_run_finalizing,
                 )
             if turn.tool_calls:
                 self.emit_event(
@@ -590,8 +785,8 @@ class KernelLoop:
                 state,
                 callback=callback,
                 run_id=run_id,
-                emit_event=self.emit_event,
-                dispatch_run_finalizing=self._dispatch_run_finalizing,
+                emit_event=terminal_emit_event,
+                dispatch_run_finalizing=dispatch_run_finalizing,
             )
 
     def run(
@@ -617,6 +812,7 @@ class KernelLoop:
         tool_runtime_plugins: list[Any] | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
         _provider_replay_frame: dict[str, Any] | None = None,
+        _execution_guard: ExecutionGuard | None = None,
     ) -> KernelRunResult:
         plan = prepare_fresh_run_invocation(
             messages=messages,
@@ -633,21 +829,26 @@ class KernelLoop:
         )
         if isinstance(_provider_replay_frame, dict):
             set_provider_replay_frame(plan.state, _provider_replay_frame)
-        return self._run_state(
-            plan.state,
-            payload=plan.payload,
-            response_format=response_format,
-            callback=callback,
-            verbose=verbose,
-            max_iterations=max_iterations,
-            on_tool_confirm=on_tool_confirm,
-            on_human_input=on_human_input,
-            on_max_iterations=on_max_iterations,
-            toolkit=toolkit,
-            run_id=plan.run_id,
-            tool_runtime_plugins=tool_runtime_plugins,
-            tool_runtime_config=tool_runtime_config,
-        )
+        with self._scope_for_session(
+            session_id=session_id,
+            execution_guard=_execution_guard,
+        ) as execution_guard:
+            return self._run_state(
+                plan.state,
+                payload=plan.payload,
+                response_format=response_format,
+                callback=callback,
+                verbose=verbose,
+                max_iterations=max_iterations,
+                on_tool_confirm=on_tool_confirm,
+                on_human_input=on_human_input,
+                on_max_iterations=on_max_iterations,
+                toolkit=toolkit,
+                run_id=plan.run_id,
+                tool_runtime_plugins=tool_runtime_plugins,
+                tool_runtime_config=tool_runtime_config,
+                execution_guard=execution_guard,
+            )
 
     def resume_human_input(
         self,
@@ -668,6 +869,7 @@ class KernelLoop:
         run_id: str | None = None,
         tool_runtime_plugins: list[Any] | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
+        _execution_guard: ExecutionGuard | None = None,
     ) -> KernelRunResult:
         plan = prepare_resume_run_invocation(
             conversation=conversation,
@@ -681,38 +883,45 @@ class KernelLoop:
             run_id=run_id,
             run_id_factory=lambda: str(uuid.uuid4()),
         )
-        self._dispatch_bootstrap(
-            plan.state,
-            payload=plan.payload,
-            response_format=plan.response_format,
-            callback=callback,
-            verbose=verbose,
-            toolkit=toolkit,
-            run_id=plan.run_id,
-            resume_mode=True,
-            continuation=continuation,
-            tool_runtime_config=tool_runtime_config,
-        )
-        self._dispatch_on_resume(
-            plan.state,
-            continuation=continuation,
-            response=response,
-            callback=callback,
-            run_id=plan.run_id,
-        )
-        return self._run_state(
-            plan.state,
-            payload=plan.payload,
-            response_format=plan.response_format,
-            callback=callback,
-            verbose=verbose,
-            max_iterations=plan.max_iterations,
-            on_tool_confirm=on_tool_confirm,
-            on_human_input=on_human_input,
-            on_max_iterations=on_max_iterations,
-            toolkit=toolkit,
-            run_id=plan.run_id,
-            skip_bootstrap=True,
-            tool_runtime_plugins=tool_runtime_plugins,
-            tool_runtime_config=tool_runtime_config,
-        )
+        with self._scope_for_session(
+            session_id=session_id,
+            execution_guard=_execution_guard,
+        ) as execution_guard:
+            self._dispatch_bootstrap(
+                plan.state,
+                payload=plan.payload,
+                response_format=plan.response_format,
+                callback=callback,
+                verbose=verbose,
+                toolkit=toolkit,
+                run_id=plan.run_id,
+                resume_mode=True,
+                continuation=continuation,
+                tool_runtime_config=tool_runtime_config,
+                execution_guard=execution_guard,
+            )
+            self._dispatch_on_resume(
+                plan.state,
+                continuation=continuation,
+                response=response,
+                callback=callback,
+                run_id=plan.run_id,
+                execution_guard=execution_guard,
+            )
+            return self._run_state(
+                plan.state,
+                payload=plan.payload,
+                response_format=plan.response_format,
+                callback=callback,
+                verbose=verbose,
+                max_iterations=plan.max_iterations,
+                on_tool_confirm=on_tool_confirm,
+                on_human_input=on_human_input,
+                on_max_iterations=on_max_iterations,
+                toolkit=toolkit,
+                run_id=plan.run_id,
+                skip_bootstrap=True,
+                tool_runtime_plugins=tool_runtime_plugins,
+                tool_runtime_config=tool_runtime_config,
+                execution_guard=execution_guard,
+            )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -12,6 +13,7 @@ from ..memory import (
     KernelMemoryRuntime,
 )
 from ..memory.ownership import ensure_no_external_provider_history
+from ..execution import ExecutionGuard
 from ..kernel.loop import KernelLoop
 from ..kernel.model_io import ModelIO
 from ..kernel.replay_handle import load_provider_replay_handle
@@ -126,6 +128,7 @@ class PreparedAgent:
         payload: dict[str, Any] | None,
         provider: str | None = None,
         model: str | None = None,
+        execution_guard: ExecutionGuard | None = None,
     ) -> tuple[Toolkit, list[Any]]:
         plugins = list(self.tool_runtime_plugins)
         config = ToolOptimizerConfig.coerce(self.tool_optimizer_config)
@@ -135,6 +138,12 @@ class PreparedAgent:
         model_io = self.loop.model_io
         if model_io is None:
             return self.toolkit, plugins
+        if execution_guard is not None:
+            execution_guard.renew()
+            model_io = execution_guard.guard_model_io(
+                model_io,
+                "model.tool_exposure",
+            )
 
         runtime = ToolExposureRuntime(
             config=config,
@@ -149,6 +158,8 @@ class PreparedAgent:
             run_id=self.call_context.run_id,
         )
         exposed_toolkit = runtime.prepare()
+        if execution_guard is not None:
+            execution_guard.assert_active()
         plugins.extend(runtime.build_plugins())
         return exposed_toolkit, plugins
 
@@ -159,6 +170,7 @@ class PreparedAgent:
         payload: dict[str, Any] | None,
         previous_response_id: str | None,
         max_iterations: int,
+        execution_guard: ExecutionGuard | None = None,
     ) -> KernelRunResult:
         if self.session_history_owned_by_memory:
             ensure_no_external_provider_history(
@@ -170,6 +182,7 @@ class PreparedAgent:
             payload=payload,
             provider=self.spec.provider,
             model=self.spec.model,
+            execution_guard=execution_guard,
         )
         result = self.loop.run(
             messages=messages,
@@ -194,6 +207,7 @@ class PreparedAgent:
             _provider_replay_frame=copy.deepcopy(
                 self._completion_replay_frame
             ),
+            _execution_guard=execution_guard,
         )
         self._completion_replay_frame = load_provider_replay_handle(
             result.provider_replay_handle
@@ -207,6 +221,7 @@ class PreparedAgent:
         payload: dict[str, Any] | None,
         previous_response_id: str | None,
         max_iterations: int,
+        execution_guard: ExecutionGuard | None = None,
     ) -> KernelRunResult:
         if not self.session_history_owned_by_memory:
             use_remote_repair = bool(
@@ -231,6 +246,7 @@ class PreparedAgent:
                 payload=payload,
                 previous_response_id=previous_response_id,
                 max_iterations=max_iterations,
+                execution_guard=execution_guard,
             )
         feedback = copy.deepcopy(messages[-1]) if messages else None
         if not isinstance(feedback, dict) or feedback.get("role") != "user":
@@ -240,33 +256,59 @@ class PreparedAgent:
             payload=payload,
             previous_response_id=None,
             max_iterations=max_iterations,
+            execution_guard=execution_guard,
         )
 
-    def _completion_policy_runner(self) -> CompletionPolicyRunner:
+    def _completion_policy_runner(
+        self,
+        execution_guard: ExecutionGuard | None = None,
+    ) -> CompletionPolicyRunner:
+        def run_once(**kwargs: Any) -> KernelRunResult:
+            return self._run_completion_repair_once(
+                execution_guard=execution_guard,
+                **kwargs,
+            )
+
         return CompletionPolicyRunner(
             policy=self.completion_policy,
-            run_once=self._run_completion_repair_once,
+            run_once=run_once,
             event_callback=self.call_context.callback,
             run_id=str(self.call_context.run_id or "agent"),
         )
 
+    def _execution_scope(self):
+        execution_runtime = self.loop.execution_runtime
+        session_id = str(self.call_context.session_id or "")
+        if execution_runtime is None or not session_id:
+            return nullcontext(None)
+        return execution_runtime.scope(session_id)
+
     def run(self) -> KernelRunResult:
         messages = copy.deepcopy(self.call_context.input_messages or [])
         payload = self._merge_payloads(self.default_payload, self.call_context.payload)
-        result = self._run_once(
-            payload=payload,
-            messages=messages,
-            max_iterations=self._resolved_max_iterations(),
-            previous_response_id=self.call_context.previous_response_id,
-        )
-        result = self._completion_policy_runner().apply(
-            result,
-            payload=payload,
-            max_iterations=self._resolved_max_iterations(),
-        )
-        return self._apply_run_hooks(result)
+        with self._execution_scope() as execution_guard:
+            result = self._run_once(
+                payload=payload,
+                messages=messages,
+                max_iterations=self._resolved_max_iterations(),
+                previous_response_id=self.call_context.previous_response_id,
+                execution_guard=execution_guard,
+            )
+            result = self._completion_policy_runner(execution_guard).apply(
+                result,
+                payload=payload,
+                max_iterations=self._resolved_max_iterations(),
+            )
+            return self._apply_run_hooks(result)
 
     def resume_human_input(self) -> KernelRunResult:
+        with self._execution_scope() as execution_guard:
+            return self._resume_human_input_under_guard(execution_guard)
+
+    def _resume_human_input_under_guard(
+        self,
+        execution_guard: ExecutionGuard | None,
+    ) -> KernelRunResult:
         provided_conversation = self.call_context.conversation
         provided_continuation = self.call_context.continuation
         if (provided_conversation is None) != (provided_continuation is None):
@@ -314,6 +356,7 @@ class PreparedAgent:
                 if isinstance(provided_continuation, dict)
                 else None
             ),
+            execution_guard=execution_guard,
         )
         result = self.loop.resume_human_input(
             conversation=conversation,
@@ -332,6 +375,7 @@ class PreparedAgent:
             run_id=self.call_context.run_id,
             tool_runtime_plugins=tool_runtime_plugins,
             tool_runtime_config=copy.deepcopy(self.call_context.tool_runtime_config or {}),
+            _execution_guard=execution_guard,
         )
         return self._apply_run_hooks(result)
 

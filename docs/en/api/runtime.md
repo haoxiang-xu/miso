@@ -4,9 +4,9 @@ Core execution types: kernel loop, provider abstraction (`ModelIO`), model turn 
 
 | Metric | Value |
 | --- | --- |
-| Classes | 3 |
-| Dataclasses | 7 |
-| Protocols | 1 |
+| Classes | 5 |
+| Dataclasses | 10 |
+| Protocols | 2 |
 | Internal-only types | 0 |
 
 ## Coverage map
@@ -23,6 +23,16 @@ Core execution types: kernel loop, provider abstraction (`ModelIO`), model turn 
 | `CompletionEvaluation` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
 | `CompletionPolicy` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
 | `CompletionPolicyRunner` | `src/unchain/runtime/completion.py` | subpackage | dataclass |
+| `ExecutionFence` | `src/unchain/execution.py` | subpackage | dataclass (frozen) |
+| `ExecutionLease` | `src/unchain/execution.py` | subpackage | dataclass (frozen) |
+| `ExecutionLeaseConfig` | `src/unchain/execution.py` | subpackage | dataclass (frozen) |
+| `ExecutionLeaseStore` | `src/unchain/execution.py` | subpackage | protocol |
+| `ExecutionRuntime` | `src/unchain/execution.py` | subpackage | class |
+| `ExecutionGuard` | `src/unchain/execution.py` | subpackage | class |
+
+### Execution ownership
+
+`ExecutionRuntime` acquires an `ExecutionGuard` from an `ExecutionLeaseStore`. The guard owns a time-bounded `ExecutionLease`; its `ExecutionFence` is passed to atomic session writes. `ExecutionLeaseConfig` controls the TTL and heartbeat interval. Memory-backed built-in stores are wired automatically by `build_runtime_loop`; callers may also inject an explicit runtime when constructing a loop. Lease conflicts and stale fencing tokens fail closed through the exported `ExecutionLeaseError` hierarchy.
 
 ### `src/unchain/kernel/types.py`
 

@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from ..execution import ExecutionLeaseError
 from ..kernel.types import ToolCall
 from .models import ToolHistoryOptimizationContext
 from .toolkit import Toolkit
@@ -562,6 +563,8 @@ class ToolResultBudgetController:
                     include_hash=True,
                 )
                 return optimizer(copy.deepcopy(record.payload), context), True
+            except ExecutionLeaseError:
+                raise
             except Exception:
                 optimizer_error_count += 1
                 return None, False

@@ -7,6 +7,7 @@ from .manager import (
     VectorStoreAdapter,
 )
 from .revision import (
+    FencedRevisionedSessionStore,
     RevisionedSessionStore,
     SessionConsistency,
     SessionRevisionConflictError,
@@ -17,6 +18,7 @@ from .revision import (
 )
 
 __all__ = [
+    "FencedRevisionedSessionStore",
     "InMemorySessionStore",
     "JsonFileLongTermProfileStore",
     "LongTermProfileStore",

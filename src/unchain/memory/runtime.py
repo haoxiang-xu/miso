@@ -4,6 +4,7 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..execution import ExecutionFence, ExecutionLeaseError
 from .checkpoint_state import (
     EXECUTION_CHECKPOINT_KEY,
     ExecutionCheckpointCompatibilityError,
@@ -92,6 +93,19 @@ def _ensure_expected_revision(
         )
 
 
+def _verify_execution_fence(store: object, fence: ExecutionFence | None) -> None:
+    if fence is None:
+        return
+    verify_lease = getattr(store, "verify_lease", None)
+    if not callable(verify_lease):
+        raise TypeError("execution fence requires a lease-aware session store")
+    verify_lease(
+        fence.execution_id,
+        fence.owner_id,
+        fence.fencing_token,
+    )
+
+
 def _ensure_checkpoint_extends_semantic_history(
     *,
     history: list[dict[str, Any]],
@@ -169,6 +183,8 @@ class KernelMemoryRuntime:
     def ensure_long_term_components(self) -> None:
         try:
             self.memory_manager.ensure_long_term_components()
+        except ExecutionLeaseError:
+            raise
         except Exception:
             return
 
@@ -188,6 +204,7 @@ class KernelMemoryRuntime:
         state: dict[str, Any],
         *,
         expected_revision: int | None = None,
+        execution_fence: ExecutionFence | None = None,
     ) -> SessionSnapshot:
         if not session_id:
             return SessionSnapshot(state={}, revision=None)
@@ -206,6 +223,7 @@ class KernelMemoryRuntime:
                 if expected_revision is not None
                 else current.revision
             ),
+            execution_fence=execution_fence,
         )
 
     def load_execution_checkpoint(self, session_id: str) -> dict[str, Any] | None:
@@ -220,10 +238,13 @@ class KernelMemoryRuntime:
         self,
         session_id: str,
         checkpoint: dict[str, Any],
+        *,
+        execution_fence: ExecutionFence | None = None,
     ) -> dict[str, Any]:
         persisted, _ = self.save_execution_checkpoint_snapshot(
             session_id,
             checkpoint,
+            execution_fence=execution_fence,
         )
         return persisted
 
@@ -233,6 +254,7 @@ class KernelMemoryRuntime:
         checkpoint: dict[str, Any],
         *,
         expected_revision: int | None = None,
+        execution_fence: ExecutionFence | None = None,
     ) -> tuple[dict[str, Any], SessionSnapshot]:
         if not session_id:
             raise ExecutionCheckpointPersistenceError(
@@ -262,6 +284,7 @@ class KernelMemoryRuntime:
                 and same_checkpoint
                 and (same_revision_noop or verified_retry)
             ):
+                _verify_execution_fence(self.store, execution_fence)
                 return current, session_snapshot
         _ensure_expected_revision(
             session_snapshot,
@@ -280,9 +303,10 @@ class KernelMemoryRuntime:
                     if expected_revision is not None
                     else session_snapshot.revision
                 ),
+                execution_fence=execution_fence,
             )
         except Exception as exc:
-            if isinstance(exc, SessionRevisionConflictError):
+            if isinstance(exc, (SessionRevisionConflictError, ExecutionLeaseError)):
                 raise
             raise ExecutionCheckpointPersistenceError(
                 f"failed to persist execution checkpoint: {exc}"
@@ -323,10 +347,12 @@ class KernelMemoryRuntime:
         session_id: str,
         *,
         expected_checkpoint_id: str | None = None,
+        execution_fence: ExecutionFence | None = None,
     ) -> bool:
         cleared, _ = self.clear_execution_checkpoint_snapshot(
             session_id,
             expected_checkpoint_id=expected_checkpoint_id,
+            execution_fence=execution_fence,
         )
         return cleared
 
@@ -336,6 +362,7 @@ class KernelMemoryRuntime:
         *,
         expected_checkpoint_id: str | None = None,
         expected_revision: int | None = None,
+        execution_fence: ExecutionFence | None = None,
     ) -> tuple[bool, SessionSnapshot]:
         if not session_id:
             return False, SessionSnapshot(state={}, revision=None)
@@ -347,6 +374,7 @@ class KernelMemoryRuntime:
         )
         state = copy.deepcopy(session_snapshot.state)
         if EXECUTION_CHECKPOINT_KEY not in state:
+            _verify_execution_fence(self.store, execution_fence)
             return False, session_snapshot
         current = validate_execution_checkpoint(state.get(EXECUTION_CHECKPOINT_KEY))
         if (
@@ -367,9 +395,10 @@ class KernelMemoryRuntime:
                     if expected_revision is not None
                     else session_snapshot.revision
                 ),
+                execution_fence=execution_fence,
             )
         except Exception as exc:
-            if isinstance(exc, SessionRevisionConflictError):
+            if isinstance(exc, (SessionRevisionConflictError, ExecutionLeaseError)):
                 raise
             raise ExecutionCheckpointPersistenceError(
                 f"failed to clear execution checkpoint: {exc}"
@@ -589,6 +618,7 @@ class KernelMemoryRuntime:
         summary_text: str | None,
         expected_revision: int | None = None,
         expected_checkpoint_id: str | None = None,
+        execution_fence: ExecutionFence | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         if not session_id:
             commit_info = {
@@ -611,6 +641,7 @@ class KernelMemoryRuntime:
             summary_text=str(summary_text or "").strip(),
             return_result=True,
             clear_execution_checkpoint_id=expected_checkpoint_id,
+            execution_fence=execution_fence,
         )
         if outcome is None:
             raise RuntimeError("memory commit did not return its persisted session snapshot")

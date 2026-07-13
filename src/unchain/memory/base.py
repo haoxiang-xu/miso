@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from ..execution import ExecutionFence, ExecutionGuard
 from ..tools.toolkit import Toolkit
 from ..kernel.harness import BaseRuntimeHarness, HarnessContext, RuntimeHarness, RuntimePhase
 from ..kernel.state import RunState
@@ -59,6 +60,16 @@ class MemoryContext:
     @property
     def loop(self) -> Any:
         return self.event.get("loop")
+
+    @property
+    def execution_guard(self) -> ExecutionGuard | None:
+        guard = self.harness_context.event.get("execution_guard")
+        return guard if isinstance(guard, ExecutionGuard) else None
+
+    @property
+    def execution_fence(self) -> ExecutionFence | None:
+        guard = self.execution_guard
+        return guard.fence if guard is not None else None
 
     @property
     def callback(self) -> Any:

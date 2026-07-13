@@ -28,6 +28,7 @@ class MemoryCommitHarness(BaseMemoryHarness):
                 str(context.state.memory_state.get("execution_checkpoint_id") or "")
                 or None
             ),
+            execution_fence=context.execution_fence,
         )
         memory_state = {
             "loaded": bool(context.session_id),

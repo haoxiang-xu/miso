@@ -280,7 +280,10 @@ class ToolExecutionHarness(BaseToolHarness):
             context.tool_runtime_plugins,
             tool_call=tool_call,
             context=context,
+            execution_guard=context.execution_guard,
         )
+        if context.execution_guard is not None:
+            context.execution_guard.assert_active()
         if plugin_outcome is not None:
             builder = get_provider_message_builder(context.provider)
             result_messages = copy_messages(batch_state.result_messages)
@@ -432,7 +435,10 @@ class ToolExecutionHarness(BaseToolHarness):
                 turn_id=f"{context.run_id}:turn-{context.iteration}",
                 workspace_changes=workspace_change_tracker,
             ),
+            execution_guard=context.execution_guard,
         )
+        if context.execution_guard is not None:
+            context.execution_guard.assert_active()
         if workspace_change_tracker is not None:
             workspace_change_tracker.record_text_snapshot_changes(
                 workspace_snapshot_before,
@@ -573,8 +579,14 @@ class ToolExecutionHarness(BaseToolHarness):
         token_state = {}
         if batch_state.should_observe and result_messages:
             observation = ""
+            observation_model_io = context.model_io
+            if context.execution_guard is not None and observation_model_io is not None:
+                observation_model_io = context.execution_guard.guard_model_io(
+                    observation_model_io,
+                    "model.tool_observation",
+                )
             observation, observe_usage = ToolObservationRunner(
-                model_io=context.model_io,
+                model_io=observation_model_io,
             ).observe_tool_batch(
                 full_messages=context.state.transcript,
                 tool_messages=result_messages,
@@ -582,6 +594,8 @@ class ToolExecutionHarness(BaseToolHarness):
                 iteration=context.iteration,
                 provider=context.provider,
             )
+            if context.execution_guard is not None:
+                context.execution_guard.assert_active()
             token_state = observation_token_state(
                 consumed_tokens=context.state.token_state.consumed_tokens,
                 input_tokens=context.state.token_state.input_tokens,

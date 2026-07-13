@@ -4,9 +4,9 @@
 
 | 指标 | 值 |
 | --- | --- |
-| 类数量 | 3 |
-| Dataclass | 7 |
-| 协议 | 1 |
+| 类数量 | 5 |
+| Dataclass | 10 |
+| 协议 | 2 |
 | 仅内部类型 | 0 |
 
 ## 覆盖地图
@@ -23,6 +23,16 @@
 | `CompletionEvaluation` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
 | `CompletionPolicy` | `src/unchain/runtime/completion.py` | subpackage | dataclass (frozen) |
 | `CompletionPolicyRunner` | `src/unchain/runtime/completion.py` | subpackage | dataclass |
+| `ExecutionFence` | `src/unchain/execution.py` | subpackage | dataclass (frozen) |
+| `ExecutionLease` | `src/unchain/execution.py` | subpackage | dataclass (frozen) |
+| `ExecutionLeaseConfig` | `src/unchain/execution.py` | subpackage | dataclass (frozen) |
+| `ExecutionLeaseStore` | `src/unchain/execution.py` | subpackage | protocol |
+| `ExecutionRuntime` | `src/unchain/execution.py` | subpackage | class |
+| `ExecutionGuard` | `src/unchain/execution.py` | subpackage | class |
+
+### 执行所有权
+
+`ExecutionRuntime` 从 `ExecutionLeaseStore` 获取 `ExecutionGuard`。Guard 持有有时限的 `ExecutionLease`，并把其中的 `ExecutionFence` 传给原子 session 写入。`ExecutionLeaseConfig` 控制 TTL 与 heartbeat 间隔。`build_runtime_loop` 会为 memory-backed 内置 store 自动接线；构造 loop 时也可显式注入 runtime。Lease 冲突和过期 fencing token 会通过导出的 `ExecutionLeaseError` 异常体系 fail closed。
 
 ### `src/unchain/kernel/types.py`
 

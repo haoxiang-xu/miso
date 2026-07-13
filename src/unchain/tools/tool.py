@@ -4,6 +4,7 @@ import inspect
 import json
 from typing import Any, Callable, get_type_hints
 
+from ..execution import ExecutionLeaseError
 from .models import (
     HistoryPayloadOptimizer,
     ToolConfirmationPolicy,
@@ -129,6 +130,8 @@ class Tool:
                 {"error": "invalid tool arguments type"},
                 created_by=f"tool.{self.name}",
             )
+        except ExecutionLeaseError:
+            raise
         except Exception as exc:
             return normalize_capability_outcome(
                 {"error": str(exc), "tool": self.name},
@@ -314,6 +317,8 @@ class Tool:
             return {"result": result}
         except _InvalidToolArgumentsType:
             return {"error": "invalid tool arguments type"}
+        except ExecutionLeaseError:
+            raise
         except Exception as exc:
             return {"error": str(exc), "tool": self.name}
 
