@@ -26,7 +26,7 @@
 - 用 `register_harness(...)` 注册一个或多个 harness。
 - 可选 `attach_memory(KernelMemoryRuntime)` 接 memory commit。
 - 调 `run(messages, ...)`；loop 反复跑 `step_once()` 直到完成或暂停。
-- 暂停时 loop 返回 `status="awaiting_human_input"` 的 `KernelRunResult` 加一份 `continuation` payload；把两个都喂给 `resume_human_input()` 继续。
+- 暂停时 loop 返回带 `continuation` 的 `KernelRunResult`；durable wait 还会返回 `interaction_request`。用 `Agent.submit_interaction()` 持久化回答，再用 `Agent.resume_interaction()` 继续；`resume_human_input()` 保留为旧 human-input adapter。
 
 ## 配置面
 
@@ -37,7 +37,7 @@
 ## 常见陷阱
 
 - Observation turn 计入迭代预算。
-- callback 在 loop 内同步执行；耗时工作要外抛。
+- Interaction callback 是同步 adapter。durable session 会在 callback 等待期间释放 lease，把 callback 回答保存为 receipt，再重新拿 lease 后继续；无关的耗时工作仍应外抛。
 - Provider SDK 懒加载；缺 SDK 时 `fetch_turn()` 才报错，不是 import 时。
 - Provider 调用统一通过 `ModelIO` 实现；旧的 provider runtime 兼容层已经移除。
 
@@ -80,7 +80,7 @@ result = loop.run(messages=[{"role": "user", "content": "Hello"}])
 1. `run()` 规范化输入消息，按模型能力校验模态支持，并为这次迭代构造 `RunState`。
 2. loop 在每个模型 turn 前后 dispatch 对外扩展 phase（完整列表见 `architecture-overview.md`），并在 suspend/finalize 时跨过 runtime 保留的 durable barrier。
 3. `ModelIO.fetch_turn(request)` 返回 `ModelTurnResult`，含 assistant 消息、工具调用、token 计数。
-4. 如果模型发出工具调用，`ToolExecutionHarness` 执行它们。需要确认的工具会让 loop 提前返回 `status="awaiting_human_input"`。
+4. 如果模型发出工具调用，`ToolExecutionHarness` 执行它们。需要确认的工具会创建 durable interaction；没有同步 adapter 回答时，loop 提前返回 `status="awaiting_interaction"`。
 5. 标了 `observe=True` 的工具会在 `after_tool_batch` 触发额外的 observation turn。
 6. 当一轮不再产生工具调用时，loop 应用结构化输出解析、commit memory、返回 `KernelRunResult`。
 
@@ -92,6 +92,7 @@ result = loop.run(messages=[{"role": "user", "content": "Hello"}])
 - 每次请求都以当前 semantic model context 为权威。Provider replay 只补回仍被保留的原生 reasoning/tool 外壳，不能覆盖新的 memory、prompt、optimizer 或用户 delta。OpenAI remote continuation 的增量输入与完整本地 fallback 分开保存。
 - durable suspend 边界仍待发送的 request-only model context 会写入 execution checkpoint，并在下一次 `before_model` 前恢复。
 - 人工输入 continuation 对外只暴露进程内的 opaque replay handle，不会把 provider reasoning/signature 序列化进公开 continuation。若 continuation 需要跨进程恢复，应启用 session memory/checkpoint。
+- 对 human-input、tool-approval 等等待，以及由已配置的 memory-backed callback 创建的 max-budget 等待，不可变 interaction request 与 checkpoint reference 会原子创建。response receipt 必须先持久化才能 resume；缺失或冲突的 receipt 会在 model/tool 工作之前 fail closed。
 
 ## Provider 抽象
 
@@ -174,25 +175,47 @@ result = agent.run("task", callback=my_callback)
 
 ## 确认暂停与恢复
 
-调用 `requires_confirmation=True` 的工具时：
+在 memory-backed session 中调用 `requires_confirmation=True` 的工具时：
 
 ```text
 KernelLoop.run()
   ├── LLM 请求工具调用
   ├── on_tool_call 阶段：ToolExecutionHarness 构建 ToolConfirmationRequest
-  ├── on_suspend 阶段触发；loop 返回 KernelRunResult(status="awaiting_human_input", continuation=...)
+  ├── on_suspend 阶段原子保存 checkpoint + InteractionRequest
+  ├── loop 返回 KernelRunResult(status="awaiting_interaction", interaction_request=...)
   │
   │   ← 外部：UI 显示确认对话框
   │   ← 外部：用户批准/拒绝
   │
-  ├── Agent.resume_human_input(continuation=..., response=...)
-  │   └── 在 on_resume 阶段重新进入 loop，response 在手
+  ├── Agent.submit_interaction(...) 持久保存 response receipt
+  ├── Agent.resume_interaction(session_id=...)
+  │   └── 在 on_resume 路径校验并消费 receipt
   ├── 若批准：执行工具（参数若被改则用改后的）
   ├── 若拒绝：错误发给 LLM，loop 继续
   └── run() 继续或返回最终结果
 ```
 
-toolkit catalog 与 discovery 状态通过 harness 的 `on_suspend` / `on_resume` checkpoint 在这次往返中存活。
+当 `ToolOptimizer` 选择了工具面时，durable interaction continuation 会保存严格的版本化 exposure plan：catalog digest，以及精确的 direct、deferred、loaded 工具名。`Agent.resume_interaction()` 会先校验 catalog，再直接重建同一工具面，不会再次调用 selector。已存在但格式错误的 plan 或 catalog drift 会在 model/tool 工作之前 fail closed。该精确重放适用于 durable human-input、tool-approval 与已配置的 max-budget interaction resume；普通 `max_iterations` checkpoint 交给后续 `Agent.run()` 时属于新 invocation，仍可能重新优化工具面。`on_tool_confirm` 仍可使用，但它执行的是同一套同步 adapter 流程：持久化 request + checkpoint、释放 lease、调用 callback、持久化 receipt、重新拿 lease、resume。它不会绕开 journal。
+
+推荐的 durable API 把 receipt 提交与执行分开：
+
+```python
+suspended = agent.run("Do something risky", session_id="job-42")
+
+agent.submit_interaction(
+    session_id="job-42",
+    interaction_id=suspended.interaction_request["interaction_id"],
+    response={"approved": True},
+)
+
+resumed = agent.resume_interaction(session_id="job-42")
+```
+
+`resume_interaction(response=...)` 是一次调用完成两步的便利入口。已有 human-input 集成可以继续使用 `resume_human_input()`；配置 durable memory 后，它会走同一份 receipt journal，而不是另一条可靠性路径。
+
+如果没有 durable memory-backed `session_id`，原有进程内 confirmation/callback 行为仍可用，但不能声称支持跨进程 receipt recovery。
+
+这个 receipt 边界保证的是“决定”持久化，不是任意 external side effect exactly-once。如果已批准的远程工具修改了外部世界，而 worker 在记录工具结果前崩溃，恢复仍需要 D3 tool-intent/tool-receipt 协议、idempotency key、reconciliation 或 transactional outbox。
 
 ## 结构化输出（Response Format）
 

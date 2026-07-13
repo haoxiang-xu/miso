@@ -4,6 +4,7 @@ from typing import Any
 
 from ..execution import ExecutionRuntime
 from ..interaction import HumanInputResumeHarness
+from ..interaction.runtime import DurableInteractionRuntime
 from ..kernel.harness import RuntimeHarness
 from ..kernel.loop import KernelLoop
 from ..kernel.microcompact import MidRunMicrocompactHarness
@@ -34,6 +35,8 @@ def attach_default_runtime_components(loop: KernelLoop) -> None:
 
 
 def attach_memory_runtime_components(loop: KernelLoop, memory_runtime: KernelMemoryRuntime) -> None:
+    if loop.interaction_runtime is None:
+        loop.interaction_runtime = DurableInteractionRuntime(memory_runtime)
     existing_names = {harness.name for harness in loop.harnesses}
     for component in memory_runtime.build_default_components():
         if component.name in existing_names:
@@ -99,6 +102,11 @@ def build_runtime_loop(
         model_io=model_io,
         retry_config=retry_config,
         execution_runtime=execution_runtime,
+        interaction_runtime=(
+            DurableInteractionRuntime(memory_runtime)
+            if memory_runtime is not None
+            else None
+        ),
         **kwargs,
     )
     attach_default_runtime_components(loop)

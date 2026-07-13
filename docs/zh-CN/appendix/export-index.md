@@ -47,6 +47,31 @@
 | `is_human_input_tool_name` | `-` | 非 class 导出 |
 | `media` | `-` | 非 class 导出 |
 
+## `src/unchain/interaction/__init__.py` 的 durable 导出
+
+下表只列出 interaction journal surface 在本轮新增的 durable interaction 导出；
+已有 FYI、queued-turn 与 human-input 工具保持不变。
+
+| 名称 | 源码 | 参考 |
+| --- | --- | --- |
+| `INTERACTION_JOURNAL_KEY` | `src/unchain/interaction/durable.py:18` | `../api/interaction.md#常量` |
+| `INTERACTION_KIND_HUMAN_INPUT` | `src/unchain/interaction/durable.py:22` | `../api/interaction.md#常量` |
+| `INTERACTION_KIND_MAX_BUDGET` | `src/unchain/interaction/durable.py:24` | `../api/interaction.md#常量` |
+| `INTERACTION_KIND_TOOL_APPROVAL` | `src/unchain/interaction/durable.py:23` | `../api/interaction.md#常量` |
+| `InteractionAlreadyAppliedError` | `src/unchain/interaction/durable.py:60` | `../api/interaction.md#interaction-errors` |
+| `InteractionError` | `src/unchain/interaction/durable.py:36` | `../api/interaction.md#interaction-errors` |
+| `InteractionIntegrityError` | `src/unchain/interaction/durable.py:42` | `../api/interaction.md#interaction-errors` |
+| `InteractionNotPendingError` | `src/unchain/interaction/durable.py:48` | `../api/interaction.md#interaction-errors` |
+| `InteractionReceipt` | `src/unchain/interaction/durable.py:407` | `../api/interaction.md#interactionreceipt` |
+| `InteractionReceiptConflictError` | `src/unchain/interaction/durable.py:54` | `../api/interaction.md#interaction-errors` |
+| `InteractionRequest` | `src/unchain/interaction/durable.py:214` | `../api/interaction.md#interactionrequest` |
+| `build_interaction_receipt` | `src/unchain/interaction/durable.py:523` | `../api/interaction.md#interactionreceipt` |
+| `build_interaction_request` | `src/unchain/interaction/durable.py:339` | `../api/interaction.md#interactionrequest` |
+| `build_max_budget_continuation` | `src/unchain/interaction/effects.py:161` | `../api/interaction.md#builder-与-helper-导出` |
+| `build_max_budget_suspend_request` | `src/unchain/interaction/effects.py:222` | `../api/interaction.md#builder-与-helper-导出` |
+| `build_tool_approval_continuation` | `src/unchain/interaction/effects.py:239` | `../api/interaction.md#builder-与-helper-导出` |
+| `build_tool_approval_suspend_request` | `src/unchain/interaction/effects.py:331` | `../api/interaction.md#builder-与-helper-导出` |
+
 ## `src/unchain/memory/__init__.py`
 
 | 名称 | 源码 | 参考 |

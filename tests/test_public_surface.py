@@ -32,6 +32,25 @@ def test_tools_surface_exports_runtime_contracts():
     assert ToolConfirmationResponse.__name__ == "ToolConfirmationResponse"
 
 
+def test_interaction_surface_exports_durable_contracts():
+    from unchain.interaction import (
+        InteractionAlreadyAppliedError,
+        InteractionError,
+        InteractionIntegrityError,
+        InteractionNotPendingError,
+        InteractionReceipt,
+        InteractionReceiptConflictError,
+        InteractionRequest,
+    )
+
+    assert InteractionRequest.__name__ == "InteractionRequest"
+    assert InteractionReceipt.__name__ == "InteractionReceipt"
+    assert issubclass(InteractionIntegrityError, InteractionError)
+    assert issubclass(InteractionNotPendingError, InteractionError)
+    assert issubclass(InteractionReceiptConflictError, InteractionError)
+    assert issubclass(InteractionAlreadyAppliedError, InteractionError)
+
+
 def test_toolkits_surface_exports_current_concrete_toolkits():
     import unchain.toolkits as toolkits
     from unchain.toolkits import AgentReachToolkit, CoreToolkit, MCPToolkit, PlanToolkit

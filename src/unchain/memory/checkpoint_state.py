@@ -5,13 +5,24 @@ import hashlib
 import json
 from typing import Any
 
+from ..interaction.durable import (
+    INTERACTION_JOURNAL_KEY,
+    InteractionError,
+    InteractionRequest,
+    mark_interaction_applied,
+    register_interaction_request,
+    validate_interaction_journal,
+    validate_interaction_request,
+)
 from ..kernel.state import RunState
 from .ownership import ensure_session_delta_input
 
 
 EXECUTION_CHECKPOINT_KEY = "execution_checkpoint"
 EXECUTION_CHECKPOINT_SCHEMA_VERSION = 1
-_CHECKPOINT_STATUSES = frozenset({"max_iterations", "awaiting_human_input"})
+_CHECKPOINT_STATUSES = frozenset(
+    {"max_iterations", "awaiting_human_input", "awaiting_interaction"}
+)
 
 
 class ExecutionCheckpointError(RuntimeError):
@@ -113,6 +124,59 @@ def _human_input_request(state: RunState) -> dict[str, Any] | None:
     return _json_safe(to_dict()) if callable(to_dict) else _json_safe(request)
 
 
+def _checkpoint_interaction_request(
+    state: RunState,
+    *,
+    status: str,
+    run_id: str,
+    session_id: str,
+    base_session_revision: int | None,
+) -> InteractionRequest | None:
+    suspend_payload = state.suspend_state.payload
+    raw_request = (
+        suspend_payload.get("interaction_request")
+        if isinstance(suspend_payload, dict)
+        else None
+    )
+    if raw_request is None:
+        if status == "awaiting_interaction":
+            raise ExecutionCheckpointError(
+                "awaiting_interaction checkpoint requires an interaction_request"
+            )
+        return None
+    try:
+        request = validate_interaction_request(raw_request)
+    except InteractionError as exc:
+        raise ExecutionCheckpointIntegrityError(
+            f"invalid checkpoint interaction_request: {exc}"
+        ) from exc
+    if request.session_id != session_id:
+        raise ExecutionCheckpointCompatibilityError(
+            "interaction_request session_id does not match the checkpoint session"
+        )
+    expected_run_id = str(run_id or "kernel")
+    if request.source_run_id != expected_run_id:
+        raise ExecutionCheckpointCompatibilityError(
+            "interaction_request source_run_id does not match the checkpoint run"
+        )
+    if (
+        base_session_revision is not None
+        and request.created_revision != base_session_revision
+    ):
+        raise ExecutionCheckpointCompatibilityError(
+            "interaction_request created_revision does not match the checkpoint base revision"
+        )
+    expected_kind = {
+        "awaiting_human_input": "human_input",
+        "max_iterations": "max_budget",
+    }.get(status)
+    if expected_kind is not None and request.kind != expected_kind:
+        raise ExecutionCheckpointCompatibilityError(
+            f"{status} checkpoint requires an {expected_kind} interaction_request"
+        )
+    return request
+
+
 def build_execution_checkpoint(
     state: RunState,
     *,
@@ -128,6 +192,20 @@ def build_execution_checkpoint(
     if not session_id:
         raise ExecutionCheckpointError("execution checkpoint requires a non-empty session_id")
 
+    base_session_revision = (
+        int(state.memory_state.get("session_revision"))
+        if isinstance(state.memory_state.get("session_revision"), int)
+        and not isinstance(state.memory_state.get("session_revision"), bool)
+        else None
+    )
+    interaction_request = _checkpoint_interaction_request(
+        state,
+        status=normalized_status,
+        run_id=run_id,
+        session_id=session_id,
+        base_session_revision=base_session_revision,
+    )
+
     payload = _json_safe(
         {
             "schema_version": EXECUTION_CHECKPOINT_SCHEMA_VERSION,
@@ -137,12 +215,7 @@ def build_execution_checkpoint(
             "provider": str(state.provider_state.provider or ""),
             "model": str(state.provider_state.model or ""),
             "iteration": int(state.iteration),
-            "base_session_revision": (
-                int(state.memory_state.get("session_revision"))
-                if isinstance(state.memory_state.get("session_revision"), int)
-                and not isinstance(state.memory_state.get("session_revision"), bool)
-                else None
-            ),
+            "base_session_revision": base_session_revision,
             "transcript": copy.deepcopy(state.transcript),
             "pending_model_context": copy.deepcopy(state.next_model_input),
             "replay_frame": replay_frame_from_state(state),
@@ -176,6 +249,16 @@ def build_execution_checkpoint(
                 ),
             },
             "workspace_change_state": copy.deepcopy(state.workspace_change_state),
+            **(
+                {
+                    "interaction_ref": {
+                        "interaction_id": interaction_request.interaction_id,
+                        "request_digest": interaction_request.request_digest,
+                    }
+                }
+                if interaction_request is not None
+                else {}
+            ),
         }
     )
     digest = stable_payload_digest(payload)
@@ -285,6 +368,30 @@ def validate_execution_checkpoint(raw: Any) -> dict[str, Any]:
             raise ExecutionCheckpointIntegrityError(
                 "awaiting_human_input checkpoint requires human_input_request"
             )
+    interaction_ref = checkpoint.get("interaction_ref")
+    if interaction_ref is not None:
+        if not isinstance(interaction_ref, dict) or set(interaction_ref) != {
+            "interaction_id",
+            "request_digest",
+        }:
+            raise ExecutionCheckpointIntegrityError(
+                "execution checkpoint interaction_ref must contain only "
+                "interaction_id and request_digest"
+            )
+        for key in ("interaction_id", "request_digest"):
+            if not isinstance(interaction_ref.get(key), str) or not interaction_ref.get(key):
+                raise ExecutionCheckpointIntegrityError(
+                    f"execution checkpoint interaction_ref.{key} must be a non-empty string"
+                )
+    if checkpoint.get("status") == "awaiting_interaction":
+        if interaction_ref is None:
+            raise ExecutionCheckpointIntegrityError(
+                "awaiting_interaction checkpoint requires interaction_ref"
+            )
+        if not isinstance(checkpoint.get("continuation"), dict):
+            raise ExecutionCheckpointIntegrityError(
+                "awaiting_interaction checkpoint requires continuation"
+            )
     base_revision = checkpoint.get("base_session_revision")
     if (
         base_revision is not None
@@ -319,6 +426,164 @@ def validate_execution_checkpoint(raw: Any) -> dict[str, Any]:
             "execution checkpoint id does not match its payload"
         )
     return checkpoint
+
+
+def _validate_checkpoint_request_binding(
+    checkpoint: dict[str, Any],
+    request: InteractionRequest,
+) -> None:
+    interaction_ref = checkpoint.get("interaction_ref")
+    if not isinstance(interaction_ref, dict):
+        raise ExecutionCheckpointCompatibilityError(
+            "interaction_request was supplied for a checkpoint without interaction_ref"
+        )
+    if (
+        interaction_ref.get("interaction_id") != request.interaction_id
+        or interaction_ref.get("request_digest") != request.request_digest
+    ):
+        raise ExecutionCheckpointCompatibilityError(
+            "interaction_request does not match the checkpoint interaction_ref"
+        )
+    if request.session_id != checkpoint.get("session_id"):
+        raise ExecutionCheckpointCompatibilityError(
+            "interaction_request belongs to a different session"
+        )
+    if request.source_run_id != checkpoint.get("source_run_id"):
+        raise ExecutionCheckpointCompatibilityError(
+            "interaction_request belongs to a different source run"
+        )
+    base_revision = checkpoint.get("base_session_revision")
+    if base_revision is not None and request.created_revision != base_revision:
+        raise ExecutionCheckpointCompatibilityError(
+            "interaction_request created_revision does not match the checkpoint"
+        )
+
+
+def register_checkpoint_interaction_request(
+    session_state: dict[str, Any],
+    *,
+    checkpoint: dict[str, Any],
+    interaction_request: Any,
+) -> None:
+    """Register a checkpoint-bound request inside the same session-state CAS."""
+
+    try:
+        request = validate_interaction_request(interaction_request)
+        _validate_checkpoint_request_binding(checkpoint, request)
+        journal = validate_interaction_journal(
+            session_state.get(INTERACTION_JOURNAL_KEY)
+        )
+    except InteractionError as exc:
+        raise ExecutionCheckpointIntegrityError(
+            f"invalid durable interaction state: {exc}"
+        ) from exc
+
+    active_id = journal.get("active_id")
+    if active_id is not None and active_id != request.interaction_id:
+        active_entry = journal["entries"].get(active_id)
+        current_raw = session_state.get(EXECUTION_CHECKPOINT_KEY)
+        current = (
+            validate_execution_checkpoint(current_raw)
+            if isinstance(current_raw, dict)
+            else None
+        )
+        current_ref = current.get("interaction_ref") if isinstance(current, dict) else None
+        if (
+            not isinstance(active_entry, dict)
+            or not isinstance(current_ref, dict)
+            or current_ref.get("interaction_id") != active_id
+            or active_entry.get("checkpoint_id") != current.get("checkpoint_id")
+        ):
+            raise ExecutionCheckpointCompatibilityError(
+                "active interaction is not bound to the current execution checkpoint"
+            )
+        receipt = active_entry.get("receipt")
+        if not isinstance(receipt, dict):
+            raise ExecutionCheckpointResumeRequiredError(
+                "cannot replace an unanswered durable interaction"
+            )
+        try:
+            journal = mark_interaction_applied(
+                journal,
+                interaction_id=active_id,
+                receipt_id=str(receipt.get("receipt_id") or ""),
+                applied_checkpoint_id=str(checkpoint.get("checkpoint_id") or ""),
+            )
+        except InteractionError as exc:
+            raise ExecutionCheckpointIntegrityError(
+                f"failed to apply the prior durable interaction: {exc}"
+            ) from exc
+
+    existing = journal["entries"].get(request.interaction_id)
+    if isinstance(existing, dict) and existing.get("application") is not None:
+        raise ExecutionCheckpointCompatibilityError(
+            "cannot reactivate an already-applied durable interaction"
+        )
+    try:
+        journal = register_interaction_request(
+            journal,
+            request,
+            checkpoint_id=str(checkpoint.get("checkpoint_id") or ""),
+        )
+    except InteractionError as exc:
+        raise ExecutionCheckpointCompatibilityError(
+            f"failed to register checkpoint interaction: {exc}"
+        ) from exc
+    session_state[INTERACTION_JOURNAL_KEY] = journal
+
+
+def apply_checkpoint_interaction_receipt(
+    session_state: dict[str, Any],
+    *,
+    checkpoint: dict[str, Any],
+    applied_checkpoint_id: str,
+) -> bool:
+    """Tombstone a receipt before atomically clearing/replacing its checkpoint."""
+
+    interaction_ref = checkpoint.get("interaction_ref")
+    if interaction_ref is None:
+        return False
+    try:
+        journal = validate_interaction_journal(
+            session_state.get(INTERACTION_JOURNAL_KEY)
+        )
+    except InteractionError as exc:
+        raise ExecutionCheckpointIntegrityError(
+            f"invalid durable interaction journal: {exc}"
+        ) from exc
+    interaction_id = str(interaction_ref.get("interaction_id") or "")
+    entry = journal["entries"].get(interaction_id)
+    if not isinstance(entry, dict):
+        raise ExecutionCheckpointIntegrityError(
+            "checkpoint interaction_ref is missing from the interaction journal"
+        )
+    request = entry.get("request")
+    if (
+        not isinstance(request, dict)
+        or request.get("request_digest") != interaction_ref.get("request_digest")
+        or request.get("session_id") != checkpoint.get("session_id")
+        or entry.get("checkpoint_id") != checkpoint.get("checkpoint_id")
+    ):
+        raise ExecutionCheckpointIntegrityError(
+            "checkpoint interaction_ref does not match its journal entry"
+        )
+    receipt = entry.get("receipt")
+    if not isinstance(receipt, dict):
+        raise ExecutionCheckpointResumeRequiredError(
+            "cannot clear an interaction checkpoint before its receipt is recorded"
+        )
+    try:
+        session_state[INTERACTION_JOURNAL_KEY] = mark_interaction_applied(
+            journal,
+            interaction_id=interaction_id,
+            receipt_id=str(receipt.get("receipt_id") or ""),
+            applied_checkpoint_id=applied_checkpoint_id,
+        )
+    except InteractionError as exc:
+        raise ExecutionCheckpointIntegrityError(
+            f"failed to apply checkpoint interaction receipt: {exc}"
+        ) from exc
+    return True
 
 
 def ensure_checkpoint_compatible(
@@ -368,10 +633,13 @@ def restore_fresh_checkpoint_messages(
     *,
     incoming_messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    if checkpoint.get("status") == "awaiting_human_input":
+    if (
+        checkpoint.get("status") in {"awaiting_human_input", "awaiting_interaction"}
+        or isinstance(checkpoint.get("interaction_ref"), dict)
+    ):
         raise ExecutionCheckpointResumeRequiredError(
-            "session is awaiting human input; resume the persisted continuation "
-            "instead of starting a fresh run"
+            "session is awaiting a durable interaction; resume the persisted "
+            "continuation instead of starting a fresh run"
         )
     ensure_checkpoint_replayable(checkpoint)
     transcript = copy.deepcopy(checkpoint.get("transcript") or [])
@@ -435,9 +703,14 @@ def restore_resume_checkpoint_messages(
     conversation: list[dict[str, Any]],
     continuation: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
-    if checkpoint.get("status") != "awaiting_human_input":
+    resumable_interaction = (
+        isinstance(checkpoint.get("interaction_ref"), dict)
+        and checkpoint.get("status")
+        in {"awaiting_human_input", "awaiting_interaction", "max_iterations"}
+    )
+    if checkpoint.get("status") != "awaiting_human_input" and not resumable_interaction:
         raise ExecutionCheckpointCompatibilityError(
-            "resume_human_input requires an awaiting_human_input checkpoint"
+            "interaction resume requires a durable interaction checkpoint"
         )
     ensure_checkpoint_replayable(checkpoint)
     transcript = copy.deepcopy(checkpoint.get("transcript") or [])
@@ -464,10 +737,12 @@ __all__ = [
     "ExecutionCheckpointPersistenceError",
     "ExecutionCheckpointReplayUnavailableError",
     "ExecutionCheckpointResumeRequiredError",
+    "apply_checkpoint_interaction_receipt",
     "build_execution_checkpoint",
     "ensure_checkpoint_compatible",
     "ensure_checkpoint_replayable",
     "replay_frame_from_state",
+    "register_checkpoint_interaction_request",
     "merge_checkpoint_transcript_with_incoming",
     "restore_fresh_checkpoint_messages",
     "restore_resume_checkpoint_messages",

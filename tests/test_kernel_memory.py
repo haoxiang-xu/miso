@@ -22,6 +22,9 @@ from unchain.tools import Toolkit
 
 
 class _QueueModelIO:
+    provider = "openai"
+    model = "gpt-4.1"
+
     def __init__(self, results):
         self.results = list(results)
         self.requests = []

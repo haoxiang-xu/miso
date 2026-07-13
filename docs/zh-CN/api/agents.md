@@ -76,7 +76,7 @@ Frozen dataclass，持有 Agent 实例的不可变配置。
 
 ### `src/unchain/agent/agent.py`
 
-顶层 `Agent` 门面：持有配置、规范化消息、通过 `AgentBuilder` 准备 kernel loop，并暴露 `run`/`resume_human_input`/`clone`/`fork_for_subagent`/`as_tool` 入口。
+顶层 `Agent` 门面：持有配置、规范化消息、通过 `AgentBuilder` 准备 kernel loop，并暴露 `run`/`submit_interaction`/`resume_interaction` 以及兼容、clone、delegation 与 tool 入口。
 
 ## Agent
 
@@ -117,11 +117,25 @@ Frozen dataclass，持有 Agent 实例的不可变配置。
 - 类型：方法
 - 返回：`KernelRunResult`
 
-#### `resume_human_input(self, *, conversation: list[dict[str, Any]] | None=None, continuation: dict[str, Any] | None=None, response: dict[str, Any] | Any, payload: dict[str, Any] | None=None, response_format: Any=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, on_tool_confirm: Callable[..., Any] | None=None, on_human_input: Callable[..., Any] | None=None, on_max_iterations: Callable[..., Any] | None=None, session_id: str | None=None, memory_namespace: str | None=None, run_id: str | None=None, tool_runtime_config: dict[str, Any] | None=None) -> KernelRunResult`
+#### `resume_human_input(self, *, conversation: list[dict[str, Any]] | None=None, continuation: dict[str, Any] | None=None, response: dict[str, Any] | Any=None, payload: dict[str, Any] | None=None, response_format: Any=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, on_tool_confirm: Callable[..., Any] | None=None, on_human_input: Callable[..., Any] | None=None, on_max_iterations: Callable[..., Any] | None=None, session_id: str | None=None, memory_namespace: str | None=None, run_id: str | None=None, tool_runtime_config: dict[str, Any] | None=None) -> KernelRunResult`
 
 在收集到人类输入后恢复暂停的运行。
 
-如果同时省略 `conversation` 和 `continuation`，则 memory-backed `session_id` 中必须存在 `awaiting_human_input` execution checkpoint；该方法会从 checkpoint 恢复两者。
+如果同时省略 `conversation` 和 `continuation`，则 memory-backed `session_id` 中必须存在 `awaiting_human_input` execution checkpoint；该方法会从 checkpoint 恢复两者。存在 durable interaction journal 时，这个旧入口会使用同一份 journal；`response=None` 时也能消费之前已经提交的 human receipt。
+
+- 类型：方法
+- 返回：`KernelRunResult`
+
+#### `submit_interaction(self, *, session_id: str, interaction_id: str, response: Any, submitted_by: str='user') -> InteractionReceipt`
+
+规范化并持久记录当前不可变 interaction request 的 response，但不恢复模型，也不执行工具。重复提交相同的规范化 response 是幂等的；冲突 response 会 fail closed。
+
+- 类型：方法
+- 返回：持久化后的 `InteractionReceipt`
+
+#### `resume_interaction(self, *, session_id: str, conversation: list[dict[str, Any]] | None=None, continuation: dict[str, Any] | None=None, response: Any=None, submitted_by: str='api:resume_interaction', payload: dict[str, Any] | None=None, response_format: Any=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, on_tool_confirm: Callable[..., Any] | None=None, on_human_input: Callable[..., Any] | None=None, on_max_iterations: Callable[..., Any] | None=None, memory_namespace: str | None=None, run_id: str | None=None, tool_runtime_config: dict[str, Any] | None=None) -> KernelRunResult`
+
+加载活跃的 human-input、tool-approval 或 max-budget request，并消费其持久 receipt。如果提供 `response`，该方法会先通过同一 receipt 路径记录 response，再 resume。必须提供 durable `session_id`。继续执行前，request subject、checkpoint、continuation 与当前 model adapter 的 provider/model 必须完全一致。因此用于 durable resume 的自定义 `ModelIO` 必须直接暴露 `provider`/`model`，或通过 `engine` 暴露；无法推断实际身份时会 fail closed。
 
 - 类型：方法
 - 返回：`KernelRunResult`
@@ -176,7 +190,7 @@ Agent 准备管线：`AgentCallContext` 捕获调用端选项，`AgentBuilder` �
 
 ## AgentCallContext
 
-Dataclass，捕获传给 `Agent.run()` 或 `Agent.resume_human_input()` 的每次调用选项。
+Dataclass，捕获传给 Agent run、interaction submission 与 resume 入口的每次调用选项。
 
 | 项目 | 细节 |
 | --- | --- |
@@ -189,7 +203,7 @@ Dataclass，捕获传给 `Agent.run()` 或 `Agent.resume_human_input()` 的每�
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `mode` | `str` | `"run"` 或 `"resume_human_input"`。 |
+| `mode` | `str` | `"run"`、`"resume_human_input"`、`"submit_interaction"` 或 `"resume_interaction"`。 |
 | `input_messages` | `list[dict[str, Any]] \| None` | 默认值：`None`。 |
 | `conversation` | `list[dict[str, Any]] \| None` | 默认值：`None`。 |
 | `continuation` | `dict[str, Any] \| None` | 默认值：`None`。 |
@@ -208,6 +222,8 @@ Dataclass，捕获传给 `Agent.run()` 或 `Agent.resume_human_input()` 的每�
 | `memory_namespace` | `str \| None` | 默认值：`None`。 |
 | `run_id` | `str \| None` | 默认值：`None`。 |
 | `tool_runtime_config` | `dict[str, Any] \| None` | 默认值：`None`。 |
+| `interaction_id` | `str \| None` | `submit_interaction()` 指向的 durable interaction。默认值：`None`。 |
+| `submitted_by` | `str` | Receipt 提交者身份。默认值：`"user"`。 |
 
 ## AgentBuilder
 
@@ -257,6 +273,8 @@ Dataclass，捕获传给 `Agent.run()` 或 `Agent.resume_human_input()` 的每�
 | --- | --- | --- |
 | `run()` | `KernelRunResult` | 执行 kernel loop。 |
 | `resume_human_input()` | `KernelRunResult` | 从人类输入暂停恢复。 |
+| `submit_interaction()` | `InteractionReceipt` | 只持久化 response，不恢复执行。 |
+| `resume_interaction()` | `KernelRunResult` | 从已校验 durable receipt 恢复。 |
 
 ### `src/unchain/agent/modules/`
 

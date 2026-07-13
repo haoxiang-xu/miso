@@ -7,6 +7,7 @@ from .provider_replay import current_provider_replay_frame
 from .replay_handle import store_provider_replay_handle
 from .state import RunState
 from .types import KernelRunResult
+from ..interaction.durable import InteractionRequest
 
 
 def _human_input_request_payload(state: RunState) -> dict[str, Any] | None:
@@ -18,12 +19,20 @@ def _continuation_payload(state: RunState) -> dict[str, Any] | None:
     return copy.deepcopy(state.last_continuation) if isinstance(state.last_continuation, dict) else None
 
 
+def _interaction_request_payload(state: RunState) -> dict[str, Any] | None:
+    raw = state.suspend_state.payload.get("interaction_request")
+    if not isinstance(raw, dict):
+        return None
+    return InteractionRequest.from_dict(raw).to_dict()
+
+
 def build_kernel_run_result(state: RunState, *, status: str) -> KernelRunResult:
     return KernelRunResult(
         messages=copy.deepcopy(state.transcript),
         status=status,
         continuation=_continuation_payload(state),
         human_input_request=_human_input_request_payload(state),
+        interaction_request=_interaction_request_payload(state),
         consumed_tokens=int(state.token_state.consumed_tokens or 0),
         input_tokens=int(state.token_state.input_tokens or 0),
         output_tokens=int(state.token_state.output_tokens or 0),
@@ -48,7 +57,7 @@ def build_legacy_run_bundle(state: RunState, *, status: str) -> dict[str, Any]:
         if max_context_window_tokens > 0
         else 0.0
     )
-    return {
+    bundle = {
         "model": state.provider_state.model,
         "consumed_tokens": int(state.token_state.consumed_tokens or 0),
         "input_tokens": int(state.token_state.input_tokens or 0),
@@ -64,6 +73,10 @@ def build_legacy_run_bundle(state: RunState, *, status: str) -> dict[str, Any]:
         "previous_response_id": state.provider_state.previous_response_id,
         "iteration": int(state.iteration),
     }
+    interaction_request = _interaction_request_payload(state)
+    if interaction_request is not None:
+        bundle["interaction_request"] = interaction_request
+    return bundle
 
 
 __all__ = [

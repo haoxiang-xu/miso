@@ -5,12 +5,20 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..execution import ExecutionFence, ExecutionLeaseError
+from ..interaction.durable import (
+    INTERACTION_JOURNAL_KEY,
+    validate_interaction_journal,
+    validate_interaction_request,
+)
 from .checkpoint_state import (
     EXECUTION_CHECKPOINT_KEY,
     ExecutionCheckpointCompatibilityError,
+    ExecutionCheckpointIntegrityError,
     ExecutionCheckpointPersistenceError,
+    apply_checkpoint_interaction_receipt,
     ensure_checkpoint_compatible,
     merge_checkpoint_transcript_with_incoming,
+    register_checkpoint_interaction_request,
     restore_fresh_checkpoint_messages,
     restore_resume_checkpoint_messages,
     transcript_digest,
@@ -239,11 +247,13 @@ class KernelMemoryRuntime:
         session_id: str,
         checkpoint: dict[str, Any],
         *,
+        interaction_request: Any = None,
         execution_fence: ExecutionFence | None = None,
     ) -> dict[str, Any]:
         persisted, _ = self.save_execution_checkpoint_snapshot(
             session_id,
             checkpoint,
+            interaction_request=interaction_request,
             execution_fence=execution_fence,
         )
         return persisted
@@ -253,6 +263,7 @@ class KernelMemoryRuntime:
         session_id: str,
         checkpoint: dict[str, Any],
         *,
+        interaction_request: Any = None,
         expected_revision: int | None = None,
         execution_fence: ExecutionFence | None = None,
     ) -> tuple[dict[str, Any], SessionSnapshot]:
@@ -265,8 +276,18 @@ class KernelMemoryRuntime:
             raise ExecutionCheckpointCompatibilityError(
                 "execution checkpoint session_id does not match the target session"
             )
+        has_interaction_ref = isinstance(validated.get("interaction_ref"), dict)
+        if has_interaction_ref and interaction_request is None:
+            raise ExecutionCheckpointCompatibilityError(
+                "checkpoint interaction_ref requires its full interaction_request"
+            )
+        if not has_interaction_ref and interaction_request is not None:
+            raise ExecutionCheckpointCompatibilityError(
+                "interaction_request requires a checkpoint interaction_ref"
+            )
         session_snapshot = self.load_session_snapshot(session_id)
         current_raw = session_snapshot.state.get(EXECUTION_CHECKPOINT_KEY)
+        current = None
         if isinstance(current_raw, dict):
             current = validate_execution_checkpoint(current_raw)
             current_revision = session_snapshot.revision
@@ -279,20 +300,50 @@ class KernelMemoryRuntime:
                 and current_revision == expected_revision + 1
                 and current.get("base_session_revision") == expected_revision
             )
-            if (
+            retry_candidate = (
                 expected_revision is not None
                 and same_checkpoint
                 and (same_revision_noop or verified_retry)
-            ):
+            )
+            if not retry_candidate:
+                _ensure_expected_revision(
+                    session_snapshot,
+                    session_id=session_id,
+                    expected_revision=expected_revision,
+                )
+        else:
+            retry_candidate = False
+            _ensure_expected_revision(
+                session_snapshot,
+                session_id=session_id,
+                expected_revision=expected_revision,
+            )
+
+        state = copy.deepcopy(session_snapshot.state)
+        if has_interaction_ref:
+            register_checkpoint_interaction_request(
+                state,
+                checkpoint=validated,
+                interaction_request=interaction_request,
+            )
+        elif (
+            isinstance(current, dict)
+            and isinstance(current.get("interaction_ref"), dict)
+        ):
+            apply_checkpoint_interaction_receipt(
+                state,
+                checkpoint=current,
+                applied_checkpoint_id=str(validated.get("checkpoint_id") or ""),
+            )
+        state[EXECUTION_CHECKPOINT_KEY] = copy.deepcopy(validated)
+        if retry_candidate:
+            if state != session_snapshot.state:
+                raise ExecutionCheckpointIntegrityError(
+                    "checkpoint retry found a non-atomic interaction journal state"
+                )
+            if isinstance(current, dict):
                 _verify_execution_fence(self.store, execution_fence)
                 return current, session_snapshot
-        _ensure_expected_revision(
-            session_snapshot,
-            session_id=session_id,
-            expected_revision=expected_revision,
-        )
-        state = copy.deepcopy(session_snapshot.state)
-        state[EXECUTION_CHECKPOINT_KEY] = copy.deepcopy(validated)
         try:
             persisted_snapshot = save_session_snapshot(
                 self.store,
@@ -340,6 +391,27 @@ class KernelMemoryRuntime:
             raise ExecutionCheckpointPersistenceError(
                 "execution checkpoint write verification failed"
             )
+        if has_interaction_ref:
+            try:
+                request = validate_interaction_request(interaction_request)
+                journal = validate_interaction_journal(
+                    verified_snapshot.state.get(INTERACTION_JOURNAL_KEY)
+                )
+                entry = journal["entries"].get(request.interaction_id)
+            except Exception as exc:
+                raise ExecutionCheckpointPersistenceError(
+                    f"persisted interaction journal could not be verified: {exc}"
+                ) from exc
+            if (
+                journal.get("active_id") != request.interaction_id
+                or not isinstance(entry, dict)
+                or entry.get("request") != request.to_dict()
+                or entry.get("checkpoint_id") != validated.get("checkpoint_id")
+                or entry.get("application") is not None
+            ):
+                raise ExecutionCheckpointPersistenceError(
+                    "interaction journal write verification failed"
+                )
         return persisted, persisted_snapshot
 
     def clear_execution_checkpoint(
@@ -384,6 +456,14 @@ class KernelMemoryRuntime:
             raise ExecutionCheckpointCompatibilityError(
                 "refusing to clear a different execution checkpoint"
             )
+        interaction_applied = apply_checkpoint_interaction_receipt(
+            state,
+            checkpoint=current,
+            applied_checkpoint_id=str(current.get("checkpoint_id") or ""),
+        )
+        interaction_id = str(
+            (current.get("interaction_ref") or {}).get("interaction_id") or ""
+        )
         state.pop(EXECUTION_CHECKPOINT_KEY, None)
         try:
             persisted_snapshot = save_session_snapshot(
@@ -418,6 +498,24 @@ class KernelMemoryRuntime:
             raise ExecutionCheckpointPersistenceError(
                 "execution checkpoint clear verification failed"
             )
+        if interaction_applied:
+            try:
+                journal = validate_interaction_journal(
+                    verified_snapshot.state.get(INTERACTION_JOURNAL_KEY)
+                )
+                entry = journal["entries"].get(interaction_id)
+            except Exception as exc:
+                raise ExecutionCheckpointPersistenceError(
+                    f"cleared interaction journal could not be verified: {exc}"
+                ) from exc
+            if (
+                journal.get("active_id") is not None
+                or not isinstance(entry, dict)
+                or not isinstance(entry.get("application"), dict)
+            ):
+                raise ExecutionCheckpointPersistenceError(
+                    "interaction receipt application verification failed"
+                )
         return True, persisted_snapshot
 
     def bootstrap_session(

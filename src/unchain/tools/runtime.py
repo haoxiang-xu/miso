@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from ..interaction.durable import InteractionIntegrityError
 from ..kernel.delta import SuspendSignal
 from ..kernel.types import ToolCall
 
@@ -26,6 +27,30 @@ class ToolRuntimePlugin(Protocol):
 
     def execute(self, *, tool_call: ToolCall, context: Any) -> ToolRuntimeOutcome:
         ...
+
+
+def snapshot_durable_tool_exposure_plan(
+    plugins: list[Any] | None,
+) -> dict[str, Any] | None:
+    snapshots: list[dict[str, Any]] = []
+    for plugin in plugins or []:
+        snapshotter = getattr(plugin, "durable_exposure_plan", None)
+        if not callable(snapshotter):
+            continue
+        snapshot = snapshotter()
+        if not isinstance(snapshot, dict):
+            raise InteractionIntegrityError(
+                "tool runtime plugin returned an invalid durable exposure plan"
+            )
+        snapshots.append(copy.deepcopy(snapshot))
+    if not snapshots:
+        return None
+    first = snapshots[0]
+    if any(snapshot != first for snapshot in snapshots[1:]):
+        raise InteractionIntegrityError(
+            "tool runtime plugins returned conflicting durable exposure plans"
+        )
+    return first
 
 
 def _copy_tool_result_snapshot(tool_result: dict[str, Any]) -> dict[str, Any]:

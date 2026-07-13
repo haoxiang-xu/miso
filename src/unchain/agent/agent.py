@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from .modules.memory import MemoryModule
 from ..kernel.types import KernelRunResult
+from ..interaction.durable import InteractionReceipt
 from ..tools import Tool
 from .builder import AgentBuilder, AgentCallContext
 from .model_io import ModelIOFactoryRegistry
@@ -208,7 +209,7 @@ class Agent:
         *,
         conversation: list[dict[str, Any]] | None = None,
         continuation: dict[str, Any] | None = None,
-        response: dict[str, Any] | Any,
+        response: dict[str, Any] | Any = None,
         payload: dict[str, Any] | None = None,
         response_format: Any = None,
         callback: Callable[[dict[str, Any]], None] | None = None,
@@ -252,6 +253,76 @@ class Agent:
         )
         return prepared.resume_human_input()
 
+    def submit_interaction(
+        self,
+        *,
+        session_id: str,
+        interaction_id: str,
+        response: Any,
+        submitted_by: str = "user",
+    ) -> InteractionReceipt:
+        prepared = self._prepare(
+            AgentCallContext(
+                mode="submit_interaction",
+                session_id=session_id,
+                interaction_id=interaction_id,
+                response=copy.deepcopy(response),
+                submitted_by=submitted_by,
+            )
+        )
+        return prepared.submit_interaction()
+
+    def resume_interaction(
+        self,
+        *,
+        session_id: str,
+        conversation: list[dict[str, Any]] | None = None,
+        continuation: dict[str, Any] | None = None,
+        response: Any = None,
+        submitted_by: str = "api:resume_interaction",
+        payload: dict[str, Any] | None = None,
+        response_format: Any = None,
+        callback: Callable[[dict[str, Any]], None] | None = None,
+        verbose: bool = False,
+        on_tool_confirm: Callable[..., Any] | None = None,
+        on_human_input: Callable[..., Any] | None = None,
+        on_max_iterations: Callable[..., Any] | None = None,
+        memory_namespace: str | None = None,
+        run_id: str | None = None,
+        tool_runtime_config: dict[str, Any] | None = None,
+    ) -> KernelRunResult:
+        prepared = self._prepare(
+            AgentCallContext(
+                mode="resume_interaction",
+                conversation=(
+                    copy.deepcopy(conversation)
+                    if isinstance(conversation, list)
+                    else None
+                ),
+                continuation=(
+                    copy.deepcopy(continuation)
+                    if isinstance(continuation, dict)
+                    else None
+                ),
+                response=copy.deepcopy(response),
+                submitted_by=submitted_by,
+                payload=copy.deepcopy(payload) if isinstance(payload, dict) else None,
+                response_format=response_format,
+                callback=callback,
+                verbose=verbose,
+                on_tool_confirm=on_tool_confirm,
+                on_human_input=on_human_input,
+                on_max_iterations=on_max_iterations,
+                session_id=session_id,
+                memory_namespace=memory_namespace,
+                run_id=run_id,
+                tool_runtime_config=copy.deepcopy(tool_runtime_config)
+                if isinstance(tool_runtime_config, dict)
+                else None,
+            )
+        )
+        return prepared.resume_interaction()
+
     def _last_assistant_text(self, messages: list[dict[str, Any]]) -> str:
         for message in reversed(messages or []):
             if not isinstance(message, dict) or message.get("role") != "assistant":
@@ -279,6 +350,7 @@ class Agent:
                 "output": self._last_assistant_text(result.messages),
                 "continuation": copy.deepcopy(result.continuation),
                 "human_input_request": copy.deepcopy(result.human_input_request),
+                "interaction_request": copy.deepcopy(result.interaction_request),
             }
 
         return Tool.from_callable(

@@ -50,3 +50,4 @@ class KernelRunResult:
     previous_response_id: str | None = None
     iteration: int = 0
     provider_replay_handle: dict[str, Any] | None = None
+    interaction_request: dict[str, Any] | None = None

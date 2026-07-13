@@ -75,7 +75,7 @@ Mutable dataclass for per-agent runtime state.
 
 ### `src/unchain/agent/agent.py`
 
-Top-level `Agent` facade: owns configuration, normalizes messages, prepares the kernel loop via `AgentBuilder`, and exposes `run`/`resume_human_input`/`clone`/`fork_for_subagent`/`as_tool` entry points.
+Top-level `Agent` facade: owns configuration, normalizes messages, prepares the kernel loop via `AgentBuilder`, and exposes `run`/`submit_interaction`/`resume_interaction` plus compatibility, cloning, delegation, and tool entry points.
 
 ## Agent
 
@@ -116,11 +116,25 @@ Main entry point. Normalizes messages, prepares a `PreparedAgent` via `AgentBuil
 - Category: Method
 - Returns: `KernelRunResult`
 
-#### `resume_human_input(self, *, conversation: list[dict[str, Any]] | None=None, continuation: dict[str, Any] | None=None, response: dict[str, Any] | Any, payload: dict[str, Any] | None=None, response_format: Any=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, on_tool_confirm: Callable[..., Any] | None=None, on_human_input: Callable[..., Any] | None=None, on_max_iterations: Callable[..., Any] | None=None, session_id: str | None=None, memory_namespace: str | None=None, run_id: str | None=None, tool_runtime_config: dict[str, Any] | None=None) -> KernelRunResult`
+#### `resume_human_input(self, *, conversation: list[dict[str, Any]] | None=None, continuation: dict[str, Any] | None=None, response: dict[str, Any] | Any=None, payload: dict[str, Any] | None=None, response_format: Any=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, on_tool_confirm: Callable[..., Any] | None=None, on_human_input: Callable[..., Any] | None=None, on_max_iterations: Callable[..., Any] | None=None, session_id: str | None=None, memory_namespace: str | None=None, run_id: str | None=None, tool_runtime_config: dict[str, Any] | None=None) -> KernelRunResult`
 
 Resumes a suspended run after human input has been collected.
 
-When both `conversation` and `continuation` are omitted, a memory-backed `session_id` must contain an `awaiting_human_input` execution checkpoint; the method restores both values from that checkpoint.
+When both `conversation` and `continuation` are omitted, a memory-backed `session_id` must contain an `awaiting_human_input` execution checkpoint; the method restores both values from that checkpoint. This legacy entry point uses the durable interaction journal when one is present, including consuming a previously submitted human receipt when `response=None`.
+
+- Category: Method
+- Returns: `KernelRunResult`
+
+#### `submit_interaction(self, *, session_id: str, interaction_id: str, response: Any, submitted_by: str='user') -> InteractionReceipt`
+
+Normalizes and durably records a response for the active immutable interaction request without resuming the model or executing a tool. Repeating the same normalized response is idempotent; a conflicting response fails closed.
+
+- Category: Method
+- Returns: persisted `InteractionReceipt`
+
+#### `resume_interaction(self, *, session_id: str, conversation: list[dict[str, Any]] | None=None, continuation: dict[str, Any] | None=None, response: Any=None, submitted_by: str='api:resume_interaction', payload: dict[str, Any] | None=None, response_format: Any=None, callback: Callable[[dict[str, Any]], None] | None=None, verbose: bool=False, on_tool_confirm: Callable[..., Any] | None=None, on_human_input: Callable[..., Any] | None=None, on_max_iterations: Callable[..., Any] | None=None, memory_namespace: str | None=None, run_id: str | None=None, tool_runtime_config: dict[str, Any] | None=None) -> KernelRunResult`
+
+Loads the active human-input, tool-approval, or max-budget request and consumes its persisted receipt. If `response` is supplied, the method first records that response through the same receipt path and then resumes. A durable `session_id` is required. Before execution resumes, the request subject, checkpoint, continuation, and active model adapter must agree on provider/model. A custom `ModelIO` used for durable resume must therefore expose `provider` and `model` directly or through its `engine`; an adapter whose actual identity cannot be inferred fails closed.
 
 - Category: Method
 - Returns: `KernelRunResult`
@@ -175,7 +189,7 @@ Agent preparation pipeline: `AgentCallContext` captures call-site options, `Agen
 
 ## AgentCallContext
 
-Dataclass capturing the per-call options passed to `Agent.run()` or `Agent.resume_human_input()`.
+Dataclass capturing the per-call options passed to the Agent run, interaction-submission, and resume entry points.
 
 | Item | Details |
 | --- | --- |
@@ -188,7 +202,7 @@ Dataclass capturing the per-call options passed to `Agent.run()` or `Agent.resum
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `mode` | `str` | `"run"` or `"resume_human_input"`. |
+| `mode` | `str` | `"run"`, `"resume_human_input"`, `"submit_interaction"`, or `"resume_interaction"`. |
 | `input_messages` | `list[dict[str, Any]] \| None` | Default: `None`. |
 | `conversation` | `list[dict[str, Any]] \| None` | Default: `None`. |
 | `continuation` | `dict[str, Any] \| None` | Default: `None`. |
@@ -207,6 +221,8 @@ Dataclass capturing the per-call options passed to `Agent.run()` or `Agent.resum
 | `memory_namespace` | `str \| None` | Default: `None`. |
 | `run_id` | `str \| None` | Default: `None`. |
 | `tool_runtime_config` | `dict[str, Any] \| None` | Default: `None`. |
+| `interaction_id` | `str \| None` | Durable interaction targeted by `submit_interaction()`. Default: `None`. |
+| `submitted_by` | `str` | Receipt submitter identity. Default: `"user"`. |
 
 ## AgentBuilder
 
@@ -256,6 +272,8 @@ Assembled agent ready for execution. Holds the `KernelLoop`, merged `Toolkit`, a
 | --- | --- | --- |
 | `run()` | `KernelRunResult` | Execute the kernel loop. |
 | `resume_human_input()` | `KernelRunResult` | Resume from human input suspension. |
+| `submit_interaction()` | `InteractionReceipt` | Persist a response without resuming execution. |
+| `resume_interaction()` | `KernelRunResult` | Resume from a verified durable receipt. |
 
 ### `src/unchain/agent/modules/`
 

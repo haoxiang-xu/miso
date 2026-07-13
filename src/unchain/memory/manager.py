@@ -26,6 +26,7 @@ from .checkpoint_state import (
     EXECUTION_CHECKPOINT_KEY,
     ExecutionCheckpointCompatibilityError,
     ExecutionCheckpointResumeRequiredError,
+    apply_checkpoint_interaction_receipt,
     validate_execution_checkpoint,
 )
 from .ownership import ensure_session_delta_input
@@ -3036,7 +3037,12 @@ class MemoryManager:
             )
         checkpoint_cleared = False
         if clear_execution_checkpoint_id:
-            current_checkpoint = state.get(EXECUTION_CHECKPOINT_KEY)
+            current_raw = state.get(EXECUTION_CHECKPOINT_KEY)
+            current_checkpoint = (
+                validate_execution_checkpoint(current_raw)
+                if isinstance(current_raw, dict)
+                else None
+            )
             current_checkpoint_id = (
                 str(current_checkpoint.get("checkpoint_id") or "")
                 if isinstance(current_checkpoint, dict)
@@ -3045,6 +3051,12 @@ class MemoryManager:
             if current_checkpoint_id != clear_execution_checkpoint_id:
                 raise ExecutionCheckpointCompatibilityError(
                     "refusing to commit over a different execution checkpoint"
+                )
+            if isinstance(current_checkpoint, dict):
+                apply_checkpoint_interaction_receipt(
+                    state,
+                    checkpoint=current_checkpoint,
+                    applied_checkpoint_id=clear_execution_checkpoint_id,
                 )
             state.pop(EXECUTION_CHECKPOINT_KEY, None)
             checkpoint_cleared = True

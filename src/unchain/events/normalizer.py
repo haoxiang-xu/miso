@@ -160,8 +160,11 @@ def _renderer_from_selection_mode(selection_mode: str, kind: str = "") -> str:
 
 def _interaction_payload(raw: dict[str, Any], *, raw_type: str) -> tuple[str, dict[str, Any]]:
     interaction_id = _str_value(
-        raw.get("confirmation_id"),
-        _str_value(raw.get("request_id"), _str_value(raw.get("call_id"))),
+        raw.get("interaction_id"),
+        _str_value(
+            raw.get("confirmation_id"),
+            _str_value(raw.get("request_id"), _str_value(raw.get("call_id"))),
+        ),
     )
     interact_type = _str_value(raw.get("interact_type"))
     selection_mode = _str_value(raw.get("selection_mode"))
@@ -207,7 +210,61 @@ def _interaction_payload(raw: dict[str, Any], *, raw_type: str) -> tuple[str, di
     for key in ("allow_other", "other_label", "other_placeholder", "min_selected", "max_selected"):
         if key in raw:
             payload[key] = copy.deepcopy(raw[key])
+    durable_request = raw.get("interaction_request")
+    if isinstance(durable_request, dict):
+        payload["interaction_kind"] = _str_value(
+            durable_request.get("kind")
+        )
+        payload["request"] = copy.deepcopy(durable_request)
     return interaction_id, payload
+
+
+def _durable_interaction_payload(
+    raw: dict[str, Any],
+) -> tuple[str, dict[str, Any], str] | None:
+    request = raw.get("interaction_request")
+    if not isinstance(request, dict):
+        return None
+    interaction_id = _str_value(request.get("interaction_id"))
+    interaction_kind = _str_value(request.get("kind"))
+    request_payload = request.get("payload")
+    if not interaction_id or not interaction_kind or not isinstance(
+        request_payload,
+        dict,
+    ):
+        return None
+
+    compatibility_raw = copy.deepcopy(request_payload)
+    compatibility_raw["confirmation_id"] = interaction_id
+    if interaction_kind == "human_input":
+        legacy_type = "human_input_requested"
+    elif interaction_kind == "tool_approval":
+        legacy_type = "tool_confirmation_requested"
+    elif interaction_kind == "max_budget":
+        legacy_type = "continuation_request"
+        compatibility_raw.setdefault("title", "Iteration limit reached")
+        compatibility_raw.setdefault("question", "Continue this run?")
+        compatibility_raw["interact_config"] = {
+            "effective_max": copy.deepcopy(
+                request_payload.get("effective_max")
+            ),
+            "suggested_extra_iterations": copy.deepcopy(
+                request_payload.get("suggested_extra_iterations")
+            ),
+            "decision": copy.deepcopy(request_payload.get("decision")),
+        }
+    else:
+        return None
+
+    _, payload = _interaction_payload(
+        compatibility_raw,
+        raw_type=legacy_type,
+    )
+    payload["interaction_id"] = interaction_id
+    payload["interaction_kind"] = interaction_kind
+    payload["request"] = copy.deepcopy(request)
+    call_id = _str_value(compatibility_raw.get("call_id"))
+    return interaction_id, payload, call_id
 
 
 def normalize_raw_event(
@@ -455,9 +512,24 @@ def normalize_raw_event(
             )
         ]
 
-    if raw_type in {"tool_confirmation_requested", "input_requested", "continuation_request", "human_input_requested"}:
-        interaction_id, payload = _interaction_payload(raw_event, raw_type=raw_type)
-        call_id = _str_value(raw_event.get("call_id"))
+    interaction_types = {
+        "tool_confirmation_requested",
+        "input_requested",
+        "continuation_request",
+        "human_input_requested",
+    }
+    if raw_type in interaction_types or raw_type == "interaction_requested":
+        if raw_type == "interaction_requested":
+            durable_payload = _durable_interaction_payload(raw_event)
+            if durable_payload is None:
+                return []
+            interaction_id, payload, call_id = durable_payload
+        else:
+            interaction_id, payload = _interaction_payload(
+                raw_event,
+                raw_type=raw_type,
+            )
+            call_id = _str_value(raw_event.get("call_id"))
         return [
             RuntimeEventDraft(
                 type="interaction.requested",

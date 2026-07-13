@@ -170,20 +170,43 @@ Session store 刻意分成两层：
 | --- | --- | --- |
 | `messages` | 已完成、面向人的 semantic conversation | 可以 |
 | `execution_checkpoint` | 未完成工具事务、continuation、provider replay frame、完整性和 tool-schema digest | 不可以 |
+| `interaction_journal` | human input、tool approval、max-budget 等等待中的不可变 request、规范化 receipt 与 receipt 应用标记 | 不可以 |
 
 - `completed`：在同一次 CAS 写入中原子提交 semantic messages，并按 checkpoint ID 条件清除匹配的 checkpoint。
 - `max_iterations`：semantic messages 保持不变，单独保存 execution checkpoint。
 - `awaiting_human_input`：semantic messages 保持不变，保存 transcript 与 continuation。
+- `awaiting_interaction`：semantic messages 保持不变，保存通用 interaction continuation；当前用于 tool approval。
 
-之后使用相同 `session_id` 调 `agent.run(...)`，可从 `max_iterations` checkpoint 继续，已经完成的工具不会再次执行。冷恢复时，`max_iterations=N` 表示给这次新调用再增加 N 个模型迭代；累计 iteration 仍会恢复，用于 telemetry。遇到 awaiting-human checkpoint 时，fresh run 会 fail closed；可用 `agent.resume_human_input(session_id=..., response=...)` 直接从持久 checkpoint 恢复，无需旧进程里的 result 对象。
+之后使用相同 `session_id` 调 `agent.run(...)`，可从 `max_iterations` checkpoint 继续，已经完成的工具不会再次执行。冷恢复时，`max_iterations=N` 表示给这次新调用再增加 N 个模型迭代；累计 iteration 仍会恢复，用于 telemetry。checkpoint 只要带有活跃 `interaction_ref`，fresh run 就会 fail closed，必须走 interaction resume。
+
+发生交互暂停时，不可变 `InteractionRequest` 与引用其 ID/digest 的 execution checkpoint 会在同一次 CAS 中写入。决定随后作为独立 `InteractionReceipt` 保存；在这个 receipt 持久化之前，runtime 不会应用 resume delta、调用模型或执行已批准工具。下一次 semantic commit 或 checkpoint 转换会原子地把该 receipt 标记为已应用。重复提交相同的规范化 response 是幂等的；同一个 request 收到不同 response 会 fail closed。Request 还通过 digest 绑定 response contract 以及相关 provider/model、prompt 与 tool schema identity，执行定义改变后不能静默消费旧批准。
+
+持久 public flow 把“接收答案”与“继续工作”拆开：
+
+```python
+suspended = agent.run("Do something risky", session_id="durable-session")
+request = suspended.interaction_request
+
+agent.submit_interaction(
+    session_id="durable-session",
+    interaction_id=request["interaction_id"],
+    response={"approved": True},
+    submitted_by="ui:user-42",
+)
+
+# 可以在新进程中执行；这里消费已经持久化的 receipt。
+final = agent.resume_interaction(session_id="durable-session")
+```
+
+`resume_interaction(response=...)` 可以在一次调用中记录并消费 response；如果希望崩溃边界最清楚，则使用 `submit_interaction()` 后再调用 `resume_interaction()`。旧 `resume_human_input()` 仍兼容已有 human-input caller；当 `response=None` 时，它也能消费已经持久化的 human receipt。
 
 Replay frame 是 provider-native 且有序的：OpenAI 保留 encrypted reasoning item，Anthropic/Hyperspace 保留 thinking signature，Ollama 保留 thinking 字段。它会校验完整性，并绑定 provider/model 与当前 tool schema；不会进入普通 memory compaction，请求 trace 中也会脱敏。
 
 保证从 checkpoint 写入并回读验证成功后开始。如果进程恰好在“外部工具已经产生副作用、checkpoint 还没落盘”之间崩溃，仍需 idempotency key、write-ahead log 或 transactional outbox；仅靠 execution checkpoint 无法提供任意崩溃下的 exactly-once。
 
-对于 memory-backed `session_id`，全部 `on_suspend` contribution 会先完成，然后才跨过保留的持久化 barrier。阻塞式 `on_human_input`、`on_max_iterations` callback 及其对应 request event，只会在 checkpoint 写入并回读成功后执行；final message event 也只会在 durable finalization 后发出。因此 checkpoint 写入失败时，运行不会进入长期等待。callback 返回的用户回答目前还不是 exactly-once 的持久 interaction record；如果用户已经回答、但进程在 resume delta 应用前崩溃，调用方可能仍需重新提交该回答。
+对于 memory-backed `session_id`，全部 `on_suspend` contribution 会先完成，然后才跨过保留的持久化 barrier。已配置的阻塞式 `on_human_input`、`on_tool_confirm` 与 `on_max_iterations` callback 是 durable journal 上的同步 adapter，并不是另一条执行路径：runtime 先写入并验证 request + checkpoint，释放 lease，调用 callback，把规范化回答持久化为 receipt，再拿到更新的 lease 后才应用回答。因此 checkpoint 或 receipt 写入失败都会阻止后续 model/tool 工作；final message event 也只会在 durable finalization 后发出。
 
-当前 execution checkpoint 恢复的是内建 continuation 边界：semantic transcript、provider replay frame、累计 iteration/token、context-window 大小和 workspace-change state。它还不是任意 harness 状态的通用序列化格式。自定义 `component_state`、optimizer 内部状态、artifact 与 subagent state 如果也要跨进程冷恢复，后续仍需 versioned per-harness checkpoint slice 协议。
+当前 execution checkpoint 恢复的是内建 continuation 边界：semantic transcript、provider replay frame、累计 iteration/token、context-window 大小和 workspace-change state。`ToolOptimizer` 有一个明确的 durable-interaction slice：selector 启用时，human-input、tool-approval 与已配置的 max-budget continuation 会保存版本化 plan，其中包含 catalog digest 以及精确的 direct/deferred/loaded 工具分区。`Agent.resume_interaction()` 不调用 selector，先校验并重放该 plan；已存在但格式错误的 plan 或发生变化的 catalog 会在 model/tool 工作之前 fail closed。普通 `max_iterations` checkpoint 由后续 `Agent.run()` 恢复时属于带新预算的新 invocation，仍可能重新运行 selector。Checkpoint 还不是任意 harness 状态的通用序列化格式；自定义 `component_state`、其他 optimizer 内部状态、artifact 与 subagent state 若要冷恢复，后续仍需 versioned per-harness checkpoint slice 协议。
 
 每个内置 session store 还会为整份 session state 维护单调 revision。Bootstrap 捕获 revision；semantic commit、checkpoint 保存/清除、workspace pin 修改以及 edit/resend 替换都通过 compare-and-swap（CAS）写入。过期 worker 会抛出 `SessionRevisionConflictError`，不会覆盖较新的 messages 或 checkpoint；重复写入同一个确定性 checkpoint 是幂等的。
 
@@ -193,7 +216,7 @@ Memory-backed agent run 还会使用以 `session_id` 为键的 execution lease�
 
 Lease 生效期间，内置 store 会拒绝该 session 的直接 `save()` 和无 fence 的 `save_if_revision()`。扩展必须通过能够携带当前 fence 的框架路径写入；普通 tool 与 run hook 目前还拿不到通用的 fenced session writer，因此不能绕过框架直接修改 canonical session state。
 
-Fencing 能阻止已经被接管的 worker 开始下一项受保护操作或继续写 durable session state。但如果远程系统已经接受工具请求，随后进程断网或崩溃，它并不能自动让任意外部副作用 exactly-once。此类工具仍需要 idempotency key、intent/receipt journal 或 transactional outbox。
+Fencing 与 interaction receipt 能避免同一决定被重复应用；但如果远程系统已经接受工具请求，而进程在工具结果可靠落盘前断网或崩溃，它们并不能自动让任意外部副作用 exactly-once。这种歧义属于 D3 的 tool-intent/tool-receipt 层；此类工具仍需要 idempotency key、reconciliation contract 或 transactional outbox。
 
 这份 lease 的作用域是 session，而不是 memory namespace。两个使用不同 `session_id` 的合法 run 仍可能并发更新同一个长期 profile 或 vector namespace。因此，在 profile store 与外部 vector adapter 获得独立的 namespace revision/lease 或原子 merge 合约之前，它们仍属于 best-effort 的共享资源。
 
