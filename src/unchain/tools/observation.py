@@ -51,7 +51,7 @@ def build_observation_payload(
     observe_payload = dict(payload or {})
     observe_payload["temperature"] = 0.2
     normalized_provider = str(provider or "").strip().lower()
-    if normalized_provider == "anthropic":
+    if normalized_provider in {"anthropic", "hyperspace"}:
         observe_payload["max_tokens"] = OBSERVATION_MAX_OUTPUT_TOKENS
         observe_payload.pop("max_output_tokens", None)
         observe_payload.pop("num_predict", None)
