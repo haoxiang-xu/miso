@@ -19,7 +19,7 @@
 - `Agent`
 - `AgentBuilder` / `PreparedAgent` / `AgentCallContext`
 - `AgentSpec` / `AgentState`
-- Module 类型：`ToolsModule`、`MemoryModule`、`PoliciesModule`、`OptimizersModule`、`SubagentModule`、`ToolDiscoveryModule`
+- Module 类型：`ToolsModule`、`MemoryModule`、`PoliciesModule`、`OptimizersModule`、`SubagentModule`、`InteractionModule`、`JobsModule`、`CharacterModule`、`ToolDiscoveryModule`、`ToolOptimizerModule`
 - `SubagentExecutor`、`SubagentPolicy`、`SubagentTemplate`（在 `unchain.subagents`）
 
 ## 执行流与状态流

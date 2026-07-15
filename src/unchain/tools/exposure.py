@@ -19,12 +19,13 @@ from ..interaction.requests import (
 )
 from .execution import (
     _canonical_artifacts_for_tool_result,
+    _durable_tool_runtime_subject,
     _emit_artifact_events,
     _workspace_change_state_update,
     _workspace_change_tracker,
 )
 from .models import ToolExecutionContext, ToolPromptSpec
-from .runtime import ToolRuntimeOutcome
+from .runtime import ToolRuntimeOutcome, run_tool_runtime_plugins
 from .tool import Tool
 from .toolkit import Toolkit
 
@@ -149,6 +150,16 @@ class ExposureToolRecord:
         return payload
 
 
+@dataclass(frozen=True)
+class _NestedToolRuntimeContext:
+    parent: Any
+    toolkit: Toolkit
+    tool_runtime_plugins: list[Any]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.parent, name)
+
+
 class DeferredToolExecutionPlugin:
     def __init__(self, runtime: "ToolExposureRuntime") -> None:
         self.runtime = runtime
@@ -161,6 +172,17 @@ class DeferredToolExecutionPlugin:
         """Return the selector plan that must be replayed after a cold pause."""
 
         return self.runtime.durable_plan_snapshot()
+
+    def _nested_runtime_context(self, context: Any) -> _NestedToolRuntimeContext:
+        return _NestedToolRuntimeContext(
+            parent=context,
+            toolkit=self.runtime.full_toolkit,
+            tool_runtime_plugins=[
+                plugin
+                for plugin in getattr(context, "tool_runtime_plugins", [])
+                if plugin is not self
+            ],
+        )
 
     @staticmethod
     def _outer_binding(tool_call: ToolCall) -> dict[str, Any]:
@@ -212,6 +234,7 @@ class DeferredToolExecutionPlugin:
             "toolkit": self.runtime.full_toolkit,
             "preparation": preparation,
             "extra_subject": self._outer_binding(tool_call),
+            "runtime_context": self._nested_runtime_context(context),
         }
 
     def execute(self, *, tool_call: ToolCall, context: Any) -> ToolRuntimeOutcome:
@@ -302,7 +325,11 @@ class DeferredToolExecutionPlugin:
                 confirmation_request=preparation.request,
                 run_id=context.run_id,
                 source_request=stored_interaction_request,
-                extra_subject=self._outer_binding(tool_call),
+                extra_subject=_durable_tool_runtime_subject(
+                    self._nested_runtime_context(context),
+                    target_tool_call,
+                    extra_subject=self._outer_binding(tool_call),
+                ),
             )
             ensure_interaction_binding_matches(
                 stored_interaction_request,
@@ -323,6 +350,15 @@ class DeferredToolExecutionPlugin:
             raise InteractionIntegrityError(
                 "deferred tool approval must suspend before plugin execution"
             )
+        nested_context = self._nested_runtime_context(context)
+        runtime_outcome = run_tool_runtime_plugins(
+            nested_context.tool_runtime_plugins,
+            tool_call=target_tool_call,
+            context=nested_context,
+            execution_guard=context.execution_guard,
+        )
+        if runtime_outcome is not None:
+            return runtime_outcome
         outcome = execute_confirmable_tool_call(**execution_kwargs)
         state_updates: dict[str, Any] = {}
         if workspace_tracker is not None:

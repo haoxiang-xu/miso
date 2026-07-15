@@ -35,7 +35,7 @@
 ## 配置面
 
 - Provider/model/api key（在 `Agent` 上）。
-- Modules：`ToolsModule`、`MemoryModule`、`PoliciesModule`、`OptimizersModule`、`SubagentModule`、`ToolDiscoveryModule`。
+- Modules：`ToolsModule`、`MemoryModule`、`PoliciesModule`、`OptimizersModule`、`SubagentModule`、`InteractionModule`、`JobsModule`、`CharacterModule`、`ToolDiscoveryModule`、`ToolOptimizerModule`。
 - `Agent.run()` 的 per-call 覆盖（`max_iterations`、`payload`、`callback`、`on_tool_confirm`、…）。
 
 ## 扩展点
@@ -77,7 +77,9 @@ src/unchain/
 │   ├── spec.py          #   AgentSpec (frozen), AgentState
 │   ├── model_io.py      #   ModelIOFactoryRegistry
 │   └── modules/         #   ToolsModule, MemoryModule, PoliciesModule,
-│                        #   OptimizersModule, SubagentModule, ToolDiscoveryModule
+│                        #   OptimizersModule, SubagentModule, InteractionModule,
+│                        #   JobsModule, CharacterModule, ToolDiscoveryModule,
+│                        #   ToolOptimizerModule
 ├── kernel/              # 执行引擎
 │   ├── loop.py          #   KernelLoop — step-once 主循环
 │   ├── harness.py       #   RuntimeHarness 协议 + RuntimePhase + HarnessContext

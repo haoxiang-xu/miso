@@ -27,6 +27,7 @@ class ShellExecutorSpec:
 @dataclass
 class _BackgroundTask:
     task_id: str
+    session_key: str
     process: subprocess.Popen[bytes]
     cwd: Path
     shell_family: str
@@ -279,8 +280,14 @@ class ShellRuntime:
             max_output_chars=resolved_max_output_chars,
         )
 
-    def poll(self, task_id: str, max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS) -> dict[str, Any]:
-        task = self.background_tasks.get(str(task_id or ""))
+    def poll(
+        self,
+        task_id: str,
+        max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
+        *,
+        session_key: str = "__default__",
+    ) -> dict[str, Any]:
+        task = self._task_for_session(task_id, session_key=session_key)
         if task is None:
             return {
                 **self._base_result(action="poll"),
@@ -328,12 +335,13 @@ class ShellRuntime:
         self,
         task_id: str,
         *,
+        session_key: str = "__default__",
         timeout_ms: int = DEFAULT_TIMEOUT_MS,
         max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
     ) -> dict[str, Any]:
         """Wait once for a background task without spending model iterations."""
 
-        task = self.background_tasks.get(str(task_id or ""))
+        task = self._task_for_session(task_id, session_key=session_key)
         if task is None:
             return {
                 **self._base_result(action="wait"),
@@ -352,14 +360,24 @@ class ShellRuntime:
             except subprocess.TimeoutExpired:
                 wait_timed_out = True
 
-        result = self.poll(task_id=task.task_id, max_output_chars=max_output_chars)
+        result = self.poll(
+            task_id=task.task_id,
+            max_output_chars=max_output_chars,
+            session_key=session_key,
+        )
         result["action"] = "wait"
         result["wait_timeout_ms"] = resolved_timeout_ms
         result["wait_timed_out"] = bool(wait_timed_out and not result["completed"])
         return result
 
-    def kill(self, task_id: str, max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS) -> dict[str, Any]:
-        task = self.background_tasks.get(str(task_id or ""))
+    def kill(
+        self,
+        task_id: str,
+        max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
+        *,
+        session_key: str = "__default__",
+    ) -> dict[str, Any]:
+        task = self._task_for_session(task_id, session_key=session_key)
         if task is None:
             return {
                 **self._base_result(action="kill"),
@@ -395,9 +413,13 @@ class ShellRuntime:
         }
 
     def shutdown(self) -> None:
-        for task_id in list(self.background_tasks):
+        for task in list(self.background_tasks.values()):
             try:
-                self.kill(task_id, max_output_chars=self.DEFAULT_MAX_OUTPUT_CHARS)
+                self.kill(
+                    task.task_id,
+                    max_output_chars=self.DEFAULT_MAX_OUTPUT_CHARS,
+                    session_key=task.session_key,
+                )
             except Exception:
                 continue
         self.background_tasks.clear()
@@ -517,6 +539,7 @@ class ShellRuntime:
         task_id = uuid.uuid4().hex
         task = _BackgroundTask(
             task_id=task_id,
+            session_key=session_key,
             process=process,
             cwd=cwd,
             shell_family=spec.family,
@@ -547,6 +570,17 @@ class ShellRuntime:
             "timed_out": False,
             "truncated": False,
         }
+
+    def _task_for_session(
+        self,
+        task_id: str,
+        *,
+        session_key: str,
+    ) -> _BackgroundTask | None:
+        task = self.background_tasks.get(str(task_id or ""))
+        if task is None or task.session_key != str(session_key or ""):
+            return None
+        return task
 
     def _start_timeout_watcher(self, task: _BackgroundTask, *, timeout_ms: int) -> None:
         def _watch() -> None:

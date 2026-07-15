@@ -30,6 +30,18 @@ Every production class under `src/unchain` grouped by reference page.
 - `DurableInteractionRuntime` -> `src/unchain/interaction/runtime.py:205` (module-only, dataclass)
 - `DurableMaxBudgetCallbackAdapter` -> `src/unchain/interaction/adapters.py:31` (module-only, dataclass)
 
+## [Durable Jobs API Reference](../api/jobs.md)
+
+- `DurableJobError` and typed subclasses -> `src/unchain/jobs/models.py` (subpackage, error classes)
+- `DurableJobHandle` -> `src/unchain/jobs/models.py` (subpackage, frozen dataclass)
+- `DurableJobSnapshot` -> `src/unchain/jobs/models.py` (subpackage, frozen dataclass)
+- `DurableJobResult` -> `src/unchain/jobs/process.py` (subpackage, dict result)
+- `JsonFileJobStore` -> `src/unchain/jobs/store.py` (subpackage, class)
+- `JobEnvironmentProfile` -> `src/unchain/jobs/environment.py` (subpackage, frozen dataclass)
+- `ProcessJobSupervisor` -> `src/unchain/jobs/process.py` (subpackage, class)
+- `DurableShellJobPlugin` -> `src/unchain/jobs/plugin.py` (subpackage, dataclass)
+- `JobsModule` -> `src/unchain/agent/modules/jobs.py` (subpackage, frozen dataclass)
+
 ## [Tool System API Reference](../api/tools.md)
 
 - `ToolkitCatalogConfig` -> `src/unchain/tools/catalog.py:34` (subpackage, dataclass)

@@ -25,13 +25,39 @@ Exports declared by package `__init__` files and where to read their reference.
 | `CompletionEvaluation` | `src/unchain/runtime/completion.py:13` | `../api/runtime.md#completionevaluation` |
 | `CompletionPolicy` | `src/unchain/runtime/completion.py:24` | `../api/runtime.md#completionpolicy` |
 | `CompletionValidator` | `src/unchain/runtime/completion.py:19` | non-class export |
+| `InteractionModule` | `src/unchain/agent/modules/interaction.py` | `../api/agents.md#interactionmodule` |
+| `JobsModule` | `src/unchain/agent/modules/jobs.py` | `../api/agents.md#jobsmodule` |
 | `MemoryModule` | `src/unchain/agent/modules/memory.py:12` | non-class export |
 | `ModelIOFactoryRegistry` | `src/unchain/agent/model_io.py:10` | non-class export |
 | `OptimizersModule` | `src/unchain/agent/modules/optimizers.py:9` | non-class export |
 | `PoliciesModule` | `src/unchain/agent/modules/policies.py:12` | non-class export |
 | `PreparedAgent` | `src/unchain/agent/builder.py:44` | non-class export |
 | `SubagentModule` | `src/unchain/agent/modules/subagents.py:17` | non-class export |
+| `ToolDiscoveryModule` | `src/unchain/agent/modules/tool_discovery.py` | non-class export |
+| `ToolOptimizerModule` | `src/unchain/agent/modules/tool_optimizer.py` | non-class export |
 | `ToolsModule` | `src/unchain/agent/modules/tools.py:10` | non-class export |
+
+## `src/unchain/jobs/__init__.py`
+
+| Name | Source | Reference |
+| --- | --- | --- |
+| `JOB_ENVIRONMENT_PROFILE_VERSION` | `src/unchain/jobs/environment.py` | `../api/jobs.md#environment-profile` |
+| `JOB_SCHEMA_VERSION` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `JOB_STATUSES` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `STORE_MANIFEST_SCHEMA_VERSION` | `src/unchain/jobs/store.py` | `../api/jobs.md#store-identity` |
+| `TERMINAL_JOB_STATUSES` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `DurableJobError` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `DurableJobNotFoundError` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `DurableJobOwnershipError` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `DurableJobConflictError` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `DurableJobStoreCorruptionError` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `DurableJobHandle` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `DurableJobSnapshot` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `DurableJobResult` | `src/unchain/jobs/process.py` | `../api/jobs.md#public-surface` |
+| `JsonFileJobStore` | `src/unchain/jobs/store.py` | `../api/jobs.md#public-surface` |
+| `JobEnvironmentProfile` | `src/unchain/jobs/environment.py` | `../api/jobs.md#environment-profile` |
+| `ProcessJobSupervisor` | `src/unchain/jobs/process.py` | `../api/jobs.md#processjobsupervisor` |
+| `DurableShellJobPlugin` | `src/unchain/jobs/plugin.py` | `../api/jobs.md#agent-shell-integration` |
 
 ## `src/unchain/input/__init__.py`
 

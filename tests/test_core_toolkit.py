@@ -1064,6 +1064,63 @@ def test_code_toolkit_shell_confirmation_policy_and_background_lifecycle():
         assert len(confirm_requests) == 2
 
 
+def test_code_toolkit_shell_background_tasks_are_session_owned():
+    with tempfile.TemporaryDirectory() as tmp:
+        toolkit = CoreToolkit(workspace_root=tmp)
+        command = "Start-Sleep -Seconds 30" if sys.platform.startswith("win") else "sleep 30"
+        session_a = ToolExecutionContext(
+            session_id="session-a",
+            run_id="run-a",
+            provider="openai",
+            model="gpt-5",
+            iteration=0,
+        )
+        session_b = ToolExecutionContext(
+            session_id="session-b",
+            run_id="run-b",
+            provider="openai",
+            model="gpt-5",
+            iteration=0,
+        )
+
+        try:
+            toolkit.push_execution_context(session_a)
+            started = toolkit.shell(
+                action="run",
+                command=command,
+                run_in_background=True,
+                yield_time_ms=0,
+            )
+            toolkit.pop_execution_context()
+            task_id = started["task_id"]
+
+            toolkit.push_execution_context(session_b)
+            foreign_poll = toolkit.shell(action="poll", task_id=task_id)
+            foreign_wait = toolkit.shell(
+                action="wait",
+                task_id=task_id,
+                timeout_ms=1_000,
+            )
+            foreign_kill = toolkit.shell(action="kill", task_id=task_id)
+            toolkit.pop_execution_context()
+
+            assert foreign_poll["status"] == "missing"
+            assert foreign_wait["status"] == "missing"
+            assert foreign_kill["status"] == "missing"
+
+            toolkit.push_execution_context(session_a)
+            owner_poll = toolkit.shell(action="poll", task_id=task_id)
+            owner_kill = toolkit.shell(action="kill", task_id=task_id)
+            toolkit.pop_execution_context()
+
+            assert owner_poll["status"] == "running"
+            assert owner_kill["status"] == "killed"
+        finally:
+            while toolkit.current_execution_context is not None:
+                toolkit.pop_execution_context()
+            toolkit.shutdown()
+
+
 def test_code_toolkit_shell_background_poll_returns_incremental_output():
     with tempfile.TemporaryDirectory() as tmp:
         toolkit = CoreToolkit(workspace_root=tmp)

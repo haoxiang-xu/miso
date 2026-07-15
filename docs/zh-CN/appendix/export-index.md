@@ -25,13 +25,39 @@
 | `CompletionEvaluation` | `src/unchain/runtime/completion.py:13` | `../api/runtime.md#completionevaluation` |
 | `CompletionPolicy` | `src/unchain/runtime/completion.py:24` | `../api/runtime.md#completionpolicy` |
 | `CompletionValidator` | `src/unchain/runtime/completion.py:19` | 非 class 导出 |
+| `InteractionModule` | `src/unchain/agent/modules/interaction.py` | `../api/agents.md#interactionmodule` |
+| `JobsModule` | `src/unchain/agent/modules/jobs.py` | `../api/agents.md#jobsmodule` |
 | `MemoryModule` | `src/unchain/agent/modules/memory.py:12` | 非 class 导出 |
 | `ModelIOFactoryRegistry` | `src/unchain/agent/model_io.py:10` | 非 class 导出 |
 | `OptimizersModule` | `src/unchain/agent/modules/optimizers.py:9` | 非 class 导出 |
 | `PoliciesModule` | `src/unchain/agent/modules/policies.py:12` | 非 class 导出 |
 | `PreparedAgent` | `src/unchain/agent/builder.py:44` | 非 class 导出 |
 | `SubagentModule` | `src/unchain/agent/modules/subagents.py:17` | 非 class 导出 |
+| `ToolDiscoveryModule` | `src/unchain/agent/modules/tool_discovery.py` | 非 class 导出 |
+| `ToolOptimizerModule` | `src/unchain/agent/modules/tool_optimizer.py` | 非 class 导出 |
 | `ToolsModule` | `src/unchain/agent/modules/tools.py:10` | 非 class 导出 |
+
+## `src/unchain/jobs/__init__.py`
+
+| 名称 | 源码 | 参考 |
+| --- | --- | --- |
+| `JOB_ENVIRONMENT_PROFILE_VERSION` | `src/unchain/jobs/environment.py` | `../api/jobs.md#environment-profile` |
+| `JOB_SCHEMA_VERSION` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `JOB_STATUSES` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `STORE_MANIFEST_SCHEMA_VERSION` | `src/unchain/jobs/store.py` | `../api/jobs.md#store-identity` |
+| `TERMINAL_JOB_STATUSES` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `DurableJobError` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `DurableJobNotFoundError` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `DurableJobOwnershipError` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `DurableJobConflictError` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `DurableJobStoreCorruptionError` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `DurableJobHandle` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `DurableJobSnapshot` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `DurableJobResult` | `src/unchain/jobs/process.py` | `../api/jobs.md#公共接口` |
+| `JsonFileJobStore` | `src/unchain/jobs/store.py` | `../api/jobs.md#公共接口` |
+| `JobEnvironmentProfile` | `src/unchain/jobs/environment.py` | `../api/jobs.md#environment-profile` |
+| `ProcessJobSupervisor` | `src/unchain/jobs/process.py` | `../api/jobs.md#processjobsupervisor` |
+| `DurableShellJobPlugin` | `src/unchain/jobs/plugin.py` | `../api/jobs.md#接入-agent-的-shell` |
 
 ## `src/unchain/input/__init__.py`
 

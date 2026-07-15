@@ -45,6 +45,7 @@ from .result_budget import ToolResultBudgetConfig, ToolResultBudgetController
 from .runtime import (
     run_tool_runtime_plugins,
     snapshot_durable_tool_exposure_plan,
+    snapshot_durable_tool_runtime_route,
 )
 from .types import ToolBatchState
 
@@ -90,6 +91,23 @@ def _workspace_change_state_update(
 
 def _durable_tool_exposure_plan(context: ToolContext) -> dict[str, Any] | None:
     return snapshot_durable_tool_exposure_plan(context.tool_runtime_plugins)
+
+
+def _durable_tool_runtime_subject(
+    context: Any,
+    tool_call: ToolCall,
+    *,
+    extra_subject: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    subject = copy.deepcopy(extra_subject) if isinstance(extra_subject, dict) else {}
+    route = snapshot_durable_tool_runtime_route(
+        getattr(context, "tool_runtime_plugins", None),
+        tool_call=tool_call,
+        context=context,
+    )
+    if route is not None:
+        subject["tool_runtime_route"] = route
+    return subject or None
 
 
 def _emit_artifact_events(
@@ -344,6 +362,10 @@ class ToolExecutionHarness(BaseToolHarness):
                     if isinstance(stored_interaction_request, dict)
                     else None
                 ),
+                extra_subject=_durable_tool_runtime_subject(
+                    context,
+                    tool_call,
+                ),
             )
             if isinstance(stored_interaction_request, dict):
                 ensure_interaction_binding_matches(
@@ -449,10 +471,14 @@ class ToolExecutionHarness(BaseToolHarness):
                         if isinstance(stored_interaction_request, dict)
                         else None
                     ),
-                    extra_subject=(
-                        nested.get("extra_subject")
-                        if isinstance(nested.get("extra_subject"), dict)
-                        else None
+                    extra_subject=_durable_tool_runtime_subject(
+                        nested.get("runtime_context", context),
+                        nested_tool_call,
+                        extra_subject=(
+                            nested.get("extra_subject")
+                            if isinstance(nested.get("extra_subject"), dict)
+                            else None
+                        ),
                     ),
                 )
                 if isinstance(stored_interaction_request, dict):

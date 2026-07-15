@@ -1,13 +1,13 @@
 # Agents API Reference
 
-Modular agent composition via the `Agent` class, `AgentBuilder` pipeline, immutable `AgentSpec`/`AgentState`, and pluggable `AgentModule` system (tools, memory, policies, optimizers, subagents).
+Modular agent composition via the `Agent` class, `AgentBuilder` pipeline, immutable `AgentSpec`/`AgentState`, and pluggable `AgentModule` system (tools, memory, policies, optimizers, subagents, interactions, durable jobs, character, discovery, and tool exposure optimization).
 
 | Metric | Value |
 | --- | --- |
 | Classes | 3 |
 | Dataclasses | 5 |
 | Protocols | 1 |
-| Agent Modules | 5 |
+| Agent Modules | 10 |
 
 ## Coverage map
 
@@ -28,6 +28,11 @@ Modular agent composition via the `Agent` class, `AgentBuilder` pipeline, immuta
 | `PoliciesModule` | `src/unchain/agent/modules/policies.py` | subpackage | dataclass (frozen) |
 | `OptimizersModule` | `src/unchain/agent/modules/optimizers.py` | subpackage | dataclass (frozen) |
 | `SubagentModule` | `src/unchain/agent/modules/subagents.py` | subpackage | dataclass (frozen) |
+| `InteractionModule` | `src/unchain/agent/modules/interaction.py` | subpackage | dataclass (frozen) |
+| `JobsModule` | `src/unchain/agent/modules/jobs.py` | subpackage | dataclass (frozen) |
+| `CharacterModule` | `src/unchain/character/module.py` | subpackage | dataclass (frozen) |
+| `ToolDiscoveryModule` | `src/unchain/agent/modules/tool_discovery.py` | subpackage | dataclass (frozen) |
+| `ToolOptimizerModule` | `src/unchain/agent/modules/tool_optimizer.py` | subpackage | dataclass (frozen) |
 
 ### `src/unchain/agent/spec.py`
 
@@ -164,7 +169,7 @@ Wraps this agent as a callable `Tool` that delegates to `self.run()`.
 
 - Construction validates identity, builds an `AgentSpec` and `AgentState`.
 - `run()` normalizes messages, creates an `AgentCallContext`, calls `_prepare()` which invokes each module's `configure()` on an `AgentBuilder`, then calls `builder.build()` to get a `PreparedAgent`, and finally calls `prepared.run()`.
-- Modules compose behaviour: `ToolsModule` registers tools, `MemoryModule` attaches memory, `PoliciesModule` sets defaults, `OptimizersModule` adds harnesses, `SubagentModule` adds delegation tools.
+- Modules compose behaviour: `ToolsModule` registers tools, `MemoryModule` attaches memory, `PoliciesModule` sets defaults, `OptimizersModule` adds harnesses, `SubagentModule` adds delegation tools, `InteractionModule` injects FYI events, and `JobsModule` routes durable background shell jobs.
 
 ### Minimal usage example
 
@@ -415,3 +420,24 @@ Registers delegation, handoff, and worker-batch tools plus the `SubagentToolPlug
 | `policy` | `SubagentPolicy` | Default: `SubagentPolicy()`. |
 | `executor` | `SubagentExecutor \| None` | Default: `None`. |
 | `name` | `str` | Default: `"subagents"`. |
+
+## JobsModule
+
+Registers `DurableShellJobPlugin` with the builder while leaving the original
+shell schema and confirmation policy intact.
+
+| Item | Details |
+| --- | --- |
+| Source | `src/unchain/agent/modules/jobs.py` |
+| Inheritance | `BaseAgentModule` |
+| Kind | Dataclass (frozen). |
+
+### Fields
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `supervisor` | `ProcessJobSupervisor` | Required shared durable-job supervisor. |
+| `name` | `str` | Fixed to `"jobs"`. |
+
+See [Durable Jobs API Reference](jobs.md) for the persistence and recovery
+contract.

@@ -1,13 +1,13 @@
 # Agents API 参考
 
-通过 `Agent` 类、`AgentBuilder` 管线、不可变 `AgentSpec`/`AgentState`，以及可插拔的 `AgentModule` 系统（tools、memory、policies、optimizers、subagents）实现模块化 Agent 组合。
+通过 `Agent` 类、`AgentBuilder` 管线、不可变 `AgentSpec`/`AgentState`，以及可插拔的 `AgentModule` 系统（tools、memory、policies、optimizers、subagents、interactions、durable jobs、character、discovery 和 tool exposure optimization）实现模块化 Agent 组合。
 
 | 指标 | 值 |
 | --- | --- |
 | 类数量 | 3 |
 | Dataclass | 5 |
 | 协议 | 1 |
-| Agent 模块 | 6 |
+| Agent 模块 | 10 |
 
 ## 覆盖地图
 
@@ -29,6 +29,10 @@
 | `OptimizersModule` | `src/unchain/agent/modules/optimizers.py` | subpackage | dataclass (frozen) |
 | `SubagentModule` | `src/unchain/agent/modules/subagents.py` | subpackage | dataclass (frozen) |
 | `InteractionModule` | `src/unchain/agent/modules/interaction.py` | subpackage | dataclass (frozen) |
+| `JobsModule` | `src/unchain/agent/modules/jobs.py` | subpackage | dataclass (frozen) |
+| `CharacterModule` | `src/unchain/character/module.py` | subpackage | dataclass (frozen) |
+| `ToolDiscoveryModule` | `src/unchain/agent/modules/tool_discovery.py` | subpackage | dataclass (frozen) |
+| `ToolOptimizerModule` | `src/unchain/agent/modules/tool_optimizer.py` | subpackage | dataclass (frozen) |
 
 ### `src/unchain/agent/spec.py`
 
@@ -165,7 +169,7 @@ Frozen dataclass，持有 Agent 实例的不可变配置。
 
 - 构造阶段校验 identity，构建 `AgentSpec` 和 `AgentState`。
 - `run()` 规范化消息，创建 `AgentCallContext`，调用 `_prepare()` 让每个模块的 `configure()` 作用于 `AgentBuilder`，然后调用 `builder.build()` 获得 `PreparedAgent`，最后调用 `prepared.run()`。
-- 模块组合行为：`ToolsModule` 注册工具，`MemoryModule` 挂载 memory，`PoliciesModule` 设置默认值，`OptimizersModule` 添加 harness，`SubagentModule` 添加委托工具。
+- 模块组合行为：`ToolsModule` 注册工具，`MemoryModule` 挂载 memory，`PoliciesModule` 设置默认值，`OptimizersModule` 添加 harness，`SubagentModule` 添加委托工具，`InteractionModule` 注入 FYI 事件，`JobsModule` 路由耐久后台 shell 任务。
 
 ### 最小调用示例
 
@@ -416,6 +420,25 @@ PoliciesModule(
 | `policy` | `SubagentPolicy` | 默认值：`SubagentPolicy()`。 |
 | `executor` | `SubagentExecutor \| None` | 默认值：`None`。 |
 | `name` | `str` | 默认值：`"subagents"`。 |
+
+## JobsModule
+
+向 builder 注册 `DurableShellJobPlugin`，同时保留原 shell schema 和确认策略。
+
+| 项目 | 细节 |
+| --- | --- |
+| 源码 | `src/unchain/agent/modules/jobs.py` |
+| 继承/协议 | `BaseAgentModule` |
+| 对象类型 | Dataclass (frozen)。 |
+
+### 字段
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `supervisor` | `ProcessJobSupervisor` | 必填、可共享的耐久任务 supervisor。 |
+| `name` | `str` | 固定为 `"jobs"`。 |
+
+持久化与恢复契约见[耐久任务 API 参考](jobs.md)。
 
 ## InteractionModule
 
