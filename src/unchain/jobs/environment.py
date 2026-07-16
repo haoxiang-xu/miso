@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -83,16 +84,17 @@ def normalized_job_environment(
             )
         normalized[normalized_key] = value
 
-    source_root = str(Path(__file__).resolve().parents[2])
     existing = normalized.get("PYTHONPATH", "")
     entries = [
         resolved
         for item in existing.split(os.pathsep)
         if item
         for resolved in (str(Path(item).expanduser().resolve()),)
-        if resolved != source_root
     ]
-    entries.insert(0, source_root)
+    if not bool(getattr(sys, "frozen", False)):
+        source_root = str(Path(__file__).resolve().parents[2])
+        entries = [entry for entry in entries if entry != source_root]
+        entries.insert(0, source_root)
     normalized["PYTHONPATH"] = os.pathsep.join(entries)
     return normalized
 

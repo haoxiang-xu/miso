@@ -77,7 +77,9 @@ generation，不能单独重新生成 `store.json`。只有在确认没有 stale
 `JobEnvironmentProfile.capture(environment=None)` 会校验并冻结一份 string-to-string
 环境 mapping。省略 `environment` 时，它会在 supervisor 构造时捕获 `os.environ`。
 `PYTHONPATH` 各项会解析成绝对路径，并把当前运行的 Unchain source root 放在最前面，
-保证 detached worker 加载同一份代码。得到的完整 mapping 会同时传给 worker 和 child。
+保证 detached worker 加载同一份代码。冻结宿主不会把临时 bundle 解压根目录注入
+`PYTHONPATH`：可信宿主 launcher 已经提供内嵌 worker，而把易变的解压路径写进 profile
+会导致新 worker 无法验证 digest。得到的完整 mapping 会同时传给 worker 和 child。
 
 profile entries 不进入 `repr`，也不会写入 job store 或耐久审批 journal。持久化的只有
 `environment_digest`，并会出现在 `DurableJobSnapshot` 和 `DurableJobHandle` 上。即使
@@ -167,6 +169,8 @@ ProcessJobSupervisor(
     store,
     *,
     python_executable=None,
+    worker_command_prefix=None,
+    worker_environment_overlay=None,
     heartbeat_stale_ms=None,
     launch_grace_ms=None,
     poll_interval_s=None,
@@ -187,6 +191,21 @@ ProcessJobSupervisor(
 `heartbeat_stale_after_ms`、`startup_timeout_ms` 和 `poll_interval_ms` 是对应主参数的
 兼容 alias，不能与主参数同时提供。`environment` 接受 mapping 或已有的
 `JobEnvironmentProfile`，并且只在构造时捕获一次；单个 `start()` 不能换另一份 profile。
+
+worker command prefix 默认是
+`(python_executable or sys.executable, "-m", "unchain.jobs._worker")`。
+可信宿主 adapter 可通过 `worker_command_prefix` 提供不可变的等价前缀；例如冻结应用
+可以传 `(sys.executable, "--durable-job-worker")`，再由自身分发这个私有入口。它与
+`python_executable` 互斥。该前缀属于 orchestration 配置，绝不能来自模型或 tool
+arguments；改变它不会改变公开 job identity 或进程 intent。宿主必须确保该入口实际
+分发内嵌的 `unchain.jobs._worker`，并在 worker 校验 job 前重建与捕获时完全一致的环境。
+
+`worker_environment_overlay` 是不可变的 string mapping，只会叠加到可信 wrapper 的
+`Popen` 环境。它明确不进入 canonical `JobEnvironmentProfile`、环境 digest、耐久进程
+intent 或用户 child 环境。它用于 PyInstaller 的
+`PYINSTALLER_RESET_ENVIRONMENT=1` 这类宿主 bootloader 控制。自定义 wrapper 必须在
+进入 `unchain.jobs._worker` 前移除这份临时 overlay，并重建完全一致的 canonical
+profile；否则 worker 的 digest 校验会拒绝本次启动。
 
 主要方法：
 

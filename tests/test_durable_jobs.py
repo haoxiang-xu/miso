@@ -14,6 +14,9 @@ from typing import Any, Callable
 
 import pytest
 
+import unchain.jobs.environment as job_environment
+import unchain.jobs.process as job_process
+
 from unchain.jobs import (
     DurableJobConflictError,
     DurableJobNotFoundError,
@@ -28,6 +31,124 @@ def test_jobs_module_is_available_from_the_agent_public_surface() -> None:
     from unchain.agent import JobsModule
 
     assert JobsModule.__name__ == "JobsModule"
+
+
+def _capture_worker_command(
+    monkeypatch: pytest.MonkeyPatch,
+    supervisor: ProcessJobSupervisor,
+    tmp_path: Path,
+) -> tuple[list[str], dict[str, Any]]:
+    launches: list[tuple[list[str], dict[str, Any]]] = []
+
+    class _FakeWorker:
+        def __init__(self, command, **kwargs) -> None:
+            launches.append((list(command), dict(kwargs)))
+
+        def poll(self):
+            return None
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(job_process.subprocess, "Popen", _FakeWorker)
+    snapshot, _created = supervisor.store.reserve_process_job(
+        execution_id="execution-worker-prefix",
+        adapter="local_process",
+        argv=[sys.executable, "-c", "pass"],
+        cwd=str(tmp_path.resolve()),
+        timeout_ms=1_000,
+        idempotency_key="worker-prefix",
+        intent_digest="a" * 64,
+        max_log_bytes=1_000,
+        environment_digest=supervisor.environment_profile.digest,
+    )
+    supervisor._spawn_worker(snapshot)
+    assert len(launches) == 1
+    return launches[0]
+
+
+def test_supervisor_default_worker_command_remains_python_module(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor = ProcessJobSupervisor(JsonFileJobStore(tmp_path / "default-jobs"))
+    try:
+        command, _popen_kwargs = _capture_worker_command(
+            monkeypatch,
+            supervisor,
+            tmp_path,
+        )
+        assert command[:3] == [
+            sys.executable,
+            "-m",
+            "unchain.jobs._worker",
+        ]
+    finally:
+        supervisor.close()
+
+
+def test_supervisor_uses_immutable_trusted_worker_command_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prefix = [str(tmp_path / "host-runtime"), "--durable-job-worker"]
+    overlay = {"PYINSTALLER_RESET_ENVIRONMENT": "1"}
+    supervisor = ProcessJobSupervisor(
+        JsonFileJobStore(tmp_path / "custom-jobs"),
+        worker_command_prefix=prefix,
+        worker_environment_overlay=overlay,
+        environment={"PATH": "/usr/bin", "STABLE_JOB_VALUE": "kept"},
+    )
+    prefix.append("--mutated-after-construction")
+    overlay["PYINSTALLER_RESET_ENVIRONMENT"] = "mutated-after-construction"
+    try:
+        canonical_digest = supervisor.environment_profile.digest
+        command, popen_kwargs = _capture_worker_command(
+            monkeypatch,
+            supervisor,
+            tmp_path,
+        )
+        assert supervisor.worker_command_prefix == (
+            str(tmp_path / "host-runtime"),
+            "--durable-job-worker",
+        )
+        assert supervisor.worker_environment_overlay == (
+            ("PYINSTALLER_RESET_ENVIRONMENT", "1"),
+        )
+        assert command[:2] == list(supervisor.worker_command_prefix)
+        assert "--mutated-after-construction" not in command
+        assert (
+            popen_kwargs["env"]["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
+        )
+        assert popen_kwargs["env"]["STABLE_JOB_VALUE"] == "kept"
+        assert (
+            "PYINSTALLER_RESET_ENVIRONMENT"
+            not in supervisor.environment_profile.to_environment()
+        )
+        assert supervisor.environment_profile.digest == canonical_digest
+    finally:
+        supervisor.close()
+
+
+def test_frozen_environment_profile_does_not_bind_temporary_bundle_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(job_environment.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(
+        job_environment,
+        "__file__",
+        "/tmp/_MEI-parent/unchain/jobs/environment.py",
+    )
+    parent = JobEnvironmentProfile.capture({"PATH": "/usr/bin"})
+    monkeypatch.setattr(
+        job_environment,
+        "__file__",
+        "/tmp/_MEI-worker/unchain/jobs/environment.py",
+    )
+    worker = JobEnvironmentProfile.capture({"PATH": "/usr/bin"})
+
+    assert parent.digest == worker.digest
+    assert parent.to_environment()["PYTHONPATH"] == ""
 
 
 _JOB_WORKER_SOURCE = r"""

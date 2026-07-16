@@ -8,7 +8,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -54,6 +54,8 @@ class ProcessJobSupervisor:
         store: JsonFileJobStore,
         *,
         python_executable: str | os.PathLike[str] | None = None,
+        worker_command_prefix: Sequence[str | os.PathLike[str]] | None = None,
+        worker_environment_overlay: Mapping[str, str] | None = None,
         heartbeat_stale_ms: int | None = None,
         launch_grace_ms: int | None = None,
         poll_interval_s: float | None = None,
@@ -71,6 +73,16 @@ class ProcessJobSupervisor:
             raise TypeError("store must be a JsonFileJobStore")
         self.store = store
         self.python_executable = str(python_executable or sys.executable)
+        if python_executable is not None and worker_command_prefix is not None:
+            raise ValueError(
+                "python_executable and worker_command_prefix are mutually exclusive"
+            )
+        self.worker_command_prefix = self._normalize_worker_command_prefix(
+            worker_command_prefix
+        )
+        self.worker_environment_overlay = self._normalize_worker_environment_overlay(
+            worker_environment_overlay
+        )
         self.environment_profile = (
             environment
             if isinstance(environment, JobEnvironmentProfile)
@@ -477,9 +489,7 @@ class ProcessJobSupervisor:
                 return
             self._last_spawn_at[snapshot.job_id] = now
             command = [
-                self.python_executable,
-                "-m",
-                "unchain.jobs._worker",
+                *self.worker_command_prefix,
                 "--store-dir",
                 str(self.store.base_dir),
                 "--job-id",
@@ -491,13 +501,15 @@ class ProcessJobSupervisor:
                 "--cancel-grace-ms",
                 str(self.cancel_grace_ms),
             ]
+            worker_environment = self.environment_profile.to_environment()
+            worker_environment.update(dict(self.worker_environment_overlay))
             popen_kwargs: dict[str, Any] = {
                 "stdin": subprocess.DEVNULL,
                 "stdout": subprocess.DEVNULL,
                 "stderr": subprocess.DEVNULL,
                 "close_fds": True,
                 "shell": False,
-                "env": self.environment_profile.to_environment(),
+                "env": worker_environment,
             }
             if os.name == "nt":  # pragma: no cover - exercised on Windows
                 creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -523,6 +535,61 @@ class ProcessJobSupervisor:
                 daemon=True,
             )
             reaper.start()
+
+    def _normalize_worker_command_prefix(
+        self,
+        value: Sequence[str | os.PathLike[str]] | None,
+    ) -> tuple[str, ...]:
+        if value is None:
+            return (
+                self.python_executable,
+                "-m",
+                "unchain.jobs._worker",
+            )
+        if isinstance(value, (str, bytes, os.PathLike)):
+            raise TypeError("worker_command_prefix must be a sequence of arguments")
+        normalized: list[str] = []
+        for item in value:
+            if not isinstance(item, (str, os.PathLike)):
+                raise TypeError(
+                    "worker_command_prefix arguments must be strings or paths"
+                )
+            argument = os.fspath(item)
+            if not isinstance(argument, str):
+                raise TypeError("worker_command_prefix paths must resolve to strings")
+            if not argument or "\0" in argument:
+                raise ValueError(
+                    "worker_command_prefix arguments must be non-empty and NUL-free"
+                )
+            normalized.append(argument)
+        if not normalized:
+            raise ValueError("worker_command_prefix must not be empty")
+        return tuple(normalized)
+
+    @staticmethod
+    def _normalize_worker_environment_overlay(
+        value: Mapping[str, str] | None,
+    ) -> tuple[tuple[str, str], ...]:
+        if value is None:
+            return ()
+        if not isinstance(value, Mapping):
+            raise TypeError("worker_environment_overlay must be a string mapping")
+        normalized: dict[str, str] = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or not isinstance(item, str):
+                raise TypeError(
+                    "worker_environment_overlay keys and values must be strings"
+                )
+            if not key or "\0" in key or "=" in key or "\0" in item:
+                raise ValueError("worker_environment_overlay contains an invalid entry")
+            normalized_key = key.upper() if os.name == "nt" else key
+            previous = normalized.get(normalized_key)
+            if previous is not None and previous != item:
+                raise ValueError(
+                    "worker_environment_overlay contains conflicting keys"
+                )
+            normalized[normalized_key] = item
+        return tuple(sorted(normalized.items()))
 
     def _heartbeat_is_fresh(
         self,
