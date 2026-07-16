@@ -61,6 +61,8 @@ class AgentCallContext:
     session_id: str | None = None
     memory_namespace: str | None = None
     run_id: str | None = None
+    execution_owner_id: str | None = None
+    execution_guard: ExecutionGuard | None = None
     tool_runtime_config: dict[str, Any] | None = None
     interaction_id: str | None = None
     submitted_by: str = "user"
@@ -413,11 +415,24 @@ class PreparedAgent:
         )
 
     def _execution_scope(self):
-        execution_runtime = self.loop.execution_runtime
+        inherited_guard = self.call_context.execution_guard
         session_id = str(self.call_context.session_id or "")
+        if inherited_guard is not None:
+            if not session_id:
+                raise ValueError(
+                    "an inherited execution guard requires a non-empty session_id"
+                )
+            if inherited_guard.lease.execution_id != session_id:
+                raise ValueError(
+                    "inherited execution guard does not belong to the call session_id"
+                )
+            inherited_guard.assert_active()
+            return nullcontext(inherited_guard)
+        execution_runtime = self.loop.execution_runtime
         if execution_runtime is None or not session_id:
             return nullcontext(None)
-        return execution_runtime.scope(session_id)
+        owner_id = str(self.call_context.execution_owner_id or "").strip() or None
+        return execution_runtime.scope(session_id, owner_id=owner_id)
 
     def run(self) -> KernelRunResult:
         messages = copy.deepcopy(self.call_context.input_messages or [])

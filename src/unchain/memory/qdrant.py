@@ -6,7 +6,7 @@ import os
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
 from weakref import WeakValueDictionary
@@ -19,8 +19,11 @@ from ..runtime.payloads import (
 )
 from ..execution import (
     ActiveExecutionLeaseError,
+    ExecutionCancellation,
+    ExecutionCancelledError,
     ExecutionLease,
     ExecutionLeaseConflictError,
+    ExecutionLeaseError,
     ExecutionLeaseExpiredError,
     ExecutionLeaseNotOwnedError,
     StaleExecutionLeaseError,
@@ -29,6 +32,7 @@ from .revision import (
     SessionRevisionConflictError,
     SessionSnapshot,
     SessionStoreCorruptionError,
+    _validate_execution_fence_target,
 )
 
 if os.name == "nt":  # pragma: no cover - exercised on Windows
@@ -86,6 +90,19 @@ def _exclusive_json_session_lock(path: Path) -> Iterator[None]:
                     msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
                 else:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _exclusive_json_session_locks(*paths: Path) -> Iterator[None]:
+    """Lock multiple session records in a deterministic cross-process order."""
+
+    ordered: dict[str, Path] = {}
+    for path in paths:
+        ordered[str(path.resolve())] = path
+    with ExitStack() as stack:
+        for key in sorted(ordered):
+            stack.enter_context(_exclusive_json_session_lock(ordered[key]))
+        yield
 
 
 def _load_json_registry(path: str | Path) -> dict[str, dict[str, Any]]:
@@ -564,6 +581,7 @@ class JsonFileSessionStore:
                 "last_fencing_token": 0,
                 "last_owner_id": "",
                 "active": None,
+                "cancellations": {},
             }
         try:
             raw = json.loads(lease_path.read_text(encoding="utf-8"))
@@ -622,10 +640,50 @@ class JsonFileSessionStore:
                     session_id=execution_id,
                     detail="active execution lease does not match its watermark",
                 )
+        cancellations_raw = raw.get("cancellations", {})
+        if not isinstance(cancellations_raw, dict):
+            raise SessionStoreCorruptionError(
+                session_id=execution_id,
+                detail="execution cancellations must be an object",
+            )
+        cancellations: dict[str, ExecutionCancellation] = {}
+        for owner_id, cancellation_raw in cancellations_raw.items():
+            if (
+                not isinstance(owner_id, str)
+                or not owner_id
+                or not isinstance(cancellation_raw, dict)
+            ):
+                raise SessionStoreCorruptionError(
+                    session_id=execution_id,
+                    detail="execution cancellation identity is invalid",
+                )
+            try:
+                cancellation = ExecutionCancellation(
+                    execution_id=cancellation_raw["execution_id"],
+                    owner_id=cancellation_raw["owner_id"],
+                    fencing_token=cancellation_raw.get("fencing_token"),
+                    requested_at_ms=cancellation_raw["requested_at_ms"],
+                    reason=cancellation_raw.get("reason", ""),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise SessionStoreCorruptionError(
+                    session_id=execution_id,
+                    detail="execution cancellation fields are invalid",
+                ) from exc
+            if (
+                cancellation.execution_id != execution_id
+                or cancellation.owner_id != owner_id
+            ):
+                raise SessionStoreCorruptionError(
+                    session_id=execution_id,
+                    detail="execution cancellation belongs to another owner",
+                )
+            cancellations[owner_id] = cancellation
         return {
             "last_fencing_token": last_token,
             "last_owner_id": last_owner_id,
             "active": active,
+            "cancellations": cancellations,
         }
 
     def _write_lease_unlocked(
@@ -648,6 +706,19 @@ class JsonFileSessionStore:
                 if isinstance(active, ExecutionLease)
                 else None
             ),
+            "cancellations": {
+                owner_id: {
+                    "execution_id": cancellation.execution_id,
+                    "owner_id": cancellation.owner_id,
+                    "fencing_token": cancellation.fencing_token,
+                    "requested_at_ms": cancellation.requested_at_ms,
+                    "reason": cancellation.reason,
+                }
+                for owner_id, cancellation in dict(
+                    record.get("cancellations") or {}
+                ).items()
+                if isinstance(cancellation, ExecutionCancellation)
+            },
         }
         self._write_json_unlocked(path=self._lease_path(path), payload=payload)
 
@@ -659,6 +730,14 @@ class JsonFileSessionStore:
         path: Path,
     ) -> ExecutionLease:
         record = self._read_lease_unlocked(execution_id, path)
+        cancellation = dict(record.get("cancellations") or {}).get(owner_id)
+        if isinstance(cancellation, ExecutionCancellation):
+            raise ExecutionCancelledError(
+                cancellation.reason or "execution was cancelled",
+                execution_id=execution_id,
+                owner_id=owner_id,
+                fencing_token=cancellation.fencing_token or fencing_token,
+            )
         active = record.get("active")
         last_token = int(record.get("last_fencing_token") or 0)
         if not isinstance(active, ExecutionLease):
@@ -827,6 +906,89 @@ class JsonFileSessionStore:
             )
             return next_revision
 
+    def save_if_revision_and_execution_not_cancelled(
+        self,
+        session_id: str,
+        state: dict[str, Any],
+        expected_revision: int,
+        *,
+        execution_id: str,
+        owner_id: str,
+    ) -> int:
+        """CAS a detached child write and root cancellation check together."""
+
+        _validate_execution_fence_target(session_id, execution_id)
+        self._validate_expected_revision(expected_revision)
+        self._validate_lease_request(execution_id, owner_id)
+        path = self._path(session_id)
+        execution_path = self._path(execution_id)
+        with _exclusive_json_session_locks(path, execution_path):
+            record = self._read_lease_unlocked(execution_id, execution_path)
+            cancellation = dict(record.get("cancellations") or {}).get(owner_id)
+            if isinstance(cancellation, ExecutionCancellation):
+                raise ExecutionCancelledError(
+                    cancellation.reason or "execution was cancelled",
+                    execution_id=execution_id,
+                    owner_id=owner_id,
+                    fencing_token=cancellation.fencing_token,
+                )
+            snapshot = self._read_unlocked(session_id, path)
+            actual_revision = int(snapshot.revision or 0)
+            if actual_revision != expected_revision:
+                raise SessionRevisionConflictError(
+                    session_id=session_id,
+                    expected_revision=expected_revision,
+                    actual_revision=actual_revision,
+                )
+            next_revision = actual_revision + 1
+            self._write_unlocked(
+                path=path,
+                state=state,
+                revision=next_revision,
+            )
+            return next_revision
+
+    def save_if_revision_and_execution_cancelled(
+        self,
+        session_id: str,
+        state: dict[str, Any],
+        expected_revision: int,
+        *,
+        execution_id: str,
+        owner_id: str,
+    ) -> int:
+        """CAS terminal cleanup and exact-root tombstone proof together."""
+
+        _validate_execution_fence_target(session_id, execution_id)
+        self._validate_expected_revision(expected_revision)
+        self._validate_lease_request(execution_id, owner_id)
+        path = self._path(session_id)
+        execution_path = self._path(execution_id)
+        with _exclusive_json_session_locks(path, execution_path):
+            record = self._read_lease_unlocked(execution_id, execution_path)
+            cancellation = dict(record.get("cancellations") or {}).get(owner_id)
+            if not isinstance(cancellation, ExecutionCancellation):
+                raise ExecutionLeaseError(
+                    "execution cancellation is required for terminal cleanup",
+                    execution_id=execution_id,
+                    owner_id=owner_id,
+                )
+            snapshot = self._read_unlocked(session_id, path)
+            actual_revision = int(snapshot.revision or 0)
+            if actual_revision != expected_revision:
+                raise SessionRevisionConflictError(
+                    session_id=session_id,
+                    expected_revision=expected_revision,
+                    actual_revision=actual_revision,
+                )
+            next_revision = actual_revision + 1
+            self._write_unlocked(
+                path=path,
+                state=state,
+                revision=next_revision,
+            )
+            return next_revision
+
     def acquire_lease(
         self,
         execution_id: str,
@@ -849,6 +1011,14 @@ class JsonFileSessionStore:
                 )
             now = self._now_ms()
             record = self._read_lease_unlocked(execution_id, path)
+            cancellation = dict(record.get("cancellations") or {}).get(owner_id)
+            if isinstance(cancellation, ExecutionCancellation):
+                raise ExecutionCancelledError(
+                    cancellation.reason or "execution was cancelled",
+                    execution_id=execution_id,
+                    owner_id=owner_id,
+                    fencing_token=cancellation.fencing_token,
+                )
             active = record.get("active")
             if isinstance(active, ExecutionLease) and now < active.expires_at_ms:
                 if active.owner_id == owner_id:
@@ -876,6 +1046,59 @@ class JsonFileSessionStore:
             )
             self._write_lease_unlocked(path, record)
             return lease
+
+    def request_execution_cancel(
+        self,
+        execution_id: str,
+        owner_id: str,
+        *,
+        reason: str = "",
+    ) -> ExecutionCancellation:
+        self._validate_lease_request(execution_id, owner_id)
+        if not isinstance(reason, str):
+            raise ValueError("reason must be a string")
+        path = self._path(execution_id)
+        with _exclusive_json_session_lock(path):
+            record = self._read_lease_unlocked(execution_id, path)
+            cancellations = dict(record.get("cancellations") or {})
+            existing = cancellations.get(owner_id)
+            if isinstance(existing, ExecutionCancellation):
+                return existing
+            active = record.get("active")
+            fencing_token = None
+            if isinstance(active, ExecutionLease) and active.owner_id == owner_id:
+                fencing_token = active.fencing_token
+                record["active"] = None
+            elif str(record.get("last_owner_id") or "") == owner_id:
+                last_token = int(record.get("last_fencing_token") or 0)
+                fencing_token = last_token or None
+            cancellation = ExecutionCancellation(
+                execution_id=execution_id,
+                owner_id=owner_id,
+                fencing_token=fencing_token,
+                requested_at_ms=self._now_ms(),
+                reason=reason,
+            )
+            cancellations[owner_id] = cancellation
+            record["cancellations"] = cancellations
+            self._write_lease_unlocked(path, record)
+            return cancellation
+
+    def load_execution_cancellation(
+        self,
+        execution_id: str,
+        owner_id: str,
+    ) -> ExecutionCancellation | None:
+        self._validate_lease_request(execution_id, owner_id)
+        path = self._path(execution_id)
+        with _exclusive_json_session_lock(path):
+            record = self._read_lease_unlocked(execution_id, path)
+            cancellation = dict(record.get("cancellations") or {}).get(owner_id)
+            return (
+                cancellation
+                if isinstance(cancellation, ExecutionCancellation)
+                else None
+            )
 
     def verify_lease(
         self,
@@ -977,8 +1200,7 @@ class JsonFileSessionStore:
         owner_id: str,
         fencing_token: int,
     ) -> int:
-        if execution_id != session_id:
-            raise ValueError("execution_id must match session_id for fenced writes")
+        _validate_execution_fence_target(session_id, execution_id)
         self._validate_expected_revision(expected_revision)
         self._validate_lease_request(
             execution_id,
@@ -986,12 +1208,13 @@ class JsonFileSessionStore:
             fencing_token=fencing_token,
         )
         path = self._path(session_id)
-        with _exclusive_json_session_lock(path):
+        execution_path = self._path(execution_id)
+        with _exclusive_json_session_locks(path, execution_path):
             self._assert_active_lease_unlocked(
                 execution_id,
                 owner_id,
                 fencing_token,
-                path,
+                execution_path,
             )
             snapshot = self._read_unlocked(session_id, path)
             actual_revision = int(snapshot.revision or 0)

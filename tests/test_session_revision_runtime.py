@@ -11,7 +11,10 @@ from unchain.memory import (
     InMemorySessionStore,
     KernelMemoryRuntime,
 )
-from unchain.memory.checkpoint_state import build_execution_checkpoint
+from unchain.memory.checkpoint_state import (
+    EXECUTION_CHECKPOINT_DOMAIN_KEY,
+    build_execution_checkpoint,
+)
 from unchain.memory.revision import SessionRevisionConflictError
 from unchain.workspace.pins import load_workspace_pins, save_workspace_pins
 
@@ -327,6 +330,7 @@ def test_completed_transcript_and_checkpoint_clear_are_one_atomic_write() -> Non
     assert commit_info["execution_checkpoint_cleared"] is True
     assert persisted_state["messages"] == final_transcript
     assert "execution_checkpoint" not in persisted_state
+    assert EXECUTION_CHECKPOINT_DOMAIN_KEY not in persisted_state
     assert store.load("atomic-completion") == persisted_state
 
     cold_runtime = KernelMemoryRuntime.from_config(store=store)

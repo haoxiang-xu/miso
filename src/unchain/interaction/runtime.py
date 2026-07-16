@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from ..execution import ExecutionFence
+from ..execution import ExecutionCancelledError, ExecutionFence
 from ..input.human_input import HumanInputRequest, HumanInputResponse
 from ..memory.revision import SessionRevisionConflictError, SessionSnapshot
 from ..memory.runtime import KernelMemoryRuntime
@@ -31,6 +31,12 @@ from .durable import (
     record_interaction_receipt,
     strict_json_digest,
     validate_interaction_journal,
+)
+from ..memory.checkpoint_state import (
+    EXECUTION_CHECKPOINT_DOMAIN_KEY,
+    EXECUTION_CHECKPOINT_KEY,
+    apply_checkpoint_interaction_receipt,
+    validate_execution_checkpoint,
 )
 
 
@@ -206,18 +212,35 @@ class DurableInteractionRuntime:
     memory_runtime: KernelMemoryRuntime
     clock_ms: Callable[[], int] = lambda: int(time.time() * 1000)
 
-    def load(
+    def _load(
         self,
         session_id: str,
         *,
         interaction_id: str | None = None,
         require_active: bool = False,
+        reconcile_cancelled: bool,
     ) -> DurableInteractionSnapshot:
         if not isinstance(session_id, str) or not session_id.strip():
             raise InteractionNotPendingError(
                 "durable interaction requires a non-empty session_id"
             )
-        session_snapshot = self.memory_runtime.load_session_snapshot(session_id)
+        if reconcile_cancelled:
+            session_snapshot, cancellation = (
+                self.memory_runtime.reconcile_cancelled_execution_checkpoint(
+                    session_id
+                )
+            )
+            if cancellation is not None:
+                raise ExecutionCancelledError(
+                    cancellation.reason or "execution was cancelled",
+                    execution_id=cancellation.execution_id,
+                    owner_id=cancellation.owner_id,
+                    fencing_token=cancellation.fencing_token,
+                )
+        else:
+            session_snapshot = self.memory_runtime.load_session_snapshot(
+                session_id
+            )
         journal = validate_interaction_journal(
             session_snapshot.state.get(INTERACTION_JOURNAL_KEY)
         )
@@ -250,6 +273,20 @@ class DurableInteractionRuntime:
             session_snapshot=session_snapshot,
         )
 
+    def load(
+        self,
+        session_id: str,
+        *,
+        interaction_id: str | None = None,
+        require_active: bool = False,
+    ) -> DurableInteractionSnapshot:
+        return self._load(
+            session_id,
+            interaction_id=interaction_id,
+            require_active=require_active,
+            reconcile_cancelled=True,
+        )
+
     def load_active(self, session_id: str) -> DurableInteractionSnapshot:
         return self.load(session_id, require_active=True)
 
@@ -268,6 +305,12 @@ class DurableInteractionRuntime:
             interaction_id=interaction_id,
             require_active=False,
         )
+        effective_fence = self.memory_runtime.resolve_interaction_execution_fence(
+            session_id,
+            checkpoint_id=current.checkpoint_id,
+            session_snapshot=current.session_snapshot,
+            execution_fence=execution_fence,
+        )
         normalized_response = normalize_interaction_response(
             current.request,
             response,
@@ -276,7 +319,13 @@ class DurableInteractionRuntime:
             current.receipt is not None
             and current.receipt.response == normalized_response
         ):
-            _verify_fence(self.memory_runtime, execution_fence)
+            try:
+                _verify_fence(self.memory_runtime, effective_fence)
+            except ExecutionCancelledError:
+                self.memory_runtime.reconcile_cancelled_execution_checkpoint(
+                    session_id
+                )
+                raise
             return current
         receipt = build_interaction_receipt(
             current.request,
@@ -288,7 +337,13 @@ class DurableInteractionRuntime:
         journal = validate_interaction_journal(state.get(INTERACTION_JOURNAL_KEY))
         updated_journal = record_interaction_receipt(journal, receipt)
         if updated_journal == journal:
-            _verify_fence(self.memory_runtime, execution_fence)
+            try:
+                _verify_fence(self.memory_runtime, effective_fence)
+            except ExecutionCancelledError:
+                self.memory_runtime.reconcile_cancelled_execution_checkpoint(
+                    session_id
+                )
+                raise
             return DurableInteractionSnapshot(
                 request=current.request,
                 checkpoint_id=current.checkpoint_id,
@@ -314,9 +369,11 @@ class DurableInteractionRuntime:
             )
         state[INTERACTION_JOURNAL_KEY] = updated_journal
         try:
-            persisted = self.memory_runtime.save_session_state(
+            persisted = self.memory_runtime.save_interaction_session_state(
                 session_id,
                 state,
+                checkpoint_id=current.checkpoint_id,
+                session_snapshot=current.session_snapshot,
                 expected_revision=(
                     expected_revision
                     if expected_revision is not None
@@ -324,6 +381,11 @@ class DurableInteractionRuntime:
                 ),
                 execution_fence=execution_fence,
             )
+        except ExecutionCancelledError:
+            self.memory_runtime.reconcile_cancelled_execution_checkpoint(
+                session_id
+            )
+            raise
         except SessionRevisionConflictError:
             winner = self.load(
                 session_id,
@@ -334,7 +396,13 @@ class DurableInteractionRuntime:
                 winner.receipt is not None
                 and winner.receipt.response == normalized_response
             ):
-                _verify_fence(self.memory_runtime, execution_fence)
+                try:
+                    _verify_fence(self.memory_runtime, effective_fence)
+                except ExecutionCancelledError:
+                    self.memory_runtime.reconcile_cancelled_execution_checkpoint(
+                        session_id
+                    )
+                    raise
                 return winner
             raise
         verified = self.load(
@@ -357,6 +425,112 @@ class DurableInteractionRuntime:
                 "interaction receipt write verification failed"
             )
         return verified
+
+    def cancel_pending(
+        self,
+        session_id: str,
+        *,
+        source_run_id: str,
+        reason: str = "execution_cancelled",
+        submitted_by: str = "runtime:cancel_execution",
+    ) -> DurableInteractionSnapshot | None:
+        """Atomically abandon one source run's checkpoint and active interaction.
+
+        The execution lease must be revoked before calling this method.  The
+        exact ``source_run_id`` binding prevents a late stop for an older run
+        from consuming a newer run's interaction.
+        """
+
+        normalized_source_run_id = str(source_run_id or "").strip()
+        if not normalized_source_run_id:
+            raise ValueError("source_run_id must be a non-empty string")
+        if not isinstance(reason, str):
+            raise ValueError("reason must be a string")
+        current = self._load(
+            session_id,
+            require_active=True,
+            reconcile_cancelled=False,
+        )
+        if current.request.source_run_id != normalized_source_run_id:
+            raise InteractionNotPendingError(
+                "active interaction belongs to a different source run"
+            )
+
+        state = copy.deepcopy(current.session_snapshot.state)
+        checkpoint_raw = state.get(EXECUTION_CHECKPOINT_KEY)
+        if not isinstance(checkpoint_raw, dict):
+            raise InteractionIntegrityError(
+                "active interaction has no execution checkpoint"
+            )
+        checkpoint = validate_execution_checkpoint(checkpoint_raw)
+        if (
+            checkpoint.get("source_run_id") != normalized_source_run_id
+            or checkpoint.get("checkpoint_id") != current.checkpoint_id
+        ):
+            raise InteractionIntegrityError(
+                "active interaction checkpoint belongs to a different source run"
+            )
+
+        journal = validate_interaction_journal(
+            state.get(INTERACTION_JOURNAL_KEY)
+        )
+        entry = journal["entries"].get(current.request.interaction_id)
+        if not isinstance(entry, dict):
+            raise InteractionIntegrityError(
+                "active interaction is missing from its journal"
+            )
+        receipt_raw = entry.get("receipt")
+        if receipt_raw is None:
+            cancellation_receipt = build_interaction_receipt(
+                current.request,
+                {
+                    "cancelled": True,
+                    "reason": reason or "execution_cancelled",
+                },
+                submitted_by=submitted_by,
+                submitted_at_ms=int(self.clock_ms()),
+            )
+            journal = record_interaction_receipt(
+                journal,
+                cancellation_receipt,
+            )
+            state[INTERACTION_JOURNAL_KEY] = journal
+
+        apply_checkpoint_interaction_receipt(
+            state,
+            checkpoint=checkpoint,
+            applied_checkpoint_id=f"cancelled:{current.checkpoint_id}",
+        )
+        state.pop(EXECUTION_CHECKPOINT_KEY, None)
+        state.pop(EXECUTION_CHECKPOINT_DOMAIN_KEY, None)
+        try:
+            self.memory_runtime.save_session_state(
+                session_id,
+                state,
+                expected_revision=current.session_snapshot.revision,
+            )
+        except SessionRevisionConflictError:
+            winner = self._load(
+                session_id,
+                interaction_id=current.request.interaction_id,
+                require_active=False,
+                reconcile_cancelled=False,
+            )
+            if winner.application is not None:
+                return winner
+            raise
+
+        cancelled = self._load(
+            session_id,
+            interaction_id=current.request.interaction_id,
+            require_active=False,
+            reconcile_cancelled=False,
+        )
+        if cancelled.application is None:
+            raise InteractionIntegrityError(
+                "cancelled interaction was not terminalized"
+            )
+        return cancelled
 
     def require_receipt(
         self,

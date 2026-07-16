@@ -76,7 +76,7 @@ class RevisionedSessionStore(Protocol):
 
 @runtime_checkable
 class FencedRevisionedSessionStore(RevisionedSessionStore, Protocol):
-    """Revisioned store that validates an execution fence in the CAS write."""
+    """Revisioned store that validates an execution-domain fence in CAS."""
 
     def save_if_revision_and_fence(
         self,
@@ -113,6 +113,19 @@ def _validate_snapshot(snapshot: object, *, session_id: str) -> SessionSnapshot:
         )
     revision = _validate_revision(snapshot.revision, session_id=session_id)
     return SessionSnapshot(state=copy.deepcopy(snapshot.state), revision=revision)
+
+
+def _validate_execution_fence_target(
+    session_id: str,
+    execution_id: str,
+) -> None:
+    """Allow a fence to write only its own session or ``:`` descendants."""
+
+    if session_id == execution_id or session_id.startswith(f"{execution_id}:"):
+        return
+    raise ValueError(
+        "execution fence must target its own session_id or a descendant session"
+    )
 
 
 def _has_revision_capability(store: object) -> bool:
@@ -185,9 +198,10 @@ def save_session_snapshot(
         raise TypeError("execution_fence must be an ExecutionFence")
 
     saved_state = copy.deepcopy(state)
-    if execution_fence is not None and execution_fence.execution_id != session_id:
-        raise ValueError(
-            "execution_fence.execution_id must match the target session_id"
+    if execution_fence is not None:
+        _validate_execution_fence_target(
+            session_id,
+            execution_fence.execution_id,
         )
     if _has_revision_capability(store):
         if expected_revision is None:

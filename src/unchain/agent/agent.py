@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Callable
 
+from ..execution import ExecutionGuard
 from .modules.memory import MemoryModule
 from ..kernel.types import KernelRunResult
 from ..interaction.durable import InteractionReceipt
@@ -178,7 +179,9 @@ class Agent:
         session_id: str | None = None,
         memory_namespace: str | None = None,
         run_id: str | None = None,
+        execution_owner_id: str | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
+        _execution_guard: ExecutionGuard | None = None,
     ) -> KernelRunResult:
         prepared = self._prepare(
             AgentCallContext(
@@ -197,6 +200,8 @@ class Agent:
                 session_id=session_id,
                 memory_namespace=memory_namespace,
                 run_id=run_id,
+                execution_owner_id=execution_owner_id,
+                execution_guard=_execution_guard,
                 tool_runtime_config=copy.deepcopy(tool_runtime_config)
                 if isinstance(tool_runtime_config, dict)
                 else None,
@@ -220,6 +225,7 @@ class Agent:
         session_id: str | None = None,
         memory_namespace: str | None = None,
         run_id: str | None = None,
+        execution_owner_id: str | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
     ) -> KernelRunResult:
         prepared = self._prepare(
@@ -246,6 +252,7 @@ class Agent:
                 session_id=session_id,
                 memory_namespace=memory_namespace,
                 run_id=run_id,
+                execution_owner_id=execution_owner_id,
                 tool_runtime_config=copy.deepcopy(tool_runtime_config)
                 if isinstance(tool_runtime_config, dict)
                 else None,
@@ -289,6 +296,7 @@ class Agent:
         on_max_iterations: Callable[..., Any] | None = None,
         memory_namespace: str | None = None,
         run_id: str | None = None,
+        execution_owner_id: str | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
     ) -> KernelRunResult:
         prepared = self._prepare(
@@ -316,6 +324,7 @@ class Agent:
                 session_id=session_id,
                 memory_namespace=memory_namespace,
                 run_id=run_id,
+                execution_owner_id=execution_owner_id,
                 tool_runtime_config=copy.deepcopy(tool_runtime_config)
                 if isinstance(tool_runtime_config, dict)
                 else None,
