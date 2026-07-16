@@ -100,14 +100,14 @@ def test_memory_commit_does_not_turn_lease_error_into_vector_fallback() -> None:
         )
 
 
-def test_memory_commit_rejects_mismatched_fence_before_external_writes() -> None:
+def test_memory_commit_rejects_out_of_domain_fence_before_external_writes() -> None:
     adapter = _RecordingVectorAdapter()
     manager = MemoryManager(
         config=MemoryConfig(vector_adapter=adapter),
         store=InMemorySessionStore(),
     )
 
-    with pytest.raises(ValueError, match="must match the target session_id"):
+    with pytest.raises(ValueError, match="own session_id or a descendant"):
         manager.commit_messages(
             "target-session",
             [

@@ -19,6 +19,7 @@ from .ownership import ensure_session_delta_input
 
 
 EXECUTION_CHECKPOINT_KEY = "execution_checkpoint"
+EXECUTION_CHECKPOINT_DOMAIN_KEY = "execution_checkpoint_domain"
 EXECUTION_CHECKPOINT_SCHEMA_VERSION = 1
 _CHECKPOINT_STATUSES = frozenset(
     {"max_iterations", "awaiting_human_input", "awaiting_interaction"}
@@ -729,6 +730,7 @@ def restore_resume_checkpoint_messages(
 
 
 __all__ = [
+    "EXECUTION_CHECKPOINT_DOMAIN_KEY",
     "EXECUTION_CHECKPOINT_KEY",
     "EXECUTION_CHECKPOINT_SCHEMA_VERSION",
     "ExecutionCheckpointCompatibilityError",

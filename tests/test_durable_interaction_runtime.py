@@ -19,7 +19,13 @@ from unchain.interaction.runtime import (
     DurableInteractionRuntime,
     response_contract_for_kind,
 )
+from unchain.kernel import RunState
 from unchain.memory import InMemorySessionStore, KernelMemoryRuntime
+from unchain.memory.checkpoint_state import (
+    EXECUTION_CHECKPOINT_DOMAIN_KEY,
+    EXECUTION_CHECKPOINT_KEY,
+    build_execution_checkpoint,
+)
 
 
 def _install_pending(
@@ -189,6 +195,63 @@ def test_invalid_response_is_rejected_before_any_write() -> None:
             expected_revision=pending.revision,
         )
     assert memory.load_session_snapshot(request.session_id).revision == pending.revision
+
+
+def test_cancel_pending_atomically_terminalizes_journal_and_checkpoint() -> None:
+    session_id = "session-cancel-pending"
+    run_id = "attempt-cancel-pending"
+    memory = KernelMemoryRuntime.from_config(store=InMemorySessionStore())
+    state = RunState()
+    state.seed_messages([{"role": "user", "content": "dangerous write"}])
+    state.session_state.session_id = session_id
+    state.provider_state.provider = "ollama"
+    state.provider_state.model = "fake"
+    state.memory_state["session_revision"] = 0
+    state.iteration = 1
+    state.last_continuation = {
+        "type": "durable_interaction",
+        "occurrence": "cancel-call",
+    }
+    request = build_interaction_request(
+        session_id=session_id,
+        kind=INTERACTION_KIND_TOOL_APPROVAL,
+        source_run_id=run_id,
+        occurrence="cancel-call",
+        payload={"tool_name": "write_file", "call_id": "cancel-call"},
+        response_contract=response_contract_for_kind(
+            INTERACTION_KIND_TOOL_APPROVAL
+        ),
+        created_revision=0,
+        subject={"provider": "ollama", "model": "fake"},
+    )
+    state.suspend_state.payload = {"interaction_request": request.to_dict()}
+    checkpoint = build_execution_checkpoint(
+        state,
+        status="awaiting_interaction",
+        run_id=run_id,
+    )
+    memory.save_execution_checkpoint_snapshot(
+        session_id,
+        checkpoint,
+        interaction_request=request.to_dict(),
+        expected_revision=0,
+    )
+    runtime = DurableInteractionRuntime(memory, clock_ms=lambda: 321)
+
+    cancelled = runtime.cancel_pending(
+        session_id,
+        source_run_id=run_id,
+        reason="user_stop",
+    )
+
+    assert cancelled is not None
+    assert cancelled.application is not None
+    assert cancelled.response == {"cancelled": True, "reason": "user_stop"}
+    persisted = memory.load_session_snapshot(session_id).state
+    assert EXECUTION_CHECKPOINT_KEY not in persisted
+    assert EXECUTION_CHECKPOINT_DOMAIN_KEY not in persisted
+    journal = persisted[INTERACTION_JOURNAL_KEY]
+    assert journal["active_id"] is None
 
 
 def test_same_receipt_retry_succeeds_after_application() -> None:

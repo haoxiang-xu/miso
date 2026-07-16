@@ -5,7 +5,7 @@ import time
 from unchain.agent import Agent, MemoryModule, PoliciesModule, SubagentModule, ToolsModule
 from unchain.kernel import ModelTurnResult, ToolCall
 from unchain.subagents import SubagentPolicy, SubagentTemplate
-from unchain.memory import MemoryManager
+from unchain.memory import InMemorySessionStore, MemoryManager
 
 
 def _openai_tool_turn(*, call_id: str, name: str, arguments: dict) -> ModelTurnResult:
@@ -454,6 +454,8 @@ def test_subagent_worker_batch_rejects_non_parallel_safe_template():
 
 
 def test_subagent_child_clarification_is_escalated_without_suspending_root_run():
+    store = InMemorySessionStore()
+    memory = MemoryManager(store=store)
     clarification_args = {
         "title": "Need more detail",
         "question": "Which environment?",
@@ -463,6 +465,7 @@ def test_subagent_child_clarification_is_escalated_without_suspending_root_run()
     child = Agent(
         name="clarifier",
         provider="openai",
+        modules=(MemoryModule(memory=memory),),
         model_io_factory=lambda spec, ctx: SequenceModelIO(
             "openai",
             [_openai_tool_turn(call_id="child_call", name="ask_user_question", arguments=clarification_args)],
@@ -480,6 +483,7 @@ def test_subagent_child_clarification_is_escalated_without_suspending_root_run()
         name="manager",
         provider="openai",
         modules=(
+            MemoryModule(memory=memory),
             SubagentModule(
                 templates=(
                     SubagentTemplate(
@@ -487,6 +491,7 @@ def test_subagent_child_clarification_is_escalated_without_suspending_root_run()
                         description="Clarification specialist",
                         agent=child,
                         allowed_modes=("delegate", "handoff"),
+                        memory_policy="scoped_persistent",
                     ),
                 ),
             ),
@@ -504,7 +509,13 @@ def test_subagent_child_clarification_is_escalated_without_suspending_root_run()
         ),
     )
 
-    result = parent.run("start", max_iterations=2, callback=events.append)
+    result = parent.run(
+        "start",
+        session_id="clarification-root",
+        execution_owner_id="clarification-attempt",
+        max_iterations=2,
+        callback=events.append,
+    )
 
     assert result.status == "completed"
     assert result.human_input_request is None

@@ -90,6 +90,31 @@ class ExecutionLease:
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutionCancellation:
+    """Durable cancellation tombstone for one logical execution owner."""
+
+    execution_id: str
+    owner_id: str
+    fencing_token: int | None
+    requested_at_ms: int
+    reason: str = ""
+
+    def __post_init__(self) -> None:
+        _validate_identifier(self.execution_id, name="execution_id")
+        _validate_identifier(self.owner_id, name="owner_id")
+        if self.fencing_token is not None:
+            _validate_positive_int(self.fencing_token, name="fencing_token")
+        if (
+            isinstance(self.requested_at_ms, bool)
+            or not isinstance(self.requested_at_ms, int)
+            or self.requested_at_ms < 0
+        ):
+            raise ValueError("requested_at_ms must be a non-negative integer")
+        if not isinstance(self.reason, str):
+            raise ValueError("reason must be a string")
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionLeaseConfig:
     """Timing policy for an :class:`ExecutionRuntime` guard."""
 
@@ -167,6 +192,12 @@ class ActiveExecutionLeaseError(ExecutionLeaseConflictError):
     code = "active_execution_lease"
 
 
+class ExecutionCancelledError(ExecutionLeaseError):
+    """Raised when the exact logical execution owner was cancelled."""
+
+    code = "execution_cancelled"
+
+
 @runtime_checkable
 class ExecutionLeaseStore(Protocol):
     """Atomic lease operations required by :class:`ExecutionRuntime`."""
@@ -207,6 +238,27 @@ class ExecutionLeaseStore(Protocol):
         ...
 
 
+@runtime_checkable
+class ExecutionCancellationStore(Protocol):
+    """Optional exact-owner cancellation capability for a lease store."""
+
+    def request_execution_cancel(
+        self,
+        execution_id: str,
+        owner_id: str,
+        *,
+        reason: str = "",
+    ) -> ExecutionCancellation:
+        ...
+
+    def load_execution_cancellation(
+        self,
+        execution_id: str,
+        owner_id: str,
+    ) -> ExecutionCancellation | None:
+        ...
+
+
 _LEASE_METHODS = (
     "acquire_lease",
     "verify_lease",
@@ -224,6 +276,21 @@ def supports_execution_leases(store: object) -> bool:
     """
 
     return all(callable(getattr(store, method, None)) for method in _LEASE_METHODS)
+
+
+_CANCELLATION_METHODS = (
+    "request_execution_cancel",
+    "load_execution_cancellation",
+)
+
+
+def supports_execution_cancellation(store: object) -> bool:
+    """Return whether ``store`` supports durable exact-owner cancellation."""
+
+    return all(
+        callable(getattr(store, method, None))
+        for method in _CANCELLATION_METHODS
+    )
 
 
 class ExecutionRuntime:
@@ -272,6 +339,82 @@ class ExecutionRuntime:
             owner_id=owner_id,
         )
         return ExecutionGuard(runtime=self, lease=lease)
+
+    def request_cancel(
+        self,
+        execution_id: str,
+        owner_id: str,
+        *,
+        reason: str = "",
+    ) -> ExecutionCancellation:
+        """Durably cancel exactly one logical owner without touching successors."""
+
+        execution_id = _validate_identifier(execution_id, name="execution_id")
+        owner_id = _validate_identifier(owner_id, name="owner_id")
+        if not isinstance(reason, str):
+            raise ValueError("reason must be a string")
+        request_cancel = getattr(self.store, "request_execution_cancel", None)
+        if not callable(request_cancel):
+            raise TypeError("execution lease store does not support cancellation")
+        cancellation = request_cancel(
+            execution_id,
+            owner_id,
+            reason=reason,
+        )
+        if not isinstance(cancellation, ExecutionCancellation):
+            raise ExecutionLeaseError(
+                "execution cancellation store returned an invalid tombstone",
+                execution_id=execution_id,
+                owner_id=owner_id,
+            )
+        if (
+            cancellation.execution_id != execution_id
+            or cancellation.owner_id != owner_id
+        ):
+            raise ExecutionLeaseError(
+                "execution cancellation store returned a different owner",
+                execution_id=execution_id,
+                owner_id=owner_id,
+                fencing_token=cancellation.fencing_token,
+            )
+        return cancellation
+
+    def load_cancellation(
+        self,
+        execution_id: str,
+        owner_id: str,
+    ) -> ExecutionCancellation | None:
+        """Load the durable tombstone for one owner, if present."""
+
+        execution_id = _validate_identifier(execution_id, name="execution_id")
+        owner_id = _validate_identifier(owner_id, name="owner_id")
+        load_cancellation = getattr(
+            self.store,
+            "load_execution_cancellation",
+            None,
+        )
+        if not callable(load_cancellation):
+            raise TypeError("execution lease store does not support cancellation")
+        cancellation = load_cancellation(execution_id, owner_id)
+        if cancellation is None:
+            return None
+        if not isinstance(cancellation, ExecutionCancellation):
+            raise ExecutionLeaseError(
+                "execution cancellation store returned an invalid tombstone",
+                execution_id=execution_id,
+                owner_id=owner_id,
+            )
+        if (
+            cancellation.execution_id != execution_id
+            or cancellation.owner_id != owner_id
+        ):
+            raise ExecutionLeaseError(
+                "execution cancellation store returned a different owner",
+                execution_id=execution_id,
+                owner_id=owner_id,
+                fencing_token=cancellation.fencing_token,
+            )
+        return cancellation
 
     @contextmanager
     def scope(
@@ -565,6 +708,136 @@ class ExecutionGuard:
                     return
 
 
+class _BorrowedExecutionGuard(ExecutionGuard):
+    """Session-shaped view of a parent execution's cancellation domain.
+
+    Subagents have their own transcript session IDs, but they still belong to
+    the root execution that the user can stop.  This view keeps KernelLoop's
+    session ownership checks strict while every active/fenced operation is
+    authorized by the parent's lease.  Waiting in one child only pauses this
+    view; it never releases the shared root lease out from under sibling
+    workers.
+    """
+
+    def __init__(
+        self,
+        *,
+        parent: ExecutionGuard,
+        session_id: str,
+    ) -> None:
+        self._parent = parent
+        self._session_id = _validate_identifier(session_id, name="session_id")
+        self._borrow_state = "active"
+        self._borrow_lock = threading.RLock()
+        self._parent.assert_active()
+
+    def _project_lease(self, lease: ExecutionLease) -> ExecutionLease:
+        return ExecutionLease(
+            execution_id=self._session_id,
+            owner_id=lease.owner_id,
+            fencing_token=lease.fencing_token,
+            acquired_at_ms=lease.acquired_at_ms,
+            expires_at_ms=lease.expires_at_ms,
+        )
+
+    def _ensure_active(self) -> None:
+        if self._borrow_state == "active":
+            return
+        detail = (
+            "borrowed execution guard is released while waiting"
+            if self._borrow_state == "waiting"
+            else "borrowed execution guard has been released"
+        )
+        lease = self._parent.lease
+        raise ExecutionLeaseNotOwnedError(
+            detail,
+            execution_id=self._session_id,
+            owner_id=lease.owner_id,
+            fencing_token=lease.fencing_token,
+        )
+
+    @property
+    def lease(self) -> ExecutionLease:
+        with self._borrow_lock:
+            self._ensure_active()
+            return self._project_lease(self._parent.lease)
+
+    @property
+    def fence(self) -> ExecutionFence:
+        with self._borrow_lock:
+            self._ensure_active()
+            return self._parent.fence
+
+    def assert_active(self) -> ExecutionLease:
+        with self._borrow_lock:
+            self._ensure_active()
+            return self._project_lease(self._parent.assert_active())
+
+    def renew(self) -> ExecutionLease:
+        with self._borrow_lock:
+            self._ensure_active()
+            return self._project_lease(self._parent.renew())
+
+    def release(self) -> None:
+        """Release only this borrowed view, never the parent's lease."""
+
+        with self._borrow_lock:
+            self._borrow_state = "released"
+
+    def release_for_wait(self) -> None:
+        """Mark this child as waiting without releasing the root execution."""
+
+        with self._borrow_lock:
+            self._ensure_active()
+            self._parent.assert_active()
+            self._borrow_state = "waiting"
+
+    def reacquire(
+        self,
+        *,
+        expected_revision: int | None = None,
+    ) -> ExecutionLease:
+        _validate_expected_revision(expected_revision)
+        with self._borrow_lock:
+            if self._borrow_state != "waiting":
+                lease = self._parent.lease
+                raise ActiveExecutionLeaseError(
+                    "borrowed execution guard can only reacquire after release_for_wait",
+                    execution_id=self._session_id,
+                    owner_id=lease.owner_id,
+                    fencing_token=lease.fencing_token,
+                )
+            lease = self._parent.assert_active()
+            self._borrow_state = "active"
+            return self._project_lease(lease)
+
+    def guard_model_io(self, delegate: Any, operation: str) -> Any:
+        if not callable(getattr(delegate, "fetch_turn", None)):
+            raise TypeError("delegate must define fetch_turn(request)")
+        operation = _validate_identifier(operation, name="operation")
+        return _GuardedModelIO(self, delegate, operation)
+
+
+def _borrow_execution_guard(
+    parent: ExecutionGuard,
+    *,
+    session_id: str,
+) -> ExecutionGuard:
+    """Bind a child session to the exact cancellation domain of ``parent``."""
+
+    if not isinstance(parent, ExecutionGuard):
+        raise TypeError("parent must be an ExecutionGuard")
+    root_execution_id = parent.fence.execution_id
+    if not (
+        session_id == root_execution_id
+        or session_id.startswith(f"{root_execution_id}:")
+    ):
+        raise ValueError(
+            "borrowed execution guard must target its root session or a descendant"
+        )
+    return _BorrowedExecutionGuard(parent=parent, session_id=session_id)
+
+
 class _GuardedModelIO:
     """Small structural ModelIO wrapper used at external call boundaries."""
 
@@ -589,6 +862,9 @@ class _GuardedModelIO:
 
 __all__ = [
     "ActiveExecutionLeaseError",
+    "ExecutionCancellation",
+    "ExecutionCancellationStore",
+    "ExecutionCancelledError",
     "ExecutionFence",
     "ExecutionGuard",
     "ExecutionLease",
@@ -600,5 +876,6 @@ __all__ = [
     "ExecutionLeaseStore",
     "ExecutionRuntime",
     "StaleExecutionLeaseError",
+    "supports_execution_cancellation",
     "supports_execution_leases",
 ]

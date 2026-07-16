@@ -97,8 +97,12 @@ still write to them.
 string-to-string environment mapping. When `environment` is omitted, it
 captures `os.environ` at supervisor construction. `PYTHONPATH` entries are
 resolved to absolute paths and the source root for the running Unchain package
-is placed first so the detached worker loads the same code. The resulting exact
-mapping is inherited by both worker and child.
+is placed first so the detached worker loads the same code. In a frozen host,
+the temporary bundle extraction root is deliberately not injected into
+`PYTHONPATH`; the bundled worker is already supplied by the trusted host
+launcher, and binding an ephemeral extraction path would make a fresh worker's
+profile unverifiable. The resulting exact mapping is inherited by both worker
+and child.
 
 The profile entries are excluded from `repr` and are never written to the job
 store or durable approval journal. `environment_digest` is the only persisted
@@ -206,6 +210,8 @@ ProcessJobSupervisor(
     store,
     *,
     python_executable=None,
+    worker_command_prefix=None,
+    worker_environment_overlay=None,
     heartbeat_stale_ms=None,
     launch_grace_ms=None,
     poll_interval_s=None,
@@ -228,6 +234,26 @@ the suspicion grace. `heartbeat_stale_after_ms`, `startup_timeout_ms`, and
 parameters and cannot be supplied together with them. `environment` accepts a
 mapping or an existing `JobEnvironmentProfile` and is captured once by the
 constructor; individual `start()` calls cannot substitute another profile.
+
+By default the worker command prefix is
+`(python_executable or sys.executable, "-m", "unchain.jobs._worker")`.
+`worker_command_prefix` lets a trusted host adapter supply an immutable
+equivalent prefix, for example `(sys.executable, "--durable-job-worker")` for
+a frozen application that dispatches that private entry point itself. It is
+mutually exclusive with `python_executable`. This prefix is orchestration
+configuration: it must never come from model or tool arguments, and changing it
+does not change the public job identity or process intent. The host is
+responsible for dispatching the bundled `unchain.jobs._worker` implementation
+and reconstructing the exact captured environment before it validates the job.
+
+`worker_environment_overlay` is an immutable string mapping applied only to the
+trusted wrapper's `Popen` environment. It is deliberately excluded from the
+canonical `JobEnvironmentProfile`, its digest, the durable process intent, and
+the user child environment. This is intended for host bootloader controls such
+as PyInstaller's `PYINSTALLER_RESET_ENVIRONMENT=1`. A custom wrapper must remove
+that transient overlay and reconstruct the exact canonical profile before it
+enters `unchain.jobs._worker`; otherwise the worker's digest check rejects the
+launch.
 
 Main methods:
 
