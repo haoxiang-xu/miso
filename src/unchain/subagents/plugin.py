@@ -67,6 +67,17 @@ def _parse_arguments(arguments: dict[str, Any] | str | None) -> dict[str, Any]:
     return {}
 
 
+def _aggregate_worker_batch_status(results: list[SubagentResult]) -> str:
+    if not results:
+        return "failed"
+    statuses = [result.status for result in results]
+    if all(status == "completed" for status in statuses):
+        return "completed"
+    if all(status in {"failed", "timeout"} for status in statuses):
+        return "failed"
+    return "partial_failure"
+
+
 def _last_assistant_text(messages: list[dict[str, Any]]) -> str:
     for message in reversed(messages or []):
         if not isinstance(message, dict) or message.get("role") != "assistant":
@@ -1994,7 +2005,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         summary_parts = [result.summary or result.output for result in results if (result.summary or result.output)]
         tool_result = {
             "mode": "worker_batch",
-            "status": "completed" if all(result.status == "completed" for result in results) else "partial_failure",
+            "status": _aggregate_worker_batch_status(results),
             "aggregate_mode": aggregate_mode,
             "summary": "\n".join(summary_parts),
             "results": [result.to_dict() for result in results],

@@ -573,7 +573,7 @@ def test_worker_batch_board_write_survives_child_failure():
     def _after_worker_batch(request):
         payload = json.loads(request.messages[-1]["output"])
         assert payload["mode"] == "worker_batch"
-        assert payload["status"] == "partial_failure"
+        assert payload["status"] == "failed"
         assert payload["results"][0]["status"] == "failed"
         assert payload["results"][0]["error"] == "worker exploded"
         return _openai_tool_turn(
