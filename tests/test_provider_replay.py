@@ -206,6 +206,7 @@ def test_openai_stateless_reasoning_replay_preserves_order_and_encrypted_content
                 "id": "rs_1",
                 "encrypted_content": "opaque-ciphertext",
                 "summary": [],
+                "status": None,
             },
             {
                 "type": "function_call",
@@ -262,9 +263,10 @@ def test_openai_stateless_reasoning_replay_preserves_order_and_encrypted_content
     ]
     replay_reasoning = captured_requests[1]["input"][-3]
     assert replay_reasoning["encrypted_content"] == "opaque-ciphertext"
+    assert "status" not in replay_reasoning
     replay_call = captured_requests[1]["input"][-2]
     assert replay_call["id"] == "fc_1"
-    assert replay_call["status"] == "completed"
+    assert "status" not in replay_call
 
 
 def test_openai_request_trace_redacts_encrypted_reasoning_content():
@@ -364,6 +366,7 @@ def test_openai_previous_response_failure_uses_complete_local_fallback():
             "id": "rs_1",
             "encrypted_content": "opaque-ciphertext",
             "summary": [],
+            "status": None,
         },
         {
             "type": "function_call",
@@ -375,6 +378,9 @@ def test_openai_previous_response_failure_uses_complete_local_fallback():
         },
         delta,
     ]
+    normalized_fallback = copy.deepcopy(full_fallback)
+    normalized_fallback[1].pop("status")
+    normalized_fallback[2].pop("status")
     model_io = OpenAIModelIO(
         model="gpt-5",
         api_key="test-key",
@@ -393,7 +399,7 @@ def test_openai_previous_response_failure_uses_complete_local_fallback():
 
     assert len(captured_requests) == 2
     assert captured_requests[0]["input"] == [delta]
-    assert captured_requests[1]["input"] == full_fallback
+    assert captured_requests[1]["input"] == normalized_fallback
     assert "previous_response_id" not in captured_requests[1]
     request_events = [event for event in events if event["type"] == "request_messages"]
     assert len(request_events) == 2
@@ -401,7 +407,9 @@ def test_openai_previous_response_failure_uses_complete_local_fallback():
     assert request_events[1].get("previous_response_id") is None
     assert request_events[1]["messages"][-1] == delta
     assert turn.provider_replay_frame["complete"] is True
-    assert turn.provider_replay_frame["items"][:4] == full_fallback
+    assert turn.provider_replay_frame["items"][:4] == normalized_fallback
+    assert full_fallback[1]["status"] is None
+    assert full_fallback[2]["status"] == "completed"
 
 
 def test_openai_previous_response_failure_without_local_fallback_fails_closed():

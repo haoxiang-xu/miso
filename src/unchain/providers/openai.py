@@ -320,13 +320,14 @@ class OpenAIModelIO(_NativeModelIOBase):
                 normalized.append(copy.deepcopy(message))
                 continue
             item_type = message.get("type")
+            normalized_item = copy.deepcopy(message)
+            normalized_item.pop("status", None)
             if item_type == "function_call":
                 call_id = message.get("call_id") or message.get("id") or str(uuid.uuid4())
-                normalized_item = copy.deepcopy(message)
                 normalized_item["call_id"] = call_id
                 normalized.append(normalized_item)
                 continue
-            normalized.append(copy.deepcopy(message))
+            normalized.append(normalized_item)
         _translate_content_blocks_for_openai(normalized)
         return normalized
 
