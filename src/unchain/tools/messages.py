@@ -143,6 +143,27 @@ class OpenAIMessageBuilder(_ProviderMessageBuilderBase):
         tool_result: dict,
     ) -> list[dict]:
         blocks = _content_blocks(tool_result)
+        if tool_call.name == "computer":
+            images = _image_blocks(blocks or [])
+            image = images[-1] if images else None
+            data = image.get("data_b64") if isinstance(image, dict) else None
+            if not isinstance(data, str) or not data:
+                # The built-in Computer protocol has no generic text/error
+                # output shape. Failing here terminates this Computer turn
+                # instead of fabricating a successful screenshot.
+                raise ValueError(
+                    "computer_turn_terminated: no screenshot available for computer_call_output"
+                )
+            media_type = image.get("media_type") or "image/png"
+            return [{
+                "type": "computer_call_output",
+                "call_id": tool_call.call_id,
+                "output": {
+                    "type": "computer_screenshot",
+                    "image_url": f"data:{media_type};base64,{data}",
+                    "detail": "original",
+                },
+            }]
         if blocks is None:
             output = json.dumps(tool_result, default=str, ensure_ascii=False)
         else:
@@ -277,11 +298,25 @@ class OllamaMessageBuilder(_ProviderMessageBuilderBase):
                 elif block.get("type") == "image":
                     parts.append(f"[image omitted: {_image_label(block)}]")
             content = "\n".join(parts)
-        return [{
+        messages = [{
             "role": "tool",
             "tool_call_id": tool_call.call_id,
             "content": content,
         }]
+        # Ollama accepts base64 images only on user messages. Keep the ordinary
+        # tool result for call pairing, then attach the fresh screenshot as a
+        # synthetic user observation. This is provider transport only; the
+        # Computer toolkit still owns capture, validation, and redaction.
+        images = _image_blocks(blocks or [])
+        if tool_call.name == "computer" and images:
+            image_data = images[-1].get("data_b64")
+            if isinstance(image_data, str) and image_data:
+                messages.append({
+                    "role": "user",
+                    "content": "Current computer screenshot after the action batch.",
+                    "images": [image_data],
+                })
+        return messages
 
 
 def get_provider_message_builder(provider: str) -> ProviderMessageBuilder:
