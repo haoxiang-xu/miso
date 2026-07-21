@@ -31,12 +31,16 @@ if ! "$VENV_PY" -m pytest --version >/dev/null 2>&1; then
 fi
 
 if ! "$VENV_PY" - <<'PY' >/dev/null 2>&1
-import miso
+import unchain
 PY
 then
-  echo "miso is not installed in editable mode."
+  echo "unchain is not installed in editable mode."
   echo "Run ./scripts/init_python312_venv.sh to install the package."
   exit 1
 fi
 
-exec "$VENV_PY" -m pytest -q tests "$@"
+if [[ $# -eq 0 ]]; then
+  set -- tests
+fi
+
+exec "$VENV_PY" -m pytest -q "$@"

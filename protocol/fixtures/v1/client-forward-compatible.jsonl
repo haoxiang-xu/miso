@@ -1,0 +1,2 @@
+{"type":"hello","protocol":"unchain.host","rpc_id":"rpc-forward","client":{"name":"unchain-python","version":"0.3.0","build_channel":"canary"},"supported_protocol":{"major":1,"min_minor":0,"max_minor":1,"feature_epoch":1},"trace_context":{"sampled":false}}
+{"type":"request","protocol":"unchain.host","protocol_version":{"major":1,"minor":0,"patch":7},"rpc_id":"rpc-forward-version","request_id":"req-forward-version","method":"host.version","params":{},"deadline_ms":5000}

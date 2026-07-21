@@ -648,9 +648,13 @@ def test_jobs_are_execution_owned_and_unknown_is_distinct_from_outcome_unknown(
 
         store = JsonFileJobStore(state_dir)
         spec = store.load_spec(started.job_id)
+        claim = store.read_claim(started.job_id)
+        assert claim is not None
         unknown_outcome = store.update_state(
             started.job_id,
             worker_token=spec["worker_token"],
+            attempt_id=claim["claim_id"],
+            worker_pid=claim["worker_pid"],
             status="outcome_unknown",
             outcome_unknown_reason="process_identity_mismatch",
             error="cannot prove whether the detached command completed",
@@ -925,6 +929,296 @@ def test_stale_claim_clear_is_cas_and_cannot_remove_replacement(
     assert store.read_claim(snapshot.job_id) == replacement
 
 
+def test_claim_worker_rejects_an_explicit_empty_attempt_id(tmp_path: Path) -> None:
+    store = JsonFileJobStore(tmp_path / "state")
+    snapshot, _ = store.reserve_process_job(
+        execution_id="execution-empty-attempt",
+        adapter="local_process",
+        argv=[sys.executable, "-c", "pass"],
+        cwd=str(tmp_path),
+        timeout_ms=1_000,
+        idempotency_key="shell:empty-attempt",
+        intent_digest=hashlib.sha256(b"empty-attempt").hexdigest(),
+        max_log_bytes=1_024,
+    )
+
+    with pytest.raises(ValueError, match="attempt_id"):
+        store.claim_worker(
+            snapshot.job_id,
+            worker_token=snapshot.worker_token,
+            worker_pid=os.getpid(),
+            attempt_id="",
+        )
+    assert store.read_claim(snapshot.job_id) is None
+
+
+@pytest.mark.parametrize("same_pid", [False, True])
+@pytest.mark.parametrize("legacy_heartbeat", [False, True])
+def test_replacement_claim_never_inherits_stale_heartbeat(
+    tmp_path: Path,
+    same_pid: bool,
+    legacy_heartbeat: bool,
+) -> None:
+    now_ms = [1_000]
+    store = JsonFileJobStore(
+        tmp_path / f"state-{same_pid}-{legacy_heartbeat}",
+        clock_ms=lambda: now_ms[0],
+    )
+    snapshot, _ = store.reserve_process_job(
+        execution_id="execution-heartbeat-fence",
+        adapter="local_process",
+        argv=[sys.executable, "-c", "pass"],
+        cwd=str(tmp_path),
+        timeout_ms=1_000,
+        idempotency_key=f"shell:heartbeat-fence:{same_pid}:{legacy_heartbeat}",
+        intent_digest=hashlib.sha256(
+            f"heartbeat-fence:{same_pid}:{legacy_heartbeat}".encode()
+        ).hexdigest(),
+        max_log_bytes=1_024,
+    )
+    stale_pid = 91_001
+    replacement_pid = stale_pid if same_pid else 91_002
+    stale_attempt_id = "d" * 32
+    replacement_attempt_id = "e" * 32
+
+    assert store.claim_worker(
+        snapshot.job_id,
+        worker_token=snapshot.worker_token,
+        worker_pid=stale_pid,
+        attempt_id=stale_attempt_id,
+    )
+    assert store.write_heartbeat(
+        snapshot.job_id,
+        worker_token=snapshot.worker_token,
+        attempt_id=stale_attempt_id,
+        worker_pid=stale_pid,
+    )
+    stale_claim = store.read_claim(snapshot.job_id)
+    stale_heartbeat = store.read_heartbeat(snapshot.job_id)
+    assert stale_claim is not None
+    assert stale_heartbeat is not None
+    assert store.clear_stale_claim(
+        snapshot.job_id,
+        worker_token=snapshot.worker_token,
+        expected_claim=stale_claim,
+    )
+    assert store.read_heartbeat(snapshot.job_id) is None
+
+    now_ms[0] += 1
+    assert store.claim_worker(
+        snapshot.job_id,
+        worker_token=snapshot.worker_token,
+        worker_pid=replacement_pid,
+        attempt_id=replacement_attempt_id,
+    )
+    replacement_claim = store.read_claim(snapshot.job_id)
+    assert replacement_claim is not None
+
+    # Simulate residue from a crash or an older process after the atomic stale
+    # claim cleanup. Neither the attempt-aware nor legacy frame may become B's
+    # lease evidence, even when the operating system has reused A's PID.
+    if legacy_heartbeat:
+        stale_heartbeat.pop("claim_id")
+    heartbeat_path = store.paths_for_worker(snapshot.job_id)["heartbeat"]
+    heartbeat_path.write_text(json.dumps(stale_heartbeat), encoding="utf-8")
+
+    supervisor = ProcessJobSupervisor(store, heartbeat_stale_ms=10_000)
+    try:
+        assert supervisor._heartbeat_is_fresh(
+            snapshot,
+            store.read_heartbeat(snapshot.job_id),
+            replacement_claim,
+        ) is False
+    finally:
+        supervisor.close()
+
+    unknown = store.transition_to_outcome_unknown(
+        snapshot.job_id,
+        execution_id=snapshot.execution_id,
+        expected_revision=snapshot.revision,
+        expected_status=snapshot.status,
+        reason="replacement_heartbeat_missing",
+        error="replacement attempt has no valid lease evidence",
+        heartbeat_stale_before_ms=0,
+        expected_heartbeat_seq=0,
+        expected_claim_id=replacement_attempt_id,
+    )
+    assert unknown.status == "outcome_unknown"
+
+
+def test_running_legacy_heartbeat_remains_valid_for_its_original_claim(
+    tmp_path: Path,
+) -> None:
+    store = JsonFileJobStore(tmp_path / "state")
+    snapshot, _ = store.reserve_process_job(
+        execution_id="execution-legacy-heartbeat",
+        adapter="local_process",
+        argv=[sys.executable, "-c", "pass"],
+        cwd=str(tmp_path),
+        timeout_ms=1_000,
+        idempotency_key="shell:legacy-heartbeat",
+        intent_digest=hashlib.sha256(b"legacy-heartbeat").hexdigest(),
+        max_log_bytes=1_024,
+    )
+    attempt_id = "f" * 32
+    worker_pid = os.getpid()
+    assert store.claim_worker(
+        snapshot.job_id,
+        worker_token=snapshot.worker_token,
+        worker_pid=worker_pid,
+        attempt_id=attempt_id,
+    )
+    snapshot = store.update_state(
+        snapshot.job_id,
+        worker_token=snapshot.worker_token,
+        attempt_id=attempt_id,
+        worker_pid=worker_pid,
+        status="starting",
+    )
+    snapshot = store.update_state(
+        snapshot.job_id,
+        worker_token=snapshot.worker_token,
+        attempt_id=attempt_id,
+        worker_pid=worker_pid,
+        status="running",
+        child_pid=worker_pid,
+    )
+    assert store.write_heartbeat(
+        snapshot.job_id,
+        worker_token=snapshot.worker_token,
+        attempt_id=attempt_id,
+        worker_pid=worker_pid,
+    )
+    claim = store.read_claim(snapshot.job_id)
+    heartbeat = store.read_heartbeat(snapshot.job_id)
+    assert claim is not None
+    assert heartbeat is not None
+    heartbeat.pop("claim_id")
+    store.paths_for_worker(snapshot.job_id)["heartbeat"].write_text(
+        json.dumps(heartbeat),
+        encoding="utf-8",
+    )
+
+    supervisor = ProcessJobSupervisor(store, heartbeat_stale_ms=10_000)
+    try:
+        assert supervisor._heartbeat_is_fresh(
+            snapshot,
+            store.read_heartbeat(snapshot.job_id),
+            claim,
+        )
+    finally:
+        supervisor.close()
+
+    unchanged = store.transition_to_outcome_unknown(
+        snapshot.job_id,
+        execution_id=snapshot.execution_id,
+        expected_revision=snapshot.revision,
+        expected_status=snapshot.status,
+        reason="legacy_heartbeat_test",
+        error="a fresh legacy heartbeat must win",
+        heartbeat_stale_before_ms=0,
+        expected_heartbeat_seq=heartbeat["heartbeat_seq"],
+        expected_claim_id=attempt_id,
+    )
+    assert unchanged.status == "running"
+    assert unchanged.revision == snapshot.revision
+
+
+def test_replacement_claim_fences_stale_attempt_writes(tmp_path: Path) -> None:
+    store = JsonFileJobStore(tmp_path / "state")
+    snapshot, _ = store.reserve_process_job(
+        execution_id="execution-attempt-fence",
+        adapter="local_process",
+        argv=[sys.executable, "-c", "pass"],
+        cwd=str(tmp_path),
+        timeout_ms=1_000,
+        idempotency_key="shell:attempt-fence",
+        intent_digest=hashlib.sha256(b"attempt-fence").hexdigest(),
+        max_log_bytes=1_024,
+    )
+    worker_pid = os.getpid()
+    stale_attempt_id = "a" * 32
+    current_attempt_id = "b" * 32
+
+    assert store.claim_worker(
+        snapshot.job_id,
+        worker_token=snapshot.worker_token,
+        worker_pid=worker_pid,
+        attempt_id=stale_attempt_id,
+    )
+    stale_claim = store.read_claim(snapshot.job_id)
+    assert stale_claim is not None
+    assert store.clear_stale_claim(
+        snapshot.job_id,
+        worker_token=snapshot.worker_token,
+        expected_claim=stale_claim,
+    )
+    assert store.claim_worker(
+        snapshot.job_id,
+        worker_token=snapshot.worker_token,
+        worker_pid=worker_pid,
+        attempt_id=current_attempt_id,
+    )
+
+    assert store.worker_claim_is_current(
+        snapshot.job_id,
+        worker_token=snapshot.worker_token,
+        attempt_id=stale_attempt_id,
+        worker_pid=worker_pid,
+    ) is False
+    assert store.worker_claim_is_current(
+        snapshot.job_id,
+        worker_token=snapshot.worker_token,
+        attempt_id=current_attempt_id,
+        worker_pid=worker_pid,
+    ) is True
+
+    with pytest.raises(DurableJobConflictError, match="current attempt"):
+        store.write_heartbeat(
+            snapshot.job_id,
+            worker_token=snapshot.worker_token,
+            attempt_id=stale_attempt_id,
+            worker_pid=worker_pid,
+        )
+    with pytest.raises(DurableJobConflictError, match="current attempt"):
+        store.update_state(
+            snapshot.job_id,
+            worker_token=snapshot.worker_token,
+            attempt_id=stale_attempt_id,
+            worker_pid=worker_pid,
+            status="starting",
+        )
+    assert store.load(
+        snapshot.job_id,
+        execution_id=snapshot.execution_id,
+    ).revision == 0
+
+    assert store.write_heartbeat(
+        snapshot.job_id,
+        worker_token=snapshot.worker_token,
+        attempt_id=current_attempt_id,
+        worker_pid=worker_pid,
+    )
+    current = store.update_state(
+        snapshot.job_id,
+        worker_token=snapshot.worker_token,
+        attempt_id=current_attempt_id,
+        worker_pid=worker_pid,
+        status="starting",
+    )
+    assert current.status == "starting"
+    assert current.revision == 1
+    with pytest.raises(DurableJobConflictError, match="current attempt"):
+        store.update_state(
+            snapshot.job_id,
+            worker_token=snapshot.worker_token,
+            attempt_id=stale_attempt_id,
+            worker_pid=worker_pid,
+            status="completed",
+            returncode=0,
+        )
+
+
 def test_reattach_skips_empty_residue_and_repairs_owned_prelaunch_record(
     tmp_path: Path,
 ) -> None:
@@ -991,27 +1285,32 @@ def test_outcome_unknown_is_persisted_and_cannot_revert_on_late_heartbeat(
         intent_digest=hashlib.sha256(b"monotonic-unknown").hexdigest(),
         max_log_bytes=1_024,
     )
+    attempt_id = "c" * 32
     assert store.claim_worker(
         snapshot.job_id,
         worker_token=snapshot.worker_token,
         worker_pid=os.getpid(),
+        attempt_id=attempt_id,
     )
     snapshot = store.update_state(
         snapshot.job_id,
         worker_token=snapshot.worker_token,
+        attempt_id=attempt_id,
+        worker_pid=os.getpid(),
         status="starting",
-        worker_pid=os.getpid(),
     )
     snapshot = store.update_state(
         snapshot.job_id,
         worker_token=snapshot.worker_token,
-        status="running",
+        attempt_id=attempt_id,
         worker_pid=os.getpid(),
+        status="running",
         child_pid=os.getpid(),
     )
     assert store.write_heartbeat(
         snapshot.job_id,
         worker_token=snapshot.worker_token,
+        attempt_id=attempt_id,
         worker_pid=os.getpid(),
     )
 
@@ -1036,6 +1335,7 @@ def test_outcome_unknown_is_persisted_and_cannot_revert_on_late_heartbeat(
     assert store.write_heartbeat(
         snapshot.job_id,
         worker_token=snapshot.worker_token,
+        attempt_id=attempt_id,
         worker_pid=os.getpid(),
     )
     assert store.read_heartbeat(snapshot.job_id)["heartbeat_seq"] > first_seq
@@ -1068,6 +1368,7 @@ def test_outcome_unknown_is_persisted_and_cannot_revert_on_late_heartbeat(
     assert store.write_heartbeat(
         snapshot.job_id,
         worker_token=snapshot.worker_token,
+        attempt_id=attempt_id,
         worker_pid=os.getpid(),
     ) is False
     assert supervisor.inspect(
@@ -1078,6 +1379,8 @@ def test_outcome_unknown_is_persisted_and_cannot_revert_on_late_heartbeat(
         store.update_state(
             snapshot.job_id,
             worker_token=snapshot.worker_token,
+            attempt_id=attempt_id,
+            worker_pid=os.getpid(),
             status="completed",
             returncode=0,
         )

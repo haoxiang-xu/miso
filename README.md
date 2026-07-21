@@ -99,6 +99,8 @@ The planner gets `delegate_to_subagent`, `handoff_to_subagent`, and `spawn_worke
 
 ## Architecture
 
+Unchain is beginning an incremental Rust-kernel migration. The Python API remains a supported execution path throughout the transition; the native host is introduced behind a versioned local protocol and reversible engine selection. See the [migration architecture](docs/architecture/rust-migration.md) and [native host protocol](protocol/host-v1.md).
+
 ```
 Agent.run(messages)
   |

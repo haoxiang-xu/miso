@@ -1,0 +1,3 @@
+{"type":"hello","protocol":"unchain.host","rpc_id":"rpc-hello","client":{"name":"unchain-python","version":"0.2.0"},"supported_protocol":{"major":1,"min_minor":0,"max_minor":0}}
+{"type":"request","protocol":"unchain.host","protocol_version":{"major":1,"minor":0},"rpc_id":"rpc-version","request_id":"req-version","method":"host.version","params":{}}
+{"type":"request","protocol":"unchain.host","protocol_version":{"major":1,"minor":0},"rpc_id":"rpc-missing","request_id":"req-missing","method":"host.missing","params":{}}

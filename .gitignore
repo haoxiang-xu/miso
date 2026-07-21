@@ -29,6 +29,9 @@ dist/
 *.egg-info/
 pip-wheel-metadata/
 
+# Rust build artifacts
+target/
+
 # Notebooks
 .ipynb_checkpoints/
 

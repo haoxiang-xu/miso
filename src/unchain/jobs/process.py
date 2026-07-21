@@ -359,8 +359,19 @@ class ProcessJobSupervisor:
             self._clear_suspicion(snapshot.job_id)
             return snapshot
 
+        claim = self.store.read_claim(snapshot.job_id)
         heartbeat = self.store.read_heartbeat(snapshot.job_id)
-        heartbeat_fresh = self._heartbeat_is_fresh(snapshot, heartbeat)
+        heartbeat_for_attempt = (
+            heartbeat
+            if self._heartbeat_matches_attempt(snapshot, heartbeat, claim)
+            else None
+        )
+        heartbeat_fresh = self._heartbeat_is_fresh(snapshot, heartbeat, claim)
+        claim_id = (
+            str(claim["claim_id"])
+            if isinstance(claim, dict) and self._claim_matches(snapshot, claim)
+            else ""
+        )
         if snapshot.status in {"starting", "running"}:
             if heartbeat_fresh:
                 self._clear_suspicion(snapshot.job_id)
@@ -373,21 +384,22 @@ class ProcessJobSupervisor:
                 return snapshot
             if not self._suspect_grace_elapsed(
                 snapshot,
-                heartbeat=heartbeat,
+                heartbeat=heartbeat_for_attempt,
                 reason="worker_heartbeat_lost",
+                claim_id=claim_id,
             ):
                 return snapshot
             return self._persist_outcome_unknown(
                 snapshot,
                 reason="worker_heartbeat_lost",
                 recheck_heartbeat=True,
-                heartbeat=heartbeat,
+                heartbeat=heartbeat_for_attempt,
+                expected_claim_id=claim_id or None,
             )
 
         if snapshot.status != "queued":
             return snapshot
 
-        claim = self.store.read_claim(snapshot.job_id)
         if claim is None:
             self._clear_suspicion(snapshot.job_id)
             if allow_launch:
@@ -403,7 +415,7 @@ class ProcessJobSupervisor:
                 snapshot,
                 reason="worker_claim_invalid",
                 recheck_heartbeat=False,
-                heartbeat=heartbeat,
+                heartbeat=heartbeat_for_attempt,
             )
         if heartbeat_fresh:
             self._clear_suspicion(snapshot.job_id)
@@ -415,7 +427,7 @@ class ProcessJobSupervisor:
                 snapshot,
                 reason="worker_claim_invalid",
                 recheck_heartbeat=False,
-                heartbeat=heartbeat,
+                heartbeat=heartbeat_for_attempt,
             )
         if self.store.now_ms() - claimed_at_ms <= self.launch_grace_ms:
             self._clear_suspicion(snapshot.job_id)
@@ -427,13 +439,13 @@ class ProcessJobSupervisor:
                 snapshot,
                 reason="worker_claim_invalid",
                 recheck_heartbeat=False,
-                heartbeat=heartbeat,
+                heartbeat=heartbeat_for_attempt,
             )
         if self._pid_may_be_alive(worker_pid):
             claim_id = str(claim.get("claim_id") or "")
             if not self._suspect_grace_elapsed(
                 snapshot,
-                heartbeat=heartbeat,
+                heartbeat=heartbeat_for_attempt,
                 reason="worker_heartbeat_lost_before_launch",
                 claim_id=claim_id,
             ):
@@ -442,7 +454,7 @@ class ProcessJobSupervisor:
                 snapshot,
                 reason="worker_heartbeat_lost_before_launch",
                 recheck_heartbeat=True,
-                heartbeat=heartbeat,
+                heartbeat=heartbeat_for_attempt,
                 expected_claim_id=claim_id,
             )
 
@@ -595,11 +607,11 @@ class ProcessJobSupervisor:
         self,
         snapshot: DurableJobSnapshot,
         heartbeat: dict[str, Any] | None,
+        claim: dict[str, Any] | None,
     ) -> bool:
-        if not isinstance(heartbeat, dict):
+        if not self._heartbeat_matches_attempt(snapshot, heartbeat, claim):
             return False
-        if heartbeat.get("worker_token") != snapshot.worker_token:
-            return False
+        assert isinstance(heartbeat, dict)
         updated_at_ms = heartbeat.get("updated_at_ms")
         worker_pid = heartbeat.get("worker_pid")
         if (
@@ -614,6 +626,27 @@ class ProcessJobSupervisor:
             return False
         age_ms = max(0, self.store.now_ms() - updated_at_ms)
         return age_ms <= self.heartbeat_stale_ms
+
+    def _heartbeat_matches_attempt(
+        self,
+        snapshot: DurableJobSnapshot,
+        heartbeat: dict[str, Any] | None,
+        claim: dict[str, Any] | None,
+    ) -> bool:
+        if not isinstance(heartbeat, dict) or not isinstance(claim, dict):
+            return False
+        if not self._claim_matches(snapshot, claim):
+            return False
+        if snapshot.worker_pid is not None and (
+            heartbeat.get("worker_pid") != snapshot.worker_pid
+            or claim.get("worker_pid") != snapshot.worker_pid
+        ):
+            return False
+        return self.store.heartbeat_belongs_to_claim(
+            heartbeat,
+            claim,
+            allow_legacy=snapshot.status in {"starting", "running"},
+        )
 
     @staticmethod
     def _claim_matches(snapshot: DurableJobSnapshot, claim: dict[str, Any]) -> bool:

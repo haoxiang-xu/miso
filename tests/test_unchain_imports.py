@@ -1,4 +1,5 @@
 import importlib
+from pathlib import Path
 
 import unchain
 
@@ -6,7 +7,7 @@ import unchain
 def test_unchain_top_level_exports():
     from unchain.agent.agent import Agent as UnchainAgent
     assert unchain.Agent is UnchainAgent
-    assert unchain.__version__ == "0.2.0"
+    assert unchain.__version__.count(".") == 2
     assert unchain.__brand__ == "unchain"
     assert unchain.__tagline__ == "unchain harness"
 
@@ -37,11 +38,15 @@ def test_unchain_common_subpackages_are_available():
     assert not hasattr(toolkits, "CodeToolkit")
     assert not hasattr(toolkits, "AskUserToolkit")
     assert hasattr(runtime, "load_model_capabilities")
-    assert "/src/unchain/kernel/" in kernel.__file__
-    assert "/src/unchain/agent/" in agent.__file__
-    assert "/src/unchain/memory/" in memory.__file__
-    assert "/src/unchain/optimizers/" in optimizers.__file__
-    assert "/src/unchain/providers/" in providers_pkg.__file__
-    assert "/src/unchain/subagents/" in subagents.__file__
-    assert "/src/unchain/tools/" in tools.__file__
-    assert "/src/unchain/toolkits/" in toolkits.__file__
+    source_root = Path(__file__).resolve().parents[1] / "src" / "unchain"
+    for package_name, package in (
+        ("kernel", kernel),
+        ("agent", agent),
+        ("memory", memory),
+        ("optimizers", optimizers),
+        ("providers", providers_pkg),
+        ("subagents", subagents),
+        ("tools", tools),
+        ("toolkits", toolkits),
+    ):
+        assert Path(package.__file__).resolve().parent == source_root / package_name

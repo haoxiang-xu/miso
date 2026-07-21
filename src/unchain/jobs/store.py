@@ -260,21 +260,39 @@ class JsonFileJobStore:
         job_id: str,
         *,
         worker_token: str,
+        attempt_id: str,
+        worker_pid: int,
         status: str | None = None,
         **updates: Any,
     ) -> DurableJobSnapshot:
+        self._validate_attempt_id(attempt_id)
+        if (
+            isinstance(worker_pid, bool)
+            or not isinstance(worker_pid, int)
+            or worker_pid <= 0
+        ):
+            raise ValueError("worker_pid must be a positive integer")
         paths = self._paths(job_id)
         with _exclusive_lock(paths["lock"]):
             self._assert_store_identity()
             spec = self._read_spec(paths["spec"])
-            if str(spec["worker_token"]) != str(worker_token or ""):
-                raise DurableJobConflictError("durable job worker token does not match")
+            self._require_current_worker_attempt(
+                paths=paths,
+                spec=spec,
+                job_id=job_id,
+                worker_token=worker_token,
+                attempt_id=attempt_id,
+                worker_pid=worker_pid,
+            )
             state = self._read_state(paths["state"], expected_job_id=job_id)
             self._ensure_worker_token_matches(spec, state)
+            if state["worker_pid"] is not None and state["worker_pid"] != worker_pid:
+                raise DurableJobConflictError(
+                    "durable job state belongs to a different worker attempt"
+                )
             next_status = str(status or state["status"])
             self._validate_transition(str(state["status"]), next_status)
             allowed_updates = {
-                "worker_pid",
                 "child_pid",
                 "returncode",
                 "timed_out",
@@ -290,6 +308,7 @@ class JsonFileJobStore:
             next_state = {
                 **state,
                 **updates,
+                "worker_pid": worker_pid,
                 "status": next_status,
                 "updated_at_ms": self.now_ms(),
                 "revision": int(state["revision"]) + 1,
@@ -298,9 +317,18 @@ class JsonFileJobStore:
             self._write_json_atomic(paths["state"], next_state)
         return self._snapshot(spec, next_state)
 
-    def claim_worker(self, job_id: str, *, worker_token: str, worker_pid: int) -> bool:
+    def claim_worker(
+        self,
+        job_id: str,
+        *,
+        worker_token: str,
+        worker_pid: int,
+        attempt_id: str | None = None,
+    ) -> bool:
         if isinstance(worker_pid, bool) or not isinstance(worker_pid, int) or worker_pid <= 0:
             raise ValueError("worker_pid must be a positive integer")
+        resolved_attempt_id = uuid.uuid4().hex if attempt_id is None else attempt_id
+        self._validate_attempt_id(resolved_attempt_id)
         paths = self._paths(job_id)
         with _exclusive_lock(paths["lock"]):
             self._assert_store_identity()
@@ -319,7 +347,10 @@ class JsonFileJobStore:
                 "schema_version": JOB_SCHEMA_VERSION,
                 "job_id": job_id,
                 "worker_token": worker_token,
-                "claim_id": uuid.uuid4().hex,
+                # ``claim_id`` is the v1 on-disk name for the per-launch
+                # attempt generation. Keep the field stable while all runtime
+                # writes use the clearer ``attempt_id`` API name.
+                "claim_id": resolved_attempt_id,
                 "worker_pid": int(worker_pid),
                 "claimed_at_ms": self.now_ms(),
             }
@@ -362,6 +393,22 @@ class JsonFileJobStore:
                 return False
             if claim != expected_claim:
                 return False
+            heartbeat = self._read_optional_json(
+                paths["heartbeat"],
+                label="heartbeat",
+            )
+            if heartbeat is not None:
+                self._validate_heartbeat(
+                    heartbeat,
+                    expected_job_id=job_id,
+                    spec=spec,
+                )
+                if self.heartbeat_belongs_to_claim(
+                    heartbeat,
+                    claim,
+                    allow_legacy=True,
+                ):
+                    paths["heartbeat"].unlink(missing_ok=True)
             paths["claim"].unlink(missing_ok=True)
             self._fsync_dir(paths["dir"])
             return True
@@ -371,15 +418,18 @@ class JsonFileJobStore:
         job_id: str,
         *,
         worker_token: str,
+        attempt_id: str,
         worker_pid: int,
     ) -> bool:
         """Return whether this live wrapper still owns the current claim."""
 
+        self._validate_attempt_id(attempt_id)
         claim = self.read_claim(job_id)
         if claim is None:
             return False
         return (
             claim.get("worker_token") == worker_token
+            and claim.get("claim_id") == attempt_id
             and claim.get("worker_pid") == worker_pid
         )
 
@@ -401,32 +451,33 @@ class JsonFileJobStore:
                 )
             return claim
 
-    def write_heartbeat(self, job_id: str, *, worker_token: str, worker_pid: int) -> bool:
+    def write_heartbeat(
+        self,
+        job_id: str,
+        *,
+        worker_token: str,
+        attempt_id: str,
+        worker_pid: int,
+    ) -> bool:
+        self._validate_attempt_id(attempt_id)
         if isinstance(worker_pid, bool) or not isinstance(worker_pid, int) or worker_pid <= 0:
             raise ValueError("worker_pid must be a positive integer")
         paths = self._paths(job_id)
         with _exclusive_lock(paths["lock"]):
             self._assert_store_identity()
             spec = self._read_spec(paths["spec"])
-            if spec["worker_token"] != worker_token:
-                raise DurableJobConflictError("durable job worker token does not match")
+            self._require_current_worker_attempt(
+                paths=paths,
+                spec=spec,
+                job_id=job_id,
+                worker_token=worker_token,
+                attempt_id=attempt_id,
+                worker_pid=worker_pid,
+            )
             state = self._read_state(paths["state"], expected_job_id=job_id)
             self._ensure_worker_token_matches(spec, state)
             if state["status"] in TERMINAL_JOB_STATUSES:
                 return False
-            claim = self._read_optional_json(paths["claim"], label="worker claim")
-            if claim is None:
-                raise DurableJobConflictError(
-                    "durable job heartbeat requires a current worker claim"
-                )
-            self._validate_claim(claim, expected_job_id=job_id)
-            if (
-                claim["worker_token"] != worker_token
-                or claim["worker_pid"] != worker_pid
-            ):
-                raise DurableJobConflictError(
-                    "durable job heartbeat worker does not own the current claim"
-                )
             if state["worker_pid"] is not None and state["worker_pid"] != worker_pid:
                 raise DurableJobConflictError(
                     "durable job heartbeat worker does not match durable state"
@@ -449,6 +500,7 @@ class JsonFileJobStore:
                     "schema_version": JOB_SCHEMA_VERSION,
                     "job_id": job_id,
                     "worker_token": worker_token,
+                    "claim_id": attempt_id,
                     "worker_pid": int(worker_pid),
                     "heartbeat_seq": previous_seq + 1,
                     "updated_at_ms": self.now_ms(),
@@ -563,26 +615,45 @@ class JsonFileJobStore:
                     paths["heartbeat"],
                     label="heartbeat",
                 )
-                current_heartbeat_seq = 0
+                relevant_heartbeat = heartbeat
                 if heartbeat is not None:
                     self._validate_heartbeat(
                         heartbeat,
                         expected_job_id=job_id,
                         spec=spec,
                     )
-                    current_heartbeat_seq = int(heartbeat["heartbeat_seq"])
+                    if current_claim is not None:
+                        allow_legacy = state["status"] in {"starting", "running"}
+                        if not self.heartbeat_belongs_to_claim(
+                            heartbeat,
+                            current_claim,
+                            allow_legacy=allow_legacy,
+                        ) or (
+                            state["worker_pid"] is not None
+                            and current_claim["worker_pid"] != state["worker_pid"]
+                        ):
+                            relevant_heartbeat = None
+                current_heartbeat_seq = (
+                    int(relevant_heartbeat["heartbeat_seq"])
+                    if relevant_heartbeat is not None
+                    else 0
+                )
                 if (
                     expected_heartbeat_seq is not None
                     and current_heartbeat_seq != expected_heartbeat_seq
                 ):
                     return self._snapshot(spec, state)
-                if heartbeat is not None and heartbeat_stale_before_ms is not None:
+                if (
+                    relevant_heartbeat is not None
+                    and heartbeat_stale_before_ms is not None
+                ):
                     expected_worker_pid = state["worker_pid"]
                     if expected_worker_pid is None and current_claim is not None:
                         expected_worker_pid = current_claim["worker_pid"]
                     if (
-                        heartbeat["worker_pid"] == expected_worker_pid
-                        and heartbeat["updated_at_ms"] >= heartbeat_stale_before_ms
+                        relevant_heartbeat["worker_pid"] == expected_worker_pid
+                        and relevant_heartbeat["updated_at_ms"]
+                        >= heartbeat_stale_before_ms
                     ):
                         return self._snapshot(spec, state)
 
@@ -975,6 +1046,73 @@ class JsonFileJobStore:
         return raw
 
     @staticmethod
+    def _validate_attempt_id(attempt_id: str) -> None:
+        if not isinstance(attempt_id, str) or not re.fullmatch(
+            r"[0-9a-f]{32}",
+            attempt_id,
+        ):
+            raise ValueError("attempt_id must be a lowercase 32-character generation")
+
+    @staticmethod
+    def heartbeat_belongs_to_claim(
+        heartbeat: dict[str, Any],
+        claim: dict[str, Any],
+        *,
+        allow_legacy: bool,
+    ) -> bool:
+        """Return whether lease evidence belongs to one exact worker claim.
+
+        Heartbeats written before attempt fencing have no ``claim_id``. They
+        remain usable only where state and claim identity already make PID
+        reuse impossible; queued recovery always requires an explicit
+        generation.
+        """
+
+        if (
+            heartbeat.get("worker_token") != claim.get("worker_token")
+            or heartbeat.get("worker_pid") != claim.get("worker_pid")
+        ):
+            return False
+        heartbeat_claim_id = heartbeat.get("claim_id")
+        if heartbeat_claim_id is None:
+            return allow_legacy
+        return heartbeat_claim_id == claim.get("claim_id")
+
+    def _require_current_worker_attempt(
+        self,
+        *,
+        paths: dict[str, Path],
+        spec: dict[str, Any],
+        job_id: str,
+        worker_token: str,
+        attempt_id: str,
+        worker_pid: int,
+    ) -> dict[str, Any]:
+        """Fence a worker write to the exact claim generation that owns it.
+
+        Callers hold the job lock while this check and the corresponding
+        mutation run, so a supervisor cannot replace the claim between them.
+        """
+
+        if str(spec["worker_token"]) != str(worker_token or ""):
+            raise DurableJobConflictError("durable job worker token does not match")
+        claim = self._read_optional_json(paths["claim"], label="worker claim")
+        if claim is None:
+            raise DurableJobConflictError(
+                "durable job worker write requires a current claim"
+            )
+        self._validate_claim(claim, expected_job_id=job_id)
+        if (
+            claim["worker_token"] != worker_token
+            or claim["claim_id"] != attempt_id
+            or claim["worker_pid"] != worker_pid
+        ):
+            raise DurableJobConflictError(
+                "durable job worker does not own the current attempt"
+            )
+        return claim
+
+    @staticmethod
     def _validate_claim(raw: dict[str, Any], *, expected_job_id: str) -> None:
         if (
             raw.get("schema_version") != JOB_SCHEMA_VERSION
@@ -1054,6 +1192,14 @@ class JsonFileJobStore:
         if raw["worker_pid"] <= 0 or raw["heartbeat_seq"] <= 0:
             raise DurableJobStoreCorruptionError(
                 "durable job heartbeat identity or sequence is invalid"
+            )
+        claim_id = raw.get("claim_id")
+        if claim_id is not None and (
+            not isinstance(claim_id, str)
+            or not re.fullmatch(r"[0-9a-f]{32}", claim_id)
+        ):
+            raise DurableJobStoreCorruptionError(
+                "durable job heartbeat claim generation is invalid"
             )
         if raw["worker_token"] != spec["worker_token"]:
             raise DurableJobStoreCorruptionError(

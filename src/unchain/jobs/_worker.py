@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, BinaryIO, Sequence
 
@@ -28,12 +29,14 @@ class _HeartbeatLease:
         store: JsonFileJobStore,
         job_id: str,
         worker_token: str,
+        attempt_id: str,
         worker_pid: int,
         interval_ms: int,
     ) -> None:
         self.store = store
         self.job_id = job_id
         self.worker_token = worker_token
+        self.attempt_id = attempt_id
         self.worker_pid = worker_pid
         self.interval_s = max(0.001, interval_ms / 1_000.0)
         self.last_error = ""
@@ -49,6 +52,7 @@ class _HeartbeatLease:
         if not self.store.write_heartbeat(
             self.job_id,
             worker_token=self.worker_token,
+            attempt_id=self.attempt_id,
             worker_pid=self.worker_pid,
         ):
             raise RuntimeError("durable job became terminal before worker startup")
@@ -67,6 +71,7 @@ class _HeartbeatLease:
                 if not self.store.write_heartbeat(
                     self.job_id,
                     worker_token=self.worker_token,
+                    attempt_id=self.attempt_id,
                     worker_pid=self.worker_pid,
                 ):
                     return
@@ -275,6 +280,8 @@ def _record_orchestration_failure(
     snapshot: DurableJobSnapshot,
     *,
     worker_token: str,
+    attempt_id: str,
+    worker_pid: int,
     process: subprocess.Popen[bytes] | None,
     error: BaseException,
     cancel_grace_s: float,
@@ -300,8 +307,9 @@ def _record_orchestration_failure(
         store.update_state(
             snapshot.job_id,
             worker_token=worker_token,
+            attempt_id=attempt_id,
+            worker_pid=worker_pid,
             status="failed",
-            worker_pid=os.getpid(),
             child_pid=process.pid if process is not None else current.child_pid,
             returncode=returncode,
             error=message,
@@ -327,10 +335,12 @@ def run_worker(
     if str(spec["worker_token"]) != str(worker_token or ""):
         return 2
     worker_pid = os.getpid()
+    attempt_id = uuid.uuid4().hex
     if not store.claim_worker(
         job_id,
         worker_token=worker_token,
         worker_pid=worker_pid,
+        attempt_id=attempt_id,
     ):
         # Concurrent supervisors may launch multiple wrappers, but the claim
         # ensures only one wrapper can ever reach the user command.
@@ -340,6 +350,7 @@ def run_worker(
         store=store,
         job_id=job_id,
         worker_token=worker_token,
+        attempt_id=attempt_id,
         worker_pid=worker_pid,
         interval_ms=heartbeat_interval_ms,
     )
@@ -359,15 +370,17 @@ def run_worker(
         snapshot = store.update_state(
             job_id,
             worker_token=worker_token,
-            status="starting",
+            attempt_id=attempt_id,
             worker_pid=worker_pid,
+            status="starting",
         )
         if store.cancel_requested(job_id):
             store.update_state(
                 job_id,
                 worker_token=worker_token,
-                status="cancelled",
+                attempt_id=attempt_id,
                 worker_pid=worker_pid,
+                status="cancelled",
                 cancelled=True,
                 error="cancelled before command launch",
             )
@@ -379,6 +392,7 @@ def run_worker(
         if not store.worker_claim_is_current(
             job_id,
             worker_token=worker_token,
+            attempt_id=attempt_id,
             worker_pid=worker_pid,
         ):
             store.transition_to_outcome_unknown(
@@ -388,6 +402,7 @@ def run_worker(
                 expected_status=snapshot.status,
                 reason="worker_claim_lost_before_launch",
                 error="worker claim changed before command launch",
+                expected_claim_id=attempt_id,
             )
             return 3
 
@@ -398,8 +413,9 @@ def run_worker(
         snapshot = store.update_state(
             job_id,
             worker_token=worker_token,
-            status="running",
+            attempt_id=attempt_id,
             worker_pid=worker_pid,
+            status="running",
             child_pid=process.pid,
         )
         paths = store.paths_for_worker(job_id)
@@ -474,8 +490,9 @@ def run_worker(
         store.update_state(
             job_id,
             worker_token=worker_token,
-            status=status,
+            attempt_id=attempt_id,
             worker_pid=worker_pid,
+            status=status,
             child_pid=process.pid,
             returncode=returncode,
             timed_out=timed_out,
@@ -491,6 +508,8 @@ def run_worker(
                 store,
                 snapshot,
                 worker_token=worker_token,
+                attempt_id=attempt_id,
+                worker_pid=worker_pid,
                 process=process,
                 error=exc,
                 cancel_grace_s=cancel_grace_ms / 1000.0,
