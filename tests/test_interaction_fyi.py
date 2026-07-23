@@ -36,6 +36,31 @@ def test_fyi_channel_post_and_drain_preserves_fifo_order():
     assert isinstance(drained[0], FyiMessage)
 
 
+def test_fyi_channel_retries_with_same_message_id_are_idempotent_after_drain():
+    channel = FyiChannel()
+
+    first_id = channel.post("first delivery", message_id="fyi_client_1")
+    assert [message.text for message in channel.drain()] == ["first delivery"]
+
+    retry_id = channel.post("retry must not duplicate", message_id="fyi_client_1")
+
+    assert first_id == retry_id == "fyi_client_1"
+    assert channel.pending_count() == 0
+    assert channel.drain() == []
+
+
+def test_fyi_channel_distinct_client_message_ids_remain_fifo():
+    channel = FyiChannel()
+
+    channel.post("first", message_id="fyi_client_1")
+    channel.post("second", message_id="fyi_client_2")
+
+    assert [message.message_id for message in channel.drain()] == [
+        "fyi_client_1",
+        "fyi_client_2",
+    ]
+
+
 def test_fyi_channel_is_thread_safe_under_concurrent_posts():
     channel = FyiChannel()
 

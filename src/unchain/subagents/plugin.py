@@ -449,6 +449,16 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         def _captured_delta() -> dict[str, Any]:
             return {"blackboards": copy.deepcopy(captured_state.blackboards)} if captured_state.blackboards else {}
 
+        def _stop_child_at_max_iterations(_decision: Any) -> dict[str, Any]:
+            # The parent's continuation callback is bound to the root run's
+            # durable interaction.  A child reaching its own budget must
+            # return that status to the parent instead of borrowing the root
+            # callback (which can otherwise resume the wrong execution).
+            return {
+                "approved": False,
+                "reason": "subagent_max_iterations_reached",
+            }
+
         child_execution_guard = (
             _borrow_execution_guard(execution_guard, session_id=session_id)
             if execution_guard is not None
@@ -478,8 +488,11 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 max_iterations=max_iterations,
                 callback=_child_callback,
                 on_tool_confirm=on_tool_confirm,
-                on_human_input=on_human_input,
-                on_max_iterations=on_max_iterations,
+                # A child cannot safely own the parent's blocking UI callback.
+                # Let the child suspend so its clarification request can be
+                # returned to the parent as a structured SubagentResult.
+                on_human_input=None,
+                on_max_iterations=_stop_child_at_max_iterations,
                 run_id=child_run_id,
                 **guarded_run_kwargs,
             )
@@ -573,10 +586,34 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         expected_output = str(args.get("expected_output") or "").strip()
         context_mode = str(args.get("context_mode") or "none").strip() or "none"
         background = bool(args.get("background", False))
+        return_mode = str(args.get("return_mode") or "result").strip() or "result"
         if not target:
             return ToolRuntimeOutcome(handled=True, tool_result={"error": "spawn_agent_thread requires target"})
         if not task:
             return ToolRuntimeOutcome(handled=True, tool_result={"error": "spawn_agent_thread requires task"})
+        if background:
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={
+                    "error": "spawn_agent_thread background=true is not supported",
+                    "error_code": "agent_thread_background_unsupported",
+                    "status": "unsupported",
+                    "tool": "spawn_agent_thread",
+                },
+            )
+        if return_mode != "result":
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={
+                    "error": (
+                        "spawn_agent_thread only supports return_mode='result'; "
+                        f"received {return_mode!r}"
+                    ),
+                    "error_code": "agent_thread_return_mode_unsupported",
+                    "status": "unsupported",
+                    "tool": "spawn_agent_thread",
+                },
+            )
 
         state = self._ensure_state(context)
         child_id, lineage, next_state = self._next_subagent_identity(state=state, target=target, mode="delegate")
@@ -1012,6 +1049,44 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 handled=True,
                 tool_result={"error": "wait_agent_messages condition must be one of all_done, any_done, or idle"},
             )
+        raw_timeout_seconds = args.get("timeout_seconds")
+        if raw_timeout_seconds is not None:
+            timeout_seconds: float | None = None
+            if not isinstance(raw_timeout_seconds, bool) and isinstance(
+                raw_timeout_seconds,
+                (int, float),
+            ):
+                try:
+                    timeout_seconds = float(raw_timeout_seconds)
+                except (OverflowError, ValueError):
+                    timeout_seconds = None
+            if (
+                timeout_seconds is None
+                or not math.isfinite(timeout_seconds)
+                or timeout_seconds < 0
+            ):
+                return ToolRuntimeOutcome(
+                    handled=True,
+                    tool_result={
+                        "error": "wait_agent_messages timeout_seconds must be a finite non-negative number",
+                        "error_code": "agent_wait_timeout_invalid",
+                        "status": "invalid_request",
+                        "tool": "wait_agent_messages",
+                    },
+                )
+            if timeout_seconds > 0:
+                return ToolRuntimeOutcome(
+                    handled=True,
+                    tool_result={
+                        "error": (
+                            "wait_agent_messages timed waiting is not supported; "
+                            "omit timeout_seconds or use 0 for a snapshot"
+                        ),
+                        "error_code": "agent_wait_timed_wait_unsupported",
+                        "status": "unsupported",
+                        "tool": "wait_agent_messages",
+                    },
+                )
 
         state = self._ensure_state(context)
         threads: list[dict[str, Any]] = []

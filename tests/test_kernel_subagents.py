@@ -655,6 +655,86 @@ def test_subagent_child_clarification_is_escalated_without_suspending_root_run()
     assert all(event["type"] != "human_input_requested" for event in events)
 
 
+def test_subagent_max_iterations_does_not_invoke_root_continuation_callback():
+    root_continuation_requests = []
+    memory = MemoryManager(store=InMemorySessionStore())
+
+    def keep_working_tool():
+        return {"status": "keep_working"}
+
+    child = Agent(
+        name="bounded-worker",
+        provider="openai",
+        modules=(
+            MemoryModule(memory=memory),
+            ToolsModule(tools=(keep_working_tool,)),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="child_step_1",
+                    name="keep_working_tool",
+                    arguments={},
+                ),
+                _openai_tool_turn(
+                    call_id="child_step_2",
+                    name="keep_working_tool",
+                    arguments={},
+                ),
+            ],
+        ),
+    )
+
+    def _after_child_budget(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["status"] == "max_iterations"
+        return _text_turn("manager handled child budget")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            MemoryModule(memory=memory),
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="bounded-worker",
+                        description="Worker with a strict iteration budget",
+                        agent=child,
+                        allowed_modes=("delegate",),
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="call_1",
+                    name="delegate_to_subagent",
+                    arguments={
+                        "target": "bounded-worker",
+                        "task": "Keep working until the child budget ends",
+                    },
+                ),
+                _after_child_budget,
+            ],
+        ),
+    )
+
+    result = parent.run(
+        "start",
+        session_id="max-budget-root",
+        max_iterations=2,
+        on_max_iterations=lambda request: root_continuation_requests.append(request),
+    )
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "manager handled child budget"
+    assert root_continuation_requests == []
+
+
 def test_subagent_policy_limits_are_enforced_as_tool_errors():
     def _after_error(request):
         payload = json.loads(request.messages[-1]["output"])

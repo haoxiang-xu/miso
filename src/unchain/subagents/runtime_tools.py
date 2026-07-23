@@ -60,7 +60,10 @@ def build_spawn_worker_batch_tool() -> Tool:
 def build_spawn_agent_thread_tool() -> Tool:
     return tool(
         name="spawn_agent_thread",
-        description="Spawn an addressable subagent thread that can receive follow-up messages.",
+        description=(
+            "Run a subagent synchronously, then retain an addressable thread "
+            "that can receive follow-up messages."
+        ),
         func=lambda **_: {"error": "spawn_agent_thread is a reserved runtime tool and cannot be executed directly"},
         parameters=[
             ToolParameter(name="target", description="Template name or specialist role.", type_="string", required=True),
@@ -68,8 +71,8 @@ def build_spawn_agent_thread_tool() -> Tool:
             ToolParameter(name="instructions", description="Extra execution instructions.", type_="string", required=False),
             ToolParameter(name="expected_output", description="Expected output contract.", type_="string", required=False),
             ToolParameter(name="context_mode", description="One of none, summary, last_n, or full.", type_="string", required=False),
-            ToolParameter(name="background", description="Whether to keep the thread addressable after returning.", type_="boolean", required=False),
-            ToolParameter(name="return_mode", description="One of result, return_to_parent, or terminal_handoff.", type_="string", required=False),
+            ToolParameter(name="background", description="Background execution is not supported; true is rejected. Omit or set false.", type_="boolean", required=False),
+            ToolParameter(name="return_mode", description="Only result is currently supported; other values are rejected.", type_="string", required=False),
         ],
     )
 
@@ -93,12 +96,12 @@ def build_send_agent_message_tool() -> Tool:
 def build_wait_agent_messages_tool() -> Tool:
     return tool(
         name="wait_agent_messages",
-        description="Inspect or wait for one or more agent threads to reach a condition.",
+        description="Inspect one or more agent thread snapshots without blocking.",
         func=lambda **_: {"error": "wait_agent_messages is a reserved runtime tool and cannot be executed directly"},
         parameters=[
             ToolParameter(name="thread_ids", description="Thread ids to inspect.", type_="array", required=True, items={"type": "string"}),
             ToolParameter(name="condition", description="One of any_done, all_done, or idle.", type_="string", required=False),
-            ToolParameter(name="timeout_seconds", description="Maximum wait time in seconds.", type_="number", required=False),
+            ToolParameter(name="timeout_seconds", description="Timed waiting is not supported; values above 0 are rejected. Omit or use 0 for a snapshot.", type_="number", required=False),
         ],
     )
 
