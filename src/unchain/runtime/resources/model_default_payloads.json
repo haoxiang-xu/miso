@@ -73,17 +73,6 @@
       "effort": "medium"
     }
   },
-  "gpt-5-codex": {
-    "instructions": "",
-    "max_output_tokens": 128000,
-    "truncation": "auto",
-    "store": false,
-    "include": [],
-    "reasoning": {
-      "effort": "medium"
-    },
-    "tool_choice": null
-  },
   "deepseek-r1:14b": {
     "num_predict": -1,
     "temperature": 0.7,
@@ -133,7 +122,7 @@
     "temperature": 0.7,
     "top_p": 1
   },
-  "gpt-5.2-codex": {
+  "gpt-5.3-codex": {
     "instructions": "",
     "max_output_tokens": 128000,
     "truncation": "auto",
