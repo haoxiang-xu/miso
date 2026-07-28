@@ -674,14 +674,23 @@ class CoreCodingBackend:
                 "error": "task_id is required",
             }
         if resolved_action == "poll":
-            return self._shell_runtime.poll(task_id=task_id, max_output_chars=max_output_chars)
+            return self._shell_runtime.poll(
+                task_id=task_id,
+                max_output_chars=max_output_chars,
+                session_key=session_key,
+            )
         if resolved_action == "wait":
             return self._shell_runtime.wait(
                 task_id=task_id,
+                session_key=session_key,
                 timeout_ms=timeout_ms,
                 max_output_chars=max_output_chars,
             )
-        return self._shell_runtime.kill(task_id=task_id, max_output_chars=max_output_chars)
+        return self._shell_runtime.kill(
+            task_id=task_id,
+            max_output_chars=max_output_chars,
+            session_key=session_key,
+        )
 
     def _resolve_shell_confirmation(
         self,

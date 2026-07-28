@@ -28,7 +28,7 @@ This chapter explains the run loop (`KernelLoop` internally), the `RuntimeHook` 
 - Register one or more harnesses with `register_harness(...)`.
 - Optionally `attach_memory(KernelMemoryRuntime)` to wire memory commits.
 - Call `run(messages, ...)`; the loop iterates `step_once()` until completion or suspension.
-- On suspension, the loop returns a `KernelRunResult` with `status="awaiting_human_input"` and a `continuation` payload; pass both back into `resume_human_input()` to continue.
+- On suspension, the loop returns a `KernelRunResult` with a `continuation` and, for a durable wait, an `interaction_request`. Persist the answer with `Agent.submit_interaction()` and continue with `Agent.resume_interaction()`; `resume_human_input()` remains the legacy human-input adapter.
 
 ## Configuration surface
 
@@ -39,7 +39,7 @@ This chapter explains the run loop (`KernelLoop` internally), the `RuntimeHook` 
 ## Common gotchas
 
 - Observation turns count toward the iteration budget.
-- Callbacks run synchronously inside the loop; offload long work.
+- Interaction callbacks are synchronous adapters. In a durable session the runtime releases its lease while the callback waits, records the callback answer as a receipt, then reacquires before continuing; offload unrelated long work.
 - Provider SDK imports are lazy; missing SDK fails when `fetch_turn()` runs, not at import.
 - Provider calls go through `ModelAdapter` implementations; the old provider runtime compatibility layer has been removed.
 
@@ -82,7 +82,7 @@ For day-to-day use, prefer `Agent.run()`. Direct `KernelLoop` use is only needed
 1. `run()` normalizes incoming messages, validates modality support against model capabilities, and builds a `RunState` for this iteration.
 2. The loop dispatches hooks across the public extension phases (see `architecture-overview.md` for the full list) before and after each model turn, then crosses reserved durability barriers on suspension and finalization.
 3. `ModelAdapter.fetch_turn(request)` returns a `ModelTurnResult` containing assistant messages, tool calls, and token counts.
-4. If the model emitted tool calls, `ToolExecutionHook` runs them. Confirmation-gated tools cause the loop to return early with `status="awaiting_human_input"`.
+4. If the model emitted tool calls, `ToolExecutionHook` runs them. Confirmation-gated tools create a durable interaction and return early with `status="awaiting_interaction"` when no synchronous adapter answers it.
 5. Tools marked with `observe=True` trigger an additional observation turn during `after_tool_batch`.
 6. When a turn no longer produces tool calls, the loop applies any structured-output parsing, commits memory, and returns a `KernelRunResult`.
 
@@ -94,6 +94,7 @@ For day-to-day use, prefer `Agent.run()`. Direct `KernelLoop` use is only needed
 - The current semantic model context is authoritative for every request. Provider replay contributes only retained native reasoning/tool envelopes; it cannot overwrite new memory, prompt, optimizer, or user deltas. OpenAI remote continuation keeps a separate delta input and a complete local fallback.
 - A request-only model context that is still pending at a durable suspend boundary is stored in the execution checkpoint and restored before the next `before_model` phase.
 - Human-input continuations expose only an opaque, process-local replay handle; provider reasoning/signatures are not serialized into the public continuation. Use session memory/checkpoints when a continuation must survive a process restart.
+- For human-input and tool-approval waits, plus max-budget waits created by a configured memory-backed callback, the immutable interaction request and its checkpoint reference are created atomically. A response receipt is persisted before resume, and a missing or conflicting receipt fails before model/tool work.
 
 ## Provider Abstraction
 
@@ -176,25 +177,47 @@ result = agent.run("task", callback=my_callback)
 
 ## Confirmation Suspension & Resumption
 
-When a tool with `requires_confirmation=True` is called:
+For a memory-backed session, when a tool with `requires_confirmation=True` is called:
 
 ```text
 KernelLoop.run()
   ├── LLM requests tool call
   ├── on_tool_call phase: ToolExecutionHarness builds ToolConfirmationRequest
-  ├── on_suspend phase fires; loop returns KernelRunResult(status="awaiting_human_input", continuation=...)
+  ├── on_suspend phase atomically stores checkpoint + InteractionRequest
+  ├── loop returns KernelRunResult(status="awaiting_interaction", interaction_request=...)
   │
   │   ← External: UI shows confirmation dialog
   │   ← External: User approves/rejects
   │
-  ├── Agent.resume_human_input(continuation=..., response=...)
-  │   └── Re-enters the loop on on_resume phase with the response in hand
+  ├── Agent.submit_interaction(...) durably records the response receipt
+  ├── Agent.resume_interaction(session_id=...)
+  │   └── Verifies and consumes the receipt on the on_resume path
   ├── If approved: tool executes (with modified args if any)
   ├── If rejected: error sent to LLM, loop continues
   └── run() continues or returns final result
 ```
 
-The toolkit catalog and discovery state survive this round trip via the harness `on_suspend` / `on_resume` checkpointing.
+When `ToolOptimizer` selected the tool surface, the durable interaction continuation stores a strict versioned exposure plan: catalog digest plus the exact direct, deferred, and loaded tool names. `Agent.resume_interaction()` validates that catalog and rebuilds the same surface without another selector call. A malformed present plan or catalog drift fails before model/tool work. This exact replay applies to durable human-input, tool-approval, and configured max-budget interaction resumes; a later `Agent.run()` over an ordinary `max_iterations` checkpoint is a new invocation and may optimize its tool surface again. `on_tool_confirm` remains available, but it performs the same sequence as a synchronous adapter: persist request and checkpoint, release the lease, call the callback, persist the receipt, reacquire, and resume. It does not bypass the journal.
+
+The recommended durable API keeps receipt submission separate from execution:
+
+```python
+suspended = agent.run("Do something risky", session_id="job-42")
+
+agent.submit_interaction(
+    session_id="job-42",
+    interaction_id=suspended.interaction_request["interaction_id"],
+    response={"approved": True},
+)
+
+resumed = agent.resume_interaction(session_id="job-42")
+```
+
+`resume_interaction(response=...)` is a one-call convenience. Existing human-input integrations may continue to call `resume_human_input()`; with durable memory it uses the same receipt journal rather than a separate reliability path.
+
+Without a durable memory-backed `session_id`, existing process-local confirmation and callback behavior remains available, but it cannot claim cross-process receipt recovery.
+
+This receipt boundary makes the decision durable, not an arbitrary external side effect. If an approved remote tool changes the outside world and the worker dies before recording its tool result, recovery still needs the D3 tool-intent/tool-receipt protocol, an idempotency key, reconciliation, or a transactional outbox.
 
 ## Structured Output (Response Format)
 

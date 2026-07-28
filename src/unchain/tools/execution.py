@@ -19,6 +19,16 @@ from ..interaction import (
     build_human_input_continuation,
     build_human_input_suspend_request,
 )
+from ..interaction.requests import build_human_interaction_request
+from ..interaction.effects import (
+    build_tool_approval_continuation,
+    build_tool_approval_suspend_request,
+)
+from ..interaction.durable import InteractionIntegrityError
+from ..interaction.requests import (
+    build_tool_approval_interaction_request,
+    ensure_interaction_binding_matches,
+)
 from ..toolkits.base import BuiltinToolkit
 from ..workspace_changes import WorkspaceChangeTracker
 from .toolkit import Toolkit
@@ -26,13 +36,17 @@ from ..kernel.delta import HarnessDelta
 from ..kernel.types import ToolCall
 from .base import BaseToolHarness, ToolContext
 from .common import append_executed_call_id, copy_messages, emit_loop_event
-from .confirmation import execute_confirmable_tool_call
+from .confirmation import execute_confirmable_tool_call, prepare_tool_confirmation
 from .human_input import parse_human_input_request
 from .messages import coalesce_provider_tool_result_messages, get_provider_message_builder
 from .models import ToolExecutionContext
 from .observation import ToolObservationRunner, inject_observation, observation_token_state
 from .result_budget import ToolResultBudgetConfig, ToolResultBudgetController
-from .runtime import run_tool_runtime_plugins
+from .runtime import (
+    run_tool_runtime_plugins,
+    snapshot_durable_tool_exposure_plan,
+    snapshot_durable_tool_runtime_route,
+)
 from .types import ToolBatchState
 
 
@@ -73,6 +87,27 @@ def _workspace_change_state_update(
     if tracker is None or not tracker.has_changes():
         return {}
     return {"workspace_change_state": tracker.to_state()}
+
+
+def _durable_tool_exposure_plan(context: ToolContext) -> dict[str, Any] | None:
+    return snapshot_durable_tool_exposure_plan(context.tool_runtime_plugins)
+
+
+def _durable_tool_runtime_subject(
+    context: Any,
+    tool_call: ToolCall,
+    *,
+    extra_subject: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    subject = copy.deepcopy(extra_subject) if isinstance(extra_subject, dict) else {}
+    route = snapshot_durable_tool_runtime_route(
+        getattr(context, "tool_runtime_plugins", None),
+        tool_call=tool_call,
+        context=context,
+    )
+    if route is not None:
+        subject["tool_runtime_route"] = route
+    return subject or None
 
 
 def _emit_artifact_events(
@@ -255,7 +290,11 @@ class ToolExecutionHarness(BaseToolHarness):
             return None
 
         batch_state = context.state.tool_batch_state.copy()
-        if tool_call.call_id in batch_state.executed_call_ids or batch_state.awaiting_human_input:
+        if (
+            tool_call.call_id in batch_state.executed_call_ids
+            or batch_state.awaiting_human_input
+            or context.state.run_status == "awaiting_interaction"
+        ):
             return None
 
         emit_loop_event(
@@ -276,6 +315,228 @@ class ToolExecutionHarness(BaseToolHarness):
             if workspace_change_tracker is not None:
                 workspace_snapshot_before = workspace_change_tracker.capture_text_snapshot()
 
+        execution_context = ToolExecutionContext(
+            session_id=context.session_id,
+            run_id=context.run_id,
+            provider=context.provider,
+            model=context.model,
+            iteration=context.iteration,
+            memory_namespace=context.memory_namespace,
+            tool_runtime_config=context.event.get("tool_runtime_config")
+            if isinstance(context.event.get("tool_runtime_config"), dict)
+            else {},
+            tool_name=tool_call.name,
+            call_id=tool_call.call_id,
+            turn_id=f"{context.run_id}:turn-{context.iteration}",
+            workspace_changes=workspace_change_tracker,
+        )
+        confirmation_preparation = prepare_tool_confirmation(
+            toolkit=toolkit,
+            tool_call=tool_call,
+            execution_context=execution_context,
+            execution_guard=context.execution_guard,
+        )
+        interaction_response_supplied = (
+            "interaction_response" in context.raw_event
+        )
+        stored_interaction_request = context.raw_event.get("interaction_request")
+        stored_request_bound = False
+        if (
+            confirmation_preparation.needs_confirmation_response
+            and context.session_id
+            and getattr(context.loop, "interaction_runtime", None) is not None
+        ):
+            confirmation_request = confirmation_preparation.request
+            if confirmation_request is None:
+                raise RuntimeError(
+                    "tool confirmation preparation requires a request"
+                )
+            current_interaction_request = build_tool_approval_interaction_request(
+                state=context.state,
+                toolkit=toolkit,
+                tool_call=tool_call,
+                confirmation_request=confirmation_request,
+                run_id=context.run_id,
+                source_request=(
+                    stored_interaction_request
+                    if isinstance(stored_interaction_request, dict)
+                    else None
+                ),
+                extra_subject=_durable_tool_runtime_subject(
+                    context,
+                    tool_call,
+                ),
+            )
+            if isinstance(stored_interaction_request, dict):
+                ensure_interaction_binding_matches(
+                    stored_interaction_request,
+                    current_interaction_request,
+                )
+                if not interaction_response_supplied:
+                    raise RuntimeError(
+                        "durable tool approval resume requires a receipt response"
+                    )
+                stored_request_bound = True
+            else:
+                continuation = build_tool_approval_continuation(
+                    interaction_request=current_interaction_request,
+                    payload=copy.deepcopy(context.event.get("payload") or {}),
+                    response_format=context.event.get("response_format"),
+                    max_iterations=int(context.event.get("max_iterations") or 0),
+                    tool_calls=list(context.event.get("tool_calls") or []),
+                    batch_state=batch_state,
+                    state=context.state,
+                    run_id=context.run_id,
+                    tool_exposure_plan=_durable_tool_exposure_plan(context),
+                )
+                suspend_op = build_tool_approval_suspend_request(
+                    interaction_request=current_interaction_request,
+                    continuation=continuation,
+                )
+                return CapabilityOutcome(
+                    delta=RunDelta(
+                        created_by=INTERACTION_EFFECT_CREATED_BY,
+                        context_ops=(suspend_op,),
+                        state_updates={
+                            "run_status": "awaiting_interaction",
+                            "last_continuation": continuation,
+                            "pending_tool_calls": list(
+                                context.event.get("tool_calls") or []
+                            ),
+                            "tool_batch_state": batch_state,
+                        },
+                        trace={
+                            "awaiting_tool_approval": True,
+                            "tool_call": tool_call.name,
+                            "call_id": tool_call.call_id,
+                            "interaction_id": (
+                                current_interaction_request.interaction_id
+                            ),
+                        },
+                    )
+                )
+
+        if (
+            not stored_request_bound
+            and context.session_id
+            and getattr(context.loop, "interaction_runtime", None) is not None
+        ):
+            for plugin in context.tool_runtime_plugins:
+                can_handle = getattr(plugin, "can_handle", None)
+                prepare_nested = getattr(
+                    plugin,
+                    "prepare_durable_confirmation",
+                    None,
+                )
+                if (
+                    not callable(can_handle)
+                    or not can_handle(tool_call=tool_call, context=context)
+                    or not callable(prepare_nested)
+                ):
+                    continue
+                nested = prepare_nested(tool_call=tool_call, context=context)
+                if not isinstance(nested, dict):
+                    break
+                nested_preparation = nested.get("preparation")
+                nested_request = getattr(nested_preparation, "request", None)
+                if not bool(
+                    getattr(
+                        nested_preparation,
+                        "needs_confirmation_response",
+                        False,
+                    )
+                ) or nested_request is None:
+                    if isinstance(stored_interaction_request, dict):
+                        raise InteractionIntegrityError(
+                            "tool confirmation policy changed while approval was pending"
+                        )
+                    break
+                nested_tool_call = nested.get("tool_call")
+                nested_toolkit = nested.get("toolkit")
+                if not isinstance(nested_tool_call, ToolCall) or not isinstance(
+                    nested_toolkit,
+                    Toolkit,
+                ):
+                    raise RuntimeError(
+                        "tool runtime plugin returned invalid confirmation preparation"
+                    )
+                interaction_request = build_tool_approval_interaction_request(
+                    state=context.state,
+                    toolkit=nested_toolkit,
+                    tool_call=nested_tool_call,
+                    confirmation_request=nested_request,
+                    run_id=context.run_id,
+                    source_request=(
+                        stored_interaction_request
+                        if isinstance(stored_interaction_request, dict)
+                        else None
+                    ),
+                    extra_subject=_durable_tool_runtime_subject(
+                        nested.get("runtime_context", context),
+                        nested_tool_call,
+                        extra_subject=(
+                            nested.get("extra_subject")
+                            if isinstance(nested.get("extra_subject"), dict)
+                            else None
+                        ),
+                    ),
+                )
+                if isinstance(stored_interaction_request, dict):
+                    ensure_interaction_binding_matches(
+                        stored_interaction_request,
+                        interaction_request,
+                    )
+                    if not interaction_response_supplied:
+                        raise InteractionIntegrityError(
+                            "durable tool approval resume requires a receipt response"
+                        )
+                    stored_request_bound = True
+                    break
+                continuation = build_tool_approval_continuation(
+                    interaction_request=interaction_request,
+                    payload=copy.deepcopy(context.event.get("payload") or {}),
+                    response_format=context.event.get("response_format"),
+                    max_iterations=int(context.event.get("max_iterations") or 0),
+                    tool_calls=list(context.event.get("tool_calls") or []),
+                    batch_state=batch_state,
+                    state=context.state,
+                    run_id=context.run_id,
+                    tool_exposure_plan=_durable_tool_exposure_plan(context),
+                )
+                suspend_op = build_tool_approval_suspend_request(
+                    interaction_request=interaction_request,
+                    continuation=continuation,
+                )
+                return CapabilityOutcome(
+                    delta=RunDelta(
+                        created_by=INTERACTION_EFFECT_CREATED_BY,
+                        context_ops=(suspend_op,),
+                        state_updates={
+                            "run_status": "awaiting_interaction",
+                            "last_continuation": continuation,
+                            "pending_tool_calls": list(
+                                context.event.get("tool_calls") or []
+                            ),
+                            "tool_batch_state": batch_state,
+                        },
+                        trace={
+                            "awaiting_tool_approval": True,
+                            "tool_call": nested_tool_call.name,
+                            "call_id": nested_tool_call.call_id,
+                            "interaction_id": interaction_request.interaction_id,
+                            "deferred_tool": True,
+                        },
+                    )
+                )
+
+        if (
+            isinstance(stored_interaction_request, dict)
+            and not stored_request_bound
+        ):
+            raise InteractionIntegrityError(
+                "tool confirmation policy changed while approval was pending"
+            )
+
         plugin_outcome = run_tool_runtime_plugins(
             context.tool_runtime_plugins,
             tool_call=tool_call,
@@ -294,8 +555,8 @@ class ToolExecutionHarness(BaseToolHarness):
             if plugin_outcome.result_messages:
                 result_messages.extend(copy_messages(plugin_outcome.result_messages))
             elif isinstance(visible_tool_result, dict):
-                result_messages.append(
-                    builder.build_tool_result_message(tool_call=tool_call, tool_result=visible_tool_result)
+                result_messages.extend(
+                    builder.build_tool_result_messages(tool_call=tool_call, tool_result=visible_tool_result)
                 )
             emitted_artifacts: list[dict] = []
             if isinstance(visible_tool_result, dict):
@@ -412,30 +673,24 @@ class ToolExecutionHarness(BaseToolHarness):
                 ),
             )
 
+        execution_kwargs: dict[str, Any] = {
+            "toolkit": toolkit,
+            "tool_call": tool_call,
+            "on_tool_confirm": on_tool_confirm,
+            "loop": context.loop,
+            "callback": context.callback,
+            "run_id": context.run_id,
+            "iteration": context.iteration,
+            "execution_context": execution_context,
+            "execution_guard": context.execution_guard,
+            "prepared_confirmation": confirmation_preparation,
+        }
+        if interaction_response_supplied:
+            execution_kwargs["confirmation_response"] = context.raw_event.get(
+                "interaction_response"
+            )
         outcome = execute_confirmable_tool_call(
-            toolkit=toolkit,
-            tool_call=tool_call,
-            on_tool_confirm=on_tool_confirm,
-            loop=context.loop,
-            callback=context.callback,
-            run_id=context.run_id,
-            iteration=context.iteration,
-            execution_context=ToolExecutionContext(
-                session_id=context.session_id,
-                run_id=context.run_id,
-                provider=context.provider,
-                model=context.model,
-                iteration=context.iteration,
-                memory_namespace=context.memory_namespace,
-                tool_runtime_config=context.event.get("tool_runtime_config")
-                if isinstance(context.event.get("tool_runtime_config"), dict)
-                else {},
-                tool_name=tool_call.name,
-                call_id=tool_call.call_id,
-                turn_id=f"{context.run_id}:turn-{context.iteration}",
-                workspace_changes=workspace_change_tracker,
-            ),
-            execution_guard=context.execution_guard,
+            **execution_kwargs,
         )
         if context.execution_guard is not None:
             context.execution_guard.assert_active()
@@ -460,8 +715,8 @@ class ToolExecutionHarness(BaseToolHarness):
                 effective_arguments=outcome.effective_arguments,
             )
         result_messages = copy_messages(batch_state.result_messages)
-        result_messages.append(
-            builder.build_tool_result_message(tool_call=tool_call, tool_result=visible_tool_result)
+        result_messages.extend(
+            builder.build_tool_result_messages(tool_call=tool_call, tool_result=visible_tool_result)
         )
         emit_loop_event(
             context.loop,
@@ -543,7 +798,20 @@ class ToolExecutionHarness(BaseToolHarness):
         response_format = context.event.get("response_format")
         batch_state = context.state.tool_batch_state.copy()
 
+        if context.state.run_status == "awaiting_interaction":
+            return None
+
         if batch_state.awaiting_human_input and batch_state.human_input_request is not None:
+            interaction_request = None
+            if (
+                context.session_id
+                and getattr(context.loop, "interaction_runtime", None) is not None
+            ):
+                interaction_request = build_human_interaction_request(
+                    state=context.state,
+                    request=batch_state.human_input_request,
+                    run_id=context.run_id,
+                )
             continuation = build_human_input_continuation(
                 request=batch_state.human_input_request,
                 payload=payload,
@@ -552,11 +820,14 @@ class ToolExecutionHarness(BaseToolHarness):
                 max_iterations=int(context.event.get("max_iterations") or 0),
                 state=context.state,
                 run_id=context.run_id,
+                interaction_request=interaction_request,
+                tool_exposure_plan=_durable_tool_exposure_plan(context),
             )
             suspend_ops = (
                 build_human_input_suspend_request(
                     batch_state.human_input_request,
                     continuation=continuation,
+                    interaction_request=interaction_request,
                 ),
             )
             return CapabilityOutcome(

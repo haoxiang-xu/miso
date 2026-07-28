@@ -12,13 +12,20 @@ from ..memory import (
     ExecutionCheckpointResumeRequiredError,
     KernelMemoryRuntime,
 )
+from ..memory.checkpoint_state import restore_resume_checkpoint_messages
 from ..memory.ownership import ensure_no_external_provider_history
 from ..execution import ExecutionGuard
 from ..kernel.loop import KernelLoop
 from ..kernel.model_io import ModelIO
 from ..kernel.replay_handle import load_provider_replay_handle
-from ..kernel.run_preparation import effective_payload_store
+from ..kernel.run_preparation import effective_payload_store, infer_model, infer_provider
 from ..kernel.types import KernelRunResult
+from ..interaction.durable import (
+    INTERACTION_KIND_HUMAN_INPUT,
+    InteractionIntegrityError,
+    InteractionNotPendingError,
+    InteractionReceipt,
+)
 from ..schemas import ResponseFormat
 from ..runtime import (
     CompletionPolicy,
@@ -54,7 +61,11 @@ class AgentCallContext:
     session_id: str | None = None
     memory_namespace: str | None = None
     run_id: str | None = None
+    execution_owner_id: str | None = None
+    execution_guard: ExecutionGuard | None = None
     tool_runtime_config: dict[str, Any] | None = None
+    interaction_id: str | None = None
+    submitted_by: str = "user"
 
 
 @dataclass
@@ -129,14 +140,32 @@ class PreparedAgent:
         provider: str | None = None,
         model: str | None = None,
         execution_guard: ExecutionGuard | None = None,
+        replay_plan: dict[str, Any] | None = None,
+        require_durable_plan: bool = False,
     ) -> tuple[Toolkit, list[Any]]:
         plugins = list(self.tool_runtime_plugins)
         config = ToolOptimizerConfig.coerce(self.tool_optimizer_config)
+        if replay_plan is not None and (config is None or not config.enabled):
+            raise InteractionIntegrityError(
+                "durable tool exposure replay requires the tool optimizer"
+            )
         if config is None or not config.enabled:
             return self.toolkit, plugins
+        if (
+            require_durable_plan
+            and replay_plan is None
+            and len(self.toolkit.tools) > config.trigger_tool_count
+        ):
+            raise InteractionIntegrityError(
+                "durable interaction continuation is missing its exposure plan"
+            )
 
         model_io = self.loop.model_io
         if model_io is None:
+            if replay_plan is not None:
+                raise InteractionIntegrityError(
+                    "durable tool exposure replay requires an active model runtime"
+                )
             return self.toolkit, plugins
         if execution_guard is not None:
             execution_guard.renew()
@@ -157,11 +186,119 @@ class PreparedAgent:
             callback=self.call_context.callback,
             run_id=self.call_context.run_id,
         )
-        exposed_toolkit = runtime.prepare()
+        exposed_toolkit = runtime.prepare(replay_plan=replay_plan)
         if execution_guard is not None:
             execution_guard.assert_active()
         plugins.extend(runtime.build_plugins())
         return exposed_toolkit, plugins
+
+    def _assert_fresh_run_has_no_pending_interaction(self) -> None:
+        session_id = str(self.call_context.session_id or "")
+        if self.memory_runtime is None or not session_id:
+            return
+        checkpoint = self.memory_runtime.load_execution_checkpoint(session_id)
+        if isinstance(checkpoint, dict) and isinstance(
+            checkpoint.get("interaction_ref"),
+            dict,
+        ):
+            raise ExecutionCheckpointResumeRequiredError(
+                "session is awaiting a durable interaction; resume the persisted "
+                "continuation instead of starting a fresh run"
+            )
+
+    def _preflight_durable_interaction_resume(
+        self,
+        *,
+        session_id: str,
+        checkpoint: dict[str, Any],
+        continuation: dict[str, Any],
+        response: Any,
+        submitted_by: str,
+        expected_kind: str | None,
+        execution_guard: ExecutionGuard | None,
+    ) -> None:
+        interaction_runtime = self.loop.interaction_runtime
+        interaction_ref = checkpoint.get("interaction_ref")
+        if interaction_runtime is None or not isinstance(interaction_ref, dict):
+            raise InteractionNotPendingError(
+                "execution checkpoint has no durable interaction"
+            )
+        interaction_id = str(interaction_ref.get("interaction_id") or "")
+        pending = interaction_runtime.load(
+            session_id,
+            interaction_id=interaction_id,
+            require_active=True,
+        )
+        if (
+            pending.checkpoint_id != checkpoint.get("checkpoint_id")
+            or pending.request.request_digest
+            != interaction_ref.get("request_digest")
+        ):
+            raise InteractionIntegrityError(
+                "durable interaction is not bound to the active checkpoint"
+            )
+        subject = pending.request.subject
+        if not isinstance(subject, dict):
+            raise InteractionIntegrityError(
+                "durable interaction has no runtime provider/model binding"
+            )
+        checkpoint_provider = str(checkpoint.get("provider") or "")
+        checkpoint_model = str(checkpoint.get("model") or "")
+        subject_provider = str(subject.get("provider") or "")
+        subject_model = str(subject.get("model") or "")
+        actual_provider = str(infer_provider(self.loop.model_io) or "")
+        actual_model = str(infer_model(self.loop.model_io) or "")
+        if (
+            not checkpoint_provider
+            or not checkpoint_model
+            or checkpoint_provider != subject_provider
+            or checkpoint_model != subject_model
+        ):
+            raise InteractionIntegrityError(
+                "durable interaction provider/model binding does not match its checkpoint"
+            )
+        continuation_provider = str(continuation.get("provider") or "")
+        continuation_model = str(continuation.get("model") or "")
+        if (
+            continuation_provider != checkpoint_provider
+            or continuation_model != checkpoint_model
+        ):
+            raise InteractionIntegrityError(
+                "durable interaction continuation provider/model does not match its checkpoint"
+            )
+        if (
+            actual_provider != checkpoint_provider
+            or actual_model != checkpoint_model
+        ):
+            raise InteractionIntegrityError(
+                "durable interaction provider/model binding does not match the current model"
+            )
+        if expected_kind is not None and pending.request.kind != expected_kind:
+            raise InteractionNotPendingError(
+                f"pending interaction is not a {expected_kind.replace('_', '-')} request"
+            )
+        if continuation.get("interaction_id") != pending.request.interaction_id:
+            raise InteractionIntegrityError(
+                "resume continuation does not match the durable interaction"
+            )
+        if response is None:
+            interaction_runtime.require_receipt(
+                session_id,
+                interaction_id=interaction_id,
+            )
+            return
+        interaction_runtime.record_receipt(
+            session_id,
+            interaction_id=interaction_id,
+            response=copy.deepcopy(response),
+            submitted_by=submitted_by,
+            expected_revision=pending.session_snapshot.revision,
+            execution_fence=(
+                execution_guard.fence
+                if execution_guard is not None
+                else None
+            ),
+        )
 
     def _run_once(
         self,
@@ -177,6 +314,7 @@ class PreparedAgent:
                 provider=self.spec.provider,
                 previous_response_id=previous_response_id,
             )
+        self._assert_fresh_run_has_no_pending_interaction()
         toolkit, tool_runtime_plugins = self._prepare_tool_exposure(
             messages=messages,
             payload=payload,
@@ -277,11 +415,24 @@ class PreparedAgent:
         )
 
     def _execution_scope(self):
-        execution_runtime = self.loop.execution_runtime
+        inherited_guard = self.call_context.execution_guard
         session_id = str(self.call_context.session_id or "")
+        if inherited_guard is not None:
+            if not session_id:
+                raise ValueError(
+                    "an inherited execution guard requires a non-empty session_id"
+                )
+            if inherited_guard.lease.execution_id != session_id:
+                raise ValueError(
+                    "inherited execution guard does not belong to the call session_id"
+                )
+            inherited_guard.assert_active()
+            return nullcontext(inherited_guard)
+        execution_runtime = self.loop.execution_runtime
         if execution_runtime is None or not session_id:
             return nullcontext(None)
-        return execution_runtime.scope(session_id)
+        owner_id = str(self.call_context.execution_owner_id or "").strip() or None
+        return execution_runtime.scope(session_id, owner_id=owner_id)
 
     def run(self) -> KernelRunResult:
         messages = copy.deepcopy(self.call_context.input_messages or [])
@@ -305,23 +456,182 @@ class PreparedAgent:
         with self._execution_scope() as execution_guard:
             return self._resume_human_input_under_guard(execution_guard)
 
+    def submit_interaction(self) -> InteractionReceipt:
+        session_id = str(self.call_context.session_id or "")
+        interaction_id = str(self.call_context.interaction_id or "")
+        interaction_runtime = self.loop.interaction_runtime
+        if interaction_runtime is None or not session_id or not interaction_id:
+            raise InteractionNotPendingError(
+                "submit_interaction requires a memory-backed session_id and interaction_id"
+            )
+        persisted = interaction_runtime.record_receipt(
+            session_id,
+            interaction_id=interaction_id,
+            response=copy.deepcopy(self.call_context.response),
+            submitted_by=str(self.call_context.submitted_by or "user"),
+        )
+        if persisted.receipt is None:
+            raise InteractionNotPendingError(
+                "interaction receipt was not persisted"
+            )
+        return persisted.receipt
+
+    def resume_interaction(self) -> KernelRunResult:
+        with self._execution_scope() as execution_guard:
+            provided_conversation = self.call_context.conversation
+            provided_continuation = self.call_context.continuation
+            if (provided_conversation is None) != (provided_continuation is None):
+                raise ValueError(
+                    "conversation and continuation must either both be provided or both be omitted"
+                )
+            session_id = str(self.call_context.session_id or "")
+            if self.memory_runtime is None or not session_id:
+                raise ExecutionCheckpointResumeRequiredError(
+                    "interaction resume requires a memory-backed session_id"
+                )
+            if provided_conversation is None:
+                checkpoint = self.memory_runtime.load_execution_checkpoint(session_id)
+                if not isinstance(checkpoint, dict) or not isinstance(
+                    checkpoint.get("interaction_ref"),
+                    dict,
+                ):
+                    raise ExecutionCheckpointResumeRequiredError(
+                        "session has no durable interaction checkpoint"
+                    )
+                provided_conversation = copy.deepcopy(
+                    checkpoint.get("transcript") or []
+                )
+                raw_continuation = checkpoint.get("continuation")
+                if not isinstance(raw_continuation, dict):
+                    raise ExecutionCheckpointResumeRequiredError(
+                        "durable interaction checkpoint has no continuation"
+                    )
+                provided_continuation = copy.deepcopy(raw_continuation)
+
+            checkpoint = self.memory_runtime.load_execution_checkpoint(session_id)
+            if not isinstance(checkpoint, dict):
+                raise ExecutionCheckpointResumeRequiredError(
+                    "session has no durable interaction checkpoint"
+                )
+            restore_resume_checkpoint_messages(
+                checkpoint,
+                conversation=copy.deepcopy(provided_conversation or []),
+                continuation=copy.deepcopy(provided_continuation or {}),
+            )
+            self._preflight_durable_interaction_resume(
+                session_id=session_id,
+                checkpoint=checkpoint,
+                continuation=copy.deepcopy(provided_continuation or {}),
+                response=self.call_context.response,
+                submitted_by=str(
+                    self.call_context.submitted_by or "api:resume_interaction"
+                ),
+                expected_kind=None,
+                execution_guard=execution_guard,
+            )
+
+            continuation_payload = (
+                provided_continuation.get("payload")
+                if isinstance(provided_continuation, dict)
+                else None
+            )
+            payload = self._merge_payloads(
+                self.default_payload,
+                continuation_payload
+                if isinstance(continuation_payload, dict)
+                else None,
+                self.call_context.payload,
+            )
+            conversation = copy.deepcopy(provided_conversation or [])
+            is_durable_continuation = (
+                isinstance(provided_continuation, dict)
+                and provided_continuation.get("type")
+                in {
+                    "human_input_continuation",
+                    "tool_approval_continuation",
+                    "max_budget_continuation",
+                }
+            )
+            plan_present = bool(
+                is_durable_continuation
+                and isinstance(provided_continuation, dict)
+                and "tool_exposure_plan" in provided_continuation
+            )
+            raw_exposure_plan = (
+                provided_continuation.get("tool_exposure_plan")
+                if plan_present and isinstance(provided_continuation, dict)
+                else None
+            )
+            if plan_present and not isinstance(raw_exposure_plan, dict):
+                raise InteractionIntegrityError(
+                    "durable interaction exposure plan must be an object"
+                )
+            toolkit, tool_runtime_plugins = self._prepare_tool_exposure(
+                messages=conversation,
+                payload=payload,
+                provider=(
+                    str(provided_continuation.get("provider") or "")
+                    if isinstance(provided_continuation, dict)
+                    else None
+                ),
+                model=(
+                    str(provided_continuation.get("model") or "")
+                    if isinstance(provided_continuation, dict)
+                    else None
+                ),
+                execution_guard=execution_guard,
+                replay_plan=(
+                    copy.deepcopy(raw_exposure_plan)
+                    if isinstance(raw_exposure_plan, dict)
+                    else None
+                ),
+                require_durable_plan=is_durable_continuation,
+            )
+            result = self.loop.resume_interaction(
+                session_id=session_id,
+                conversation=conversation,
+                continuation=copy.deepcopy(provided_continuation or {}),
+                response=None,
+                submitted_by=str(
+                    self.call_context.submitted_by or "api:resume_interaction"
+                ),
+                payload=payload,
+                response_format=self._resolved_response_format(),
+                callback=self.call_context.callback,
+                verbose=self.call_context.verbose,
+                on_tool_confirm=self._resolved_on_tool_confirm(),
+                on_human_input=self._resolved_on_human_input(),
+                on_max_iterations=self._resolved_on_max_iterations(),
+                memory_namespace=self.call_context.memory_namespace,
+                toolkit=toolkit,
+                run_id=self.call_context.run_id,
+                tool_runtime_plugins=tool_runtime_plugins,
+                tool_runtime_config=copy.deepcopy(
+                    self.call_context.tool_runtime_config or {}
+                ),
+                _execution_guard=execution_guard,
+            )
+            return self._apply_run_hooks(result)
+
     def _resume_human_input_under_guard(
         self,
         execution_guard: ExecutionGuard | None,
     ) -> KernelRunResult:
         provided_conversation = self.call_context.conversation
         provided_continuation = self.call_context.continuation
+        checkpoint: dict[str, Any] | None = None
+        session_id = str(self.call_context.session_id or "")
         if (provided_conversation is None) != (provided_continuation is None):
             raise ValueError(
                 "conversation and continuation must either both be provided or both be omitted"
             )
+        if self.memory_runtime is not None and session_id:
+            checkpoint = self.memory_runtime.load_execution_checkpoint(session_id)
         if provided_conversation is None and provided_continuation is None:
-            session_id = str(self.call_context.session_id or "")
             if self.memory_runtime is None or not session_id:
                 raise ExecutionCheckpointResumeRequiredError(
                     "cold human-input resume requires a memory-backed session_id"
                 )
-            checkpoint = self.memory_runtime.load_execution_checkpoint(session_id)
             if (
                 not isinstance(checkpoint, dict)
                 or checkpoint.get("status") != "awaiting_human_input"
@@ -337,12 +647,55 @@ class PreparedAgent:
                 )
             provided_continuation = copy.deepcopy(raw_continuation)
 
+        response_for_loop = copy.deepcopy(self.call_context.response)
+        if isinstance(checkpoint, dict):
+            restore_resume_checkpoint_messages(
+                checkpoint,
+                conversation=copy.deepcopy(provided_conversation or []),
+                continuation=copy.deepcopy(provided_continuation or {}),
+            )
+            if isinstance(checkpoint.get("interaction_ref"), dict):
+                self._preflight_durable_interaction_resume(
+                    session_id=session_id,
+                    checkpoint=checkpoint,
+                    continuation=copy.deepcopy(provided_continuation or {}),
+                    response=self.call_context.response,
+                    submitted_by="api:resume_human_input",
+                    expected_kind=INTERACTION_KIND_HUMAN_INPUT,
+                    execution_guard=execution_guard,
+                )
+                response_for_loop = None
+        if response_for_loop is None and not (
+            isinstance(checkpoint, dict)
+            and isinstance(checkpoint.get("interaction_ref"), dict)
+        ):
+            raise InteractionNotPendingError(
+                "human-input resume requires an explicit response"
+            )
+
         continuation_payload = None
         if isinstance(provided_continuation, dict):
             raw_payload = provided_continuation.get("payload")
             continuation_payload = raw_payload if isinstance(raw_payload, dict) else None
         conversation = copy.deepcopy(provided_conversation or [])
         payload = self._merge_payloads(self.default_payload, continuation_payload, self.call_context.payload)
+        durable_interaction = bool(
+            isinstance(checkpoint, dict)
+            and isinstance(checkpoint.get("interaction_ref"), dict)
+        )
+        plan_present = bool(
+            isinstance(provided_continuation, dict)
+            and "tool_exposure_plan" in provided_continuation
+        )
+        raw_exposure_plan = (
+            provided_continuation.get("tool_exposure_plan")
+            if plan_present and isinstance(provided_continuation, dict)
+            else None
+        )
+        if plan_present and not isinstance(raw_exposure_plan, dict):
+            raise InteractionIntegrityError(
+                "durable interaction exposure plan must be an object"
+            )
         toolkit, tool_runtime_plugins = self._prepare_tool_exposure(
             messages=conversation,
             payload=payload,
@@ -357,11 +710,17 @@ class PreparedAgent:
                 else None
             ),
             execution_guard=execution_guard,
+            replay_plan=(
+                copy.deepcopy(raw_exposure_plan)
+                if isinstance(raw_exposure_plan, dict)
+                else None
+            ),
+            require_durable_plan=durable_interaction,
         )
         result = self.loop.resume_human_input(
             conversation=conversation,
             continuation=copy.deepcopy(provided_continuation or {}),
-            response=copy.deepcopy(self.call_context.response),
+            response=response_for_loop,
             payload=payload,
             response_format=self._resolved_response_format(),
             callback=self.call_context.callback,

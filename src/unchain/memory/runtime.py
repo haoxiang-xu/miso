@@ -4,13 +4,28 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..execution import ExecutionFence, ExecutionLeaseError
+from ..execution import (
+    ExecutionCancellation,
+    ExecutionFence,
+    ExecutionLeaseError,
+)
+from ..interaction.durable import (
+    INTERACTION_JOURNAL_KEY,
+    build_interaction_receipt,
+    record_interaction_receipt,
+    validate_interaction_journal,
+    validate_interaction_request,
+)
 from .checkpoint_state import (
+    EXECUTION_CHECKPOINT_DOMAIN_KEY,
     EXECUTION_CHECKPOINT_KEY,
     ExecutionCheckpointCompatibilityError,
+    ExecutionCheckpointIntegrityError,
     ExecutionCheckpointPersistenceError,
+    apply_checkpoint_interaction_receipt,
     ensure_checkpoint_compatible,
     merge_checkpoint_transcript_with_incoming,
+    register_checkpoint_interaction_request,
     restore_fresh_checkpoint_messages,
     restore_resume_checkpoint_messages,
     transcript_digest,
@@ -27,6 +42,109 @@ from .revision import (
     save_session_snapshot,
 )
 from .stores import InMemorySessionStore, SessionStore
+
+
+_EXECUTION_CHECKPOINT_DOMAIN_SCHEMA_VERSION = 1
+
+
+@dataclass(frozen=True, slots=True)
+class _ExecutionCheckpointDomain:
+    """Exact root-attempt ownership persisted beside one checkpoint."""
+
+    checkpoint_id: str
+    execution_id: str
+    owner_id: str
+    fencing_token: int
+
+    @classmethod
+    def from_fence(
+        cls,
+        checkpoint: dict[str, Any],
+        fence: ExecutionFence,
+    ) -> "_ExecutionCheckpointDomain":
+        return cls(
+            checkpoint_id=str(checkpoint.get("checkpoint_id") or ""),
+            execution_id=fence.execution_id,
+            owner_id=fence.owner_id,
+            fencing_token=fence.fencing_token,
+        )
+
+    @classmethod
+    def from_state(
+        cls,
+        state: dict[str, Any],
+        *,
+        checkpoint: dict[str, Any],
+        session_id: str,
+    ) -> "_ExecutionCheckpointDomain | None":
+        raw = state.get(EXECUTION_CHECKPOINT_DOMAIN_KEY)
+        if raw is None:
+            return None
+        expected_fields = {
+            "schema_version",
+            "checkpoint_id",
+            "execution_id",
+            "owner_id",
+            "fencing_token",
+        }
+        if not isinstance(raw, dict) or set(raw) != expected_fields:
+            raise ExecutionCheckpointIntegrityError(
+                "execution checkpoint domain has an invalid shape"
+            )
+        if raw.get("schema_version") != _EXECUTION_CHECKPOINT_DOMAIN_SCHEMA_VERSION:
+            raise ExecutionCheckpointIntegrityError(
+                "unsupported execution checkpoint domain schema_version"
+            )
+        checkpoint_id = raw.get("checkpoint_id")
+        execution_id = raw.get("execution_id")
+        owner_id = raw.get("owner_id")
+        fencing_token = raw.get("fencing_token")
+        if (
+            not isinstance(checkpoint_id, str)
+            or not checkpoint_id
+            or checkpoint_id != checkpoint.get("checkpoint_id")
+        ):
+            raise ExecutionCheckpointIntegrityError(
+                "execution checkpoint domain is bound to a different checkpoint"
+            )
+        if not isinstance(execution_id, str) or not execution_id:
+            raise ExecutionCheckpointIntegrityError(
+                "execution checkpoint domain requires execution_id"
+            )
+        if not isinstance(owner_id, str) or not owner_id:
+            raise ExecutionCheckpointIntegrityError(
+                "execution checkpoint domain requires owner_id"
+            )
+        if (
+            isinstance(fencing_token, bool)
+            or not isinstance(fencing_token, int)
+            or fencing_token <= 0
+        ):
+            raise ExecutionCheckpointIntegrityError(
+                "execution checkpoint domain requires a positive fencing_token"
+            )
+        if not (
+            session_id == execution_id
+            or session_id.startswith(f"{execution_id}:")
+        ):
+            raise ExecutionCheckpointIntegrityError(
+                "execution checkpoint domain cannot own the target session"
+            )
+        return cls(
+            checkpoint_id=checkpoint_id,
+            execution_id=execution_id,
+            owner_id=owner_id,
+            fencing_token=fencing_token,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": _EXECUTION_CHECKPOINT_DOMAIN_SCHEMA_VERSION,
+            "checkpoint_id": self.checkpoint_id,
+            "execution_id": self.execution_id,
+            "owner_id": self.owner_id,
+            "fencing_token": self.fencing_token,
+        }
 
 
 def _deepcopy_messages(messages: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -226,10 +344,277 @@ class KernelMemoryRuntime:
             execution_fence=execution_fence,
         )
 
+    def _checkpoint_domain(
+        self,
+        session_id: str,
+        session_snapshot: SessionSnapshot,
+    ) -> tuple[dict[str, Any], _ExecutionCheckpointDomain] | None:
+        checkpoint_raw = session_snapshot.state.get(EXECUTION_CHECKPOINT_KEY)
+        if not isinstance(checkpoint_raw, dict):
+            return None
+        checkpoint = validate_execution_checkpoint(checkpoint_raw)
+        domain = _ExecutionCheckpointDomain.from_state(
+            session_snapshot.state,
+            checkpoint=checkpoint,
+            session_id=session_id,
+        )
+        if domain is None:
+            return None
+        return checkpoint, domain
+
+    def reconcile_cancelled_execution_checkpoint(
+        self,
+        session_id: str,
+        *,
+        submitted_by: str = "runtime:cancelled_execution_tree",
+    ) -> tuple[SessionSnapshot, ExecutionCancellation | None]:
+        """Terminalize a wait whose exact owning attempt was cancelled.
+
+        Hosts normally terminalize the root wait in their Stop transaction.
+        This reconciliation is the crash-safe fallback for root and descendant
+        checkpoints.  The persisted owner binding and cancellation-aware CAS
+        ensure that cleanup can never consume a newer attempt's checkpoint.
+        """
+
+        if not session_id:
+            return SessionSnapshot(state={}, revision=None), None
+
+        last_conflict: SessionRevisionConflictError | None = None
+        for _ in range(16):
+            session_snapshot = self.load_session_snapshot(session_id)
+            bound = self._checkpoint_domain(session_id, session_snapshot)
+            if bound is None:
+                return session_snapshot, None
+            checkpoint, domain = bound
+
+            load_cancellation = getattr(
+                self.store,
+                "load_execution_cancellation",
+                None,
+            )
+            save_cancelled = getattr(
+                self.store,
+                "save_if_revision_and_execution_cancelled",
+                None,
+            )
+            if not callable(load_cancellation) or not callable(save_cancelled):
+                raise TypeError(
+                    "execution checkpoint cancellation requires atomic "
+                    "cancellation-aware session storage"
+                )
+
+            cancellation = load_cancellation(
+                domain.execution_id,
+                domain.owner_id,
+            )
+            if cancellation is None:
+                return session_snapshot, None
+            if not isinstance(cancellation, ExecutionCancellation):
+                raise ExecutionLeaseError(
+                    "execution cancellation store returned an invalid tombstone",
+                    execution_id=domain.execution_id,
+                    owner_id=domain.owner_id,
+                    fencing_token=domain.fencing_token,
+                )
+            if (
+                cancellation.execution_id != domain.execution_id
+                or cancellation.owner_id != domain.owner_id
+            ):
+                raise ExecutionLeaseError(
+                    "execution cancellation store returned a different owner",
+                    execution_id=domain.execution_id,
+                    owner_id=domain.owner_id,
+                    fencing_token=domain.fencing_token,
+                )
+
+            state = copy.deepcopy(session_snapshot.state)
+            interaction_ref = checkpoint.get("interaction_ref")
+            if isinstance(interaction_ref, dict):
+                journal = validate_interaction_journal(
+                    state.get(INTERACTION_JOURNAL_KEY)
+                )
+                interaction_id = str(
+                    interaction_ref.get("interaction_id") or ""
+                )
+                entry = journal["entries"].get(interaction_id)
+                if (
+                    not isinstance(entry, dict)
+                    or entry.get("checkpoint_id") != checkpoint.get("checkpoint_id")
+                ):
+                    raise ExecutionCheckpointIntegrityError(
+                        "cancelled checkpoint is missing its interaction"
+                    )
+                if entry.get("receipt") is None:
+                    request = validate_interaction_request(entry.get("request"))
+                    cancellation_receipt = build_interaction_receipt(
+                        request,
+                        {
+                            "cancelled": True,
+                            "reason": (
+                                cancellation.reason or "execution_cancelled"
+                            ),
+                        },
+                        submitted_by=submitted_by,
+                        submitted_at_ms=cancellation.requested_at_ms,
+                    )
+                    journal = record_interaction_receipt(
+                        journal,
+                        cancellation_receipt,
+                    )
+                    state[INTERACTION_JOURNAL_KEY] = journal
+                apply_checkpoint_interaction_receipt(
+                    state,
+                    checkpoint=checkpoint,
+                    applied_checkpoint_id=(
+                        f"cancelled:{checkpoint.get('checkpoint_id')}"
+                    ),
+                )
+
+            state.pop(EXECUTION_CHECKPOINT_KEY, None)
+            state.pop(EXECUTION_CHECKPOINT_DOMAIN_KEY, None)
+            expected_revision = session_snapshot.revision
+            if expected_revision is None:
+                raise TypeError(
+                    "execution checkpoint cancellation requires revisioned storage"
+                )
+            try:
+                next_revision = save_cancelled(
+                    session_id,
+                    state,
+                    expected_revision,
+                    execution_id=domain.execution_id,
+                    owner_id=domain.owner_id,
+                )
+            except SessionRevisionConflictError as exc:
+                last_conflict = exc
+                continue
+            if (
+                isinstance(next_revision, bool)
+                or not isinstance(next_revision, int)
+                or next_revision <= expected_revision
+            ):
+                raise ExecutionCheckpointPersistenceError(
+                    "cancellation-aware checkpoint CAS returned an invalid revision"
+                )
+            persisted = SessionSnapshot(
+                state=copy.deepcopy(state),
+                revision=next_revision,
+            )
+            return persisted, cancellation
+
+        if last_conflict is not None:
+            raise last_conflict
+        raise ExecutionCheckpointPersistenceError(
+            "cancelled checkpoint reconciliation did not converge"
+        )
+
+    def resolve_interaction_execution_fence(
+        self,
+        session_id: str,
+        *,
+        checkpoint_id: str,
+        session_snapshot: SessionSnapshot,
+        execution_fence: ExecutionFence | None,
+    ) -> ExecutionFence | None:
+        """Validate any live fence supplied for an interaction receipt."""
+
+        bound = self._checkpoint_domain(session_id, session_snapshot)
+        if bound is None:
+            return execution_fence
+        checkpoint, domain = bound
+        if checkpoint.get("checkpoint_id") != checkpoint_id:
+            raise ExecutionCheckpointCompatibilityError(
+                "interaction receipt belongs to a different checkpoint"
+            )
+        if domain.execution_id == session_id:
+            return execution_fence
+        if execution_fence is not None:
+            if (
+                execution_fence.execution_id != domain.execution_id
+                or execution_fence.owner_id != domain.owner_id
+            ):
+                raise ExecutionCheckpointCompatibilityError(
+                    "interaction receipt execution fence does not match its checkpoint"
+                )
+            return execution_fence
+        return None
+
+    def save_interaction_session_state(
+        self,
+        session_id: str,
+        state: dict[str, Any],
+        *,
+        checkpoint_id: str,
+        session_snapshot: SessionSnapshot,
+        expected_revision: int | None,
+        execution_fence: ExecutionFence | None,
+    ) -> SessionSnapshot:
+        """Persist a receipt without reopening a cancelled execution tree."""
+
+        effective_fence = self.resolve_interaction_execution_fence(
+            session_id,
+            checkpoint_id=checkpoint_id,
+            session_snapshot=session_snapshot,
+            execution_fence=execution_fence,
+        )
+        bound = self._checkpoint_domain(session_id, session_snapshot)
+        if bound is None or effective_fence is not None:
+            return self.save_session_state(
+                session_id,
+                state,
+                expected_revision=expected_revision,
+                execution_fence=effective_fence,
+            )
+
+        _, domain = bound
+        save_not_cancelled = getattr(
+            self.store,
+            "save_if_revision_and_execution_not_cancelled",
+            None,
+        )
+        if not callable(save_not_cancelled):
+            raise TypeError(
+                "descendant interaction receipt requires atomic "
+                "cancellation-aware session storage"
+            )
+        revision = (
+            expected_revision
+            if expected_revision is not None
+            else session_snapshot.revision
+        )
+        if revision is None:
+            raise TypeError(
+                "descendant interaction receipt requires revisioned session storage"
+            )
+        next_revision = save_not_cancelled(
+            session_id,
+            copy.deepcopy(state),
+            revision,
+            execution_id=domain.execution_id,
+            owner_id=domain.owner_id,
+        )
+        if (
+            isinstance(next_revision, bool)
+            or not isinstance(next_revision, int)
+            or next_revision <= revision
+        ):
+            raise ExecutionCheckpointPersistenceError(
+                "cancellation-aware receipt CAS returned an invalid revision"
+            )
+        return SessionSnapshot(
+            state=copy.deepcopy(state),
+            revision=next_revision,
+        )
+
     def load_execution_checkpoint(self, session_id: str) -> dict[str, Any] | None:
         if not session_id:
             return None
-        state = self.load_session_state(session_id)
+        session_snapshot, cancellation = (
+            self.reconcile_cancelled_execution_checkpoint(session_id)
+        )
+        if cancellation is not None:
+            return None
+        state = session_snapshot.state
         if EXECUTION_CHECKPOINT_KEY not in state:
             return None
         return validate_execution_checkpoint(state.get(EXECUTION_CHECKPOINT_KEY))
@@ -239,11 +624,13 @@ class KernelMemoryRuntime:
         session_id: str,
         checkpoint: dict[str, Any],
         *,
+        interaction_request: Any = None,
         execution_fence: ExecutionFence | None = None,
     ) -> dict[str, Any]:
         persisted, _ = self.save_execution_checkpoint_snapshot(
             session_id,
             checkpoint,
+            interaction_request=interaction_request,
             execution_fence=execution_fence,
         )
         return persisted
@@ -253,6 +640,7 @@ class KernelMemoryRuntime:
         session_id: str,
         checkpoint: dict[str, Any],
         *,
+        interaction_request: Any = None,
         expected_revision: int | None = None,
         execution_fence: ExecutionFence | None = None,
     ) -> tuple[dict[str, Any], SessionSnapshot]:
@@ -265,8 +653,18 @@ class KernelMemoryRuntime:
             raise ExecutionCheckpointCompatibilityError(
                 "execution checkpoint session_id does not match the target session"
             )
+        has_interaction_ref = isinstance(validated.get("interaction_ref"), dict)
+        if has_interaction_ref and interaction_request is None:
+            raise ExecutionCheckpointCompatibilityError(
+                "checkpoint interaction_ref requires its full interaction_request"
+            )
+        if not has_interaction_ref and interaction_request is not None:
+            raise ExecutionCheckpointCompatibilityError(
+                "interaction_request requires a checkpoint interaction_ref"
+            )
         session_snapshot = self.load_session_snapshot(session_id)
         current_raw = session_snapshot.state.get(EXECUTION_CHECKPOINT_KEY)
+        current = None
         if isinstance(current_raw, dict):
             current = validate_execution_checkpoint(current_raw)
             current_revision = session_snapshot.revision
@@ -279,20 +677,98 @@ class KernelMemoryRuntime:
                 and current_revision == expected_revision + 1
                 and current.get("base_session_revision") == expected_revision
             )
-            if (
+            retry_candidate = (
                 expected_revision is not None
                 and same_checkpoint
                 and (same_revision_noop or verified_retry)
-            ):
+            )
+            if not retry_candidate:
+                _ensure_expected_revision(
+                    session_snapshot,
+                    session_id=session_id,
+                    expected_revision=expected_revision,
+                )
+        else:
+            retry_candidate = False
+            _ensure_expected_revision(
+                session_snapshot,
+                session_id=session_id,
+                expected_revision=expected_revision,
+            )
+
+        state = copy.deepcopy(session_snapshot.state)
+        if has_interaction_ref:
+            register_checkpoint_interaction_request(
+                state,
+                checkpoint=validated,
+                interaction_request=interaction_request,
+            )
+        elif (
+            isinstance(current, dict)
+            and isinstance(current.get("interaction_ref"), dict)
+        ):
+            apply_checkpoint_interaction_receipt(
+                state,
+                checkpoint=current,
+                applied_checkpoint_id=str(validated.get("checkpoint_id") or ""),
+            )
+        state[EXECUTION_CHECKPOINT_KEY] = copy.deepcopy(validated)
+        if execution_fence is not None:
+            cancellation_aware = all(
+                callable(getattr(self.store, method, None))
+                for method in (
+                    "load_execution_cancellation",
+                    "save_if_revision_and_execution_not_cancelled",
+                    "save_if_revision_and_execution_cancelled",
+                )
+            )
+            if session_id != execution_fence.execution_id and not cancellation_aware:
+                raise TypeError(
+                    "descendant execution checkpoint requires atomic "
+                    "cancellation-aware session storage"
+                )
+            if cancellation_aware:
+                next_domain = _ExecutionCheckpointDomain.from_fence(
+                    validated,
+                    execution_fence,
+                )
+                existing_domain = (
+                    _ExecutionCheckpointDomain.from_state(
+                        session_snapshot.state,
+                        checkpoint=current,
+                        session_id=session_id,
+                    )
+                    if retry_candidate and isinstance(current, dict)
+                    else None
+                )
+                if (
+                    existing_domain is not None
+                    and existing_domain.execution_id == next_domain.execution_id
+                    and existing_domain.owner_id == next_domain.owner_id
+                ):
+                    state[EXECUTION_CHECKPOINT_DOMAIN_KEY] = (
+                        existing_domain.to_dict()
+                    )
+                elif (
+                    retry_candidate
+                    and EXECUTION_CHECKPOINT_DOMAIN_KEY
+                    not in session_snapshot.state
+                ):
+                    state.pop(EXECUTION_CHECKPOINT_DOMAIN_KEY, None)
+                else:
+                    state[EXECUTION_CHECKPOINT_DOMAIN_KEY] = next_domain.to_dict()
+            else:
+                state.pop(EXECUTION_CHECKPOINT_DOMAIN_KEY, None)
+        else:
+            state.pop(EXECUTION_CHECKPOINT_DOMAIN_KEY, None)
+        if retry_candidate:
+            if state != session_snapshot.state:
+                raise ExecutionCheckpointIntegrityError(
+                    "checkpoint retry found a non-atomic interaction journal state"
+                )
+            if isinstance(current, dict):
                 _verify_execution_fence(self.store, execution_fence)
                 return current, session_snapshot
-        _ensure_expected_revision(
-            session_snapshot,
-            session_id=session_id,
-            expected_revision=expected_revision,
-        )
-        state = copy.deepcopy(session_snapshot.state)
-        state[EXECUTION_CHECKPOINT_KEY] = copy.deepcopy(validated)
         try:
             persisted_snapshot = save_session_snapshot(
                 self.store,
@@ -340,6 +816,27 @@ class KernelMemoryRuntime:
             raise ExecutionCheckpointPersistenceError(
                 "execution checkpoint write verification failed"
             )
+        if has_interaction_ref:
+            try:
+                request = validate_interaction_request(interaction_request)
+                journal = validate_interaction_journal(
+                    verified_snapshot.state.get(INTERACTION_JOURNAL_KEY)
+                )
+                entry = journal["entries"].get(request.interaction_id)
+            except Exception as exc:
+                raise ExecutionCheckpointPersistenceError(
+                    f"persisted interaction journal could not be verified: {exc}"
+                ) from exc
+            if (
+                journal.get("active_id") != request.interaction_id
+                or not isinstance(entry, dict)
+                or entry.get("request") != request.to_dict()
+                or entry.get("checkpoint_id") != validated.get("checkpoint_id")
+                or entry.get("application") is not None
+            ):
+                raise ExecutionCheckpointPersistenceError(
+                    "interaction journal write verification failed"
+                )
         return persisted, persisted_snapshot
 
     def clear_execution_checkpoint(
@@ -384,7 +881,16 @@ class KernelMemoryRuntime:
             raise ExecutionCheckpointCompatibilityError(
                 "refusing to clear a different execution checkpoint"
             )
+        interaction_applied = apply_checkpoint_interaction_receipt(
+            state,
+            checkpoint=current,
+            applied_checkpoint_id=str(current.get("checkpoint_id") or ""),
+        )
+        interaction_id = str(
+            (current.get("interaction_ref") or {}).get("interaction_id") or ""
+        )
         state.pop(EXECUTION_CHECKPOINT_KEY, None)
+        state.pop(EXECUTION_CHECKPOINT_DOMAIN_KEY, None)
         try:
             persisted_snapshot = save_session_snapshot(
                 self.store,
@@ -418,6 +924,24 @@ class KernelMemoryRuntime:
             raise ExecutionCheckpointPersistenceError(
                 "execution checkpoint clear verification failed"
             )
+        if interaction_applied:
+            try:
+                journal = validate_interaction_journal(
+                    verified_snapshot.state.get(INTERACTION_JOURNAL_KEY)
+                )
+                entry = journal["entries"].get(interaction_id)
+            except Exception as exc:
+                raise ExecutionCheckpointPersistenceError(
+                    f"cleared interaction journal could not be verified: {exc}"
+                ) from exc
+            if (
+                journal.get("active_id") is not None
+                or not isinstance(entry, dict)
+                or not isinstance(entry.get("application"), dict)
+            ):
+                raise ExecutionCheckpointPersistenceError(
+                    "interaction receipt application verification failed"
+                )
         return True, persisted_snapshot
 
     def bootstrap_session(
@@ -442,7 +966,9 @@ class KernelMemoryRuntime:
             self.last_prepare_info = copy.deepcopy(prepare_info)
             return _deepcopy_messages(incoming_messages), {}, prepare_info, ""
 
-        session_snapshot = self.load_session_snapshot(session_id)
+        session_snapshot, _ = self.reconcile_cancelled_execution_checkpoint(
+            session_id
+        )
         loaded_state = copy.deepcopy(session_snapshot.state)
         history = loaded_state.get("messages", [])
         if not isinstance(history, list):

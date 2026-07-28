@@ -345,7 +345,7 @@ Full bilingual docs with skills chapters and API reference:
 
 **Skills Chapters**: Architecture Overview, Agent & Subagents, Runtime Engine, Tool System Patterns, Memory System, Creating Toolkits, Testing Conventions
 
-**API Reference**: Agents, Runtime, Tools, Toolkits, Memory, Input/Workspace/Schemas
+**API Reference**: Agents, Runtime, Interaction, Durable Jobs, Tools, Toolkits, Memory, Input/Workspace/Schemas
 
 **Appendices**: Class Index (55+ classes), Export Index, Glossary, Return Shapes
 

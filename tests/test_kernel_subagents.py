@@ -5,7 +5,7 @@ import time
 from unchain.agent import Agent, MemoryModule, PoliciesModule, SubagentModule, ToolsModule
 from unchain.kernel import ModelTurnResult, ToolCall
 from unchain.subagents import SubagentPolicy, SubagentTemplate
-from unchain.memory import MemoryManager
+from unchain.memory import InMemorySessionStore, MemoryManager
 
 
 def _openai_tool_turn(*, call_id: str, name: str, arguments: dict) -> ModelTurnResult:
@@ -414,7 +414,7 @@ def test_subagent_worker_batch_rejects_non_parallel_safe_template():
 
     def _join_turn(request):
         payload = json.loads(request.messages[-1]["output"])
-        assert payload["status"] == "partial_failure"
+        assert payload["status"] == "failed"
         assert "not parallel_safe" in payload["results"][0]["error"]
         return _text_turn("handled worker failure")
 
@@ -453,7 +453,140 @@ def test_subagent_worker_batch_rejects_non_parallel_safe_template():
     assert result.messages[-1]["content"] == "handled worker failure"
 
 
+def test_subagent_worker_batch_rejects_delegate_only_template_before_spawn():
+    delegate_only = Agent(
+        name="delegate_only",
+        provider="openai",
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [_text_turn("should not run")],
+        ),
+    )
+
+    def _join_turn(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert "does not support mode='worker'" in payload["error"]
+        return _text_turn("handled unsupported worker mode")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="delegate_only",
+                        description="Serial delegate",
+                        agent=delegate_only,
+                        allowed_modes=("delegate",),
+                        parallel_safe=False,
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="call_1",
+                    name="spawn_worker_batch",
+                    arguments={
+                        "target": "delegate_only",
+                        "tasks": [{"task": "must stay serial"}],
+                    },
+                ),
+                _join_turn,
+            ],
+        ),
+    )
+
+    result = parent.run("fan out", max_iterations=2)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "handled unsupported worker mode"
+
+
+def test_subagent_worker_batch_reports_partial_failure_for_mixed_results():
+    successful_worker = Agent(
+        name="successful_worker",
+        provider="openai",
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [_text_turn("worker completed")],
+        ),
+    )
+
+    def _raise_worker_error(request):
+        raise RuntimeError("worker failed")
+
+    failing_worker = Agent(
+        name="failing_worker",
+        provider="openai",
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [_raise_worker_error],
+        ),
+    )
+
+    def _join_turn(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["status"] == "partial_failure"
+        assert [item["status"] for item in payload["results"]] == [
+            "completed",
+            "failed",
+        ]
+        return _text_turn("handled mixed results")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="successful_worker",
+                        description="Successful worker",
+                        agent=successful_worker,
+                        allowed_modes=("worker",),
+                        parallel_safe=True,
+                    ),
+                    SubagentTemplate(
+                        name="failing_worker",
+                        description="Failing worker",
+                        agent=failing_worker,
+                        allowed_modes=("worker",),
+                        parallel_safe=True,
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="call_1",
+                    name="spawn_worker_batch",
+                    arguments={
+                        "tasks": [
+                            {"target": "successful_worker", "task": "succeed"},
+                            {"target": "failing_worker", "task": "fail"},
+                        ],
+                    },
+                ),
+                _join_turn,
+            ],
+        ),
+    )
+
+    result = parent.run("fan out", max_iterations=2)
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "handled mixed results"
+
+
 def test_subagent_child_clarification_is_escalated_without_suspending_root_run():
+    store = InMemorySessionStore()
+    memory = MemoryManager(store=store)
     clarification_args = {
         "title": "Need more detail",
         "question": "Which environment?",
@@ -463,6 +596,7 @@ def test_subagent_child_clarification_is_escalated_without_suspending_root_run()
     child = Agent(
         name="clarifier",
         provider="openai",
+        modules=(MemoryModule(memory=memory),),
         model_io_factory=lambda spec, ctx: SequenceModelIO(
             "openai",
             [_openai_tool_turn(call_id="child_call", name="ask_user_question", arguments=clarification_args)],
@@ -480,6 +614,7 @@ def test_subagent_child_clarification_is_escalated_without_suspending_root_run()
         name="manager",
         provider="openai",
         modules=(
+            MemoryModule(memory=memory),
             SubagentModule(
                 templates=(
                     SubagentTemplate(
@@ -487,6 +622,7 @@ def test_subagent_child_clarification_is_escalated_without_suspending_root_run()
                         description="Clarification specialist",
                         agent=child,
                         allowed_modes=("delegate", "handoff"),
+                        memory_policy="scoped_persistent",
                     ),
                 ),
             ),
@@ -504,13 +640,99 @@ def test_subagent_child_clarification_is_escalated_without_suspending_root_run()
         ),
     )
 
-    result = parent.run("start", max_iterations=2, callback=events.append)
+    result = parent.run(
+        "start",
+        session_id="clarification-root",
+        execution_owner_id="clarification-attempt",
+        max_iterations=2,
+        callback=events.append,
+    )
 
     assert result.status == "completed"
     assert result.human_input_request is None
     assert result.messages[-1]["content"] == "parent handled clarification"
     assert any(event["type"] == "subagent_clarification_requested" for event in events)
     assert all(event["type"] != "human_input_requested" for event in events)
+
+
+def test_subagent_max_iterations_does_not_invoke_root_continuation_callback():
+    root_continuation_requests = []
+    memory = MemoryManager(store=InMemorySessionStore())
+
+    def keep_working_tool():
+        return {"status": "keep_working"}
+
+    child = Agent(
+        name="bounded-worker",
+        provider="openai",
+        modules=(
+            MemoryModule(memory=memory),
+            ToolsModule(tools=(keep_working_tool,)),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="child_step_1",
+                    name="keep_working_tool",
+                    arguments={},
+                ),
+                _openai_tool_turn(
+                    call_id="child_step_2",
+                    name="keep_working_tool",
+                    arguments={},
+                ),
+            ],
+        ),
+    )
+
+    def _after_child_budget(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["status"] == "max_iterations"
+        return _text_turn("manager handled child budget")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            MemoryModule(memory=memory),
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="bounded-worker",
+                        description="Worker with a strict iteration budget",
+                        agent=child,
+                        allowed_modes=("delegate",),
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="call_1",
+                    name="delegate_to_subagent",
+                    arguments={
+                        "target": "bounded-worker",
+                        "task": "Keep working until the child budget ends",
+                    },
+                ),
+                _after_child_budget,
+            ],
+        ),
+    )
+
+    result = parent.run(
+        "start",
+        session_id="max-budget-root",
+        max_iterations=2,
+        on_max_iterations=lambda request: root_continuation_requests.append(request),
+    )
+
+    assert result.status == "completed"
+    assert result.messages[-1]["content"] == "manager handled child budget"
+    assert root_continuation_requests == []
 
 
 def test_subagent_policy_limits_are_enforced_as_tool_errors():

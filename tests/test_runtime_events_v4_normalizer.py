@@ -104,6 +104,106 @@ def test_v4_normalizes_human_input_to_choice_interaction():
     assert events[0].payload["config"]["selection_mode"] == "single"
 
 
+def test_v4_preserves_durable_request_on_legacy_human_event() -> None:
+    durable_request = {
+        "interaction_id": "interaction-human-1",
+        "kind": "human_input",
+        "request_digest": "digest-human-1",
+    }
+    events = normalize_raw_event(
+        {
+            "type": "human_input_requested",
+            "run_id": "run-root",
+            "iteration": 3,
+            "interaction_id": "interaction-human-1",
+            "interaction_request": durable_request,
+            "request_id": "call-user",
+            "kind": "selector",
+            "title": "Choose",
+            "question": "Pick one",
+            "selection_mode": "single",
+            "options": [{"label": "A", "value": "a"}],
+        },
+        context=_context(),
+    )
+
+    assert events[0].links.interaction_id == "interaction-human-1"
+    assert events[0].payload["interaction_kind"] == "human_input"
+    assert events[0].payload["request"] == durable_request
+
+
+def test_v4_normalizes_durable_tool_interaction_request() -> None:
+    durable_request = {
+        "schema_version": 1,
+        "interaction_id": "interaction-tool-1",
+        "kind": "tool_approval",
+        "request_digest": "digest-tool-1",
+        "schema_digest": "schema-tool-1",
+        "payload": {
+            "type": "tool_confirmation_request",
+            "tool_name": "write_file",
+            "call_id": "call-1",
+            "arguments": {"path": "a.py"},
+            "description": "Write a.py",
+        },
+    }
+
+    events = normalize_raw_event(
+        {
+            "type": "interaction_requested",
+            "run_id": "run-root",
+            "iteration": 2,
+            "interaction_request": durable_request,
+        },
+        context=_context(),
+    )
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.type == "interaction.requested"
+    assert event.links.interaction_id == "interaction-tool-1"
+    assert event.links.tool_call_id == "call-1"
+    assert event.payload["interaction_id"] == "interaction-tool-1"
+    assert event.payload["interaction_kind"] == "tool_approval"
+    assert event.payload["renderer"] == "confirmation"
+    assert event.payload["target"]["tool_name"] == "write_file"
+    assert event.payload["request"] == durable_request
+
+
+def test_v4_normalizes_durable_max_budget_interaction_request() -> None:
+    durable_request = {
+        "schema_version": 1,
+        "interaction_id": "interaction-max-1",
+        "kind": "max_budget",
+        "request_digest": "digest-max-1",
+        "schema_digest": "schema-max-1",
+        "payload": {
+            "effective_max": 6,
+            "suggested_extra_iterations": 6,
+            "decision": {"iteration": 6, "max_iterations": 6},
+        },
+    }
+
+    events = normalize_raw_event(
+        {
+            "type": "interaction_requested",
+            "run_id": "run-root",
+            "iteration": 6,
+            "interaction_request": durable_request,
+        },
+        context=_context(),
+    )
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.type == "interaction.requested"
+    assert event.links.interaction_id == "interaction-max-1"
+    assert event.payload["kind"] == "continuation"
+    assert event.payload["interaction_kind"] == "max_budget"
+    assert event.payload["config"]["effective_max"] == 6
+    assert event.payload["request"] == durable_request
+
+
 def test_v4_normalizes_tool_denied_to_interaction_resolved():
     events = normalize_raw_event(
         {

@@ -11,15 +11,21 @@ from ..execution import ExecutionLeaseError
 from ..kernel.model_io import ModelIO, ModelTurnRequest
 from ..kernel.types import ModelTurnResult, ToolCall
 from ..schemas import ResponseFormat
-from .confirmation import execute_confirmable_tool_call
+from .confirmation import execute_confirmable_tool_call, prepare_tool_confirmation
+from ..interaction.durable import InteractionIntegrityError, strict_json_digest
+from ..interaction.requests import (
+    build_tool_approval_interaction_request,
+    ensure_interaction_binding_matches,
+)
 from .execution import (
     _canonical_artifacts_for_tool_result,
+    _durable_tool_runtime_subject,
     _emit_artifact_events,
     _workspace_change_state_update,
     _workspace_change_tracker,
 )
 from .models import ToolExecutionContext, ToolPromptSpec
-from .runtime import ToolRuntimeOutcome
+from .runtime import ToolRuntimeOutcome, run_tool_runtime_plugins
 from .tool import Tool
 from .toolkit import Toolkit
 
@@ -34,6 +40,7 @@ META_TOOL_NAMES = (
     TOOL_LOAD_NAME,
     TOOL_EXECUTE_DEFERRED_NAME,
 )
+TOOL_EXPOSURE_PLAN_SCHEMA_VERSION = 1
 
 
 def _unique_names(names: list[str] | tuple[str, ...]) -> list[str]:
@@ -143,6 +150,16 @@ class ExposureToolRecord:
         return payload
 
 
+@dataclass(frozen=True)
+class _NestedToolRuntimeContext:
+    parent: Any
+    toolkit: Toolkit
+    tool_runtime_plugins: list[Any]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.parent, name)
+
+
 class DeferredToolExecutionPlugin:
     def __init__(self, runtime: "ToolExposureRuntime") -> None:
         self.runtime = runtime
@@ -150,6 +167,75 @@ class DeferredToolExecutionPlugin:
     def can_handle(self, *, tool_call: ToolCall, context: Any) -> bool:
         del context
         return tool_call.name == TOOL_EXECUTE_DEFERRED_NAME
+
+    def durable_exposure_plan(self) -> dict[str, Any]:
+        """Return the selector plan that must be replayed after a cold pause."""
+
+        return self.runtime.durable_plan_snapshot()
+
+    def _nested_runtime_context(self, context: Any) -> _NestedToolRuntimeContext:
+        return _NestedToolRuntimeContext(
+            parent=context,
+            toolkit=self.runtime.full_toolkit,
+            tool_runtime_plugins=[
+                plugin
+                for plugin in getattr(context, "tool_runtime_plugins", [])
+                if plugin is not self
+            ],
+        )
+
+    @staticmethod
+    def _outer_binding(tool_call: ToolCall) -> dict[str, Any]:
+        return {
+            "outer_tool_name": tool_call.name,
+            "outer_call_id": tool_call.call_id,
+            "outer_arguments_digest": strict_json_digest(tool_call.arguments),
+        }
+
+    def prepare_durable_confirmation(
+        self,
+        *,
+        tool_call: ToolCall,
+        context: Any,
+    ) -> dict[str, Any] | None:
+        payload = self.runtime.parse_execute_deferred_arguments(tool_call.arguments)
+        if "error" in payload:
+            return None
+        target_name = str(payload.get("tool_name") or "").strip()
+        if target_name not in self.runtime.full_toolkit.tools or target_name in META_TOOL_NAMES:
+            return None
+        target_call = ToolCall(
+            call_id=tool_call.call_id,
+            name=target_name,
+            arguments=payload.get("arguments"),
+        )
+        execution_context = ToolExecutionContext(
+            session_id=context.session_id,
+            run_id=context.run_id,
+            provider=context.provider,
+            model=context.model,
+            iteration=context.iteration,
+            memory_namespace=context.memory_namespace,
+            tool_runtime_config=context.event.get("tool_runtime_config")
+            if isinstance(context.event.get("tool_runtime_config"), dict)
+            else {},
+            tool_name=target_name,
+            call_id=tool_call.call_id,
+            turn_id=f"{context.run_id}:turn-{context.iteration}",
+        )
+        preparation = prepare_tool_confirmation(
+            toolkit=self.runtime.full_toolkit,
+            tool_call=target_call,
+            execution_context=execution_context,
+            execution_guard=context.execution_guard,
+        )
+        return {
+            "tool_call": target_call,
+            "toolkit": self.runtime.full_toolkit,
+            "preparation": preparation,
+            "extra_subject": self._outer_binding(tool_call),
+            "runtime_context": self._nested_runtime_context(context),
+        }
 
     def execute(self, *, tool_call: ToolCall, context: Any) -> ToolRuntimeOutcome:
         payload = self.runtime.parse_execute_deferred_arguments(tool_call.arguments)
@@ -185,31 +271,95 @@ class DeferredToolExecutionPlugin:
             if workspace_tracker is not None
             else None
         )
-        outcome = execute_confirmable_tool_call(
+        execution_context = ToolExecutionContext(
+            session_id=context.session_id,
+            run_id=context.run_id,
+            provider=context.provider,
+            model=context.model,
+            iteration=context.iteration,
+            memory_namespace=context.memory_namespace,
+            tool_runtime_config=context.event.get("tool_runtime_config")
+            if isinstance(context.event.get("tool_runtime_config"), dict)
+            else {},
+            tool_name=target_name,
+            call_id=tool_call.call_id,
+            turn_id=f"{context.run_id}:turn-{context.iteration}",
+            workspace_changes=workspace_tracker,
+        )
+        preparation = prepare_tool_confirmation(
             toolkit=self.runtime.full_toolkit,
             tool_call=target_tool_call,
-            on_tool_confirm=on_tool_confirm,
-            loop=context.loop,
-            callback=context.callback,
-            run_id=context.run_id,
-            iteration=context.iteration,
-            execution_context=ToolExecutionContext(
-                session_id=context.session_id,
-                run_id=context.run_id,
-                provider=context.provider,
-                model=context.model,
-                iteration=context.iteration,
-                memory_namespace=context.memory_namespace,
-                tool_runtime_config=context.event.get("tool_runtime_config")
-                if isinstance(context.event.get("tool_runtime_config"), dict)
-                else {},
-                tool_name=target_name,
-                call_id=tool_call.call_id,
-                turn_id=f"{context.run_id}:turn-{context.iteration}",
-                workspace_changes=workspace_tracker,
-            ),
+            execution_context=execution_context,
             execution_guard=context.execution_guard,
         )
+        stored_interaction_request = (
+            context.raw_event.get("interaction_request")
+            if hasattr(context, "raw_event")
+            else None
+        )
+        interaction_response_supplied = bool(
+            hasattr(context, "raw_event")
+            and "interaction_response" in context.raw_event
+        )
+        execution_kwargs: dict[str, Any] = {
+            "toolkit": self.runtime.full_toolkit,
+            "tool_call": target_tool_call,
+            "on_tool_confirm": on_tool_confirm,
+            "loop": context.loop,
+            "callback": context.callback,
+            "run_id": context.run_id,
+            "iteration": context.iteration,
+            "execution_context": execution_context,
+            "execution_guard": context.execution_guard,
+            "prepared_confirmation": preparation,
+        }
+        if isinstance(stored_interaction_request, dict):
+            if not preparation.needs_confirmation_response or preparation.request is None:
+                raise InteractionIntegrityError(
+                    "deferred tool confirmation policy changed while approval was pending"
+                )
+            current_request = build_tool_approval_interaction_request(
+                state=context.state,
+                toolkit=self.runtime.full_toolkit,
+                tool_call=target_tool_call,
+                confirmation_request=preparation.request,
+                run_id=context.run_id,
+                source_request=stored_interaction_request,
+                extra_subject=_durable_tool_runtime_subject(
+                    self._nested_runtime_context(context),
+                    target_tool_call,
+                    extra_subject=self._outer_binding(tool_call),
+                ),
+            )
+            ensure_interaction_binding_matches(
+                stored_interaction_request,
+                current_request,
+            )
+            if not interaction_response_supplied:
+                raise InteractionIntegrityError(
+                    "deferred tool approval requires a durable receipt response"
+                )
+            execution_kwargs["confirmation_response"] = context.raw_event.get(
+                "interaction_response"
+            )
+        elif (
+            preparation.needs_confirmation_response
+            and context.session_id
+            and getattr(context.loop, "interaction_runtime", None) is not None
+        ):
+            raise InteractionIntegrityError(
+                "deferred tool approval must suspend before plugin execution"
+            )
+        nested_context = self._nested_runtime_context(context)
+        runtime_outcome = run_tool_runtime_plugins(
+            nested_context.tool_runtime_plugins,
+            tool_call=target_tool_call,
+            context=nested_context,
+            execution_guard=context.execution_guard,
+        )
+        if runtime_outcome is not None:
+            return runtime_outcome
+        outcome = execute_confirmable_tool_call(**execution_kwargs)
         state_updates: dict[str, Any] = {}
         if workspace_tracker is not None:
             workspace_tracker.record_text_snapshot_changes(
@@ -285,7 +435,14 @@ class ToolExposureRuntime:
             return []
         return [DeferredToolExecutionPlugin(self)]
 
-    def prepare(self) -> Toolkit:
+    def prepare(
+        self,
+        *,
+        replay_plan: dict[str, Any] | None = None,
+    ) -> Toolkit:
+        if replay_plan is not None:
+            return self._prepare_replay_plan(replay_plan)
+
         if not self.config.enabled:
             self.plan = ToolExposurePlan(
                 direct_tool_names=list(self.full_toolkit.tools),
@@ -320,6 +477,164 @@ class ToolExposureRuntime:
             fallback_reason=fallback_reason,
         )
         self.exposed_toolkit = self._build_exposed_toolkit(direct_original)
+        return self.exposed_toolkit
+
+    def _catalog_manifest(self) -> dict[str, Any]:
+        tools: list[dict[str, Any]] = []
+        for name, tool_obj in self.full_toolkit.tools.items():
+            if name in META_TOOL_NAMES:
+                continue
+            prompt_spec = getattr(tool_obj, "prompt_spec", None)
+            tools.append(
+                {
+                    "name": name,
+                    "provider_schema": tool_obj.to_provider_json(self.provider),
+                    "always_load": bool(getattr(tool_obj, "always_load", False)),
+                    "defer_by_default": bool(
+                        getattr(tool_obj, "defer_by_default", False)
+                    ),
+                    "search_hint": str(getattr(tool_obj, "search_hint", "") or ""),
+                    "toolkit": str(getattr(tool_obj, "toolkit_id", "") or "runtime"),
+                    "server": str(getattr(tool_obj, "server", "") or ""),
+                    "category": str(getattr(tool_obj, "category", "") or "local"),
+                    "prompt_spec": (
+                        {
+                            "purpose": str(getattr(prompt_spec, "purpose", "") or ""),
+                            "when_to_use": list(
+                                getattr(prompt_spec, "when_to_use", ()) or ()
+                            ),
+                            "when_not_to_use": list(
+                                getattr(prompt_spec, "when_not_to_use", ()) or ()
+                            ),
+                            "examples": list(
+                                getattr(prompt_spec, "examples", ()) or ()
+                            ),
+                            "advanced_tips": list(
+                                getattr(prompt_spec, "advanced_tips", ()) or ()
+                            ),
+                        }
+                        if prompt_spec is not None
+                        else None
+                    ),
+                }
+            )
+        return {
+            "provider": self.provider,
+            "prompt_sections": list(self.full_toolkit.prompt_sections),
+            "tools": tools,
+        }
+
+    def _catalog_digest(self) -> str:
+        return strict_json_digest(self._catalog_manifest())
+
+    @staticmethod
+    def _plan_name_list(raw: Any, *, field_name: str) -> list[str]:
+        if not isinstance(raw, list) or any(
+            not isinstance(item, str) or not item.strip() for item in raw
+        ):
+            raise InteractionIntegrityError(
+                f"tool exposure replay {field_name} must be a list of non-empty strings"
+            )
+        names = [item.strip() for item in raw]
+        if len(names) != len(set(names)):
+            raise InteractionIntegrityError(
+                f"tool exposure replay {field_name} contains duplicate names"
+            )
+        return names
+
+    def durable_plan_snapshot(self) -> dict[str, Any]:
+        if not self._selector_used:
+            raise InteractionIntegrityError(
+                "tool exposure plan is unavailable because the selector was not active"
+            )
+        direct_original = [
+            name
+            for name in self.plan.direct_tool_names
+            if name not in META_TOOL_NAMES
+        ]
+        return {
+            "schema_version": TOOL_EXPOSURE_PLAN_SCHEMA_VERSION,
+            "provider": self.provider,
+            "catalog_digest": self._catalog_digest(),
+            "direct_tool_names": direct_original,
+            "deferred_tool_names": list(self.plan.deferred_tool_names),
+            "loaded_tool_names": list(self.plan.loaded_tool_names),
+        }
+
+    def _prepare_replay_plan(self, raw: dict[str, Any]) -> Toolkit:
+        if not self.config.enabled:
+            raise InteractionIntegrityError(
+                "tool exposure replay requires an enabled tool optimizer"
+            )
+        expected_fields = {
+            "schema_version",
+            "provider",
+            "catalog_digest",
+            "direct_tool_names",
+            "deferred_tool_names",
+            "loaded_tool_names",
+        }
+        if not isinstance(raw, dict) or set(raw) != expected_fields:
+            raise InteractionIntegrityError(
+                "tool exposure replay plan does not match schema version 1"
+            )
+        if raw.get("schema_version") != TOOL_EXPOSURE_PLAN_SCHEMA_VERSION:
+            raise InteractionIntegrityError(
+                "unsupported tool exposure replay plan schema_version"
+            )
+        if raw.get("provider") != self.provider:
+            raise InteractionIntegrityError(
+                "tool exposure replay provider does not match the active runtime"
+            )
+        catalog_digest = raw.get("catalog_digest")
+        if (
+            not isinstance(catalog_digest, str)
+            or not catalog_digest
+            or catalog_digest != self._catalog_digest()
+        ):
+            raise InteractionIntegrityError(
+                "tool exposure replay catalog digest does not match the active toolkit"
+            )
+        direct_names = self._plan_name_list(
+            raw.get("direct_tool_names"),
+            field_name="direct_tool_names",
+        )
+        deferred_names = self._plan_name_list(
+            raw.get("deferred_tool_names"),
+            field_name="deferred_tool_names",
+        )
+        loaded_names = self._plan_name_list(
+            raw.get("loaded_tool_names"),
+            field_name="loaded_tool_names",
+        )
+        full_names = [
+            name
+            for name in self.full_toolkit.tools
+            if name not in META_TOOL_NAMES
+        ]
+        direct_set = set(direct_names)
+        deferred_set = set(deferred_names)
+        full_set = set(full_names)
+        if direct_set & deferred_set or direct_set | deferred_set != full_set:
+            raise InteractionIntegrityError(
+                "tool exposure replay direct/deferred names must exactly partition the active toolkit"
+            )
+        if not set(loaded_names).issubset(direct_set):
+            raise InteractionIntegrityError(
+                "tool exposure replay loaded names must be a subset of direct names"
+            )
+
+        self._selector_used = True
+        self._records_by_name = self._build_records()
+        self._loaded_names = list(loaded_names)
+        self.plan = ToolExposurePlan(
+            direct_tool_names=[*direct_names, *META_TOOL_NAMES],
+            deferred_tool_names=list(deferred_names),
+            loaded_tool_names=list(loaded_names),
+            selector_status="replayed",
+            fallback_reason="",
+        )
+        self.exposed_toolkit = self._build_exposed_toolkit(direct_names)
         return self.exposed_toolkit
 
     def _build_records(self) -> dict[str, ExposureToolRecord]:

@@ -7,6 +7,7 @@ from typing import Any, Callable
 from openai import OpenAI
 
 from .base import ModelTurnRequest
+from .context_assembler import _openai_computer_call_semantic
 from .native import _NativeModelIOBase, _translate_content_blocks_for_openai
 from ..kernel.provider_replay import (
     ProviderReplayFrameError,
@@ -240,6 +241,24 @@ class OpenAIModelIO(_NativeModelIOBase):
                     "arguments": copy.deepcopy(item.get("arguments", "{}")),
                 })
                 continue
+            if item_type == "computer_call":
+                semantic_call = _openai_computer_call_semantic(item)
+                call_id = semantic_call["call_id"]
+                actions = semantic_call["actions"]
+                arguments = {
+                    "provider": "openai",
+                    "protocol": "openai.responses.computer.v1",
+                    "actions": copy.deepcopy(actions),
+                }
+                tool_calls.append(
+                    ToolCall(
+                        call_id=str(call_id),
+                        name="computer",
+                        arguments=arguments,
+                    )
+                )
+                assistant_messages.append(semantic_call)
+                continue
             if item_type == "message":
                 text = self._extract_openai_message_text(item)
                 if text:
@@ -320,13 +339,19 @@ class OpenAIModelIO(_NativeModelIOBase):
                 normalized.append(copy.deepcopy(message))
                 continue
             item_type = message.get("type")
+            normalized_item = copy.deepcopy(message)
+            normalized_item.pop("status", None)
+            if item_type == "computer_call":
+                # Reuse the same canonical semantic shape used by checkpoint
+                # projection so pause/resume never compares raw SDK output to
+                # a differently normalized wire item.
+                normalized_item = _openai_computer_call_semantic(message)
             if item_type == "function_call":
                 call_id = message.get("call_id") or message.get("id") or str(uuid.uuid4())
-                normalized_item = copy.deepcopy(message)
                 normalized_item["call_id"] = call_id
                 normalized.append(normalized_item)
                 continue
-            normalized.append(copy.deepcopy(message))
+            normalized.append(normalized_item)
         _translate_content_blocks_for_openai(normalized)
         return normalized
 

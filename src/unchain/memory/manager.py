@@ -13,6 +13,8 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 from ..execution import (
     ActiveExecutionLeaseError,
+    ExecutionCancellation,
+    ExecutionCancelledError,
     ExecutionFence,
     ExecutionLease,
     ExecutionLeaseConflictError,
@@ -23,15 +25,18 @@ from ..execution import (
 )
 from ..tools.models import NormalizedToolHistoryRecord, ToolHistoryOptimizationContext
 from .checkpoint_state import (
+    EXECUTION_CHECKPOINT_DOMAIN_KEY,
     EXECUTION_CHECKPOINT_KEY,
     ExecutionCheckpointCompatibilityError,
     ExecutionCheckpointResumeRequiredError,
+    apply_checkpoint_interaction_receipt,
     validate_execution_checkpoint,
 )
 from .ownership import ensure_session_delta_input
 from .revision import (
     SessionRevisionConflictError,
     SessionSnapshot,
+    _validate_execution_fence_target,
     load_session_snapshot,
     save_session_snapshot,
 )
@@ -135,6 +140,10 @@ class InMemorySessionStore:
         self._sessions: dict[str, dict[str, Any]] = {}
         self._revisions: dict[str, int] = {}
         self._execution_leases: dict[str, dict[str, Any]] = {}
+        self._execution_cancellations: dict[
+            str,
+            dict[str, ExecutionCancellation],
+        ] = {}
         self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
         self._lock = RLock()
 
@@ -192,6 +201,16 @@ class InMemorySessionStore:
         owner_id: str,
         fencing_token: int,
     ) -> ExecutionLease:
+        cancellation = self._execution_cancellations.get(execution_id, {}).get(
+            owner_id
+        )
+        if cancellation is not None:
+            raise ExecutionCancelledError(
+                cancellation.reason or "execution was cancelled",
+                execution_id=execution_id,
+                owner_id=owner_id,
+                fencing_token=cancellation.fencing_token or fencing_token,
+            )
         record = self._execution_leases.get(execution_id)
         active = record.get("active") if isinstance(record, dict) else None
         last_token = int(record.get("last_fencing_token") or 0) if record else 0
@@ -291,6 +310,81 @@ class InMemorySessionStore:
             self._revisions[session_id] = next_revision
             return next_revision
 
+    def save_if_revision_and_execution_not_cancelled(
+        self,
+        session_id: str,
+        state: dict[str, Any],
+        expected_revision: int,
+        *,
+        execution_id: str,
+        owner_id: str,
+    ) -> int:
+        """CAS a detached child write only while its root attempt is live."""
+
+        _validate_execution_fence_target(session_id, execution_id)
+        self._validate_expected_revision(expected_revision)
+        self._validate_lease_request(execution_id, owner_id)
+        with self._lock:
+            cancellation = self._execution_cancellations.get(
+                execution_id,
+                {},
+            ).get(owner_id)
+            if cancellation is not None:
+                raise ExecutionCancelledError(
+                    cancellation.reason or "execution was cancelled",
+                    execution_id=execution_id,
+                    owner_id=owner_id,
+                    fencing_token=cancellation.fencing_token,
+                )
+            actual_revision = self._revisions.get(session_id, 0)
+            if actual_revision != expected_revision:
+                raise SessionRevisionConflictError(
+                    session_id=session_id,
+                    expected_revision=expected_revision,
+                    actual_revision=actual_revision,
+                )
+            next_revision = actual_revision + 1
+            self._sessions[session_id] = copy.deepcopy(state)
+            self._revisions[session_id] = next_revision
+            return next_revision
+
+    def save_if_revision_and_execution_cancelled(
+        self,
+        session_id: str,
+        state: dict[str, Any],
+        expected_revision: int,
+        *,
+        execution_id: str,
+        owner_id: str,
+    ) -> int:
+        """CAS terminal cleanup only after the exact root attempt was stopped."""
+
+        _validate_execution_fence_target(session_id, execution_id)
+        self._validate_expected_revision(expected_revision)
+        self._validate_lease_request(execution_id, owner_id)
+        with self._lock:
+            cancellation = self._execution_cancellations.get(
+                execution_id,
+                {},
+            ).get(owner_id)
+            if cancellation is None:
+                raise ExecutionLeaseError(
+                    "execution cancellation is required for terminal cleanup",
+                    execution_id=execution_id,
+                    owner_id=owner_id,
+                )
+            actual_revision = self._revisions.get(session_id, 0)
+            if actual_revision != expected_revision:
+                raise SessionRevisionConflictError(
+                    session_id=session_id,
+                    expected_revision=expected_revision,
+                    actual_revision=actual_revision,
+                )
+            next_revision = actual_revision + 1
+            self._sessions[session_id] = copy.deepcopy(state)
+            self._revisions[session_id] = next_revision
+            return next_revision
+
     def acquire_lease(
         self,
         execution_id: str,
@@ -302,6 +396,17 @@ class InMemorySessionStore:
         self._validate_lease_request(execution_id, owner_id, ttl_ms=ttl_ms)
         self._validate_expected_revision(expected_revision)
         with self._lock:
+            cancellation = self._execution_cancellations.get(
+                execution_id,
+                {},
+            ).get(owner_id)
+            if cancellation is not None:
+                raise ExecutionCancelledError(
+                    cancellation.reason or "execution was cancelled",
+                    execution_id=execution_id,
+                    owner_id=owner_id,
+                    fencing_token=cancellation.fencing_token,
+                )
             actual_revision = self._revisions.get(execution_id, 0)
             if expected_revision is not None and actual_revision != expected_revision:
                 raise SessionRevisionConflictError(
@@ -337,6 +442,54 @@ class InMemorySessionStore:
                 }
             )
             return lease
+
+    def request_execution_cancel(
+        self,
+        execution_id: str,
+        owner_id: str,
+        *,
+        reason: str = "",
+    ) -> ExecutionCancellation:
+        self._validate_lease_request(execution_id, owner_id)
+        if not isinstance(reason, str):
+            raise ValueError("reason must be a string")
+        with self._lock:
+            cancellations = self._execution_cancellations.setdefault(
+                execution_id,
+                {},
+            )
+            existing = cancellations.get(owner_id)
+            if existing is not None:
+                return existing
+            record = self._lease_record_unlocked(execution_id)
+            active = record.get("active")
+            fencing_token = None
+            if isinstance(active, ExecutionLease) and active.owner_id == owner_id:
+                fencing_token = active.fencing_token
+                record["active"] = None
+            elif str(record.get("last_owner_id") or "") == owner_id:
+                last_token = int(record.get("last_fencing_token") or 0)
+                fencing_token = last_token or None
+            cancellation = ExecutionCancellation(
+                execution_id=execution_id,
+                owner_id=owner_id,
+                fencing_token=fencing_token,
+                requested_at_ms=self._now_ms(),
+                reason=reason,
+            )
+            cancellations[owner_id] = cancellation
+            return cancellation
+
+    def load_execution_cancellation(
+        self,
+        execution_id: str,
+        owner_id: str,
+    ) -> ExecutionCancellation | None:
+        self._validate_lease_request(execution_id, owner_id)
+        with self._lock:
+            return self._execution_cancellations.get(execution_id, {}).get(
+                owner_id
+            )
 
     def verify_lease(
         self,
@@ -429,8 +582,7 @@ class InMemorySessionStore:
         owner_id: str,
         fencing_token: int,
     ) -> int:
-        if execution_id != session_id:
-            raise ValueError("execution_id must match session_id for fenced writes")
+        _validate_execution_fence_target(session_id, execution_id)
         self._validate_expected_revision(expected_revision)
         self._validate_lease_request(
             execution_id,
@@ -2998,12 +3150,10 @@ class MemoryManager:
         clear_execution_checkpoint_id: str | None = None,
         execution_fence: ExecutionFence | None = None,
     ) -> MemoryCommitResult | None:
-        if (
-            execution_fence is not None
-            and execution_fence.execution_id != session_id
-        ):
-            raise ValueError(
-                "execution_fence.execution_id must match the target session_id"
+        if execution_fence is not None:
+            _validate_execution_fence_target(
+                session_id,
+                execution_fence.execution_id,
             )
         self._verify_execution_fence(execution_fence)
         session_snapshot = (
@@ -3036,7 +3186,12 @@ class MemoryManager:
             )
         checkpoint_cleared = False
         if clear_execution_checkpoint_id:
-            current_checkpoint = state.get(EXECUTION_CHECKPOINT_KEY)
+            current_raw = state.get(EXECUTION_CHECKPOINT_KEY)
+            current_checkpoint = (
+                validate_execution_checkpoint(current_raw)
+                if isinstance(current_raw, dict)
+                else None
+            )
             current_checkpoint_id = (
                 str(current_checkpoint.get("checkpoint_id") or "")
                 if isinstance(current_checkpoint, dict)
@@ -3046,7 +3201,14 @@ class MemoryManager:
                 raise ExecutionCheckpointCompatibilityError(
                     "refusing to commit over a different execution checkpoint"
                 )
+            if isinstance(current_checkpoint, dict):
+                apply_checkpoint_interaction_receipt(
+                    state,
+                    checkpoint=current_checkpoint,
+                    applied_checkpoint_id=clear_execution_checkpoint_id,
+                )
             state.pop(EXECUTION_CHECKPOINT_KEY, None)
+            state.pop(EXECUTION_CHECKPOINT_DOMAIN_KEY, None)
             checkpoint_cleared = True
         clean_conversation = _deepcopy_messages(full_conversation)
         state["messages"] = clean_conversation

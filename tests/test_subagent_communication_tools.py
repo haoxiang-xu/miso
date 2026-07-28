@@ -167,6 +167,74 @@ def test_communication_runtime_tool_builders_have_expected_names():
     ]
 
 
+def test_agent_thread_tool_schemas_describe_the_synchronous_snapshot_contract():
+    spawn_tool = build_spawn_agent_thread_tool()
+    wait_tool = build_wait_agent_messages_tool()
+    spawn_parameters = {parameter.name: parameter for parameter in spawn_tool.parameters}
+    wait_parameters = {parameter.name: parameter for parameter in wait_tool.parameters}
+
+    assert "synchronously" in spawn_tool.description
+    assert "not supported" in spawn_parameters["background"].description
+    assert "Only result" in spawn_parameters["return_mode"].description
+    assert "without blocking" in wait_tool.description
+    assert "not supported" in wait_parameters["timeout_seconds"].description
+
+
+def test_spawn_agent_thread_rejects_background_before_allocating_or_running_child():
+    plugin = _wait_plugin()
+    context = _plugin_context_with_threads({})
+    original_state = context.state.subagent_state.to_dict()
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_background",
+            name="spawn_agent_thread",
+            arguments={
+                "target": "researcher",
+                "task": "Investigate",
+                "background": True,
+            },
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result == {
+        "error": "spawn_agent_thread background=true is not supported",
+        "error_code": "agent_thread_background_unsupported",
+        "status": "unsupported",
+        "tool": "spawn_agent_thread",
+    }
+    assert outcome.state_updates == {}
+    assert context.state.subagent_state.to_dict() == original_state
+
+
+def test_spawn_agent_thread_rejects_unimplemented_return_modes_before_allocation():
+    plugin = _wait_plugin()
+    context = _plugin_context_with_threads({})
+    original_state = context.state.subagent_state.to_dict()
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_return_mode",
+            name="spawn_agent_thread",
+            arguments={
+                "target": "researcher",
+                "task": "Investigate",
+                "return_mode": "terminal_handoff",
+            },
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result["error_code"] == "agent_thread_return_mode_unsupported"
+    assert outcome.tool_result["status"] == "unsupported"
+    assert "return_mode='result'" in outcome.tool_result["error"]
+    assert outcome.state_updates == {}
+    assert context.state.subagent_state.to_dict() == original_state
+
+
 def test_read_agent_board_tool_schema_exposes_singular_kind_filter():
     read_tool = build_read_agent_board_tool()
 
@@ -573,7 +641,7 @@ def test_worker_batch_board_write_survives_child_failure():
     def _after_worker_batch(request):
         payload = json.loads(request.messages[-1]["output"])
         assert payload["mode"] == "worker_batch"
-        assert payload["status"] == "partial_failure"
+        assert payload["status"] == "failed"
         assert payload["results"][0]["status"] == "failed"
         assert payload["results"][0]["error"] == "worker exploded"
         return _openai_tool_turn(
@@ -1262,6 +1330,88 @@ def test_wait_agent_messages_idle_completes_for_idle_and_terminal_threads():
     assert [thread["status"] for thread in outcome.tool_result["threads"]] == ["idle", "needs_clarification"]
 
 
+def test_wait_agent_messages_rejects_timed_wait_without_inspecting_state():
+    plugin = _wait_plugin()
+    context = _plugin_context_with_threads(
+        {"thread-1": {"thread_id": "thread-1", "status": "running"}}
+    )
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_wait_timed",
+            name="wait_agent_messages",
+            arguments={
+                "thread_ids": ["thread-1"],
+                "condition": "all_done",
+                "timeout_seconds": 30,
+            },
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result == {
+        "error": (
+            "wait_agent_messages timed waiting is not supported; "
+            "omit timeout_seconds or use 0 for a snapshot"
+        ),
+        "error_code": "agent_wait_timed_wait_unsupported",
+        "status": "unsupported",
+        "tool": "wait_agent_messages",
+    }
+
+
+@pytest.mark.parametrize("timeout_seconds", [-1, True, "30", float("inf")])
+def test_wait_agent_messages_rejects_invalid_timeout_values(timeout_seconds):
+    plugin = _wait_plugin()
+    context = _plugin_context_with_threads(
+        {"thread-1": {"thread_id": "thread-1", "status": "running"}}
+    )
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_wait_invalid_timeout",
+            name="wait_agent_messages",
+            arguments={
+                "thread_ids": ["thread-1"],
+                "condition": "all_done",
+                "timeout_seconds": timeout_seconds,
+            },
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result["error_code"] == "agent_wait_timeout_invalid"
+    assert outcome.tool_result["status"] == "invalid_request"
+
+
+def test_wait_agent_messages_accepts_zero_timeout_as_a_snapshot():
+    plugin = _wait_plugin()
+    context = _plugin_context_with_threads(
+        {"thread-1": {"thread_id": "thread-1", "status": "running"}}
+    )
+
+    outcome = plugin.execute(
+        tool_call=ToolCall(
+            call_id="call_wait_snapshot",
+            name="wait_agent_messages",
+            arguments={
+                "thread_ids": ["thread-1"],
+                "condition": "all_done",
+                "timeout_seconds": 0,
+            },
+        ),
+        context=context,
+    )
+
+    assert outcome.handled is True
+    assert outcome.tool_result["status"] == "running"
+    assert outcome.tool_result["threads"] == [
+        {"thread_id": "thread-1", "status": "running"}
+    ]
+
+
 def test_send_agent_message_runs_followup_on_existing_thread_session():
     child_observations = []
     events = []
@@ -1849,7 +1999,14 @@ def test_spawn_agent_thread_preserves_child_clarification_request_for_parent():
     )
     events = []
 
-    result = parent.run("coordinate", max_iterations=3, callback=events.append)
+    result = parent.run(
+        "coordinate",
+        max_iterations=3,
+        callback=events.append,
+        on_human_input=lambda _request: pytest.fail(
+            "a child clarification must not invoke the parent's blocking callback"
+        ),
+    )
 
     assert result.status == "completed"
     assert result.human_input_request is None

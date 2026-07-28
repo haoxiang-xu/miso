@@ -58,6 +58,15 @@ def tool_schema_manifest(toolkit: Any, provider: str) -> dict[str, str]:
             if isinstance(function, dict)
             else schema.get("name")
         )
+        if (
+            not name
+            and str(provider or "").strip().lower() == "openai"
+            and schema.get("type") == "computer"
+        ):
+            # OpenAI's built-in Computer schema is intentionally nameless on
+            # the wire (`{"type":"computer"}`). Give it a stable internal
+            # manifest key without weakening validation for any other schema.
+            name = "computer"
         normalized_name = str(name or "").strip()
         if not normalized_name or normalized_name in manifest:
             raise ProviderReplayFrameError(

@@ -343,7 +343,12 @@ class MCPToolkit(Toolkit):
 
     @staticmethod
     def _parse_call_result(result, tool_name: str) -> dict[str, Any]:
-        """Convert an MCP ``CallToolResult`` to a plain dict."""
+        """Convert an MCP ``CallToolResult`` to a plain dict.
+
+        Image content blocks are collected into the reserved ``content_blocks``
+        key (S0 rich tool result) instead of being dropped. Text-only results
+        are byte-identical to the pre-S0 behavior.
+        """
         if result.isError:
             error_text = ""
             for block in result.content or []:
@@ -351,6 +356,21 @@ class MCPToolkit(Toolkit):
                     error_text += block.text
             return {"error": error_text or "unknown MCP error", "tool": tool_name}
 
+        parsed = MCPToolkit._parse_success_payload(result)
+
+        content_blocks = MCPToolkit._collect_content_blocks(result.content or [])
+        if content_blocks:
+            existing = parsed.get("content_blocks") if isinstance(parsed, dict) else None
+            blocks = list(existing) if isinstance(existing, list) else []
+            blocks.extend(content_blocks)
+            parsed = dict(parsed)
+            parsed["content_blocks"] = blocks
+
+        return parsed
+
+    @staticmethod
+    def _parse_success_payload(result) -> dict[str, Any]:
+        """Legacy text/structured payload parsing (unchanged pre-S0 behavior)."""
         # Try structured content first.
         if result.structuredContent is not None:
             return dict(result.structuredContent)
@@ -373,6 +393,37 @@ class MCPToolkit(Toolkit):
             pass
 
         return {"result": combined}
+
+    @staticmethod
+    def _collect_content_blocks(content) -> list[dict[str, Any]]:
+        """Map MCP text+image content blocks to the S0 ``content_blocks`` shape.
+
+        Only builds blocks when an image is present (text-only results keep the
+        pre-S0 byte-identical behavior). When it does, the accompanying text is
+        surfaced too — otherwise "screenshot + caption" MCP results would lose
+        the caption, since the model only sees ``content_blocks`` when present.
+        Text blocks come before the image (Anthropic guidance: text-first aids
+        localization accuracy).
+        """
+        text_blocks: list[dict[str, Any]] = []
+        image_blocks: list[dict[str, Any]] = []
+        for block in content:
+            btype = getattr(block, "type", None)
+            if btype == "image":
+                data = getattr(block, "data", None)
+                if isinstance(data, str) and data:
+                    image_blocks.append({
+                        "type": "image",
+                        "media_type": getattr(block, "mimeType", None) or "image/png",
+                        "data_b64": data,
+                    })
+                continue
+            text = getattr(block, "text", None)
+            if isinstance(text, str) and text:
+                text_blocks.append({"type": "text", "text": text})
+        if not image_blocks:
+            return []
+        return text_blocks + image_blocks
 
     # ── repr ───────────────────────────────────────────────────────────────
 

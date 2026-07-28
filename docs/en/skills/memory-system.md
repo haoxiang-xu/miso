@@ -170,20 +170,43 @@ The session store keeps two deliberately separate layers:
 | --- | --- | --- |
 | `messages` | Completed, human-readable semantic conversation | Yes |
 | `execution_checkpoint` | Incomplete tool transaction, continuation, provider replay frame, integrity and tool-schema digests | No |
+| `interaction_journal` | Immutable requests, normalized receipts, and receipt-application markers for human input, tool approval, and max-budget waits | No |
 
 - `completed`: atomically commit semantic messages and conditionally clear the matching checkpoint in the same CAS write.
 - `max_iterations`: leave semantic messages unchanged and persist an execution checkpoint.
 - `awaiting_human_input`: leave semantic messages unchanged and persist the transcript plus continuation.
+- `awaiting_interaction`: leave semantic messages unchanged and persist a generic interaction continuation, currently used by tool approval.
 
-A later `agent.run(..., session_id=same_id)` continues a `max_iterations` checkpoint without executing completed tools again. On that cold continuation, `max_iterations=N` means N additional model iterations for the new invocation; the cumulative iteration counter is still restored for telemetry. An awaiting-human checkpoint must be resumed; a fresh run fails closed. `agent.resume_human_input(session_id=same_id, response=...)` can load the persisted conversation and continuation without an old in-process result object.
+A later `agent.run(..., session_id=same_id)` continues a `max_iterations` checkpoint without executing completed tools again. On that cold continuation, `max_iterations=N` means N additional model iterations for the new invocation; the cumulative iteration counter is still restored for telemetry. A checkpoint with an active `interaction_ref` must be resumed; a fresh run fails closed.
+
+At an interactive suspension, the immutable `InteractionRequest` and the execution checkpoint that references its ID and digest are written in one CAS. The decision is then written as a separate `InteractionReceipt` before any resume delta, model call, or approved tool execution. The next semantic commit or checkpoint transition atomically marks that receipt as applied. Re-submitting the same normalized response is idempotent; a different response for the same request fails closed. Requests are also digest-bound to their response contract and relevant provider/model, prompt, and tool-schema identity, so changed execution cannot silently consume a stale approval.
+
+The durable public flow separates accepting the answer from doing more work:
+
+```python
+suspended = agent.run("Do something risky", session_id="durable-session")
+request = suspended.interaction_request
+
+agent.submit_interaction(
+    session_id="durable-session",
+    interaction_id=request["interaction_id"],
+    response={"approved": True},
+    submitted_by="ui:user-42",
+)
+
+# This may run in a new process. It consumes the already-persisted receipt.
+final = agent.resume_interaction(session_id="durable-session")
+```
+
+`resume_interaction(response=...)` may record and consume a response in one call, but `submit_interaction()` followed by `resume_interaction()` gives the clearest crash boundary. `resume_human_input()` remains compatible for existing human-input callers and can also consume an already-persisted human receipt when `response=None`.
 
 The replay frame is provider-native and ordered. OpenAI preserves encrypted reasoning items, Anthropic/Hyperspace preserve thinking signatures, and Ollama preserves the thinking field. It is integrity-checked, bound to provider/model and the active tool schema, excluded from normal memory compaction, and redacted from request traces.
 
 The guarantee begins after the checkpoint write is verified. A hard crash between an external tool side effect and that write still requires an idempotency key, write-ahead log, or transactional outbox; execution checkpoints alone cannot provide arbitrary-crash exactly-once semantics.
 
-For a memory-backed `session_id`, all `on_suspend` contributors finish before the reserved persistence barrier. Blocking `on_human_input` and `on_max_iterations` callbacks, plus their corresponding request events, run only after the checkpoint has been written and read back. Final message events likewise run only after durable finalization. A failed checkpoint write therefore prevents the callback from entering a long wait. A callback response itself is not yet an exactly-once durable interaction record; a crash after the user responds but before the resume delta is applied may still require the caller to submit that response again.
+For a memory-backed `session_id`, all `on_suspend` contributors finish before the reserved persistence barrier. Configured blocking `on_human_input`, `on_tool_confirm`, and `on_max_iterations` callbacks are synchronous adapters over the durable journal, not a separate execution path: the runtime writes and verifies the request plus checkpoint, releases the lease, invokes the callback, persists its normalized response as a receipt, then reacquires a newer lease before applying the response. A failed checkpoint or receipt write therefore prevents later model/tool work. Final message events likewise run only after durable finalization.
 
-The current execution checkpoint restores the built-in continuation boundary: semantic transcript, provider replay frame, cumulative iteration/token counters, context-window size, and workspace-change state. It is not yet a universal serialization format for arbitrary harness state. Custom `component_state`, optimizer internals, artifacts, and subagent state require a future versioned per-harness checkpoint-slice contract if they must survive a cold process restart.
+The current execution checkpoint restores the built-in continuation boundary: semantic transcript, provider replay frame, cumulative iteration/token counters, context-window size, and workspace-change state. `ToolOptimizer` has an explicit durable-interaction slice: when its selector was active, human-input, tool-approval, and configured max-budget continuations store a versioned plan containing the catalog digest and the exact direct/deferred/loaded tool partition. `Agent.resume_interaction()` validates and replays that plan without calling the selector; a present but malformed plan or a changed catalog fails before model/tool work. An ordinary `max_iterations` checkpoint resumed by a later `Agent.run()` is a new invocation with new budget and may run the selector again. The checkpoint is not yet a universal serialization format for arbitrary harness state; custom `component_state`, other optimizer internals, artifacts, and subagent state still require a future versioned per-harness checkpoint-slice contract for cold restart.
 
 Every built-in session store also attaches a monotonic revision to the whole session state. Bootstrap captures that revision, and semantic commit, checkpoint save/clear, workspace-pin mutation, and edit/resend replacement use compare-and-swap (CAS). A stale worker raises `SessionRevisionConflictError` instead of overwriting newer messages or a newer checkpoint. Repeating the same deterministic checkpoint write is idempotent.
 
@@ -193,7 +216,7 @@ Memory-backed agent runs also use an execution lease keyed by `session_id`. `Pre
 
 While a lease is active, the built-in stores reject direct `save()` and unfenced `save_if_revision()` calls for that session. Extensions must use a framework path that carries the current fence; ordinary tools and run hooks do not yet receive a general-purpose fenced session writer and must not mutate canonical session state through the raw store.
 
-Fencing prevents a superseded worker from starting its next guarded step or writing durable session state. It does not make an arbitrary remote tool side effect exactly once if the process loses connectivity or crashes after the remote system accepts the request. Such tools still need an idempotency key, intent/receipt journal, or transactional outbox.
+Fencing and interaction receipts prevent duplicate decision application; they do not make an arbitrary remote tool side effect exactly once if the process loses connectivity or crashes after the remote system accepts the request but before its result is durably recorded. That ambiguity belongs to the D3 tool-intent/tool-receipt layer. Such tools still need an idempotency key, reconciliation contract, or transactional outbox.
 
 The lease is session-scoped, not memory-namespace-scoped. Two valid runs using different `session_id` values can still update the same long-term profile or vector namespace concurrently. The built-in profile store and external vector adapters therefore remain best-effort shared resources until they gain their own namespace revision/lease or atomic merge contract.
 

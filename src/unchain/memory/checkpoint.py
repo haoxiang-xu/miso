@@ -38,7 +38,11 @@ class ExecutionCheckpointHarness(BaseMemoryHarness):
 
         if context.phase == "suspend_persist":
             suspend_status = str(context.event.get("status") or "awaiting_human_input")
-            if suspend_status not in {"awaiting_human_input", "max_iterations"}:
+            if suspend_status not in {
+                "awaiting_human_input",
+                "awaiting_interaction",
+                "max_iterations",
+            }:
                 return None
             return self._persist(context, status=suspend_status)
         if context.phase != "finalize_persist":
@@ -55,9 +59,16 @@ class ExecutionCheckpointHarness(BaseMemoryHarness):
             status=status,
             run_id=context.run_id,
         )
+        suspend_payload = context.state.suspend_state.payload
+        interaction_request = (
+            suspend_payload.get("interaction_request")
+            if isinstance(suspend_payload, dict)
+            else None
+        )
         persisted, session_snapshot = context.runtime.save_execution_checkpoint_snapshot(
             context.session_id,
             checkpoint,
+            interaction_request=interaction_request,
             expected_revision=context.state.memory_state.get("session_revision"),
             execution_fence=context.execution_fence,
         )

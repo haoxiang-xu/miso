@@ -25,13 +25,39 @@ Exports declared by package `__init__` files and where to read their reference.
 | `CompletionEvaluation` | `src/unchain/runtime/completion.py:13` | `../api/runtime.md#completionevaluation` |
 | `CompletionPolicy` | `src/unchain/runtime/completion.py:24` | `../api/runtime.md#completionpolicy` |
 | `CompletionValidator` | `src/unchain/runtime/completion.py:19` | non-class export |
+| `InteractionModule` | `src/unchain/agent/modules/interaction.py` | `../api/agents.md#interactionmodule` |
+| `JobsModule` | `src/unchain/agent/modules/jobs.py` | `../api/agents.md#jobsmodule` |
 | `MemoryModule` | `src/unchain/agent/modules/memory.py:12` | non-class export |
 | `ModelIOFactoryRegistry` | `src/unchain/agent/model_io.py:10` | non-class export |
 | `OptimizersModule` | `src/unchain/agent/modules/optimizers.py:9` | non-class export |
 | `PoliciesModule` | `src/unchain/agent/modules/policies.py:12` | non-class export |
 | `PreparedAgent` | `src/unchain/agent/builder.py:44` | non-class export |
 | `SubagentModule` | `src/unchain/agent/modules/subagents.py:17` | non-class export |
+| `ToolDiscoveryModule` | `src/unchain/agent/modules/tool_discovery.py` | non-class export |
+| `ToolOptimizerModule` | `src/unchain/agent/modules/tool_optimizer.py` | non-class export |
 | `ToolsModule` | `src/unchain/agent/modules/tools.py:10` | non-class export |
+
+## `src/unchain/jobs/__init__.py`
+
+| Name | Source | Reference |
+| --- | --- | --- |
+| `JOB_ENVIRONMENT_PROFILE_VERSION` | `src/unchain/jobs/environment.py` | `../api/jobs.md#environment-profile` |
+| `JOB_SCHEMA_VERSION` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `JOB_STATUSES` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `STORE_MANIFEST_SCHEMA_VERSION` | `src/unchain/jobs/store.py` | `../api/jobs.md#store-identity` |
+| `TERMINAL_JOB_STATUSES` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `DurableJobError` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `DurableJobNotFoundError` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `DurableJobOwnershipError` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `DurableJobConflictError` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `DurableJobStoreCorruptionError` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `DurableJobHandle` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `DurableJobSnapshot` | `src/unchain/jobs/models.py` | `../api/jobs.md#public-surface` |
+| `DurableJobResult` | `src/unchain/jobs/process.py` | `../api/jobs.md#public-surface` |
+| `JsonFileJobStore` | `src/unchain/jobs/store.py` | `../api/jobs.md#public-surface` |
+| `JobEnvironmentProfile` | `src/unchain/jobs/environment.py` | `../api/jobs.md#environment-profile` |
+| `ProcessJobSupervisor` | `src/unchain/jobs/process.py` | `../api/jobs.md#processjobsupervisor` |
+| `DurableShellJobPlugin` | `src/unchain/jobs/plugin.py` | `../api/jobs.md#agent-shell-integration` |
 
 ## `src/unchain/input/__init__.py`
 
@@ -46,6 +72,31 @@ Exports declared by package `__init__` files and where to read their reference.
 | `build_ask_user_question_tool` | `-` | non-class export |
 | `is_human_input_tool_name` | `-` | non-class export |
 | `media` | `-` | non-class export |
+
+## Durable exports from `src/unchain/interaction/__init__.py`
+
+These are the durable-interaction exports added by the interaction journal
+surface; pre-existing FYI, queued-turn, and human-input utilities are unchanged.
+
+| Name | Source | Reference |
+| --- | --- | --- |
+| `INTERACTION_JOURNAL_KEY` | `src/unchain/interaction/durable.py:18` | `../api/interaction.md#constants` |
+| `INTERACTION_KIND_HUMAN_INPUT` | `src/unchain/interaction/durable.py:22` | `../api/interaction.md#constants` |
+| `INTERACTION_KIND_MAX_BUDGET` | `src/unchain/interaction/durable.py:24` | `../api/interaction.md#constants` |
+| `INTERACTION_KIND_TOOL_APPROVAL` | `src/unchain/interaction/durable.py:23` | `../api/interaction.md#constants` |
+| `InteractionAlreadyAppliedError` | `src/unchain/interaction/durable.py:60` | `../api/interaction.md#interaction-errors` |
+| `InteractionError` | `src/unchain/interaction/durable.py:36` | `../api/interaction.md#interaction-errors` |
+| `InteractionIntegrityError` | `src/unchain/interaction/durable.py:42` | `../api/interaction.md#interaction-errors` |
+| `InteractionNotPendingError` | `src/unchain/interaction/durable.py:48` | `../api/interaction.md#interaction-errors` |
+| `InteractionReceipt` | `src/unchain/interaction/durable.py:407` | `../api/interaction.md#interactionreceipt` |
+| `InteractionReceiptConflictError` | `src/unchain/interaction/durable.py:54` | `../api/interaction.md#interaction-errors` |
+| `InteractionRequest` | `src/unchain/interaction/durable.py:214` | `../api/interaction.md#interactionrequest` |
+| `build_interaction_receipt` | `src/unchain/interaction/durable.py:523` | `../api/interaction.md#interactionreceipt` |
+| `build_interaction_request` | `src/unchain/interaction/durable.py:339` | `../api/interaction.md#interactionrequest` |
+| `build_max_budget_continuation` | `src/unchain/interaction/effects.py:161` | `../api/interaction.md#builder-and-helper-exports` |
+| `build_max_budget_suspend_request` | `src/unchain/interaction/effects.py:222` | `../api/interaction.md#builder-and-helper-exports` |
+| `build_tool_approval_continuation` | `src/unchain/interaction/effects.py:239` | `../api/interaction.md#builder-and-helper-exports` |
+| `build_tool_approval_suspend_request` | `src/unchain/interaction/effects.py:331` | `../api/interaction.md#builder-and-helper-exports` |
 
 ## `src/unchain/memory/__init__.py`
 

@@ -30,6 +30,40 @@ class ToolExecutionOutcome:
     capability_outcome: CapabilityOutcome | None = None
 
 
+@dataclass(frozen=True)
+class ToolConfirmationPreparation:
+    should_observe: bool
+    effective_arguments: Any
+    confirmation_policy: ToolConfirmationPolicy | None
+    requires_confirmation: bool
+    request: ToolConfirmationRequest | None
+    resolver_error: str | None = None
+
+    @property
+    def needs_confirmation_response(self) -> bool:
+        return (
+            self.resolver_error is None
+            and self.requires_confirmation
+            and self.request is not None
+        )
+
+    def to_resolver_error_outcome(self, *, tool_name: str) -> ToolExecutionOutcome | None:
+        if self.resolver_error is None:
+            return None
+        return ToolExecutionOutcome(
+            tool_result={
+                "error": f"tool confirmation resolver failed: {self.resolver_error}",
+                "tool": tool_name,
+            },
+            should_observe=self.should_observe,
+            effective_arguments=self.effective_arguments,
+            confirmation_policy=self.confirmation_policy,
+        )
+
+
+_CONFIRMATION_RESPONSE_UNSET = object()
+
+
 def _resolve_builtin_toolkit_owner(toolkit: Toolkit, tool_name: str) -> BuiltinToolkit | None:
     tool_obj = toolkit.get(tool_name)
     if tool_obj is None:
@@ -69,24 +103,18 @@ def _tool_result_from_capability_outcome(
     return {"result": value}
 
 
-def execute_confirmable_tool_call(
+def prepare_tool_confirmation(
     *,
     toolkit: Toolkit,
     tool_call: ToolCall,
-    on_tool_confirm: Any,
-    loop: Any,
-    callback: Any,
-    run_id: str,
-    iteration: int,
     execution_context: ToolExecutionContext | None = None,
     execution_guard: ExecutionGuard | None = None,
-) -> ToolExecutionOutcome:
+) -> ToolConfirmationPreparation:
     tool_obj = toolkit.get(tool_call.name)
     should_observe = bool(tool_obj is not None and tool_obj.observe)
     effective_arguments = copy.deepcopy(tool_call.arguments)
-    denied = False
-    deny_reason = ""
     confirmation_policy: ToolConfirmationPolicy | None = None
+    requires_confirmation = bool(tool_obj is not None and tool_obj.requires_confirmation)
 
     if tool_obj is not None and callable(getattr(tool_obj, "confirmation_resolver", None)):
         resolver_arguments = tool_call.arguments if isinstance(tool_call.arguments, dict) else {}
@@ -97,23 +125,22 @@ def execute_confirmable_tool_call(
         except ExecutionLeaseError:
             raise
         except Exception as exc:
-            return ToolExecutionOutcome(
-                tool_result={
-                    "error": f"tool confirmation resolver failed: {type(exc).__name__}: {exc}",
-                    "tool": tool_call.name,
-                },
+            return ToolConfirmationPreparation(
                 should_observe=should_observe,
                 effective_arguments=effective_arguments,
                 confirmation_policy=confirmation_policy,
+                requires_confirmation=requires_confirmation,
+                request=None,
+                resolver_error=f"{type(exc).__name__}: {exc}",
             )
         if execution_guard is not None:
             execution_guard.assert_active()
 
-    requires_confirmation = bool(tool_obj is not None and tool_obj.requires_confirmation)
     if confirmation_policy is not None:
         requires_confirmation = requires_confirmation and confirmation_policy.requires_confirmation
 
-    if tool_obj is not None and requires_confirmation and callable(on_tool_confirm):
+    confirmation_request: ToolConfirmationRequest | None = None
+    if tool_obj is not None and requires_confirmation:
         tool_render = getattr(tool_obj, "render_component", None)
         if isinstance(tool_render, dict) and tool_render:
             effective_render = dict(tool_render)
@@ -123,9 +150,6 @@ def execute_confirmable_tool_call(
         if isinstance(policy_render, dict) and policy_render:
             effective_render = dict(policy_render)
 
-        # Propagate interact_type / interact_config from the resolved policy
-        # onto the request. Policy may be None if no resolver ran — in that
-        # case the request defaults apply ("confirmation" / None).
         policy_interact_type = (
             confirmation_policy.interact_type
             if confirmation_policy is not None
@@ -150,7 +174,63 @@ def execute_confirmable_tool_call(
             interact_config=policy_interact_config,
             render_component=effective_render,
         )
-        response = ToolConfirmationResponse.from_raw(on_tool_confirm(confirmation_request))
+
+    return ToolConfirmationPreparation(
+        should_observe=should_observe,
+        effective_arguments=effective_arguments,
+        confirmation_policy=confirmation_policy,
+        requires_confirmation=requires_confirmation,
+        request=confirmation_request,
+    )
+
+
+def execute_confirmable_tool_call(
+    *,
+    toolkit: Toolkit,
+    tool_call: ToolCall,
+    on_tool_confirm: Any,
+    loop: Any,
+    callback: Any,
+    run_id: str,
+    iteration: int,
+    execution_context: ToolExecutionContext | None = None,
+    execution_guard: ExecutionGuard | None = None,
+    prepared_confirmation: ToolConfirmationPreparation | None = None,
+    confirmation_response: Any = _CONFIRMATION_RESPONSE_UNSET,
+) -> ToolExecutionOutcome:
+    if prepared_confirmation is None:
+        preparation = prepare_tool_confirmation(
+            toolkit=toolkit,
+            tool_call=tool_call,
+            execution_context=execution_context,
+            execution_guard=execution_guard,
+        )
+    else:
+        preparation = prepared_confirmation
+    resolver_error_outcome = preparation.to_resolver_error_outcome(tool_name=tool_call.name)
+    if resolver_error_outcome is not None:
+        return resolver_error_outcome
+
+    tool_obj = toolkit.get(tool_call.name)
+    should_observe = preparation.should_observe
+    effective_arguments = (
+        preparation.effective_arguments
+        if prepared_confirmation is None
+        else copy.deepcopy(preparation.effective_arguments)
+    )
+    denied = False
+    deny_reason = ""
+    confirmation_policy = preparation.confirmation_policy
+
+    raw_response = _CONFIRMATION_RESPONSE_UNSET
+    if preparation.needs_confirmation_response:
+        if confirmation_response is not _CONFIRMATION_RESPONSE_UNSET:
+            raw_response = confirmation_response
+        elif callable(on_tool_confirm):
+            raw_response = on_tool_confirm(preparation.request)
+
+    if raw_response is not _CONFIRMATION_RESPONSE_UNSET:
+        response = ToolConfirmationResponse.from_raw(raw_response)
         if execution_guard is not None:
             execution_guard.renew()
         if not response.approved:

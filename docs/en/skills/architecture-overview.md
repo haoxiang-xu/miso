@@ -36,7 +36,7 @@ This chapter explains how the package is layered, which modules are foundational
 ## Configuration surface
 
 - Provider/model/api key (on `Agent`).
-- Modules: `ToolsModule`, `MemoryModule`, `PoliciesModule`, `OptimizersModule`, `SubagentModule`, `ToolDiscoveryModule`.
+- Modules: `ToolsModule`, `MemoryModule`, `PoliciesModule`, `OptimizersModule`, `SubagentModule`, `InteractionModule`, `JobsModule`, `CharacterModule`, `ToolDiscoveryModule`, `ToolOptimizerModule`.
 - Per-call overrides on `Agent.run()` (`max_iterations`, `payload`, `callback`, `on_tool_confirm`, ...).
 
 ## Extension points
@@ -78,7 +78,9 @@ src/unchain/
 │   ├── spec.py          #   AgentSpec (frozen), AgentState
 │   ├── model_io.py      #   ModelIOFactoryRegistry compatibility registry
 │   └── modules/         #   ToolsModule, MemoryModule, PoliciesModule,
-│                        #   OptimizersModule, SubagentModule, ToolDiscoveryModule
+│                        #   OptimizersModule, SubagentModule, InteractionModule,
+│                        #   JobsModule, CharacterModule, ToolDiscoveryModule,
+│                        #   ToolOptimizerModule
 ├── kernel/              # Execution engine
 │   ├── loop.py          #   KernelLoop — concrete run-loop implementation
 │   ├── harness.py       #   RuntimeHook/RuntimeHarness protocol + RuntimePhase + HarnessContext

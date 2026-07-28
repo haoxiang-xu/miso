@@ -20,6 +20,9 @@ from .payloads import (
 from .workspace_artifacts import WorkspaceChangeArtifactHarness
 from ..execution import (
     ActiveExecutionLeaseError,
+    ExecutionCancellation,
+    ExecutionCancellationStore,
+    ExecutionCancelledError,
     ExecutionFence,
     ExecutionGuard,
     ExecutionLease,
@@ -31,6 +34,7 @@ from ..execution import (
     ExecutionLeaseStore,
     ExecutionRuntime,
     StaleExecutionLeaseError,
+    supports_execution_cancellation,
     supports_execution_leases,
 )
 
@@ -43,6 +47,9 @@ __all__ = [
     "CompletionPolicyRunner",
     "CompletionRunOnce",
     "CompletionValidator",
+    "ExecutionCancellation",
+    "ExecutionCancellationStore",
+    "ExecutionCancelledError",
     "ExecutionFence",
     "ExecutionGuard",
     "ExecutionLease",
@@ -61,5 +68,6 @@ __all__ = [
     "build_runtime_loop",
     "load_default_payloads",
     "load_model_capabilities",
+    "supports_execution_cancellation",
     "supports_execution_leases",
 ]

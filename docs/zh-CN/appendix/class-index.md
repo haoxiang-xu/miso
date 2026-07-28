@@ -17,6 +17,31 @@
 - `CompletionPolicyRunner` -> `src/unchain/runtime/completion.py:47` (subpackage, dataclass)
 - `ToolExecutionOutcome` -> `src/unchain/tools/confirmation.py:21` (subpackage, dataclass)
 
+## [Interaction API 参考](../api/interaction.md)
+
+- `InteractionError` -> `src/unchain/interaction/durable.py:36` (subpackage, error class)
+- `InteractionIntegrityError` -> `src/unchain/interaction/durable.py:42` (subpackage, error class)
+- `InteractionNotPendingError` -> `src/unchain/interaction/durable.py:48` (subpackage, error class)
+- `InteractionReceiptConflictError` -> `src/unchain/interaction/durable.py:54` (subpackage, error class)
+- `InteractionAlreadyAppliedError` -> `src/unchain/interaction/durable.py:60` (subpackage, error class)
+- `InteractionRequest` -> `src/unchain/interaction/durable.py:214` (subpackage, frozen dataclass)
+- `InteractionReceipt` -> `src/unchain/interaction/durable.py:407` (subpackage, frozen dataclass)
+- `DurableInteractionSnapshot` -> `src/unchain/interaction/runtime.py:160` (module-only, frozen dataclass)
+- `DurableInteractionRuntime` -> `src/unchain/interaction/runtime.py:205` (module-only, dataclass)
+- `DurableMaxBudgetCallbackAdapter` -> `src/unchain/interaction/adapters.py:31` (module-only, dataclass)
+
+## [耐久任务 API 参考](../api/jobs.md)
+
+- `DurableJobError` 及其 typed subclasses -> `src/unchain/jobs/models.py` (subpackage, error classes)
+- `DurableJobHandle` -> `src/unchain/jobs/models.py` (subpackage, frozen dataclass)
+- `DurableJobSnapshot` -> `src/unchain/jobs/models.py` (subpackage, frozen dataclass)
+- `DurableJobResult` -> `src/unchain/jobs/process.py` (subpackage, dict result)
+- `JsonFileJobStore` -> `src/unchain/jobs/store.py` (subpackage, class)
+- `JobEnvironmentProfile` -> `src/unchain/jobs/environment.py` (subpackage, frozen dataclass)
+- `ProcessJobSupervisor` -> `src/unchain/jobs/process.py` (subpackage, class)
+- `DurableShellJobPlugin` -> `src/unchain/jobs/plugin.py` (subpackage, dataclass)
+- `JobsModule` -> `src/unchain/agent/modules/jobs.py` (subpackage, frozen dataclass)
+
 ## [工具系统 API 参考](../api/tools.md)
 
 - `ToolkitCatalogConfig` -> `src/unchain/tools/catalog.py:34` (subpackage, dataclass)

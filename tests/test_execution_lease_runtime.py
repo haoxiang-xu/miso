@@ -422,10 +422,6 @@ def test_lease_takeover_between_retries_prevents_second_model_request() -> None:
 def test_takeover_inside_confirmation_callback_prevents_real_tool_execution() -> None:
     clock = _ManualClock()
     store = InMemorySessionStore(clock_ms=clock.now_ms)
-    winner_loop, _ = _runtime_loop(
-        store=store,
-        model_io=_QueueModelIO([_final_turn("new owner response")]),
-    )
     stale_loop, _ = _runtime_loop(
         store=store,
         model_io=_QueueModelIO([_tool_turn("dangerous")]),
@@ -440,12 +436,12 @@ def test_takeover_inside_confirmation_callback_prevents_real_tool_execution() ->
     )
 
     def confirm_after_takeover(_request: Any) -> dict[str, bool]:
-        clock.advance(_TTL_MS + 1)
-        winner_loop.run(
-            [{"role": "user", "content": "take over"}],
-            session_id="confirmation-session",
-            provider="ollama",
-            model="fake",
+        snapshot = store.load_with_revision("confirmation-session")
+        store.acquire_lease(
+            "confirmation-session",
+            "winner",
+            _TTL_MS,
+            expected_revision=snapshot.revision,
         )
         return {"approved": True}
 
@@ -460,7 +456,9 @@ def test_takeover_inside_confirmation_callback_prevents_real_tool_execution() ->
         )
 
     assert real_tool_calls == []
-    assert _stored_final_text(store, "confirmation-session") == "new owner response"
+    assert store.load("confirmation-session")["execution_checkpoint"]["status"] == (
+        "awaiting_interaction"
+    )
 
 
 def test_tool_unfenced_store_write_raises_lease_error_instead_of_model_recovery() -> None:
@@ -576,10 +574,6 @@ def test_confirmation_resolver_unfenced_write_cannot_become_tool_error() -> None
 def test_takeover_inside_deferred_confirmation_prevents_real_tool_execution() -> None:
     clock = _ManualClock()
     store = InMemorySessionStore(clock_ms=clock.now_ms)
-    winner_loop, _ = _runtime_loop(
-        store=store,
-        model_io=_QueueModelIO([_final_turn("new owner response")]),
-    )
     real_tool_calls: list[str] = []
     toolkit = Toolkit()
     for index in range(8):
@@ -675,15 +669,12 @@ def test_takeover_inside_deferred_confirmation_prevents_real_tool_execution() ->
     )
 
     def confirm_after_takeover(_request: Any) -> dict[str, bool]:
-        # PreparedAgent's automatically assembled runtime uses the default
-        # 60-second TTL.  Advancing the store-owned clock is deterministic and
-        # does not wait for wall time or a heartbeat thread.
-        clock.advance(60_001)
-        winner_loop.run(
-            [{"role": "user", "content": "take over"}],
-            session_id="deferred-confirmation-session",
-            provider="ollama",
-            model="fake",
+        snapshot = store.load_with_revision("deferred-confirmation-session")
+        store.acquire_lease(
+            "deferred-confirmation-session",
+            "winner",
+            60_000,
+            expected_revision=snapshot.revision,
         )
         return {"approved": True}
 
@@ -697,10 +688,9 @@ def test_takeover_inside_deferred_confirmation_prevents_real_tool_execution() ->
 
     assert model_io.call_count == 2
     assert real_tool_calls == []
-    assert (
-        _stored_final_text(store, "deferred-confirmation-session")
-        == "new owner response"
-    )
+    assert store.load("deferred-confirmation-session")["execution_checkpoint"][
+        "status"
+    ] == "awaiting_interaction"
 
 
 def test_takeover_between_on_suspend_and_persist_cannot_write_checkpoint() -> None:

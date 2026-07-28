@@ -77,6 +77,45 @@ def _openai_refusal(item: dict[str, Any]) -> str:
     return "".join(parts)
 
 
+def _openai_computer_call_semantic(item: dict[str, Any]) -> dict[str, Any]:
+    call_id = str(item.get("call_id") or item.get("id") or "")
+    actions = item.get("actions")
+    if not call_id or not isinstance(actions, list) or not actions:
+        raise ProviderContextProjectionError(
+            "OpenAI replay computer_call requires call_id and non-empty actions"
+        )
+    pending_safety_checks = item.get("pending_safety_checks")
+    if pending_safety_checks is not None and not isinstance(
+        pending_safety_checks,
+        list,
+    ):
+        raise ProviderContextProjectionError(
+            "OpenAI computer_call pending_safety_checks must be an array"
+        )
+    if pending_safety_checks:
+        raise ProviderContextProjectionError(
+            "computer_turn_terminated: OpenAI returned pending safety checks "
+            "that require explicit user acknowledgement"
+        )
+    semantic = {
+        "type": "computer_call",
+        "call_id": call_id,
+        "actions": [
+            {
+                key: copy.deepcopy(value)
+                for key, value in action.items()
+                if value is not None
+            }
+            if isinstance(action, dict)
+            else copy.deepcopy(action)
+            for action in actions
+        ],
+    }
+    if item.get("id") not in (None, ""):
+        semantic["id"] = copy.deepcopy(item["id"])
+    return semantic
+
+
 def _openai_segments(items: list[dict[str, Any]]) -> list[_ReplaySegment]:
     segments: list[_ReplaySegment] = []
     pending_reasoning: list[dict[str, Any]] = []
@@ -84,8 +123,24 @@ def _openai_segments(items: list[dict[str, Any]]) -> list[_ReplaySegment]:
     while index < len(items):
         item = copy.deepcopy(items[index])
         item_type = item.get("type")
-        if item_type == "reasoning" or item_type in _OPENAI_OPAQUE_OUTPUT_TYPES:
+        if item_type == "reasoning" or (
+            item_type in _OPENAI_OPAQUE_OUTPUT_TYPES and item_type != "computer_call"
+        ):
             pending_reasoning.append(item)
+            index += 1
+            continue
+        if item_type == "computer_call":
+            semantic = _openai_computer_call_semantic(item)
+            call_id = semantic["call_id"]
+            segments.append(
+                _ReplaySegment(
+                    semantic=semantic,
+                    wire_items=tuple([*pending_reasoning, item]),
+                    key=("openai.computer_call", call_id),
+                    requires_replay=True,
+                )
+            )
+            pending_reasoning = []
             index += 1
             continue
         if item_type == "function_call":
@@ -341,6 +396,9 @@ def _message_key(provider: str, message: dict[str, Any]) -> tuple[str, ...] | No
             if isinstance(call, dict)
         )
         return ("openai.assistant_tool_calls", *call_ids) if call_ids else None
+    if provider == "openai" and message.get("type") == "computer_call":
+        call_id = str(message.get("call_id") or message.get("id") or "")
+        return ("openai.computer_call", call_id) if call_id else None
     if provider in {"anthropic", "hyperspace"} and message.get("role") == "assistant":
         tool_ids = tuple(
             str(block.get("id") or "")
@@ -363,6 +421,26 @@ def _validate_tool_pairs(provider: str, messages: list[dict[str, Any]]) -> None:
     index = 0
     while index < len(messages):
         message = messages[index]
+        if provider == "openai" and message.get("type") == "computer_call":
+            call_id = str(message.get("call_id") or message.get("id") or "")
+            actions = message.get("actions")
+            if not call_id or not isinstance(actions, list) or not actions:
+                raise ProviderContextProjectionError(
+                    "OpenAI computer_call requires call_id and non-empty actions"
+                )
+            events.append(("calls", [call_id]))
+            index += 1
+            continue
+        if provider == "openai" and message.get("type") == "computer_call_output":
+            ids = []
+            while (
+                index < len(messages)
+                and messages[index].get("type") == "computer_call_output"
+            ):
+                ids.append(str(messages[index].get("call_id") or ""))
+                index += 1
+            events.append(("results", ids))
+            continue
         if provider == "openai" and message.get("type") == "function_call":
             ids: list[str] = []
             while index < len(messages) and messages[index].get("type") == "function_call":
@@ -520,6 +598,8 @@ def _ensure_external_remote_delta(messages: list[dict[str, Any]]) -> None:
         or message.get("type") in {
             "function_call",
             "function_call_output",
+            "computer_call",
+            "computer_call_output",
         }
         for message in conversation
     ):
@@ -747,8 +827,16 @@ def _rehydrate(
             keyed_targets.setdefault(key, []).append(index)
 
     projected = _project_segments(segments)
+    canonical_target = [
+        _openai_computer_call_semantic(message)
+        if provider == "openai" and message.get("type") == "computer_call"
+        else copy.deepcopy(message)
+        for message in target
+    ]
     replay_fingerprints = [_message_fingerprint(message) for message in projected]
-    target_fingerprints = [_message_fingerprint(message) for message in target]
+    target_fingerprints = [
+        _message_fingerprint(message) for message in canonical_target
+    ]
     replay_occurrences = _fingerprint_occurrences(replay_fingerprints)
     target_occurrences = _fingerprint_occurrences(target_fingerprints)
     unkeyed_required_indexes = {
@@ -788,7 +876,7 @@ def _rehydrate(
                 "provider replay segment has an ambiguous semantic target"
             )
         index = indexes[0]
-        if target[index] != segment.semantic:
+        if canonical_target[index] != segment.semantic:
             raise ProviderContextProjectionError(
                 "provider-native tool/reasoning segment was mutated ambiguously"
             )
@@ -803,12 +891,14 @@ def _rehydrate(
             anchored_before = (
                 segment_index > 0
                 and index > 0
-                and target[index - 1] == segments[segment_index - 1].semantic
+                and canonical_target[index - 1]
+                == segments[segment_index - 1].semantic
             )
             anchored_after = (
                 segment_index + 1 < len(segments)
                 and index + 1 < len(target)
-                and target[index + 1] == segments[segment_index + 1].semantic
+                and canonical_target[index + 1]
+                == segments[segment_index + 1].semantic
             )
             if not anchored_before and not anchored_after:
                 raise ProviderContextProjectionError(

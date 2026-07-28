@@ -37,6 +37,8 @@ Language switch: [English](README.en.md) | [简体中文](README.zh-CN.md)
 
 - [Agents API 参考](zh-CN/api/agents.md)
 - [Runtime API 参考](zh-CN/api/runtime.md)
+- [Interaction API 参考](zh-CN/api/interaction.md)
+- [耐久任务 API 参考](zh-CN/api/jobs.md)
 - [工具系统 API 参考](zh-CN/api/tools.md)
 - [Toolkit 实现参考](zh-CN/api/toolkits.md)
 - [Memory API 参考](zh-CN/api/memory.md)
@@ -51,6 +53,6 @@ Language switch: [English](README.en.md) | [简体中文](README.zh-CN.md)
 
 ## 覆盖承诺
 
-- `src/unchain` 下全部 55 个生产类都会被准确索引一次。
+- `src/unchain` 下的生产类会按参考领域建立索引。
 - 各包 `__init__` 中的公开导出会被交叉链接到参考树。
 - 中英文文档保持相同的章节和页面布局。

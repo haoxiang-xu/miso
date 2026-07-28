@@ -110,7 +110,7 @@ Frozen dataclass，由 `ModelIO.fetch_turn()` 返回，包含模型的 assistant
 
 ## KernelRunResult
 
-Frozen dataclass，由 `Agent.run()` 和 `PreparedAgent.run()` 返回，包含最终对话、状态及可选的 continuation/human-input 状态。
+Frozen dataclass，由 agent/kernel 执行入口返回，包含对话、状态以及可选 continuation/interaction 状态。
 
 | 项目 | 细节 |
 | --- | --- |
@@ -138,6 +138,7 @@ Frozen dataclass，由 `Agent.run()` 和 `PreparedAgent.run()` 返回，包含�
 | `previous_response_id` | `str \| None` | 默认值：`None`。 |
 | `iteration` | `int` | 默认值：`0`。 |
 | `provider_replay_handle` | `dict[str, Any] \| None` | 内部用于安全交接 repair/resume 的 opaque 进程内 replay capability。序列化后只含 `id` 和 `scope`，不会包含 provider reasoning/signature。默认值：`None`。 |
+| `interaction_request` | `dict[str, Any] \| None` | 异步等待 human input 或 tool approval 时返回的不可变 durable request。只有 memory-backed run 配置了 `on_max_iterations` callback 时才会 journal max-budget request；该 callback 是同步 adapter，因此它的 request 通常在等待被中断后从 session checkpoint 恢复，而不是作为正常返回值返回。默认值：`None`。 |
 
 ### `src/unchain/runtime/completion.py`
 
@@ -262,6 +263,18 @@ Kernel loop 使用的 provider 边界。所有 provider 实现（OpenAI、Anthro
 | `provider` | `str` | Provider 名称标识符。 |
 | `fetch_turn(request)` | `-> ModelTurnResult` | 执行一次模型 turn。 |
 
+### Durable interaction 身份要求
+
+上面的基础协议足以支持普通 model turn。Durable interaction resume 对
+runtime identity 有更严格的要求：在 selector、模型或工具开始工作前，runtime
+会比较 execution checkpoint、不可变 interaction request、continuation 和当前
+`ModelIO` 中记录的 provider/model。
+
+因此，用于 durable resume 的 custom `ModelIO` 必须直接暴露非空的
+`provider` 与 `model`，或通过 `engine.provider` 与 `engine.model` 同时暴露这两个
+值。如果任一值无法推断，或四方身份不一致，resume 会 fail closed。`AgentSpec`
+中的值不会被当作当前 adapter 身份的证明。
+
 ### `src/unchain/kernel/loop.py`
 
 Harness 驱动的执行循环，编排模型 turn、工具执行、memory 提交和暂停。
@@ -283,7 +296,7 @@ Harness 驱动的执行循环，编排模型 turn、工具执行、memory 提交
 - `register_harness(harness)` 挂载运行时 harness（工具执行、优化器等）。
 - `attach_memory(memory_runtime)` 连接 `KernelMemoryRuntime`。
 - `run()` 规范化消息、进入 step 循环、分发 harness phase、获取模型 turn，并返回 `KernelRunResult`。
-- `resume_human_input()` 恢复暂停的对话并继续循环。
+- `resume_interaction()` 恢复 durable suspension 并消费已校验 receipt；`resume_human_input()` 保留为 human input 兼容入口。
 
 ### 最小调用示例
 

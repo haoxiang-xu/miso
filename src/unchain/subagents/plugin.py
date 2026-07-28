@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import math
 import re
@@ -8,6 +9,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from ..execution import ExecutionGuard, _borrow_execution_guard
 from ..tools.common import emit_loop_event
 from ..tools.runtime import ToolRuntimeOutcome, ToolRuntimePlugin
 from ..kernel.types import ToolCall
@@ -38,6 +40,10 @@ _TERMINAL_THREAD_STATUSES = {
     "needs_clarification",
     "awaiting_human_input",
 }
+_WAITING_RUN_STATUSES = {
+    "awaiting_human_input",
+    "awaiting_interaction",
+}
 
 
 class _ChildRunError(RuntimeError):
@@ -59,6 +65,17 @@ def _parse_arguments(arguments: dict[str, Any] | str | None) -> dict[str, Any]:
     if isinstance(arguments, str) and arguments.strip():
         return json.loads(arguments)
     return {}
+
+
+def _aggregate_worker_batch_status(results: list[SubagentResult]) -> str:
+    if not results:
+        return "failed"
+    statuses = [result.status for result in results]
+    if all(status == "completed" for status in statuses):
+        return "completed"
+    if all(status in {"failed", "timeout"} for status in statuses):
+        return "failed"
+    return "partial_failure"
 
 
 def _last_assistant_text(messages: list[dict[str, Any]]) -> str:
@@ -394,6 +411,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         on_tool_confirm: Any = None,
         on_human_input: Any = None,
         on_max_iterations: Any = None,
+        execution_guard: ExecutionGuard | None = None,
     ) -> SubagentResult:
         if not child_run_id:
             child_run_id = self._build_child_run_id(
@@ -404,6 +422,8 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         captured_item_ids: set[str] = set()
 
         def _child_callback(event: dict[str, Any]) -> None:
+            if execution_guard is not None:
+                execution_guard.assert_active()
             if isinstance(event, dict):
                 if event.get("type") == "human_input_requested":
                     return None
@@ -429,6 +449,37 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         def _captured_delta() -> dict[str, Any]:
             return {"blackboards": copy.deepcopy(captured_state.blackboards)} if captured_state.blackboards else {}
 
+        def _stop_child_at_max_iterations(_decision: Any) -> dict[str, Any]:
+            # The parent's continuation callback is bound to the root run's
+            # durable interaction.  A child reaching its own budget must
+            # return that status to the parent instead of borrowing the root
+            # callback (which can otherwise resume the wrong execution).
+            return {
+                "approved": False,
+                "reason": "subagent_max_iterations_reached",
+            }
+
+        child_execution_guard = (
+            _borrow_execution_guard(execution_guard, session_id=session_id)
+            if execution_guard is not None
+            else None
+        )
+        guarded_run_kwargs: dict[str, Any] = {}
+        if child_execution_guard is not None:
+            try:
+                run_parameters = inspect.signature(agent.run).parameters.values()
+            except (TypeError, ValueError):
+                run_parameters = ()
+            if any(
+                (
+                    parameter.name == "_execution_guard"
+                    and parameter.kind != inspect.Parameter.POSITIONAL_ONLY
+                )
+                or parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in run_parameters
+            ):
+                guarded_run_kwargs["_execution_guard"] = child_execution_guard
+            child_execution_guard.assert_active()
         try:
             result = agent.run(
                 input_messages,
@@ -437,10 +488,22 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 max_iterations=max_iterations,
                 callback=_child_callback,
                 on_tool_confirm=on_tool_confirm,
-                on_human_input=on_human_input,
-                on_max_iterations=on_max_iterations,
+                # A child cannot safely own the parent's blocking UI callback.
+                # Let the child suspend so its clarification request can be
+                # returned to the parent as a structured SubagentResult.
+                on_human_input=None,
+                on_max_iterations=_stop_child_at_max_iterations,
                 run_id=child_run_id,
+                **guarded_run_kwargs,
             )
+            if child_execution_guard is not None:
+                if (
+                    result.status in _WAITING_RUN_STATUSES
+                    and execution_guard is not None
+                ):
+                    execution_guard.assert_active()
+                else:
+                    child_execution_guard.assert_active()
         except Exception as exc:
             raise _ChildRunError(exc, _captured_delta()) from exc
         output = _last_assistant_text(result.messages)
@@ -523,10 +586,34 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         expected_output = str(args.get("expected_output") or "").strip()
         context_mode = str(args.get("context_mode") or "none").strip() or "none"
         background = bool(args.get("background", False))
+        return_mode = str(args.get("return_mode") or "result").strip() or "result"
         if not target:
             return ToolRuntimeOutcome(handled=True, tool_result={"error": "spawn_agent_thread requires target"})
         if not task:
             return ToolRuntimeOutcome(handled=True, tool_result={"error": "spawn_agent_thread requires task"})
+        if background:
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={
+                    "error": "spawn_agent_thread background=true is not supported",
+                    "error_code": "agent_thread_background_unsupported",
+                    "status": "unsupported",
+                    "tool": "spawn_agent_thread",
+                },
+            )
+        if return_mode != "result":
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={
+                    "error": (
+                        "spawn_agent_thread only supports return_mode='result'; "
+                        f"received {return_mode!r}"
+                    ),
+                    "error_code": "agent_thread_return_mode_unsupported",
+                    "status": "unsupported",
+                    "tool": "spawn_agent_thread",
+                },
+            )
 
         state = self._ensure_state(context)
         child_id, lineage, next_state = self._next_subagent_identity(state=state, target=target, mode="delegate")
@@ -599,6 +686,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 on_tool_confirm=context.event.get("on_tool_confirm"),
                 on_human_input=context.event.get("on_human_input"),
                 on_max_iterations=context.event.get("on_max_iterations"),
+                execution_guard=getattr(context, "execution_guard", None),
             )
         except Exception as exc:
             failed_record = AgentThreadRecord(
@@ -828,6 +916,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 on_tool_confirm=event.get("on_tool_confirm"),
                 on_human_input=event.get("on_human_input"),
                 on_max_iterations=event.get("on_max_iterations"),
+                execution_guard=getattr(context, "execution_guard", None),
             )
         except Exception as exc:
             failed_record = AgentThreadRecord(
@@ -960,6 +1049,44 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 handled=True,
                 tool_result={"error": "wait_agent_messages condition must be one of all_done, any_done, or idle"},
             )
+        raw_timeout_seconds = args.get("timeout_seconds")
+        if raw_timeout_seconds is not None:
+            timeout_seconds: float | None = None
+            if not isinstance(raw_timeout_seconds, bool) and isinstance(
+                raw_timeout_seconds,
+                (int, float),
+            ):
+                try:
+                    timeout_seconds = float(raw_timeout_seconds)
+                except (OverflowError, ValueError):
+                    timeout_seconds = None
+            if (
+                timeout_seconds is None
+                or not math.isfinite(timeout_seconds)
+                or timeout_seconds < 0
+            ):
+                return ToolRuntimeOutcome(
+                    handled=True,
+                    tool_result={
+                        "error": "wait_agent_messages timeout_seconds must be a finite non-negative number",
+                        "error_code": "agent_wait_timeout_invalid",
+                        "status": "invalid_request",
+                        "tool": "wait_agent_messages",
+                    },
+                )
+            if timeout_seconds > 0:
+                return ToolRuntimeOutcome(
+                    handled=True,
+                    tool_result={
+                        "error": (
+                            "wait_agent_messages timed waiting is not supported; "
+                            "omit timeout_seconds or use 0 for a snapshot"
+                        ),
+                        "error_code": "agent_wait_timed_wait_unsupported",
+                        "status": "unsupported",
+                        "tool": "wait_agent_messages",
+                    },
+                )
 
         state = self._ensure_state(context)
         threads: list[dict[str, Any]] = []
@@ -1358,6 +1485,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 on_tool_confirm=context.event.get("on_tool_confirm"),
                 on_human_input=context.event.get("on_human_input"),
                 on_max_iterations=context.event.get("on_max_iterations"),
+                execution_guard=getattr(context, "execution_guard", None),
             )
         except Exception as exc:
             failed_state = self._merge_child_exception_subagent_state(running_state, exc)
@@ -1518,6 +1646,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 on_tool_confirm=context.event.get("on_tool_confirm"),
                 on_human_input=context.event.get("on_human_input"),
                 on_max_iterations=context.event.get("on_max_iterations"),
+                execution_guard=getattr(context, "execution_guard", None),
             )
         except Exception as exc:
             failed_state = self._merge_child_exception_subagent_state(next_state, exc)
@@ -1646,6 +1775,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 on_tool_confirm=context.event.get("on_tool_confirm"),
                 on_human_input=context.event.get("on_human_input"),
                 on_max_iterations=context.event.get("on_max_iterations"),
+                execution_guard=getattr(context, "execution_guard", None),
             )
         except Exception as exc:
             failed_state = self._merge_child_exception_subagent_state(next_state, exc)
@@ -1877,6 +2007,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                     on_tool_confirm=context.event.get("on_tool_confirm"),
                     on_human_input=context.event.get("on_human_input"),
                     on_max_iterations=context.event.get("on_max_iterations"),
+                    execution_guard=getattr(context, "execution_guard", None),
                 )
                 rendered = self._render_result(result=result, output_mode=output_mode, template_name=template_name)
                 result = SubagentResult(**rendered)
@@ -1949,7 +2080,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         summary_parts = [result.summary or result.output for result in results if (result.summary or result.output)]
         tool_result = {
             "mode": "worker_batch",
-            "status": "completed" if all(result.status == "completed" for result in results) else "partial_failure",
+            "status": _aggregate_worker_batch_status(results),
             "aggregate_mode": aggregate_mode,
             "summary": "\n".join(summary_parts),
             "results": [result.to_dict() for result in results],

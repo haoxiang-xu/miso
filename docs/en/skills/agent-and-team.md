@@ -19,7 +19,7 @@ This chapter documents the high-level orchestration surface: how a single `Agent
 - `Agent`
 - `AgentBuilder` / `PreparedAgent` / `AgentCallContext`
 - `AgentSpec` / `AgentState`
-- Module types: `ToolsModule`, `MemoryModule`, `PoliciesModule`, `OptimizersModule`, `SubagentModule`, `ToolDiscoveryModule`
+- Module types: `ToolsModule`, `MemoryModule`, `PoliciesModule`, `OptimizersModule`, `SubagentModule`, `InteractionModule`, `JobsModule`, `CharacterModule`, `ToolDiscoveryModule`, `ToolOptimizerModule`
 - `SubagentExecutor`, `SubagentPolicy`, `SubagentTemplate` (under `unchain.subagents`)
 
 ## Execution and state flow

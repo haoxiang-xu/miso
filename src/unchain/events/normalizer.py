@@ -160,8 +160,11 @@ def _renderer_from_selection_mode(selection_mode: str, kind: str = "") -> str:
 
 def _interaction_payload(raw: dict[str, Any], *, raw_type: str) -> tuple[str, dict[str, Any]]:
     interaction_id = _str_value(
-        raw.get("confirmation_id"),
-        _str_value(raw.get("request_id"), _str_value(raw.get("call_id"))),
+        raw.get("interaction_id"),
+        _str_value(
+            raw.get("confirmation_id"),
+            _str_value(raw.get("request_id"), _str_value(raw.get("call_id"))),
+        ),
     )
     interact_type = _str_value(raw.get("interact_type"))
     selection_mode = _str_value(raw.get("selection_mode"))
@@ -207,7 +210,61 @@ def _interaction_payload(raw: dict[str, Any], *, raw_type: str) -> tuple[str, di
     for key in ("allow_other", "other_label", "other_placeholder", "min_selected", "max_selected"):
         if key in raw:
             payload[key] = copy.deepcopy(raw[key])
+    durable_request = raw.get("interaction_request")
+    if isinstance(durable_request, dict):
+        payload["interaction_kind"] = _str_value(
+            durable_request.get("kind")
+        )
+        payload["request"] = copy.deepcopy(durable_request)
     return interaction_id, payload
+
+
+def _durable_interaction_payload(
+    raw: dict[str, Any],
+) -> tuple[str, dict[str, Any], str] | None:
+    request = raw.get("interaction_request")
+    if not isinstance(request, dict):
+        return None
+    interaction_id = _str_value(request.get("interaction_id"))
+    interaction_kind = _str_value(request.get("kind"))
+    request_payload = request.get("payload")
+    if not interaction_id or not interaction_kind or not isinstance(
+        request_payload,
+        dict,
+    ):
+        return None
+
+    compatibility_raw = copy.deepcopy(request_payload)
+    compatibility_raw["confirmation_id"] = interaction_id
+    if interaction_kind == "human_input":
+        legacy_type = "human_input_requested"
+    elif interaction_kind == "tool_approval":
+        legacy_type = "tool_confirmation_requested"
+    elif interaction_kind == "max_budget":
+        legacy_type = "continuation_request"
+        compatibility_raw.setdefault("title", "Iteration limit reached")
+        compatibility_raw.setdefault("question", "Continue this run?")
+        compatibility_raw["interact_config"] = {
+            "effective_max": copy.deepcopy(
+                request_payload.get("effective_max")
+            ),
+            "suggested_extra_iterations": copy.deepcopy(
+                request_payload.get("suggested_extra_iterations")
+            ),
+            "decision": copy.deepcopy(request_payload.get("decision")),
+        }
+    else:
+        return None
+
+    _, payload = _interaction_payload(
+        compatibility_raw,
+        raw_type=legacy_type,
+    )
+    payload["interaction_id"] = interaction_id
+    payload["interaction_kind"] = interaction_kind
+    payload["request"] = copy.deepcopy(request)
+    call_id = _str_value(compatibility_raw.get("call_id"))
+    return interaction_id, payload, call_id
 
 
 def normalize_raw_event(
@@ -455,9 +512,24 @@ def normalize_raw_event(
             )
         ]
 
-    if raw_type in {"tool_confirmation_requested", "input_requested", "continuation_request", "human_input_requested"}:
-        interaction_id, payload = _interaction_payload(raw_event, raw_type=raw_type)
-        call_id = _str_value(raw_event.get("call_id"))
+    interaction_types = {
+        "tool_confirmation_requested",
+        "input_requested",
+        "continuation_request",
+        "human_input_requested",
+    }
+    if raw_type in interaction_types or raw_type == "interaction_requested":
+        if raw_type == "interaction_requested":
+            durable_payload = _durable_interaction_payload(raw_event)
+            if durable_payload is None:
+                return []
+            interaction_id, payload, call_id = durable_payload
+        else:
+            interaction_id, payload = _interaction_payload(
+                raw_event,
+                raw_type=raw_type,
+            )
+            call_id = _str_value(raw_event.get("call_id"))
         return [
             RuntimeEventDraft(
                 type="interaction.requested",
@@ -555,29 +627,71 @@ def normalize_raw_event(
             )
         ]
 
-    if raw_type in {"subagent_started", "subagent_completed", "subagent_failed"}:
+    subagent_run_started_types = {
+        "subagent_started",
+        "agent_thread_spawned",
+        "subagent_return_handoff_started",
+    }
+    subagent_run_completed_types = {
+        "subagent_completed",
+        "agent_thread_completed",
+        "subagent_return_handoff_completed",
+    }
+    subagent_run_failed_types = {
+        "subagent_failed",
+        "agent_thread_failed",
+    }
+    if raw_type in (
+        subagent_run_started_types
+        | subagent_run_completed_types
+        | subagent_run_failed_types
+    ):
         child_run_id = _str_value(raw_event.get("child_run_id"))
+        if not child_run_id:
+            return []
         subagent_id = _str_value(raw_event.get("subagent_id"), child_run_id or agent_id)
         parent_run_id = _str_value(raw_event.get("root_run_id"), context.root_run_id)
-        event_type = {
-            "subagent_started": "run.started",
-            "subagent_completed": "run.completed",
-            "subagent_failed": "run.failed",
-        }[raw_type]
+        status = _str_value(raw_event.get("status"))
+        if raw_type in subagent_run_started_types:
+            event_type = "run.started"
+            status = status or "running"
+        elif raw_type in subagent_run_failed_types or status == "failed":
+            event_type = "run.failed"
+            status = status or "failed"
+        else:
+            event_type = "run.completed"
+            status = status or "completed"
         payload: dict[str, Any] = {
             "agent_id": subagent_id,
             "parent_id": _str_value(raw_event.get("parent_id")),
             "mode": _str_value(raw_event.get("mode")),
             "template": _str_value(raw_event.get("template")),
             "lineage": copy.deepcopy(raw_event.get("lineage")) if isinstance(raw_event.get("lineage"), list) else [],
+            "status": status,
         }
-        if raw_type == "subagent_completed":
-            payload["status"] = _str_value(raw_event.get("status"), "completed")
-        if raw_type == "subagent_failed":
-            payload["status"] = _str_value(raw_event.get("status"), "failed")
+        for key in ("batch_id", "thread_id", "background", "reason"):
+            if key in raw_event:
+                payload[key] = copy.deepcopy(raw_event[key])
+        if event_type == "run.failed":
+            raw_error = raw_event.get("error")
+            if isinstance(raw_error, dict):
+                error_code = _str_value(
+                    raw_error.get("code"),
+                    _str_value(raw_event.get("code"), "subagent_failed"),
+                )
+                error_message = _str_value(
+                    raw_error.get("message"),
+                    _str_value(raw_event.get("message"), "Subagent failed"),
+                )
+            else:
+                error_code = _str_value(raw_event.get("code"), "subagent_failed")
+                error_message = _str_value(
+                    raw_event.get("message"),
+                    _str_value(raw_error, "Subagent failed"),
+                )
             payload["error"] = {
-                "code": _str_value(raw_event.get("code"), "subagent_failed"),
-                "message": _str_value(raw_event.get("message"), "Subagent failed"),
+                "code": error_code,
+                "message": error_message,
             }
         return [
             RuntimeEventDraft(
@@ -587,6 +701,117 @@ def normalize_raw_event(
                 links=RuntimeEventLinks(parent_run_id=parent_run_id or None),
                 surface=_debug_surface(),
                 payload=payload,
+                metadata=metadata,
+            )
+        ]
+
+    if raw_type in {"subagent_batch_started", "subagent_batch_joined"}:
+        batch_id = _str_value(raw_event.get("batch_id"))
+        if not batch_id:
+            return []
+        step_id = f"agent-batch:{batch_id}"
+        is_started = raw_type == "subagent_batch_started"
+        payload = {
+            "step_id": step_id,
+            "step_type": "agent_orchestration",
+            "operation": "worker_batch",
+            "phase": "started" if is_started else "joined",
+            "status": "running" if is_started else "completed",
+            "batch_id": batch_id,
+            "agent_id": _str_value(raw_event.get("subagent_id"), agent_id),
+            "parent_id": _str_value(raw_event.get("parent_id")),
+            "mode": _str_value(raw_event.get("mode"), "worker"),
+            "template": _str_value(raw_event.get("template")),
+            "lineage": copy.deepcopy(raw_event.get("lineage"))
+            if isinstance(raw_event.get("lineage"), list)
+            else [],
+        }
+        count_key = "task_count" if is_started else "completed_count"
+        if count_key in raw_event:
+            payload[count_key] = copy.deepcopy(raw_event[count_key])
+        return [
+            RuntimeEventDraft(
+                type="step.started" if is_started else "step.completed",
+                run_id=run_id,
+                agent_id=payload["agent_id"],
+                turn_id=turn_id,
+                links=RuntimeEventLinks(step_id=step_id),
+                surface=_debug_surface(),
+                visibility="debug",
+                payload=payload,
+                metadata=metadata,
+            )
+        ]
+
+    if raw_type == "subagent_handoff":
+        child_run_id = _str_value(raw_event.get("child_run_id"))
+        if not child_run_id:
+            return []
+        subagent_id = _str_value(raw_event.get("subagent_id"), child_run_id)
+        parent_run_id = _str_value(raw_event.get("root_run_id"), context.root_run_id)
+        step_id = f"agent-handoff:{child_run_id}"
+        return [
+            RuntimeEventDraft(
+                type="step.completed",
+                run_id=child_run_id,
+                agent_id=subagent_id,
+                links=RuntimeEventLinks(
+                    parent_run_id=parent_run_id or None,
+                    step_id=step_id,
+                ),
+                surface=_debug_surface(),
+                visibility="debug",
+                payload={
+                    "step_id": step_id,
+                    "step_type": "agent_orchestration",
+                    "operation": "handoff",
+                    "phase": "completed",
+                    "status": "dispatched",
+                    "child_run_id": child_run_id,
+                    "agent_id": subagent_id,
+                    "parent_id": _str_value(raw_event.get("parent_id")),
+                    "mode": _str_value(raw_event.get("mode"), "handoff"),
+                    "template": _str_value(raw_event.get("template")),
+                    "lineage": copy.deepcopy(raw_event.get("lineage"))
+                    if isinstance(raw_event.get("lineage"), list)
+                    else [],
+                    "reason": _str_value(raw_event.get("reason")),
+                },
+                metadata=metadata,
+            )
+        ]
+
+    if raw_type == "agent_thread_closed":
+        thread_id = _str_value(raw_event.get("thread_id"))
+        if not thread_id:
+            return []
+        step_id = f"agent-thread:{thread_id}:close"
+        thread_agent_id = _str_value(raw_event.get("subagent_id"), agent_id)
+        return [
+            RuntimeEventDraft(
+                type="step.completed",
+                run_id=run_id,
+                agent_id=thread_agent_id,
+                turn_id=turn_id,
+                links=RuntimeEventLinks(step_id=step_id),
+                surface=_debug_surface(),
+                visibility="debug",
+                payload={
+                    "step_id": step_id,
+                    "step_type": "agent_orchestration",
+                    "operation": "agent_thread_close",
+                    "phase": "completed",
+                    "status": "closed",
+                    "thread_id": thread_id,
+                    "agent_id": thread_agent_id,
+                    "parent_id": _str_value(raw_event.get("parent_id")),
+                    "mode": _str_value(raw_event.get("mode"), "thread"),
+                    "template": _str_value(raw_event.get("template")),
+                    "lineage": copy.deepcopy(raw_event.get("lineage"))
+                    if isinstance(raw_event.get("lineage"), list)
+                    else [],
+                    "reason": _str_value(raw_event.get("reason")),
+                },
                 metadata=metadata,
             )
         ]

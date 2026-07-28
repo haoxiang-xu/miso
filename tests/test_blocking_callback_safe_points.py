@@ -378,7 +378,9 @@ def test_max_iterations_callback_observes_durable_checkpoint_before_wait():
     assert result.status == "completed"
     final_snapshot = store.load_with_revision(session_id)
     assert "execution_checkpoint" not in final_snapshot.state
-    assert final_snapshot.revision == 2
+    # checkpoint/request, receipt, and final semantic commit are three
+    # independently recoverable durable transitions.
+    assert final_snapshot.revision == 3
 
 
 def test_max_iterations_event_exception_happens_after_durable_checkpoint():

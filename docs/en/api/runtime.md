@@ -110,7 +110,7 @@ Frozen dataclass returned by `ModelIO.fetch_turn()` with the model's assistant m
 
 ## KernelRunResult
 
-Frozen dataclass returned by `Agent.run()` and `PreparedAgent.run()` with the final conversation, status, and optional continuation/human-input state.
+Frozen dataclass returned by agent/kernel execution entry points with the conversation, status, and optional continuation/interaction state.
 
 | Item | Details |
 | --- | --- |
@@ -138,6 +138,7 @@ Frozen dataclass returned by `Agent.run()` and `PreparedAgent.run()` with the fi
 | `previous_response_id` | `str \| None` | Default: `None`. |
 | `iteration` | `int` | Default: `0`. |
 | `provider_replay_handle` | `dict[str, Any] \| None` | Opaque process-local replay capability used internally for safe repair/resume handoff. Its serialized form contains only `id` and `scope`, never provider reasoning/signatures. Default: `None`. |
+| `interaction_request` | `dict[str, Any] \| None` | Immutable durable request returned by asynchronous human-input and tool-approval waits. A max-budget request is journaled only when a memory-backed `on_max_iterations` callback is configured; because that callback is a synchronous adapter, its request is normally recovered from the session checkpoint after an interrupted wait rather than returned. Default: `None`. |
 
 ### `src/unchain/runtime/completion.py`
 
@@ -262,6 +263,19 @@ Provider-facing boundary used by the kernel loop. All provider implementations (
 | `provider` | `str` | Provider name identifier. |
 | `fetch_turn(request)` | `-> ModelTurnResult` | Execute one model turn. |
 
+### Durable interaction identity requirement
+
+The base protocol above is sufficient for ordinary model turns. Durable
+interaction resume has a stricter runtime-identity requirement: before selector,
+model, or tool work, it compares the provider/model recorded in the execution
+checkpoint, immutable interaction request, continuation, and active `ModelIO`.
+
+A custom `ModelIO` used for durable resume must therefore expose non-empty
+`provider` and `model` attributes, or expose both values through
+`engine.provider` and `engine.model`. If either value cannot be inferred, or any
+of the four identities differ, resume fails closed. Values from `AgentSpec` are
+not used as proof of the active adapter's identity.
+
 ### `src/unchain/kernel/loop.py`
 
 Harness-driven execution loop that orchestrates model turns, tool execution, memory commits, and suspension.
@@ -283,7 +297,7 @@ The main execution engine. Runs a step-once loop: dispatch harness phases, fetch
 - `register_harness(harness)` attaches runtime harnesses (tool execution, optimizers, etc.).
 - `attach_memory(memory_runtime)` connects a `KernelMemoryRuntime`.
 - `run()` normalizes messages, enters the step loop, dispatches harness phases, fetches model turns, and returns a `KernelRunResult`.
-- `resume_human_input()` restores a suspended conversation and continues the loop.
+- `resume_interaction()` restores a durable suspension and consumes its verified receipt; `resume_human_input()` remains the compatibility entry point for human input.
 
 ### Minimal usage example
 

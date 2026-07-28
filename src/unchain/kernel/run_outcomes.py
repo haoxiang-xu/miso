@@ -97,8 +97,27 @@ def finish_awaiting_human_input_run(
     return build_kernel_run_result(state, status="awaiting_human_input")
 
 
+def finish_awaiting_interaction_run(
+    state: RunState,
+    *,
+    callback: Any,
+    run_id: str,
+    dispatch_on_suspend: DispatchOnSuspend,
+) -> KernelRunResult:
+    state.run_status = "awaiting_interaction"
+    dispatch_on_suspend(
+        state,
+        callback=callback,
+        run_id=run_id,
+        iteration=int(state.iteration),
+        status="awaiting_interaction",
+    )
+    return build_kernel_run_result(state, status="awaiting_interaction")
+
+
 __all__ = [
     "finish_awaiting_human_input_run",
+    "finish_awaiting_interaction_run",
     "finish_completed_run",
     "finish_max_iterations_run",
 ]

@@ -25,13 +25,39 @@
 | `CompletionEvaluation` | `src/unchain/runtime/completion.py:13` | `../api/runtime.md#completionevaluation` |
 | `CompletionPolicy` | `src/unchain/runtime/completion.py:24` | `../api/runtime.md#completionpolicy` |
 | `CompletionValidator` | `src/unchain/runtime/completion.py:19` | 非 class 导出 |
+| `InteractionModule` | `src/unchain/agent/modules/interaction.py` | `../api/agents.md#interactionmodule` |
+| `JobsModule` | `src/unchain/agent/modules/jobs.py` | `../api/agents.md#jobsmodule` |
 | `MemoryModule` | `src/unchain/agent/modules/memory.py:12` | 非 class 导出 |
 | `ModelIOFactoryRegistry` | `src/unchain/agent/model_io.py:10` | 非 class 导出 |
 | `OptimizersModule` | `src/unchain/agent/modules/optimizers.py:9` | 非 class 导出 |
 | `PoliciesModule` | `src/unchain/agent/modules/policies.py:12` | 非 class 导出 |
 | `PreparedAgent` | `src/unchain/agent/builder.py:44` | 非 class 导出 |
 | `SubagentModule` | `src/unchain/agent/modules/subagents.py:17` | 非 class 导出 |
+| `ToolDiscoveryModule` | `src/unchain/agent/modules/tool_discovery.py` | 非 class 导出 |
+| `ToolOptimizerModule` | `src/unchain/agent/modules/tool_optimizer.py` | 非 class 导出 |
 | `ToolsModule` | `src/unchain/agent/modules/tools.py:10` | 非 class 导出 |
+
+## `src/unchain/jobs/__init__.py`
+
+| 名称 | 源码 | 参考 |
+| --- | --- | --- |
+| `JOB_ENVIRONMENT_PROFILE_VERSION` | `src/unchain/jobs/environment.py` | `../api/jobs.md#environment-profile` |
+| `JOB_SCHEMA_VERSION` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `JOB_STATUSES` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `STORE_MANIFEST_SCHEMA_VERSION` | `src/unchain/jobs/store.py` | `../api/jobs.md#store-identity` |
+| `TERMINAL_JOB_STATUSES` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `DurableJobError` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `DurableJobNotFoundError` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `DurableJobOwnershipError` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `DurableJobConflictError` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `DurableJobStoreCorruptionError` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `DurableJobHandle` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `DurableJobSnapshot` | `src/unchain/jobs/models.py` | `../api/jobs.md#公共接口` |
+| `DurableJobResult` | `src/unchain/jobs/process.py` | `../api/jobs.md#公共接口` |
+| `JsonFileJobStore` | `src/unchain/jobs/store.py` | `../api/jobs.md#公共接口` |
+| `JobEnvironmentProfile` | `src/unchain/jobs/environment.py` | `../api/jobs.md#environment-profile` |
+| `ProcessJobSupervisor` | `src/unchain/jobs/process.py` | `../api/jobs.md#processjobsupervisor` |
+| `DurableShellJobPlugin` | `src/unchain/jobs/plugin.py` | `../api/jobs.md#接入-agent-的-shell` |
 
 ## `src/unchain/input/__init__.py`
 
@@ -46,6 +72,31 @@
 | `build_ask_user_question_tool` | `-` | 非 class 导出 |
 | `is_human_input_tool_name` | `-` | 非 class 导出 |
 | `media` | `-` | 非 class 导出 |
+
+## `src/unchain/interaction/__init__.py` 的 durable 导出
+
+下表只列出 interaction journal surface 在本轮新增的 durable interaction 导出；
+已有 FYI、queued-turn 与 human-input 工具保持不变。
+
+| 名称 | 源码 | 参考 |
+| --- | --- | --- |
+| `INTERACTION_JOURNAL_KEY` | `src/unchain/interaction/durable.py:18` | `../api/interaction.md#常量` |
+| `INTERACTION_KIND_HUMAN_INPUT` | `src/unchain/interaction/durable.py:22` | `../api/interaction.md#常量` |
+| `INTERACTION_KIND_MAX_BUDGET` | `src/unchain/interaction/durable.py:24` | `../api/interaction.md#常量` |
+| `INTERACTION_KIND_TOOL_APPROVAL` | `src/unchain/interaction/durable.py:23` | `../api/interaction.md#常量` |
+| `InteractionAlreadyAppliedError` | `src/unchain/interaction/durable.py:60` | `../api/interaction.md#interaction-errors` |
+| `InteractionError` | `src/unchain/interaction/durable.py:36` | `../api/interaction.md#interaction-errors` |
+| `InteractionIntegrityError` | `src/unchain/interaction/durable.py:42` | `../api/interaction.md#interaction-errors` |
+| `InteractionNotPendingError` | `src/unchain/interaction/durable.py:48` | `../api/interaction.md#interaction-errors` |
+| `InteractionReceipt` | `src/unchain/interaction/durable.py:407` | `../api/interaction.md#interactionreceipt` |
+| `InteractionReceiptConflictError` | `src/unchain/interaction/durable.py:54` | `../api/interaction.md#interaction-errors` |
+| `InteractionRequest` | `src/unchain/interaction/durable.py:214` | `../api/interaction.md#interactionrequest` |
+| `build_interaction_receipt` | `src/unchain/interaction/durable.py:523` | `../api/interaction.md#interactionreceipt` |
+| `build_interaction_request` | `src/unchain/interaction/durable.py:339` | `../api/interaction.md#interactionrequest` |
+| `build_max_budget_continuation` | `src/unchain/interaction/effects.py:161` | `../api/interaction.md#builder-与-helper-导出` |
+| `build_max_budget_suspend_request` | `src/unchain/interaction/effects.py:222` | `../api/interaction.md#builder-与-helper-导出` |
+| `build_tool_approval_continuation` | `src/unchain/interaction/effects.py:239` | `../api/interaction.md#builder-与-helper-导出` |
+| `build_tool_approval_suspend_request` | `src/unchain/interaction/effects.py:331` | `../api/interaction.md#builder-与-helper-导出` |
 
 ## `src/unchain/memory/__init__.py`
 

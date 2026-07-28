@@ -27,10 +27,29 @@ class FyiChannel:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._pending: list[FyiMessage] = []
+        self._accepted_message_ids: set[str] = set()
 
-    def post(self, text: str, *, origin: str = "user") -> str:
-        message = FyiMessage(text=text, origin=origin)
+    def post(
+        self,
+        text: str,
+        *,
+        origin: str = "user",
+        message_id: str | None = None,
+    ) -> str:
+        normalized_message_id = str(message_id or "").strip()
+        message = FyiMessage(
+            text=text,
+            origin=origin,
+            **(
+                {"message_id": normalized_message_id}
+                if normalized_message_id
+                else {}
+            ),
+        )
         with self._lock:
+            if message.message_id in self._accepted_message_ids:
+                return message.message_id
+            self._accepted_message_ids.add(message.message_id)
             self._pending.append(message)
         return message.message_id
 
