@@ -38,9 +38,10 @@ class RetryContext:
 class RetriesExhaustedError(Exception):
     """Raised when all retries are used up."""
 
+    code = "retries_exhausted"
+
     def __init__(self, last_error: BaseException, attempts: int) -> None:
-        super().__init__(
-            f"Exhausted {attempts} retry attempts. Last error: {last_error!r}"
-        )
         self.last_error = last_error
         self.attempts = attempts
+        self.__suppress_context__ = True
+        super().__init__(self.code)

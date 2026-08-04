@@ -223,6 +223,8 @@ class HumanInputResumeHarness(BaseToolHarness):
             tool_name=tool_call.name,
             call_id=tool_call.call_id,
             result=copy.deepcopy(tool_result),
+            interaction_id=str(continuation.get("interaction_id") or ""),
+            interaction_resume_replay=True,
         )
 
         checkpoint_restored = bool(

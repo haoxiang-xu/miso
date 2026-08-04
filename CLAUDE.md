@@ -1,7 +1,17 @@
+# Security Trust Boundary
+
+Unchain does not provide capability isolation within one Python process.
+Same-process Python code is trusted TCB; private/module-global/closure mutation,
+monkeypatching, and `object.__setattr__` are outside the security threat model.
+Review security at process/IPC/network and durable-disk boundaries, secret
+sinks, restart recovery, and duplicate external effects. In-process tamper
+hardening must not block P0. See
+`docs/context-memory-v2-security-backlog.md`.
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **unchain** (9944 symbols, 19669 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **unchain** (18996 symbols, 40506 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 

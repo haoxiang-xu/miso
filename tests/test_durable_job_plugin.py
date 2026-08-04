@@ -998,3 +998,34 @@ def test_unmanifested_plugin_cannot_shadow_durable_shell_route(tmp_path) -> None
     finally:
         supervisor.close()
         toolkit.shutdown()
+
+
+def test_only_matching_unmanifested_plugin_cannot_become_normal_route(
+    tmp_path,
+) -> None:
+    class UnmanifestedPlugin:
+        def can_handle(self, *, tool_call, context) -> bool:
+            del tool_call, context
+            return True
+
+        def execute(self, *, tool_call, context):
+            raise AssertionError((tool_call, context))
+
+    toolkit = CoreToolkit(workspace_root=tmp_path)
+    tool_call = ToolCall(
+        call_id="call-unmanifested-only",
+        name="shell",
+        arguments={"action": "run", "command": "printf must-not-run"},
+    )
+    try:
+        with pytest.raises(
+            InteractionIntegrityError,
+            match="has no durable runtime manifest",
+        ):
+            snapshot_durable_tool_runtime_route(
+                [UnmanifestedPlugin()],
+                tool_call=tool_call,
+                context=_context(toolkit, True),
+            )
+    finally:
+        toolkit.shutdown()

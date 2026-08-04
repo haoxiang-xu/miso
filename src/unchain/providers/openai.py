@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from openai import OpenAI
 
+from ..durability import is_durable_persistence_failure
 from .base import ModelTurnRequest
 from .context_assembler import _openai_computer_call_semantic
 from .native import _NativeModelIOBase, _translate_content_blocks_for_openai
@@ -100,6 +101,8 @@ class OpenAIModelIO(_NativeModelIOBase):
         try:
             return self._fetch_turn_streaming(openai_client, request, request_kwargs)
         except Exception as exc:
+            if is_durable_persistence_failure(exc):
+                raise
             if request_kwargs.get("previous_response_id") and self._is_previous_response_error(exc):
                 if not isinstance(request.fallback_messages, list):
                     raise ProviderReplayFrameError(

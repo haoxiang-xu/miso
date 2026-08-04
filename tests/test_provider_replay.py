@@ -7,9 +7,15 @@ from types import SimpleNamespace
 import pytest
 
 from unchain.agent import Agent, InteractionModule, MemoryModule, ToolsModule
+from unchain.context import (
+    ContextCompileRequest,
+    ContextCompiler,
+    resolve_context_budget,
+)
 from unchain.input.human_input import ASK_USER_QUESTION_TOOL_NAME
 from unchain.kernel import ModelTurnRequest, ModelTurnResult, ToolCall
 from unchain.kernel.provider_replay import ProviderReplayFrameError
+from unchain.journal import ResourceRef
 from unchain.memory import JsonFileSessionStore, MemoryManager
 from unchain.providers import AnthropicModelIO, OllamaModelIO, OpenAIModelIO
 from unchain.runtime import build_runtime_loop
@@ -1283,4 +1289,144 @@ def test_openai_reasoning_human_suspend_cold_resume_uses_checkpoint_frame(tmp_pa
     assert "human-ciphertext" not in json.dumps(completed.messages)
     assert "execution_checkpoint" not in resumed_memory.store.load(
         "openai-human-cold-session"
+    )
+
+
+def _compiled_cross_provider_tool_history(provider: str, model: str) -> list[dict]:
+    result = ContextCompiler().compile(
+        ContextCompileRequest(
+            case="provider-consumes-context-v2",
+            source_messages=(
+                {"role": "developer", "content": "portable policy"},
+                {"role": "user", "content": "portable request"},
+            ),
+            semantic_events=(
+                {
+                    "type": "tool_call",
+                    "event_id": "tool-call-1",
+                    "store_seq": 1,
+                    "source_provider": "openai",
+                    "call_id": "call-1",
+                    "tool_name": "lookup",
+                    "arguments": {"query": "portable"},
+                },
+                {
+                    "type": "tool_result",
+                    "event_id": "tool-result-1",
+                    "store_seq": 2,
+                    "source_provider": "openai",
+                    "call_id": "call-1",
+                    "tool_name": "lookup",
+                    "result": {"preview": "portable result"},
+                    "result_bytes": 64,
+                    "result_sha256": "c" * 64,
+                    "full_output_ref": ResourceRef(
+                        "artifact", "tool-result-1", 1
+                    ).to_dict(),
+                },
+            ),
+            budget=resolve_context_budget(context_window_tokens=8_192),
+            provider=provider,
+            model=model,
+        )
+    )
+    return result.to_dict()["messages"]
+
+
+def test_provider_adapters_consume_compiled_neutral_tool_history() -> None:
+    openai_requests = []
+    OpenAIModelIO(
+        model="gpt-test",
+        api_key="test-key",
+        client_factory=_openai_factory(
+            [
+                [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "done"}],
+                    }
+                ]
+            ],
+            openai_requests,
+        ),
+    ).fetch_turn(
+        ModelTurnRequest(
+            messages=_compiled_cross_provider_tool_history("openai", "gpt-test"),
+            toolkit=Toolkit(),
+        )
+    )
+
+    anthropic_requests = []
+    AnthropicModelIO(
+        model="claude-test",
+        api_key="test-key",
+        client_factory=_anthropic_factory(
+            [
+                [
+                    SimpleNamespace(
+                        type="content_block_delta",
+                        index=0,
+                        delta=SimpleNamespace(type="text_delta", text="done"),
+                    ),
+                    SimpleNamespace(type="content_block_stop", index=0),
+                ]
+            ],
+            anthropic_requests,
+        ),
+    ).fetch_turn(
+        ModelTurnRequest(
+            messages=_compiled_cross_provider_tool_history(
+                "anthropic", "claude-test"
+            ),
+            toolkit=Toolkit(),
+        )
+    )
+
+    ollama_requests = []
+    OllamaModelIO(
+        model="qwen-test",
+        stream_factory=_ollama_stream_factory(
+            [
+                [
+                    json.dumps(
+                        {
+                            "message": {"role": "assistant", "content": "done"},
+                            "done": True,
+                        }
+                    )
+                ]
+            ],
+            ollama_requests,
+        ),
+    ).fetch_turn(
+        ModelTurnRequest(
+            messages=_compiled_cross_provider_tool_history("ollama", "qwen-test"),
+            toolkit=Toolkit(),
+        )
+    )
+
+    serialized_requests = [
+        json.dumps(openai_requests[0], sort_keys=True),
+        json.dumps(anthropic_requests[0], sort_keys=True),
+        json.dumps(ollama_requests[0], sort_keys=True),
+    ]
+    assert all("MEMORY_V2_UNTRUSTED_HISTORY" in item for item in serialized_requests)
+    assert all("tool-result-1" in item for item in serialized_requests)
+    assert not any(
+        item.get("type") in {"function_call", "function_call_output"}
+        for item in openai_requests[0]["input"]
+    )
+    assert not any(
+        isinstance(block, dict) and block.get("type") in {"tool_use", "tool_result"}
+        for message in anthropic_requests[0]["messages"]
+        for block in (
+            message.get("content")
+            if isinstance(message.get("content"), list)
+            else []
+        )
+    )
+    assert not any(
+        message.get("tool_calls")
+        for message in ollama_requests[0]["json"]["messages"]
     )

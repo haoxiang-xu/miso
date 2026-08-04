@@ -66,4 +66,7 @@ def execute_with_retry(
             sleep(delay_ms / 1000.0)
 
     assert last_error is not None
-    raise RetriesExhaustedError(last_error=last_error, attempts=config.max_retries)
+    raise RetriesExhaustedError(
+        last_error=last_error,
+        attempts=config.max_retries,
+    ) from None

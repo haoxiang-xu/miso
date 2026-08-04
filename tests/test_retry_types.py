@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import traceback
+
 import pytest
 
 from unchain.retry.types import (
@@ -55,12 +57,15 @@ def test_retry_context_background_flag():
 
 
 def test_retries_exhausted_error_wraps_last_error():
-    underlying = ConnectionError("eof")
+    secret = "retry-secret-payload"
+    underlying = ConnectionError(secret)
     err = RetriesExhaustedError(last_error=underlying, attempts=10)
     assert err.last_error is underlying
     assert err.attempts == 10
-    assert "10" in str(err)
-    assert "eof" in str(err)
+    assert err.args == (RetriesExhaustedError.code,)
+    assert str(err) == RetriesExhaustedError.code
+    assert secret not in repr(err)
+    assert secret not in "".join(traceback.format_exception(err))
 
 
 def test_public_api_exports():

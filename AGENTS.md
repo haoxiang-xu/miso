@@ -53,10 +53,23 @@ PYTHONPATH=src pytest tests/ -q
 | `src/unchain/memory/manager.py` | MemoryManager |
 | `src/unchain/runtime/resources/model_capabilities.json` | Model registry |
 
+## Security Trust Boundary
+
+- Unchain does not provide capability isolation between code or objects inside
+  the same Python process. Same-process Python code is trusted TCB.
+- Private-attribute access, module-global or closure mutation, monkeypatching,
+  and `object.__setattr__` are outside the product security threat model.
+- Security reviews must focus on process/IPC/network boundaries, durable disk
+  integrity, secret sinks, restart recovery, and duplicate external effects.
+- In-process tamper hardening may be logged as robustness work, but must not
+  block P0 or trigger recursive capability-hardening reviews.
+- Canonical rationale and stop-ship criteria live in
+  `docs/context-memory-v2-security-backlog.md`.
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **unchain** (9944 symbols, 19669 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **unchain** (18996 symbols, 40506 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 

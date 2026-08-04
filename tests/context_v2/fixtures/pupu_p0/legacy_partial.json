@@ -1,0 +1,96 @@
+{
+  "schema": "unchain.context_v2.fixture.v1",
+  "case": "legacy_partial",
+  "source_contracts": [
+    {
+      "path": "unchain_runtime/server/memory_v2_legacy_adapter.py",
+      "symbol": "LegacyV1LongTermAdapter.search"
+    },
+    {
+      "path": "unchain_runtime/server/memory_v2_curator.py",
+      "symbol": "MemoryV2Curator.run_job"
+    },
+    {
+      "path": "unchain_runtime/server/memory_v2_context.py",
+      "symbol": "_journal_bootstrap_messages"
+    },
+    {
+      "path": "unchain_runtime/server/tests/test_memory_v2_curator.py",
+      "symbol": "test_leased_job_from_partial_source_is_terminally_isolated_without_model"
+    },
+    {
+      "path": "unchain_runtime/server/tests/test_memory_v2_legacy_adapter.py",
+      "symbol": "test_search_is_reference_only_and_marks_legacy_provenance"
+    }
+  ],
+  "input": {
+    "schema": "unchain.context_v2.request.v1",
+    "case": "legacy_partial",
+    "source_messages": [
+      {
+        "role": "user",
+        "content": "current legacy-aware request"
+      }
+    ],
+    "legacy_profile": {
+      "preferences": {
+        "editor": "Synthetic editor",
+        "theme": "dark"
+      },
+      "identity": {
+        "display_name": "Synthetic Person"
+      }
+    },
+    "legacy_query": "editor",
+    "capture_quality": "partial"
+  },
+  "expected": {
+    "schema": "unchain.context_v2.comparable.v1",
+    "compression_applied": false,
+    "capture_quality": "partial",
+    "legacy_references": [
+      {
+        "ref": {
+          "kind": "memory",
+          "id": "mem-space-fixture/legacy_v1_fda7b5fad613cc34e80cb1e8a6be61da2935f2d7",
+          "revision": 266662950945445937
+        },
+        "name": "preferences",
+        "path": "/legacy_v1/profile/preferences",
+        "kind": "legacy_profile_document",
+        "description": "Read-only Legacy V1 profile document “preferences”; content is available only through this bound reference.",
+        "score": 0.9,
+        "provenance": {
+          "source": "legacy_v1",
+          "legacy_v1": true,
+          "read_only": true,
+          "source_kind": "profile_document",
+          "profile_sha256": "22e68e9e74e5d9a7108a4ea39377d58fa15a8d49b310546af9a8bc230e4cdfe1"
+        }
+      }
+    ],
+    "legacy_backend": "legacy_v1_lexical",
+    "inherited_context": [
+      {
+        "trust": "UNTRUSTED_DATA",
+        "message": {
+          "role": "user",
+          "content": {
+            "kind": "memory",
+            "id": "mem-space-fixture/legacy_v1_fda7b5fad613cc34e80cb1e8a6be61da2935f2d7",
+            "revision": 266662950945445937
+          }
+        },
+        "content_bytes": 129,
+        "content_sha256": "1f26222715f40c861934912f71c64843766bd14df90f8a6665573fb3743f082e"
+      }
+    ],
+    "canonical_tool_events": [],
+    "promotion_allowed": false,
+    "curator": {
+      "status": "Isolated",
+      "reason": "source_capture_partial",
+      "model_invoked": false
+    }
+  }
+}

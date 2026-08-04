@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+import pytest
+
 
 def test_capabilities_surface_exports_core_contracts():
     from unchain.capabilities import (
@@ -350,6 +352,64 @@ def test_kernel_loop_applies_structured_run_delta_context_ops():
     loop.dispatch_phase(state, phase="before_model")
 
     assert state.component_state["demo"]["value"] == 1
+
+
+def test_kernel_loop_accepts_an_official_trace_only_run_delta() -> None:
+    from unchain.capabilities import CapabilityOutcome, RunDelta
+    from unchain.kernel import BaseRuntimeHarness, KernelLoop
+
+    class TraceOnlyHarness(BaseRuntimeHarness):
+        durable_barrier = True
+
+        def build_delta(self, context):
+            return CapabilityOutcome(
+                delta=RunDelta(
+                    created_by="harness.trace_only",
+                    trace={"checkpoint_action": "absent"},
+                ),
+            )
+
+    loop = KernelLoop(
+        harnesses=[
+            TraceOnlyHarness(
+                name="trace_only",
+                phases=("finalize_persist",),
+            )
+        ]
+    )
+    state = loop.seed_state([{"role": "user", "content": "start"}])
+
+    loop.dispatch_phase(
+        state,
+        phase="finalize_persist",
+        event={"status": "completed", "run_id": "run-1"},
+    )
+
+    assert state.latest_messages() == [
+        {"role": "user", "content": "start"}
+    ]
+
+
+def test_kernel_loop_still_rejects_a_forged_capability_delta() -> None:
+    from unchain.capabilities import CapabilityOutcome
+    from unchain.kernel import BaseRuntimeHarness, KernelLoop
+
+    class ForgedDeltaHarness(BaseRuntimeHarness):
+        def build_delta(self, context):
+            return CapabilityOutcome(delta=object())
+
+    loop = KernelLoop(
+        harnesses=[
+            ForgedDeltaHarness(
+                name="forged_delta",
+                phases=("before_model",),
+            )
+        ]
+    )
+    state = loop.seed_state([{"role": "user", "content": "start"}])
+
+    with pytest.raises(TypeError, match="expected RunDelta-compatible"):
+        loop.dispatch_phase(state, phase="before_model")
 
 
 def test_execute_confirmable_tool_call_uses_tool_invoke_capability_value():

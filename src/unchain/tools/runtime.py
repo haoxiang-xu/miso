@@ -77,7 +77,7 @@ def snapshot_durable_tool_runtime_route(
             (plugin, getattr(plugin, "durable_runtime_manifest", None))
         )
 
-    if not any(callable(factory) for _, factory in matching):
+    if not matching:
         return None
 
     handlers: list[dict[str, Any]] = []
@@ -133,6 +133,22 @@ def run_tool_runtime_plugins(
             execution_guard.renew()
         if not plugin.can_handle(tool_call=tool_call, context=context):
             continue
+        manifest_factory = getattr(
+            plugin,
+            "durable_runtime_manifest",
+            None,
+        )
+        terminal_handler = False
+        if callable(manifest_factory):
+            manifest = manifest_factory(
+                tool_call=tool_call,
+                context=context,
+            )
+            if not isinstance(manifest, dict):
+                raise InteractionIntegrityError(
+                    "tool runtime plugin returned an invalid durable route manifest"
+                )
+            terminal_handler = manifest.get("terminal_handler") is True
         if execution_guard is not None:
             execution_guard.renew()
         outcome = plugin.execute(tool_call=tool_call, context=context)
@@ -146,5 +162,9 @@ def run_tool_runtime_plugins(
                 state_updates=copy.deepcopy(outcome.state_updates),
                 should_observe=bool(outcome.should_observe),
                 suspend_override=outcome.suspend_override,
+            )
+        if terminal_handler:
+            raise InteractionIntegrityError(
+                "durable terminal tool runtime handler declined its bound route"
             )
     return None

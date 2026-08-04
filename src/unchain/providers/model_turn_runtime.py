@@ -270,6 +270,38 @@ def build_model_turn_request(
         previous_response_id=assembly.previous_response_id,
         fallback_messages=assembly.fallback_messages,
         openai_text_format=openai_text_format,
+        context_mode=assembly.mode,
+    )
+
+
+def fetch_built_model_turn(
+    *,
+    model_io: ModelIO | None,
+    retry_config: RetryConfig,
+    state: RunState,
+    request: ModelTurnRequest,
+    before_attempt: Callable[[int], None] | None = None,
+) -> ModelTurnResult:
+    if model_io is None:
+        raise RuntimeError("KernelLoop.model_io is not configured")
+    if type(request) is not ModelTurnRequest:
+        raise TypeError("request must be an exact ModelTurnRequest")
+    context = RetryContext(
+        run_id=request.run_id,
+        iteration=request.iteration,
+        is_background=(request.run_id == "observe"),
+    )
+    turn = fetch_turn_with_retry(
+        model_io=model_io,
+        request=request,
+        config=retry_config,
+        context=context,
+        before_attempt=before_attempt,
+    )
+    return _with_fallback_replay_frame(
+        state=state,
+        request=request,
+        turn=turn,
     )
 
 
@@ -288,8 +320,6 @@ def fetch_model_turn(
     openai_text_format: dict[str, Any] | None = None,
     before_attempt: Callable[[int], None] | None = None,
 ) -> ModelTurnResult:
-    if model_io is None:
-        raise RuntimeError("KernelLoop.model_io is not configured")
     request = build_model_turn_request(
         state,
         payload=payload,
@@ -301,22 +331,12 @@ def fetch_model_turn(
         response_format=response_format,
         openai_text_format=openai_text_format,
     )
-    context = RetryContext(
-        run_id=run_id,
-        iteration=state.iteration,
-        is_background=(run_id == "observe"),
-    )
-    turn = fetch_turn_with_retry(
+    return fetch_built_model_turn(
         model_io=model_io,
-        request=request,
-        config=retry_config,
-        context=context,
-        before_attempt=before_attempt,
-    )
-    return _with_fallback_replay_frame(
+        retry_config=retry_config,
         state=state,
         request=request,
-        turn=turn,
+        before_attempt=before_attempt,
     )
 
 

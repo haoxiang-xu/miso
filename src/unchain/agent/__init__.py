@@ -2,9 +2,13 @@ from .agent import Agent
 from .builder import AgentBuilder, AgentCallContext, PreparedAgent
 from .completion import CompletionEvaluation, CompletionPolicy, CompletionValidator
 from .model_io import ModelIOFactoryRegistry
+from .run_identity import MemoryV2RunRole
 from .modules import (
     AgentModule,
     BaseAgentModule,
+    ContextModule,
+    ContextShadowModule,
+    DurabilityModule,
     InteractionModule,
     JobsModule,
     MemoryModule,
@@ -28,9 +32,13 @@ __all__ = [
     "CompletionEvaluation",
     "CompletionPolicy",
     "CompletionValidator",
+    "ContextModule",
+    "ContextShadowModule",
+    "DurabilityModule",
     "InteractionModule",
     "JobsModule",
     "MemoryModule",
+    "MemoryV2RunRole",
     "ModelIOFactoryRegistry",
     "OptimizersModule",
     "PoliciesModule",

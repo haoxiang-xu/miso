@@ -5,6 +5,7 @@ import importlib
 __all__ = [
     "BaseMemoryHarness",
     "ContextStrategy",
+    "DurabilityCheckpointHarness",
     "ExecutionCheckpointCompatibilityError",
     "ExecutionCheckpointError",
     "ExecutionCheckpointHarness",
@@ -33,6 +34,7 @@ __all__ = [
     "MemoryHarness",
     "MemoryManager",
     "MemoryPrepareEventHarness",
+    "MemoryRuntimeComponentMode",
     "MEMORY_EFFECT_CREATED_BY_PREFIX",
     "QdrantLongTermVectorAdapter",
     "QdrantVectorAdapter",
@@ -48,6 +50,7 @@ __all__ = [
     "SummaryTokenStrategy",
     "VectorStoreAdapter",
     "build_default_memory_components",
+    "build_durability_memory_components",
     "build_memory_commit_event",
     "build_memory_delta",
     "build_memory_prepare_event",
@@ -62,6 +65,8 @@ __all__ = [
 
 _EXPORT_TO_MODULE = {
     "build_default_memory_components": ".assembly",
+    "build_durability_memory_components": ".assembly",
+    "MemoryRuntimeComponentMode": ".assembly",
     "LongTermMemoryConfig": ".config",
     "MemoryConfig": ".config",
     "MEMORY_EFFECT_CREATED_BY_PREFIX": ".effects",
@@ -76,6 +81,7 @@ _EXPORT_TO_MODULE = {
     "MemoryHarness": ".base",
     "MemoryBootstrapHarness": ".bootstrap",
     "ExecutionCheckpointHarness": ".checkpoint",
+    "DurabilityCheckpointHarness": ".durability",
     "ExecutionCheckpointCompatibilityError": ".checkpoint_state",
     "ExecutionCheckpointError": ".checkpoint_state",
     "ExecutionCheckpointIntegrityError": ".checkpoint_state",

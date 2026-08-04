@@ -10,6 +10,7 @@ from ..interaction.durable import InteractionReceipt
 from ..tools import Tool
 from .builder import AgentBuilder, AgentCallContext
 from .model_io import ModelIOFactoryRegistry
+from .run_identity import MemoryV2RunRole
 from .spec import AgentSpec, AgentState
 
 
@@ -179,6 +180,8 @@ class Agent:
         session_id: str | None = None,
         memory_namespace: str | None = None,
         run_id: str | None = None,
+        memory_v2_run_role: MemoryV2RunRole | None = None,
+        root_run_id: str | None = None,
         execution_owner_id: str | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
         _execution_guard: ExecutionGuard | None = None,
@@ -200,6 +203,8 @@ class Agent:
                 session_id=session_id,
                 memory_namespace=memory_namespace,
                 run_id=run_id,
+                memory_v2_run_role=memory_v2_run_role,
+                root_run_id=root_run_id,
                 execution_owner_id=execution_owner_id,
                 execution_guard=_execution_guard,
                 tool_runtime_config=copy.deepcopy(tool_runtime_config)
@@ -225,6 +230,8 @@ class Agent:
         session_id: str | None = None,
         memory_namespace: str | None = None,
         run_id: str | None = None,
+        memory_v2_run_role: MemoryV2RunRole | None = None,
+        root_run_id: str | None = None,
         execution_owner_id: str | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
     ) -> KernelRunResult:
@@ -252,6 +259,8 @@ class Agent:
                 session_id=session_id,
                 memory_namespace=memory_namespace,
                 run_id=run_id,
+                memory_v2_run_role=memory_v2_run_role,
+                root_run_id=root_run_id,
                 execution_owner_id=execution_owner_id,
                 tool_runtime_config=copy.deepcopy(tool_runtime_config)
                 if isinstance(tool_runtime_config, dict)
@@ -296,6 +305,8 @@ class Agent:
         on_max_iterations: Callable[..., Any] | None = None,
         memory_namespace: str | None = None,
         run_id: str | None = None,
+        memory_v2_run_role: MemoryV2RunRole | None = None,
+        root_run_id: str | None = None,
         execution_owner_id: str | None = None,
         tool_runtime_config: dict[str, Any] | None = None,
     ) -> KernelRunResult:
@@ -324,6 +335,8 @@ class Agent:
                 session_id=session_id,
                 memory_namespace=memory_namespace,
                 run_id=run_id,
+                memory_v2_run_role=memory_v2_run_role,
+                root_run_id=root_run_id,
                 execution_owner_id=execution_owner_id,
                 tool_runtime_config=copy.deepcopy(tool_runtime_config)
                 if isinstance(tool_runtime_config, dict)

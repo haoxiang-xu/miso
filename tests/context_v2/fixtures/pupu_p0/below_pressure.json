@@ -1,0 +1,186 @@
+{
+  "schema": "unchain.context_v2.fixture.v1",
+  "case": "below_pressure",
+  "source_contracts": [
+    {
+      "path": "unchain_runtime/server/memory_v2_context.py",
+      "symbol": "compile_context_envelope"
+    },
+    {
+      "path": "unchain_runtime/server/tests/test_memory_v2_context.py",
+      "symbol": "test_compiler_uses_checkpoint_only_under_pressure_and_keeps_current_user"
+    }
+  ],
+  "input": {
+    "schema": "unchain.context_v2.request.v1",
+    "case": "below_pressure",
+    "source_messages": [
+      {
+        "role": "user",
+        "content": "Constraint: retain all current-generation semantic history.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-01-user"
+      },
+      {
+        "role": "assistant",
+        "content": "Synthetic assistant turn 1 retained.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-01-assistant"
+      },
+      {
+        "role": "user",
+        "content": "Synthetic user turn 2.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-02-user"
+      },
+      {
+        "role": "assistant",
+        "content": "Synthetic assistant turn 2 retained.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-02-assistant"
+      },
+      {
+        "role": "user",
+        "content": "Synthetic user turn 3.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-03-user"
+      },
+      {
+        "role": "assistant",
+        "content": "Synthetic assistant turn 3 retained.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-03-assistant"
+      },
+      {
+        "role": "user",
+        "content": "Synthetic user turn 4.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-04-user"
+      },
+      {
+        "role": "assistant",
+        "content": "Synthetic assistant turn 4 retained.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-04-assistant"
+      },
+      {
+        "role": "user",
+        "content": "Synthetic user turn 5.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-05-user"
+      },
+      {
+        "role": "assistant",
+        "content": "Synthetic assistant turn 5 retained.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-05-assistant"
+      },
+      {
+        "role": "user",
+        "content": "Synthetic user turn 6.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-06-user"
+      },
+      {
+        "role": "assistant",
+        "content": "Synthetic assistant turn 6 retained.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-06-assistant"
+      }
+    ],
+    "current_generation": "generation-0042",
+    "fixed_overhead_tokens": 100
+  },
+  "expected": {
+    "schema": "unchain.context_v2.comparable.v1",
+    "compression_applied": false,
+    "messages": [
+      {
+        "role": "user",
+        "content": "Constraint: retain all current-generation semantic history.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-01-user"
+      },
+      {
+        "role": "assistant",
+        "content": "Synthetic assistant turn 1 retained.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-01-assistant"
+      },
+      {
+        "role": "user",
+        "content": "Synthetic user turn 2.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-02-user"
+      },
+      {
+        "role": "assistant",
+        "content": "Synthetic assistant turn 2 retained.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-02-assistant"
+      },
+      {
+        "role": "user",
+        "content": "Synthetic user turn 3.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-03-user"
+      },
+      {
+        "role": "assistant",
+        "content": "Synthetic assistant turn 3 retained.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-03-assistant"
+      },
+      {
+        "role": "user",
+        "content": "Synthetic user turn 4.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-04-user"
+      },
+      {
+        "role": "assistant",
+        "content": "Synthetic assistant turn 4 retained.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-04-assistant"
+      },
+      {
+        "role": "user",
+        "content": "Synthetic user turn 5.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-05-user"
+      },
+      {
+        "role": "assistant",
+        "content": "Synthetic assistant turn 5 retained.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-05-assistant"
+      },
+      {
+        "role": "user",
+        "content": "Synthetic user turn 6.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-06-user"
+      },
+      {
+        "role": "assistant",
+        "content": "Synthetic assistant turn 6 retained.",
+        "generation": "generation-0042",
+        "stable_id": "msg-0042-06-assistant"
+      }
+    ],
+    "retained_stable_ids": [
+      "msg-0042-01-user",
+      "msg-0042-01-assistant",
+      "msg-0042-02-user",
+      "msg-0042-02-assistant",
+      "msg-0042-03-user",
+      "msg-0042-03-assistant",
+      "msg-0042-04-user",
+      "msg-0042-04-assistant",
+      "msg-0042-05-user",
+      "msg-0042-05-assistant",
+      "msg-0042-06-user",
+      "msg-0042-06-assistant"
+    ]
+  }
+}

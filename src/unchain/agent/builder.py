@@ -3,14 +3,18 @@ from __future__ import annotations
 import copy
 import logging
 from contextlib import nullcontext
-from dataclasses import dataclass, field
-from typing import Any, Callable
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any, Callable
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from ..context import ContextRuntime
 
 from ..memory import (
     ExecutionCheckpointResumeRequiredError,
     KernelMemoryRuntime,
+    MemoryRuntimeComponentMode,
 )
 from ..memory.checkpoint_state import restore_resume_checkpoint_messages
 from ..memory.ownership import ensure_no_external_provider_history
@@ -35,6 +39,7 @@ from ..runtime import (
 from ..tools import Tool, Toolkit
 from ..tools.exposure import ToolExposureRuntime, ToolOptimizerConfig
 from .model_io import ModelIOFactoryRegistry
+from .run_identity import MemoryV2RunRole
 from .spec import AgentSpec, AgentState
 
 
@@ -61,6 +66,8 @@ class AgentCallContext:
     session_id: str | None = None
     memory_namespace: str | None = None
     run_id: str | None = None
+    memory_v2_run_role: MemoryV2RunRole | None = None
+    root_run_id: str | None = None
     execution_owner_id: str | None = None
     execution_guard: ExecutionGuard | None = None
     tool_runtime_config: dict[str, Any] | None = None
@@ -76,6 +83,9 @@ class PreparedAgent:
     state: AgentState
     call_context: AgentCallContext
     memory_runtime: KernelMemoryRuntime | None = None
+    memory_runtime_component_mode: MemoryRuntimeComponentMode = (
+        MemoryRuntimeComponentMode.FULL
+    )
     default_payload: dict[str, Any] = field(default_factory=dict)
     default_response_format: ResponseFormat | None = None
     default_max_iterations: int | None = None
@@ -88,6 +98,8 @@ class PreparedAgent:
     tool_optimizer_config: ToolOptimizerConfig | None = None
     completion_policy: CompletionPolicy | None = None
     session_history_owned_by_memory: bool = False
+    semantic_context_owner: str | None = None
+    context_runtime: "ContextRuntime | None" = None
     _completion_replay_frame: dict[str, Any] | None = field(
         default=None,
         init=False,
@@ -749,6 +761,9 @@ class AgentBuilder:
     toolkit: Toolkit = field(default_factory=Toolkit)
     harnesses: list[Any] = field(default_factory=list)
     memory_runtime: KernelMemoryRuntime | None = None
+    memory_runtime_component_mode: MemoryRuntimeComponentMode = (
+        MemoryRuntimeComponentMode.FULL
+    )
     default_payload: dict[str, Any] = field(default_factory=dict)
     default_response_format: ResponseFormat | None = None
     default_max_iterations: int | None = None
@@ -760,6 +775,8 @@ class AgentBuilder:
     tool_runtime_plugins: list[Any] = field(default_factory=list)
     tool_optimizer_config: ToolOptimizerConfig | None = None
     completion_policy: CompletionPolicy | None = None
+    semantic_context_owner: str | None = None
+    context_runtime: "ContextRuntime | None" = None
     _model_io: ModelIO | None = None
     _model_io_factory: Callable[[AgentSpec, AgentCallContext], ModelIO] | None = None
 
@@ -806,8 +823,41 @@ class AgentBuilder:
     def add_harness(self, harness: Any) -> None:
         self.harnesses.append(harness)
 
-    def attach_memory_runtime(self, memory_runtime: KernelMemoryRuntime) -> None:
+    def attach_memory_runtime(
+        self,
+        memory_runtime: KernelMemoryRuntime,
+        *,
+        component_mode: MemoryRuntimeComponentMode = (
+            MemoryRuntimeComponentMode.FULL
+        ),
+    ) -> None:
+        if not isinstance(memory_runtime, KernelMemoryRuntime):
+            raise TypeError("memory_runtime must be a KernelMemoryRuntime")
+        if not isinstance(component_mode, MemoryRuntimeComponentMode):
+            raise TypeError("component_mode must be a MemoryRuntimeComponentMode")
+        if self.memory_runtime is not None and (
+            self.memory_runtime is not memory_runtime
+            or self.memory_runtime_component_mode is not component_mode
+        ):
+            raise ValueError("memory runtime is already attached with another mode")
         self.memory_runtime = memory_runtime
+        self.memory_runtime_component_mode = component_mode
+
+    def attach_context_runtime(self, context_runtime: "ContextRuntime") -> None:
+        from ..context import ContextRuntime
+
+        if not isinstance(context_runtime, ContextRuntime):
+            raise TypeError("context_runtime must be a ContextRuntime")
+        incoming_owner = context_runtime.owner_id
+        if self.semantic_context_owner is not None:
+            raise ValueError(
+                "semantic context owner is already claimed by "
+                f"{self.semantic_context_owner!r}; cannot attach {incoming_owner!r}"
+            )
+        self.semantic_context_owner = incoming_owner
+        self.context_runtime = context_runtime
+        for harness in context_runtime.build_harnesses():
+            self.add_harness(harness)
 
     def set_model_io(self, model_io: ModelIO) -> None:
         self._model_io = model_io
@@ -885,18 +935,33 @@ class AgentBuilder:
 
     def build(self) -> PreparedAgent:
         self._apply_allowed_tools_filter()
+        if (self.semantic_context_owner is None) != (self.context_runtime is None):
+            raise ValueError(
+                "semantic context owner and context runtime must be configured together"
+            )
         loop = build_runtime_loop(
             harnesses=self.harnesses,
             model_io=self._resolve_model_io(),
             memory_runtime=self.memory_runtime,
+            semantic_context_owner=self.semantic_context_owner,
+            memory_runtime_component_mode=self.memory_runtime_component_mode,
         )
+        prepared_call_context = self.call_context
+        if self.context_runtime is not None:
+            prepared_call_context = replace(
+                self.call_context,
+                callback=self.context_runtime.compose_event_callback(
+                    self.call_context.callback
+                ),
+            )
         return PreparedAgent(
             loop=loop,
             toolkit=self.toolkit,
             spec=self.spec,
             state=self.state,
-            call_context=self.call_context,
+            call_context=prepared_call_context,
             memory_runtime=self.memory_runtime,
+            memory_runtime_component_mode=self.memory_runtime_component_mode,
             default_payload=copy.deepcopy(self.default_payload),
             default_response_format=self.default_response_format,
             default_max_iterations=self.default_max_iterations,
@@ -909,6 +974,11 @@ class AgentBuilder:
             tool_optimizer_config=self.tool_optimizer_config,
             completion_policy=self.completion_policy,
             session_history_owned_by_memory=(
-                self.memory_runtime is not None and bool(self.call_context.session_id)
+                self.memory_runtime is not None
+                and self.memory_runtime_component_mode
+                is MemoryRuntimeComponentMode.FULL
+                and bool(self.call_context.session_id)
             ),
+            semantic_context_owner=self.semantic_context_owner,
+            context_runtime=self.context_runtime,
         )

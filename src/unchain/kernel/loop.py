@@ -27,7 +27,12 @@ from ..interaction.requests import ensure_interaction_runtime_matches
 from ..interaction.effects import (
     HUMAN_INPUT_CONTINUATION_TYPE,
 )
-from ..providers.model_turn_runtime import apply_model_turn_result, fetch_model_turn
+from ..providers.model_turn_runtime import (
+    apply_model_turn_result,
+    build_model_turn_request,
+    fetch_built_model_turn,
+    fetch_model_turn,
+)
 from ..retry import RetryConfig
 from ..schemas import ResponseFormat
 from ..tools.toolkit import Toolkit
@@ -43,6 +48,14 @@ from .lifecycle_events import (
     build_run_started_payload,
 )
 from .model_io import ModelIO
+from .model_tool_boundary import (
+    FinalModelToolBoundary,
+    FinalModelToolPreparation,
+    _bind_final_model_tool_boundary,
+    _claims_final_model_tool_boundary,
+    _resolve_final_model_tool_boundary,
+    _snapshot_final_model_tool_boundary_context,
+)
 from .provider_replay import set_provider_replay_frame
 from .run_limits import resolve_max_iterations_boundary
 from .run_outcomes import (
@@ -71,7 +84,7 @@ class KernelLoop:
     def __init__(
         self,
         *,
-        harnesses: list[RuntimeHarness] | None = None,
+        harnesses: list[RuntimeHarness | FinalModelToolBoundary] | None = None,
         model_io: ModelIO | None = None,
         retry_config: RetryConfig | None = None,
         execution_runtime: ExecutionRuntime | None = None,
@@ -79,7 +92,9 @@ class KernelLoop:
     ) -> None:
         self._harnesses: list[RuntimeHarness] = []
         self._model_io = model_io
-        self._retry_config: RetryConfig = retry_config if retry_config is not None else RetryConfig()
+        self._retry_config: RetryConfig = (
+            retry_config if retry_config is not None else RetryConfig()
+        )
         self._execution_runtime = execution_runtime
         self._interaction_runtime = interaction_runtime
         for harness in harnesses or []:
@@ -89,7 +104,27 @@ class KernelLoop:
     def harnesses(self) -> list[RuntimeHarness]:
         return list(self._harnesses)
 
-    def register_harness(self, harness: RuntimeHarness) -> None:
+    @property
+    def final_model_tool_boundary(self) -> FinalModelToolBoundary | None:
+        return _resolve_final_model_tool_boundary(self)
+
+    def register_harness(
+        self,
+        harness: RuntimeHarness | FinalModelToolBoundary,
+    ) -> None:
+        claims_final_boundary = _claims_final_model_tool_boundary(harness)
+        if isinstance(harness, FinalModelToolBoundary):
+            if not claims_final_boundary:
+                raise TypeError("invalid final model boundary registration")
+            if tuple(getattr(harness, "phases", ())):
+                raise TypeError(
+                    "final model boundary cannot declare ordinary harness phases"
+                )
+            _bind_final_model_tool_boundary(self, harness)
+            return
+        if claims_final_boundary:
+            raise TypeError("forged final model boundary registration")
+
         harness_phases = set(getattr(harness, "phases", ()))
         reserved_phases = harness_phases & _DURABLE_BARRIER_PHASES
         if reserved_phases and getattr(harness, "durable_barrier", False) is not True:
@@ -116,6 +151,12 @@ class KernelLoop:
         self._harnesses.sort(key=lambda item: (item.order, item.name))
 
     def register_context_optimizer(self, optimizer: RuntimeHarness) -> None:
+        semantic_owner = getattr(self, "_semantic_context_owner", None)
+        if semantic_owner is not None:
+            raise ValueError(
+                "context optimizers cannot be registered after a semantic "
+                f"context owner is active: {semantic_owner!r}"
+            )
         self.register_harness(optimizer)
 
     @property
@@ -193,7 +234,9 @@ class KernelLoop:
         state.seed_messages(messages)
         state.provider_state.provider = provider
         state.provider_state.model = model
-        state.provider_state.max_context_window_tokens = max(0, int(max_context_window_tokens or 0))
+        state.provider_state.max_context_window_tokens = max(
+            0, int(max_context_window_tokens or 0)
+        )
         state.session_state.session_id = session_id
         state.session_state.memory_namespace = memory_namespace
         return state
@@ -210,11 +253,13 @@ class KernelLoop:
             if not harness.applies(context):
                 continue
             apply = getattr(harness, "apply", None)
-            raw_outcome = apply(context) if callable(apply) else harness.build_delta(context)
+            raw_outcome = (
+                apply(context) if callable(apply) else harness.build_delta(context)
+            )
             if raw_outcome is None:
                 continue
 
-            from ..capabilities import normalize_capability_outcome
+            from ..capabilities import RunDelta, normalize_capability_outcome
             from .application import apply_run_delta
 
             outcome = normalize_capability_outcome(
@@ -224,7 +269,7 @@ class KernelLoop:
             delta = outcome.delta
             if delta is None:
                 continue
-            if not isinstance(delta, HarnessDelta) and not getattr(delta, "context_ops", ()):
+            if not isinstance(delta, RunDelta):
                 raise TypeError(
                     f"harness '{harness.name}' returned {type(delta).__name__}, expected RunDelta"
                 )
@@ -349,26 +394,116 @@ class KernelLoop:
             "tool_runtime_config": copy.deepcopy(tool_runtime_config or {}),
             "execution_guard": execution_guard,
         }
+        final_boundary = self.final_model_tool_boundary
 
         if execution_guard is not None:
             execution_guard.renew()
         self.dispatch_phase(state, phase="before_model", event=phase_event)
         if execution_guard is not None:
             execution_guard.assert_active()
-        turn = self.fetch_model_turn(
-            state,
-            payload=payload,
-            toolkit=runtime_toolkit,
-            callback=callback,
-            verbose=verbose,
-            run_id=run_id,
-            emit_stream=emit_stream,
-            response_format=response_format,
-            openai_text_format=openai_text_format,
-            execution_guard=execution_guard,
-        )
+        if self.final_model_tool_boundary is not final_boundary:
+            raise RuntimeError("final model boundary changed during before_model")
+
+        preparation: FinalModelToolPreparation | None = None
+        if final_boundary is not None:
+            prepare_context = _snapshot_final_model_tool_boundary_context(
+                state=state,
+                event=phase_event,
+            )
+            preparation = final_boundary.prepare(prepare_context)
+            if type(preparation) is not FinalModelToolPreparation:
+                raise TypeError(
+                    "final model boundary must return exact "
+                    "FinalModelToolPreparation"
+                )
+            if not isinstance(preparation.model_toolkit, Toolkit):
+                raise TypeError("final model boundary preparation requires a Toolkit")
+            if not isinstance(preparation.execution_toolkit, Toolkit):
+                raise TypeError(
+                    "final model boundary preparation requires an execution Toolkit"
+                )
+            if preparation.execution_binding is None:
+                raise TypeError(
+                    "final model boundary preparation requires a sealed "
+                    "execution binding"
+                )
+            phase_event["toolkit"] = preparation.execution_toolkit
+            phase_event["tool_execution_binding"] = preparation.execution_binding
+            if preparation.prepared_provider_turn is not None:
+                raise RuntimeError(
+                    "prepared provider turn has no authenticated provider consumer"
+                )
+            if execution_guard is not None:
+                execution_guard.assert_active()
+            request = build_model_turn_request(
+                state,
+                payload=payload,
+                toolkit=preparation.model_toolkit,
+                callback=callback,
+                verbose=verbose,
+                run_id=run_id,
+                emit_stream=emit_stream,
+                response_format=response_format,
+                openai_text_format=openai_text_format,
+            )
+            before_attempt = (
+                (lambda _attempt: execution_guard.renew())
+                if execution_guard is not None
+                else None
+            )
+            turn = final_boundary.fetch_prepared(
+                prepare_context,
+                preparation,
+                request,
+                retry_config=self._retry_config,
+                before_attempt=before_attempt,
+            )
+            if turn is None:
+                turn = fetch_built_model_turn(
+                    model_io=self._model_io,
+                    retry_config=self._retry_config,
+                    state=state,
+                    request=request,
+                    before_attempt=before_attempt,
+                )
+            elif type(turn) is not ModelTurnResult:
+                raise TypeError(
+                    "final model boundary prepared fetch must return exact "
+                    "ModelTurnResult or None"
+                )
+        else:
+            turn = self.fetch_model_turn(
+                state,
+                payload=payload,
+                toolkit=runtime_toolkit,
+                callback=callback,
+                verbose=verbose,
+                run_id=run_id,
+                emit_stream=emit_stream,
+                response_format=response_format,
+                openai_text_format=openai_text_format,
+                execution_guard=execution_guard,
+            )
         if execution_guard is not None:
             execution_guard.assert_active()
+        if final_boundary is not None:
+            if preparation is None:
+                raise RuntimeError("final model boundary preparation is missing")
+            validate_context = _snapshot_final_model_tool_boundary_context(
+                state=state,
+                event=phase_event,
+            )
+            turn = final_boundary.validate(
+                validate_context,
+                preparation,
+                turn,
+            )
+            if type(turn) is not ModelTurnResult:
+                raise TypeError(
+                    "final model boundary must return exact ModelTurnResult"
+                )
+            if execution_guard is not None:
+                execution_guard.assert_active()
         self.apply_model_turn(state, turn)
 
         after_model_event = {
@@ -691,27 +826,10 @@ class KernelLoop:
             raise InteractionIntegrityError(
                 "tool approval continuation has invalid batch state"
             )
-        state.pending_tool_calls = list(tool_calls)
-        state.tool_batch_state = ToolBatchState(
-            result_messages=copy.deepcopy(result_messages),
-            should_observe=bool(raw_batch.get("should_observe", False)),
-            executed_call_ids=[
-                str(item) for item in executed_call_ids if isinstance(item, str)
-            ],
-        )
-        state.component_bucket("tools")["tool_batch_state"] = (
-            state.tool_batch_state.copy()
-        )
-        state.run_status = "running"
-        state.last_continuation = None
-        state.suspend_state.signal_kind = None
-        state.suspend_state.payload = {}
-
         tool_iteration = int(
             continuation.get("tool_iteration", max(0, int(state.iteration) - 1))
         )
         next_iteration = int(continuation.get("iteration", tool_iteration + 1))
-        state.iteration = tool_iteration
         phase_event = {
             "payload": dict(payload or {}),
             "toolkit": toolkit,
@@ -732,6 +850,54 @@ class KernelLoop:
             "turn_result": state.last_model_turn,
             "tool_calls": tool_calls,
         }
+        final_boundary = self.final_model_tool_boundary
+        if final_boundary is not None:
+            if execution_guard is not None:
+                execution_guard.assert_active()
+            resume_context = _snapshot_final_model_tool_boundary_context(
+                state=state,
+                event=phase_event,
+                iteration=tool_iteration,
+            )
+            preparation = final_boundary.prepare_tool_resume(
+                resume_context,
+                continuation=continuation,
+                interaction_request=interaction_request,
+            )
+            if self.final_model_tool_boundary is not final_boundary:
+                raise InteractionIntegrityError(
+                    "final model boundary changed during tool approval resume"
+                )
+            if (
+                type(preparation) is not FinalModelToolPreparation
+                or not isinstance(preparation.execution_toolkit, Toolkit)
+                or preparation.execution_binding is None
+            ):
+                raise InteractionIntegrityError(
+                    "final model boundary tool approval resume requires "
+                    "authenticated durable tool binding recovery"
+                )
+            phase_event["toolkit"] = preparation.execution_toolkit
+            phase_event["tool_execution_binding"] = preparation.execution_binding
+            if execution_guard is not None:
+                execution_guard.assert_active()
+        state.pending_tool_calls = list(tool_calls)
+        state.tool_batch_state = ToolBatchState(
+            result_messages=copy.deepcopy(result_messages),
+            should_observe=bool(raw_batch.get("should_observe", False)),
+            executed_call_ids=[
+                str(item) for item in executed_call_ids if isinstance(item, str)
+            ],
+        )
+        state.component_bucket("tools")[
+            "tool_batch_state"
+        ] = state.tool_batch_state.copy()
+        state.run_status = "running"
+        state.last_continuation = None
+        state.suspend_state.signal_kind = None
+        state.suspend_state.payload = {}
+
+        state.iteration = tool_iteration
         paused_call_id = str(continuation.get("paused_call_id") or "")
         try:
             for index, tool_call in enumerate(tool_calls):
@@ -739,9 +905,7 @@ class KernelLoop:
                     execution_guard.renew()
                 resume_fields = (
                     {
-                        "interaction_request": copy.deepcopy(
-                            interaction_request
-                        ),
+                        "interaction_request": copy.deepcopy(interaction_request),
                         "interaction_response": copy.deepcopy(response),
                     }
                     if tool_call.call_id == paused_call_id
@@ -828,6 +992,7 @@ class KernelLoop:
             execution_guard=execution_guard,
         )
         while True:
+
             def current_session_revision() -> int | None:
                 revision = state.memory_state.get("session_revision")
                 if isinstance(revision, bool) or not isinstance(revision, int):
@@ -865,9 +1030,7 @@ class KernelLoop:
                     execution_guard.release_for_wait()
 
             if durable_max_wait:
-                if self._interaction_runtime is None or not callable(
-                    on_max_iterations
-                ):
+                if self._interaction_runtime is None or not callable(on_max_iterations):
                     raise InteractionNotPendingError(
                         "max-budget interaction has no callback adapter"
                     )
@@ -912,9 +1075,7 @@ class KernelLoop:
             )
             effective_max = boundary.effective_max
             max_interaction_request = (
-                max_adapter.interaction_request
-                if max_adapter is not None
-                else None
+                max_adapter.interaction_request if max_adapter is not None else None
             )
             if max_interaction_request is not None:
                 state.last_continuation = None
@@ -975,8 +1136,7 @@ class KernelLoop:
                         )
                     wait_revision = current_session_revision()
                     released_for_wait = (
-                        execution_guard is not None
-                        and wait_revision is not None
+                        execution_guard is not None and wait_revision is not None
                     )
                     if released_for_wait:
                         execution_guard.release_for_wait()
@@ -997,10 +1157,7 @@ class KernelLoop:
                     )
                     if not callable(on_tool_confirm):
                         return suspended
-                    if (
-                        durable_request.get("kind")
-                        != INTERACTION_KIND_TOOL_APPROVAL
-                    ):
+                    if durable_request.get("kind") != INTERACTION_KIND_TOOL_APPROVAL:
                         raise InteractionNotPendingError(
                             "awaiting interaction is not a tool approval"
                         )
@@ -1084,7 +1241,11 @@ class KernelLoop:
                     and bool(state.session_state.session_id)
                 )
                 released_for_wait = False
-                if durable_wait and execution_guard is not None and wait_revision is not None:
+                if (
+                    durable_wait
+                    and execution_guard is not None
+                    and wait_revision is not None
+                ):
                     execution_guard.release_for_wait()
                     released_for_wait = True
                 self.emit_event(
@@ -1104,16 +1265,18 @@ class KernelLoop:
                                 "interaction_id": str(
                                     durable_request.get("interaction_id") or ""
                                 ),
-                                "interaction_request": copy.deepcopy(
-                                    durable_request
-                                ),
+                                "interaction_request": copy.deepcopy(durable_request),
                             }
                             if isinstance(durable_request, dict)
                             else {}
                         ),
                         **request.to_dict(),
                     )
-                if not callable(on_human_input) or request is None or continuation is None:
+                if (
+                    not callable(on_human_input)
+                    or request is None
+                    or continuation is None
+                ):
                     return suspended
                 if durable_wait:
                     response = on_human_input(request)
@@ -1308,9 +1471,7 @@ class KernelLoop:
                     else None
                 )
                 if isinstance(interaction_ref, dict):
-                    interaction_id = str(
-                        interaction_ref.get("interaction_id") or ""
-                    )
+                    interaction_id = str(interaction_ref.get("interaction_id") or "")
                     continuation_interaction_id = continuation.get("interaction_id")
                     if (
                         isinstance(continuation_interaction_id, str)
@@ -1354,10 +1515,7 @@ class KernelLoop:
                                 else None
                             ),
                         )
-                    if (
-                        durable_snapshot.request.kind
-                        != INTERACTION_KIND_HUMAN_INPUT
-                    ):
+                    if durable_snapshot.request.kind != INTERACTION_KIND_HUMAN_INPUT:
                         raise InteractionNotPendingError(
                             "pending interaction is not a human-input request"
                         )
@@ -1493,15 +1651,13 @@ class KernelLoop:
                     submitted_by=submitted_by,
                     expected_revision=pending.session_snapshot.revision,
                     execution_fence=(
-                        execution_guard.fence
-                        if execution_guard is not None
-                        else None
+                        execution_guard.fence if execution_guard is not None else None
                     ),
                 )
-            if (
-                durable_snapshot.checkpoint_id != checkpoint.get("checkpoint_id")
-                or durable_snapshot.request.request_digest
-                != interaction_ref.get("request_digest")
+            if durable_snapshot.checkpoint_id != checkpoint.get(
+                "checkpoint_id"
+            ) or durable_snapshot.request.request_digest != interaction_ref.get(
+                "request_digest"
             ):
                 raise InteractionIntegrityError(
                     "durable interaction is not bound to the active checkpoint"
@@ -1536,6 +1692,21 @@ class KernelLoop:
                 run_id=run_id,
                 run_id_factory=lambda: str(uuid.uuid4()),
             )
+            if (
+                durable_snapshot.request.kind == INTERACTION_KIND_TOOL_APPROVAL
+                and self.final_model_tool_boundary is not None
+            ):
+                expected_source_run_id = durable_snapshot.request.source_run_id
+                if (
+                    not expected_source_run_id
+                    or plan.run_id != expected_source_run_id
+                    or checkpoint.get("source_run_id") != expected_source_run_id
+                    or resolved_continuation.get("run_id") != expected_source_run_id
+                ):
+                    raise InteractionIntegrityError(
+                        "final model boundary tool approval resume changed its "
+                        "durable source run"
+                    )
             self._dispatch_bootstrap(
                 plan.state,
                 payload=plan.payload,
@@ -1551,10 +1722,7 @@ class KernelLoop:
             )
 
             if durable_snapshot.request.kind == INTERACTION_KIND_HUMAN_INPUT:
-                if (
-                    resolved_continuation.get("type")
-                    != HUMAN_INPUT_CONTINUATION_TYPE
-                ):
+                if resolved_continuation.get("type") != HUMAN_INPUT_CONTINUATION_TYPE:
                     raise InteractionIntegrityError(
                         "human-input receipt requires a matching continuation"
                     )
@@ -1639,9 +1807,7 @@ class KernelLoop:
                     execution_guard=execution_guard,
                 )
             if durable_snapshot.request.kind != INTERACTION_KIND_MAX_BUDGET:
-                raise InteractionNotPendingError(
-                    "unsupported durable interaction kind"
-                )
+                raise InteractionNotPendingError("unsupported durable interaction kind")
             if resolved_continuation.get("type") != "max_budget_continuation":
                 raise InteractionIntegrityError(
                     "max-budget receipt requires a max_budget_continuation"
@@ -1649,9 +1815,7 @@ class KernelLoop:
             decision = durable_snapshot.response or {}
             approved = bool(decision.get("approved"))
             extra_iterations = (
-                int(decision.get("extra_iterations") or 0)
-                if approved
-                else 0
+                int(decision.get("extra_iterations") or 0) if approved else 0
             )
             plan.state.last_continuation = None
             plan.state.suspend_state.signal_kind = None

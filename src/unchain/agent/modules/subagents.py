@@ -37,6 +37,8 @@ class SubagentModule(BaseAgentModule):
                 max_parallel_workers=int(self.policy.max_parallel_workers),
                 worker_timeout_seconds=float(self.policy.worker_timeout_seconds),
             ),
+            memory_v2_run_role=builder.call_context.memory_v2_run_role,
+            root_run_id=str(builder.call_context.root_run_id or "").strip(),
         )
         builder.add_tool(build_delegate_to_subagent_tool())
         builder.add_tool(build_handoff_to_subagent_tool())

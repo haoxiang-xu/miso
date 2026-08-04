@@ -75,6 +75,13 @@ class OllamaModelIO(_NativeModelIOBase):
             tool_names=self._tool_names_for_trace(tools),
         )
 
+        return self._fetch_turn_streaming(request_body, request)
+
+    def _fetch_turn_streaming(
+        self,
+        request_body: dict[str, Any],
+        request: ModelTurnRequest,
+    ) -> ModelTurnResult:
         collected_chunks: list[str] = []
         reasoning_chunks: list[str] = []
         latest_prompt_eval_count = 0

@@ -9,6 +9,10 @@ from unchain.interaction.durable import (
 )
 from unchain.interaction.runtime import DurableInteractionRuntime
 from unchain.kernel import ModelTurnResult
+from unchain.kernel.model_tool_boundary import (
+    FinalModelToolPreparation,
+    _issue_final_model_tool_boundary,
+)
 from unchain.kernel.types import ToolCall
 from unchain.memory import InMemorySessionStore, KernelMemoryRuntime
 from unchain.runtime import build_runtime_loop
@@ -74,6 +78,123 @@ def _toolkit(safe_calls: list[int], dangerous_calls: list[str]) -> Toolkit:
         requires_confirmation=True,
     )
     return toolkit
+
+
+def _register_final_boundary(loop, toolkit: Toolkit) -> None:
+    loop.register_harness(
+        _issue_final_model_tool_boundary(
+            prepare=lambda context: FinalModelToolPreparation(
+                model_toolkit=toolkit,
+                execution_toolkit=toolkit,
+                execution_binding=object(),
+            ),
+            validate=lambda context, preparation, turn: turn,
+        )
+    )
+
+
+def test_boundary_enabled_sync_tool_approval_resume_fails_closed() -> None:
+    session_id = "final-boundary-sync-approval"
+    store = InMemorySessionStore()
+    safe_calls: list[int] = []
+    dangerous_calls: list[str] = []
+    toolkit = _toolkit(safe_calls, dangerous_calls)
+    model = _QueueModelIO(
+        [
+            _tool_turn(
+                ToolCall(
+                    call_id="danger-1",
+                    name="dangerous_tool",
+                    arguments={"value": "must-not-run"},
+                )
+            ),
+            _final_turn(),
+        ]
+    )
+    loop = build_runtime_loop(
+        model_io=model,
+        memory_runtime=KernelMemoryRuntime.from_config(store=store),
+    )
+    _register_final_boundary(loop, toolkit)
+    loop._final_model_tool_boundary = None
+
+    with pytest.raises(
+        InteractionIntegrityError,
+        match="authenticated durable tool binding recovery",
+    ):
+        loop.run(
+            [{"role": "user", "content": "run it"}],
+            session_id=session_id,
+            provider="openai",
+            model="gpt-5",
+            toolkit=toolkit,
+            on_tool_confirm=lambda request: {"approved": True},
+        )
+
+    assert dangerous_calls == []
+    assert len(model.requests) == 1
+
+
+def test_boundary_enabled_cold_tool_approval_resume_fails_closed() -> None:
+    session_id = "final-boundary-cold-approval"
+    store = InMemorySessionStore()
+    safe_calls: list[int] = []
+    dangerous_calls: list[str] = []
+    toolkit = _toolkit(safe_calls, dangerous_calls)
+    first_loop = build_runtime_loop(
+        model_io=_QueueModelIO(
+            [
+                _tool_turn(
+                    ToolCall(
+                        call_id="danger-1",
+                        name="dangerous_tool",
+                        arguments={"value": "must-not-run"},
+                    )
+                )
+            ]
+        ),
+        memory_runtime=KernelMemoryRuntime.from_config(store=store),
+    )
+    _register_final_boundary(first_loop, toolkit)
+    suspended = first_loop.run(
+        [{"role": "user", "content": "run it"}],
+        session_id=session_id,
+        provider="openai",
+        model="gpt-5",
+        toolkit=toolkit,
+    )
+    assert suspended.status == "awaiting_interaction"
+
+    interaction = DurableInteractionRuntime(
+        KernelMemoryRuntime.from_config(store=store)
+    )
+    pending = interaction.load_active(session_id)
+    interaction.record_receipt(
+        session_id,
+        interaction_id=pending.request.interaction_id,
+        response={"approved": True},
+        expected_revision=pending.session_snapshot.revision,
+    )
+    resume_model = _QueueModelIO([_final_turn()])
+    resume_loop = build_runtime_loop(
+        model_io=resume_model,
+        memory_runtime=KernelMemoryRuntime.from_config(store=store),
+    )
+    _register_final_boundary(resume_loop, toolkit)
+    resume_loop._final_model_tool_boundary = None
+
+    with pytest.raises(
+        InteractionIntegrityError,
+        match="authenticated durable tool binding recovery",
+    ):
+        resume_loop.resume_interaction(
+            session_id=session_id,
+            response=None,
+            toolkit=toolkit,
+        )
+
+    assert dangerous_calls == []
+    assert resume_model.requests == []
 
 
 def test_tool_approval_cold_resume_does_not_repeat_prior_batch_tools() -> None:

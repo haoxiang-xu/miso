@@ -1,0 +1,36 @@
+{
+  "schema": "unchain.context_v2.compiler_fixture.v1",
+  "case": "core_below_pressure",
+  "input": {
+    "schema": "unchain.context_v2.request.v1",
+    "case": "core_below_pressure",
+    "source_messages": [
+      {"content": "current policy", "role": "system"},
+      {"content": "historical fact", "role": "user"},
+      {"content": "current request", "role": "user"}
+    ],
+    "budget": {
+      "schema": "unchain.context_budget.v1",
+      "context_window_tokens": 8192,
+      "output_reserve_tokens": 2048,
+      "transport_margin_tokens": 512,
+      "available_input_tokens": 5632,
+      "pressure_threshold_tokens": 5068
+    },
+    "source_message_cursors": [
+      {
+        "schema": "unchain.source_message_cursor.v1",
+        "message_index": 1,
+        "event_id": "event-history",
+        "store_seq": 10
+      }
+    ],
+    "provider": "openai",
+    "model": "gpt-test",
+    "build_id": "build-below",
+    "execution_id": "execution-1",
+    "generation_id": "generation-1",
+    "attempt_id": "attempt-1"
+  },
+  "expected_messages_diagnostics_json": "{\"diagnostics\":{\"after_estimated_tokens\":34,\"atomic_call_ids\":[],\"before_estimated_tokens\":34,\"budget\":{\"available_input_tokens\":5632,\"context_window_tokens\":8192,\"output_reserve_tokens\":2048,\"pressure_threshold_tokens\":5068,\"schema\":\"unchain.context_budget.v1\",\"transport_margin_tokens\":512},\"compacted\":false,\"compacted_tool_result_count\":0,\"consumed_semantic_event_indexes\":[],\"dropped_turn_count\":0,\"fixed_overhead_tokens\":0,\"included_source_indexes\":[0,1,2],\"message_budget_tokens\":5068,\"model\":\"gpt-test\",\"multimodal_image_count\":0,\"multimodal_pdf_page_count\":0,\"multimodal_provisional_token_charge\":0,\"omitted_source_indexes\":[],\"provider\":\"openai\",\"semantic_event_count\":0,\"source_message_count\":3,\"status\":\"complete\",\"text_estimated_tokens\":34,\"transformed_source_indexes\":[]},\"messages\":[{\"content\":\"current policy\",\"role\":\"system\"},{\"content\":\"historical fact\",\"role\":\"user\"},{\"content\":\"current request\",\"role\":\"user\"}]}"
+}

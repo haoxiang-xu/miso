@@ -152,6 +152,14 @@ class AnthropicModelIO(_NativeModelIOBase):
                 "selection dropped the active turn before provider call."
             )
 
+        return self._fetch_turn_streaming(client, request, request_kwargs)
+
+    def _fetch_turn_streaming(
+        self,
+        client: Any,
+        request: ModelTurnRequest,
+        request_kwargs: dict[str, Any],
+    ) -> ModelTurnResult:
         collected_chunks: list[str] = []
         input_tokens = 0
         output_tokens = 0

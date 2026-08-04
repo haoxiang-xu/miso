@@ -304,6 +304,7 @@ def test_public_human_input_resume_emits_one_tool_result_event():
     assert len(tool_result_events) == 1
     assert tool_result_events[0]["iteration"] == 0
     assert tool_result_events[0]["call_id"] == "call-user"
+    assert tool_result_events[0]["interaction_resume_replay"] is True
 
 
 def test_max_iterations_callback_waits_for_on_suspend_safe_point_without_memory():

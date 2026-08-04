@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from enum import StrEnum
 from typing import Any
 
 from ..optimizers import (
@@ -22,14 +23,35 @@ from .events import (
     MemoryPrepareEventHarness,
     MemoryPrepareInfoResetHarness,
 )
+from .durability import DurabilityBootstrapHarness, DurabilityCheckpointHarness
 from .recall_long_term import LongTermRecallMemoryHarness
 from .runtime import KernelMemoryRuntime
 from .short_term import ShortTermRecallMemoryHarness
 
 
-def build_default_memory_components(memory_runtime: KernelMemoryRuntime) -> list[Any]:
-    config = memory_runtime.config
+class MemoryRuntimeComponentMode(StrEnum):
+    FULL = "full"
+    DURABILITY_ONLY = "durability_only"
+
+
+def build_durability_memory_components(
+    memory_runtime: KernelMemoryRuntime,
+) -> list[Any]:
+    if not isinstance(memory_runtime, KernelMemoryRuntime):
+        raise TypeError("memory_runtime must be a KernelMemoryRuntime")
     return [
+        DurabilityBootstrapHarness(runtime=memory_runtime),
+        DurabilityCheckpointHarness(runtime=memory_runtime),
+    ]
+
+
+def build_default_memory_components(
+    memory_runtime: KernelMemoryRuntime,
+    *,
+    semantic_context_owner: str | None = None,
+) -> list[Any]:
+    config = memory_runtime.config
+    destructive_components = [
         ToolHistoryCompactionOptimizer(
             ToolHistoryCompactionOptimizerConfig(
                 enabled=bool(config.deferred_tool_compaction_enabled),
@@ -57,9 +79,9 @@ def build_default_memory_components(memory_runtime: KernelMemoryRuntime) -> list
                 max_window_tokens=config.sliding_window_max_tokens,
             )
         ),
+    ]
+    durable_components = [
         MemoryPrepareInfoResetHarness(runtime=memory_runtime),
-        ShortTermRecallMemoryHarness(runtime=memory_runtime),
-        LongTermRecallMemoryHarness(runtime=memory_runtime),
         MemoryPrepareEventHarness(runtime=memory_runtime),
         MemoryBootstrapHarness(runtime=memory_runtime),
         MemoryCommitInfoResetHarness(runtime=memory_runtime),
@@ -67,6 +89,21 @@ def build_default_memory_components(memory_runtime: KernelMemoryRuntime) -> list
         MemoryCommitEventHarness(runtime=memory_runtime),
         ExecutionCheckpointHarness(runtime=memory_runtime),
     ]
+    if semantic_context_owner is None:
+        return [
+            *destructive_components,
+            durable_components[0],
+            ShortTermRecallMemoryHarness(runtime=memory_runtime),
+            LongTermRecallMemoryHarness(runtime=memory_runtime),
+            *durable_components[1:],
+        ]
+    if not isinstance(semantic_context_owner, str) or not semantic_context_owner.strip():
+        raise ValueError("semantic_context_owner must be a non-empty identifier")
+    return durable_components
 
 
-__all__ = ["build_default_memory_components"]
+__all__ = [
+    "MemoryRuntimeComponentMode",
+    "build_default_memory_components",
+    "build_durability_memory_components",
+]
