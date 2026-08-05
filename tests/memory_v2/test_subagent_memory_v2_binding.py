@@ -4,18 +4,25 @@ import pytest
 
 from unchain.agent import Agent, AgentCallContext
 from unchain.agent.modules import ContextModule, SubagentModule
-from unchain.agent.modules.memory_v2 import (
-    MemoryV2AgentAttachment,
-    MemoryV2AgentAttachmentRequest,
-    MemoryV2AgentModule,
-    MemoryV2AgentModuleError,
-    MemoryV2RunRole,
+from unchain.memory import (
+    MEMORY_CANDIDATE_PROPOSE,
+    MEMORY_CONTEXT_READ,
+    MEMORY_EXECUTION_COMPLETE,
+    MEMORY_V2_MODULE_KEY,
+    MEMORY_WORKSPACE_READ,
+    MemoryAttachment,
+    MemoryAttachmentRequest,
+    MemoryV2Module,
 )
 from unchain.kernel import ModelTurnResult
 from unchain.memory.curator.host import MemoryAgentHostAdapter
 from unchain.memory.toolkit import MemoryToolkitRunBinding
+from unchain.runtime import AgentRuntimeContext, ExecutionIdentity, ModuleGrant
 from unchain.subagents import SubagentExecutor, SubagentPolicy, SubagentTemplate
-from unchain.subagents.plugin import SubagentToolPlugin
+from unchain.subagents.plugin import (
+    SubagentRuntimeContextError,
+    SubagentToolPlugin,
+)
 
 from .test_curator_coordinator import FakeCurationRepository
 from .test_memory_agent_host import _enabled_host, _normal_capabilities
@@ -45,7 +52,7 @@ class _ChildAttachmentFactory:
 
     def attach(self, request):
         self.requests.append(request)
-        return MemoryV2AgentAttachment(
+        return MemoryAttachment(
             binding=MemoryToolkitRunBinding(
                 binding_id=self.binding_id,
                 session_id=request.session_id,
@@ -56,20 +63,54 @@ class _ChildAttachmentFactory:
         )
 
 
+def _root_runtime_context(
+    *,
+    execution_id="root-execution-a",
+    attempt_id="root-attempt-a",
+    run_id="root-run-a",
+):
+    delegable = frozenset(
+        {
+            MEMORY_CONTEXT_READ,
+            MEMORY_WORKSPACE_READ,
+            MEMORY_CANDIDATE_PROPOSE,
+        }
+    )
+    return AgentRuntimeContext(
+        identity=ExecutionIdentity(
+            execution_id=execution_id,
+            attempt_id=attempt_id,
+            run_id=run_id,
+            run_lineage=(run_id,),
+        ),
+        module_grants=(
+            ModuleGrant(
+                module_key=MEMORY_V2_MODULE_KEY,
+                capabilities=delegable | {MEMORY_EXECUTION_COMPLETE},
+                delegable_capabilities=delegable,
+                authority="completion-authority-a",
+            ),
+        ),
+    )
+
+
+_DEFAULT_RUNTIME_CONTEXT = object()
+
+
 def _plugin(
     parent,
     *,
     templates=(),
-    run_role=MemoryV2RunRole.ROOT,
-    root_run_id="root-run-a",
+    runtime_context=_DEFAULT_RUNTIME_CONTEXT,
 ):
+    if runtime_context is _DEFAULT_RUNTIME_CONTEXT:
+        runtime_context = _root_runtime_context()
     return SubagentToolPlugin(
         parent_agent=parent,
         templates=templates,
         policy=SubagentPolicy(allow_dynamic_delegate=True),
         executor=SubagentExecutor(),
-        memory_v2_run_role=run_role,
-        root_run_id=root_run_id,
+        runtime_context=runtime_context,
     )
 
 
@@ -87,13 +128,13 @@ def _build_child(plugin, *, template=None):
 
 
 @pytest.mark.parametrize("template_backed", [False, True])
-def test_child_memory_attachment_uses_explicit_subagent_role_and_parent_root_identity(
+def test_child_memory_attachment_uses_delegated_grant_and_parent_lineage(
     template_backed,
 ):
     host, _, _, _ = _enabled_host()
     factory = _ChildAttachmentFactory()
     model_io = _FinalModelIO()
-    memory_module = MemoryV2AgentModule(host=host, attachment_factory=factory)
+    memory_module = MemoryV2Module(host=host, attachment_factory=factory)
     parent = Agent(
         name="parent",
         provider="openai",
@@ -113,7 +154,12 @@ def test_child_memory_attachment_uses_explicit_subagent_role_and_parent_root_ide
         if template_backed
         else None
     )
-    plugin = _plugin(parent, templates=(template,) if template is not None else ())
+    runtime_context = _root_runtime_context()
+    plugin = _plugin(
+        parent,
+        templates=(template,) if template is not None else (),
+        runtime_context=runtime_context,
+    )
     child = _build_child(plugin, template=template)
 
     result = plugin._run_child(
@@ -131,16 +177,20 @@ def test_child_memory_attachment_uses_explicit_subagent_role_and_parent_root_ide
 
     assert result.status == "completed"
     assert factory.requests == [
-        MemoryV2AgentAttachmentRequest(
+        MemoryAttachmentRequest(
             agent_name="parent.specialist.1",
             mode="run",
-            session_id="child-session",
-            attempt_id="child-run-a",
-            run_id="child-run-a",
-            role=MemoryV2RunRole.SUBAGENT,
-            root_run_id="root-run-a",
+            identity=ExecutionIdentity(
+                execution_id="child-session",
+                attempt_id="child-run-a",
+                run_id="child-run-a",
+                run_lineage=("root-run-a", "child-run-a"),
+            ),
+            grant=runtime_context.grant_for(MEMORY_V2_MODULE_KEY).delegated(),
         )
     ]
+    assert factory.requests[0].grant.authority is None
+    assert not factory.requests[0].grant.allows(MEMORY_EXECUTION_COMPLETE)
     assert tuple(
         name
         for name in model_io.requests[0].toolkit.tools
@@ -153,19 +203,22 @@ def test_child_memory_attachment_uses_explicit_subagent_role_and_parent_root_ide
     )
 
 
-def test_enabled_memory_child_fails_closed_without_parent_root_identity():
+def test_enabled_memory_child_fails_closed_without_parent_runtime_context():
     host, _, _, _ = _enabled_host()
     factory = _ChildAttachmentFactory()
-    memory_module = MemoryV2AgentModule(host=host, attachment_factory=factory)
+    memory_module = MemoryV2Module(host=host, attachment_factory=factory)
     parent = Agent(
         name="parent",
         modules=(memory_module,),
         model_io_factory=lambda spec, context: _FinalModelIO(),
     )
-    plugin = _plugin(parent, run_role=None, root_run_id="")
+    plugin = _plugin(parent, runtime_context=None)
     child = _build_child(plugin)
 
-    with pytest.raises(MemoryV2AgentModuleError, match="root run identity"):
+    with pytest.raises(
+        SubagentRuntimeContextError,
+        match="explicit parent runtime context",
+    ):
         plugin._run_child(
             agent=child,
             mode="delegate",
@@ -182,7 +235,7 @@ def test_enabled_memory_child_fails_closed_without_parent_root_identity():
     assert factory.requests == []
 
 
-def test_legacy_fake_child_signature_runs_without_memory_identity_keywords():
+def test_legacy_fake_child_signature_runs_without_runtime_context_keyword():
     class LegacyChild:
         name = "legacy-child"
 
@@ -246,20 +299,16 @@ def test_legacy_fake_child_signature_runs_without_memory_identity_keywords():
     ]
 
 
-def test_subagent_module_binds_explicit_parent_root_identity_to_runtime_plugin():
+def test_subagent_module_binds_generic_runtime_context_to_runtime_plugin():
     parent = Agent(
         name="parent",
         modules=(SubagentModule(),),
         model_io_factory=lambda spec, context: _FinalModelIO(),
     )
 
+    runtime_context = _root_runtime_context()
     prepared = parent._prepare(
-        AgentCallContext(
-            mode="run",
-            run_id="root-run-a",
-            memory_v2_run_role=MemoryV2RunRole.ROOT,
-            root_run_id="root-run-a",
-        )
+        AgentCallContext(mode="run", runtime_context=runtime_context)
     )
 
     plugin = next(
@@ -267,8 +316,8 @@ def test_subagent_module_binds_explicit_parent_root_identity_to_runtime_plugin()
         for plugin in prepared.tool_runtime_plugins
         if isinstance(plugin, SubagentToolPlugin)
     )
-    assert plugin.memory_v2_run_role is MemoryV2RunRole.ROOT
-    assert plugin.root_run_id == "root-run-a"
+    assert plugin.runtime_context is runtime_context
+    assert not hasattr(plugin, "memory_v2_run_role")
 
 
 @pytest.mark.parametrize("template_backed", [False, True])
@@ -276,7 +325,7 @@ def test_dynamic_and_template_children_inherit_exact_context_and_memory_modules(
     template_backed,
 ):
     context_module = ContextModule(runtime=object())
-    memory_module = MemoryV2AgentModule()
+    memory_module = MemoryV2Module()
     parent = Agent(
         name="parent",
         modules=(context_module, memory_module),
@@ -300,7 +349,7 @@ def test_dynamic_and_template_children_inherit_exact_context_and_memory_modules(
     child_memory = tuple(
         module
         for module in child.spec.modules
-        if isinstance(module, MemoryV2AgentModule)
+        if isinstance(module, MemoryV2Module)
     )
     assert child_context == (context_module,)
     assert child_memory == (memory_module,)
@@ -309,8 +358,8 @@ def test_dynamic_and_template_children_inherit_exact_context_and_memory_modules(
 @pytest.mark.parametrize(
     "template_memory_module",
     [
-        MemoryV2AgentModule(),
-        MemoryV2AgentModule(
+        MemoryV2Module(),
+        MemoryV2Module(
             host=MemoryAgentHostAdapter(
                 FakeCurationRepository(binding_id="binding-other")
             )
@@ -320,7 +369,7 @@ def test_dynamic_and_template_children_inherit_exact_context_and_memory_modules(
 )
 def test_template_child_rejects_non_parent_memory_module(template_memory_module):
     context_module = ContextModule(runtime=object())
-    parent_memory_module = MemoryV2AgentModule()
+    parent_memory_module = MemoryV2Module()
     parent = Agent(
         name="parent",
         modules=(context_module, parent_memory_module),
@@ -332,11 +381,11 @@ def test_template_child_rejects_non_parent_memory_module(template_memory_module)
     )
     plugin = _plugin(parent, templates=(template,))
 
-    with pytest.raises(ValueError, match="exact parent MemoryV2AgentModule"):
+    with pytest.raises(ValueError, match="exact parent Memory V2 module"):
         _build_child(plugin, template=template)
 
 
-_MISSING_EXECUTION_ID = object()
+_MISSING_RUNTIME_CONTEXT = object()
 
 
 class _RecipeRefChild:
@@ -357,18 +406,14 @@ class _RecipeRefChild:
         on_human_input,
         on_max_iterations,
         run_id,
-        memory_v2_run_role=None,
-        root_run_id=None,
-        memory_v2_execution_id=_MISSING_EXECUTION_ID,
+        runtime_context=_MISSING_RUNTIME_CONTEXT,
     ):
         self.calls.append(
             {
                 "messages": messages,
                 "session_id": session_id,
                 "run_id": run_id,
-                "memory_v2_run_role": memory_v2_run_role,
-                "root_run_id": root_run_id,
-                "memory_v2_execution_id": memory_v2_execution_id,
+                "runtime_context": runtime_context,
             }
         )
         return type(
@@ -403,8 +448,13 @@ class _PreparedInputCompletionSink:
 
 
 @pytest.mark.parametrize("active", [False, True], ids=("shadow", "active"))
-def test_recipe_ref_child_receives_explicit_parent_context_v2_execution_id(active):
-    plugin = _plugin(Agent(name="parent"))
+def test_recipe_ref_child_receives_derived_roleless_runtime_context(active):
+    plugin = _plugin(
+        Agent(name="parent"),
+        runtime_context=_root_runtime_context(
+            execution_id="parent-context-v2-execution"
+        ),
+    )
     child = _RecipeRefChild()
     completion_sink = (
         _PreparedInputCompletionSink("parent-context-v2-execution")
@@ -428,32 +478,45 @@ def test_recipe_ref_child_receives_explicit_parent_context_v2_execution_id(activ
     )
 
     assert result.status == "completed"
-    assert child.calls == [
-        {
-            "messages": "inspect",
-            "session_id": (
-                "parent-context-v2-execution"
-                if active
-                else "parent-context-v2-execution:recipe-ref-child"
-            ),
-            "run_id": "recipe-ref-run",
-            "memory_v2_run_role": MemoryV2RunRole.SUBAGENT,
-            "root_run_id": "root-run-a",
-            "memory_v2_execution_id": "parent-context-v2-execution",
-        }
-    ]
+    assert len(child.calls) == 1
+    call = child.calls[0]
+    expected_execution_id = (
+        "parent-context-v2-execution"
+        if active
+        else "parent-context-v2-execution:recipe-ref-child"
+    )
+    assert call["messages"] == "inspect"
+    assert call["session_id"] == expected_execution_id
+    assert call["run_id"] == "recipe-ref-run"
+    child_context = call["runtime_context"]
+    assert isinstance(child_context, AgentRuntimeContext)
+    assert child_context.identity == ExecutionIdentity(
+        execution_id=expected_execution_id,
+        attempt_id="recipe-ref-run",
+        run_id="recipe-ref-run",
+        run_lineage=("root-run-a", "recipe-ref-run"),
+    )
+    child_grant = child_context.grant_for(MEMORY_V2_MODULE_KEY)
+    assert child_grant is not None
+    assert child_grant.authority is None
+    assert not child_grant.allows(MEMORY_EXECUTION_COMPLETE)
     if active:
         assert len(completion_sink.preparations) == 1
         assert len(completion_sink.completions) == 1
 
 
 def test_active_recipe_ref_rejects_prepared_parent_execution_identity_drift():
-    plugin = _plugin(Agent(name="parent"))
+    plugin = _plugin(
+        Agent(name="parent"),
+        runtime_context=_root_runtime_context(
+            execution_id="parent-context-v2-execution"
+        ),
+    )
     child = _RecipeRefChild()
     completion_sink = _PreparedInputCompletionSink("different-execution")
 
     with pytest.raises(
-        MemoryV2AgentModuleError,
+        SubagentRuntimeContextError,
         match="changed its parent Context V2 execution identity",
     ):
         plugin._run_child(
@@ -475,11 +538,10 @@ def test_active_recipe_ref_rejects_prepared_parent_execution_identity_drift():
     assert completion_sink.completions == []
 
 
-def test_ordinary_child_does_not_receive_memory_v2_execution_id():
+def test_ordinary_child_without_parent_context_receives_no_runtime_context():
     plugin = _plugin(
         Agent(name="parent"),
-        run_role=None,
-        root_run_id="",
+        runtime_context=None,
     )
     child = _RecipeRefChild()
 
@@ -499,7 +561,4 @@ def test_ordinary_child_does_not_receive_memory_v2_execution_id():
 
     assert result.status == "completed"
     assert child.calls[0]["session_id"] == "ordinary-child-session"
-    assert (
-        child.calls[0]["memory_v2_execution_id"]
-        is _MISSING_EXECUTION_ID
-    )
+    assert child.calls[0]["runtime_context"] is _MISSING_RUNTIME_CONTEXT

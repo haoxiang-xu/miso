@@ -30,6 +30,7 @@ from .models import (
     ReferencePurpose,
     TaskStateUpdateRequest,
 )
+from .policy import MEMORY_PROPOSE_PROMPT_SPEC
 from .presentation import content_page, model_value
 from .validation import (
     bounded_integer,
@@ -94,6 +95,11 @@ def _register(
                 function,
                 name=name,
                 description=description,
+                prompt_spec=(
+                    MEMORY_PROPOSE_PROMPT_SPEC
+                    if name == "memory_propose"
+                    else None
+                ),
                 always_load=True,
             )
         )
@@ -110,7 +116,7 @@ def build_memory_toolkit(
     *,
     dialect: MemoryToolkitDialect = DEFAULT_MEMORY_TOOLKIT_DIALECT,
 ) -> Toolkit:
-    """Build one role-specific, scope-bound system Memory V2 toolkit."""
+    """Build one capability-bound, scope-bound system Memory V2 toolkit."""
 
     if not isinstance(binding, MemoryToolkitRunBinding):
         raise TypeError("binding must be a MemoryToolkitRunBinding")
@@ -125,7 +131,9 @@ def build_memory_toolkit(
             TaskStateMemoryToolkitCapabilities,
         ),
     ):
-        raise TypeError("capabilities must be one explicit Memory V2 role bundle")
+        raise TypeError(
+            "capabilities must be one explicit Memory V2 capability profile"
+        )
     validate_capability_bindings(binding.binding_id, capabilities)
     references = capabilities.references
 
@@ -932,12 +940,18 @@ def build_memory_toolkit(
             [
                 (
                     "memory_source_read",
-                    dialect.description("memory_source_read", role="task_state"),
+                    dialect.description(
+                        "memory_source_read",
+                        profile="task_state",
+                    ),
                     memory_source_read,
                 ),
                 (
                     "memory_update_task_state",
-                    dialect.description("memory_update_task_state", role="task_state"),
+                    dialect.description(
+                        "memory_update_task_state",
+                        profile="task_state",
+                    ),
                     memory_update_task_state,
                 ),
             ]

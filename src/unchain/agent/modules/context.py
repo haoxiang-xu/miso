@@ -16,6 +16,33 @@ class ContextModule(BaseAgentModule):
     runtime: ContextRuntime = field(kw_only=True)
     name: str = field(default="context", init=False)
 
+    @property
+    def propagation_key(self) -> str:
+        return "context"
+
+    def derive_for_child(self, request, configured_child):
+        del request
+        if configured_child is None:
+            return self
+        if (
+            type(configured_child) is not type(self)
+            or configured_child.runtime is not self.runtime
+        ):
+            raise ValueError(
+                "template subagents must use the exact parent ContextRuntime"
+            )
+        return configured_child
+
+    def prepare_subagent_completion_sink(self, harness_context, *, call_id: str):
+        return self.runtime.prepare_subagent_completion_sink(
+            harness_context,
+            call_id=call_id,
+        )
+
+    @property
+    def subagent_completion_provider_enabled(self) -> bool:
+        return True
+
     def configure(self, builder) -> None:
         factory = self.runtime.execution_factory
         if (
@@ -36,6 +63,38 @@ class ContextShadowModule(BaseAgentModule):
     runtime: ContextRuntime = field(kw_only=True)
     enabled: bool = field(default=False, kw_only=True)
     name: str = field(default="context_shadow", init=False)
+
+    @property
+    def propagation_key(self) -> str | None:
+        return "context" if self.enabled else None
+
+    def derive_for_child(self, request, configured_child):
+        del request
+        if not self.enabled:
+            return configured_child
+        if configured_child is None:
+            return self
+        if (
+            type(configured_child) is not type(self)
+            or not configured_child.enabled
+            or configured_child.runtime is not self.runtime
+        ):
+            raise ValueError(
+                "template subagents must use the exact parent ContextRuntime"
+            )
+        return configured_child
+
+    def prepare_subagent_completion_sink(self, harness_context, *, call_id: str):
+        if not self.enabled:
+            return None
+        return self.runtime.prepare_subagent_completion_sink(
+            harness_context,
+            call_id=call_id,
+        )
+
+    @property
+    def subagent_completion_provider_enabled(self) -> bool:
+        return self.enabled
 
     def __post_init__(self) -> None:
         if type(self.enabled) is not bool:

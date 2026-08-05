@@ -154,9 +154,9 @@ class MemoryToolkitDialect:
         object.__setattr__(self, "errors", MappingProxyType(errors))
         object.__setattr__(self, "hidden_result_fields", hidden_fields)
 
-    def description(self, tool_name: str, *, role: str = "") -> str:
-        role_key = f"{role}.{tool_name}" if role else ""
-        return self.descriptions.get(role_key, self.descriptions[tool_name])
+    def description(self, tool_name: str, *, profile: str = "") -> str:
+        profile_key = f"{profile}.{tool_name}" if profile else ""
+        return self.descriptions.get(profile_key, self.descriptions[tool_name])
 
     def error(self, key: str) -> str:
         return self.errors[key]

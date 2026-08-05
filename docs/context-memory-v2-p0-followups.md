@@ -108,22 +108,23 @@ They are intentionally deferred and must not reopen the P0 review loop:
   Promote to stop-ship only if a duplicate external effect or durable result
   loss becomes reproducible.
 
-## Persist Memory V2 run-role lineage as durable scope data
+## Completed: roleless module identity and durable grants
 
-- **Current guarantee:** Agent calls and Memory V2 attachment requests carry an
-  explicit typed role plus a stable `root_run_id`. Root resumes may use a new
-  current attempt/run ID while retaining that root ID. Subagents receive the
-  parent's root ID explicitly and cannot be mistaken for root runs; only an
-  explicit root role installs the consolidation completion hook.
-- **Durability boundary:** The existing SQLite curation run scope persists the
-  session, attempt, and current run IDs, but not the role or stable root ID.
-  Cold reconstruction must therefore receive the same explicit identity from
-  the host; P0 validates it at the call and attachment boundaries rather than
-  adding another schema/CAS protocol during cutover.
-- **Deferred improvement:** Version the curation run scope with role and root
-  lineage, then reject cold-attach or resume drift transactionally.
-- **P0 disposition:** Non-blocking for the locked P0 contract. Do not expand the
-  schema in the run-role wiring slice.
+- **Current guarantee:** Agent calls carry a generic `ExecutionIdentity` and
+  host-issued `ModuleGrant` values. Lineage records execution facts only;
+  authority is derived exclusively from explicit capabilities and an optional
+  non-delegable authority value.
+- **Durability boundary:** Canonical graph/resume snapshots persist the exact
+  identity, lineage, capability set, delegable subset, and authority. Legacy
+  flat role snapshots are identified explicitly and cannot be resumed as
+  canonical bindings.
+- **Delegation:** The core subagent runtime delegates arbitrary module grants
+  through a generic propagation contract. Each template may request a subset
+  of delegable capabilities. Adding a collaboration pattern does not require a
+  Memory-specific role or a Memory-module code change.
+- **Closed compatibility path:** `MemoryV2RunRole` and its compatibility export
+  modules have been removed. Production code must not reconstruct permission
+  from root/subagent/graph labels.
 
 ## Preserve promotion decision reasons as durable provenance
 

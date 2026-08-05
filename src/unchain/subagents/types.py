@@ -21,9 +21,44 @@ class SubagentTemplate:
     parallel_safe: bool = False
     allowed_tools: tuple[str, ...] | None = None
     model: str | None = None
+    module_capabilities: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
+    def __post_init__(self) -> None:
+        normalized: list[tuple[str, tuple[str, ...]]] = []
+        seen: set[str] = set()
+        for item in self.module_capabilities:
+            if not isinstance(item, tuple) or len(item) != 2:
+                raise TypeError(
+                    "module_capabilities must contain (module_key, capabilities) pairs"
+                )
+            module_key, capabilities = item
+            if not isinstance(module_key, str) or not module_key.strip():
+                raise ValueError("module capability key must be non-empty")
+            module_key = module_key.strip()
+            if module_key in seen:
+                raise ValueError("module capability keys must be unique")
+            seen.add(module_key)
+            if isinstance(capabilities, (str, bytes, bytearray)):
+                raise TypeError("module capabilities must be a string collection")
+            values = tuple(capabilities)
+            if any(
+                not isinstance(value, str) or not value.strip()
+                for value in values
+            ):
+                raise ValueError("module capabilities must be non-empty strings")
+            normalized.append(
+                (module_key, tuple(dict.fromkeys(value.strip() for value in values)))
+            )
+        object.__setattr__(self, "module_capabilities", tuple(normalized))
 
     def supports_mode(self, mode: SubagentMode) -> bool:
         return mode in self.allowed_modes
+
+    def requested_module_capabilities(self) -> dict[str, frozenset[str]]:
+        return {
+            module_key: frozenset(capabilities)
+            for module_key, capabilities in self.module_capabilities
+        }
 
 
 @dataclass(frozen=True)

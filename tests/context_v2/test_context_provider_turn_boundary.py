@@ -361,7 +361,7 @@ def test_subagent_fork_uses_a_distinct_durable_attempt_boundary(tmp_path):
         task="inspect durable state",
         instructions="",
         expected_output="short answer",
-        memory_policy="ephemeral",
+        disabled_module_keys=("memory",),
     )
 
     result = child.run(

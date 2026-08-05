@@ -16,6 +16,11 @@ from unchain.memory.toolkit import (
     build_memory_toolkit,
     MEMORY_TOOLKIT_METADATA,
 )
+from unchain.memory.toolkit.policy import (
+    MEMORY_PROPOSAL_POLICY_VERSION,
+    MEMORY_PROPOSE_PROMPT_SPEC,
+)
+from unchain.tools import render_tool_prompt_block
 
 
 BASE_DESCRIPTIONS = {
@@ -482,6 +487,41 @@ def test_role_capability_sets_are_exact_and_ordered():
     )
 
 
+def test_memory_proposal_policy_is_bound_only_to_the_proposal_tool():
+    toolkits = _toolkits()
+    proposal_tool = toolkits["normal"].tools["memory_propose"]
+
+    assert proposal_tool.prompt_spec == MEMORY_PROPOSE_PROMPT_SPEC
+    rendered = render_tool_prompt_block(toolkits["normal"])
+    assert rendered.count(MEMORY_PROPOSAL_POLICY_VERSION) == 1
+    for required_policy_term in (
+        "Explicit intent",
+        "Evidence",
+        "Future value",
+        "Durability",
+        "Novelty",
+        "Secret Vault",
+        "Pinned Task State",
+        "say only that a memory candidate was proposed",
+        "Claim formal memory was saved only when a curator or formal-write result",
+        "If nothing passes this policy, do not call the tool",
+    ):
+        assert required_policy_term in rendered
+
+    for profile in ("curator", "consolidation", "task_state"):
+        assert MEMORY_PROPOSAL_POLICY_VERSION not in render_tool_prompt_block(
+            toolkits[profile]
+        )
+
+    for provider in ("openai", "anthropic", "ollama"):
+        provider_schema = proposal_tool.to_provider_json(provider)
+        assert MEMORY_PROPOSAL_POLICY_VERSION not in str(provider_schema)
+        provider_description = provider_schema.get("description")
+        if provider_description is None:
+            provider_description = provider_schema["function"]["description"]
+        assert provider_description == ROLE_DESCRIPTIONS["memory_propose"]
+
+
 def test_tool_descriptions_schemas_flags_and_defaults_match_pupu_p0_contract():
     toolkits = _toolkits()
     expected_descriptions = {**BASE_DESCRIPTIONS, **ROLE_DESCRIPTIONS}
@@ -599,9 +639,9 @@ def test_system_toolkit_metadata_and_readme_are_packaged_without_public_manifest
 
     assert MEMORY_TOOLKIT_METADATA.package_id == "memory_v2_system"
     assert MEMORY_TOOLKIT_METADATA.public_registry is False
-    assert MEMORY_TOOLKIT_METADATA.roles == (
-        "normal",
-        "curator",
+    assert MEMORY_TOOLKIT_METADATA.capability_profiles == (
+        "agent_read_propose",
+        "workspace_curator",
         "consolidation_curator",
         "task_state_curator",
     )

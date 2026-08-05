@@ -181,7 +181,7 @@ def test_subagent_fork_retains_the_same_context_runtime_and_compiles():
         task="inspect the result",
         instructions="",
         expected_output="short answer",
-        memory_policy="ephemeral",
+        disabled_module_keys=("memory",),
     )
 
     assert child.run(

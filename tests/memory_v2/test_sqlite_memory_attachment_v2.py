@@ -5,10 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from unchain.agent.modules.memory_v2 import (
-    MemoryV2AgentAttachmentRequest,
-    MemoryV2AgentModule,
-    MemoryV2RunRole,
+from unchain.memory import (
+    MEMORY_CANDIDATE_PROPOSE,
+    MEMORY_EXECUTION_COMPLETE,
+    MEMORY_V2_CAPABILITIES,
+    MEMORY_V2_MODULE_KEY,
+    MEMORY_WORKSPACE_READ,
+    MemoryAttachmentRequest,
+    MemoryV2Module,
 )
 from unchain.journal import ResourceRef
 from unchain.memory.curator.host import MemoryAgentHostAdapter, MemoryAgentHostConfig
@@ -18,9 +22,10 @@ from unchain.memory.toolkit import (
     ReferencePurpose,
 )
 from unchain.persistence.sqlite_memory_host_v2 import (
+    SQLiteMemoryAttachmentFactory,
     SQLiteMemoryHostV2Error,
-    SQLiteMemoryV2AgentAttachmentFactory,
 )
+from unchain.runtime import ExecutionIdentity, ModuleGrant
 
 from .test_memory_v2_agent_module import _CompletionFactory, _builder, _result
 from .test_sqlite_memory_host_v2 import (
@@ -50,6 +55,44 @@ class _NeverRunModel:
         raise AssertionError("normal attachment must not run the Memory Agent model")
 
 
+def _request(
+    *,
+    agent_name="normal-agent",
+    mode="run",
+    session_id="session-a",
+    attempt_id="attempt-a",
+    run_id="run-a",
+    run_lineage=None,
+    capabilities=MEMORY_V2_CAPABILITIES,
+    authority=...,
+):
+    selected = frozenset(capabilities)
+    if authority is ...:
+        authority = (
+            "completion-authority-a"
+            if MEMORY_EXECUTION_COMPLETE in selected
+            else None
+        )
+    return MemoryAttachmentRequest(
+        agent_name=agent_name,
+        mode=mode,
+        identity=ExecutionIdentity(
+            execution_id=session_id,
+            attempt_id=attempt_id,
+            run_id=run_id,
+            run_lineage=tuple(run_lineage or (run_id,)),
+        ),
+        grant=ModuleGrant(
+            module_key=MEMORY_V2_MODULE_KEY,
+            capabilities=selected,
+            delegable_capabilities=selected.difference(
+                {MEMORY_EXECUTION_COMPLETE}
+            ),
+            authority=authority,
+        ),
+    )
+
+
 def _attachment_factory(
     repository,
     workspace,
@@ -59,7 +102,7 @@ def _attachment_factory(
     long_term=None,
     allowed_long_term_refs=(),
 ):
-    return SQLiteMemoryV2AgentAttachmentFactory(
+    return SQLiteMemoryAttachmentFactory(
         binding_id="binding-chat-a",
         repository=repository,
         workspace=workspace,
@@ -100,7 +143,7 @@ def test_default_closed_module_never_attaches_or_binds_a_candidate_run(
     )
     builder = _builder()
 
-    MemoryV2AgentModule(
+    MemoryV2Module(
         host=MemoryAgentHostAdapter(repository),
         attachment_factory=factory,
     ).configure(builder)
@@ -138,7 +181,7 @@ def test_root_attachment_exposes_exact_normal_tools_and_persists_current_run_can
     host = _enabled_host(repository, consolidation_factory, clock)
     builder = _builder()
 
-    MemoryV2AgentModule(host=host, attachment_factory=factory).configure(builder)
+    MemoryV2Module(host=host, attachment_factory=factory).configure(builder)
 
     assert tuple(
         name for name in builder.toolkit.tools if name.startswith("memory_")
@@ -148,14 +191,11 @@ def test_root_attachment_exposes_exact_normal_tools_and_persists_current_run_can
     assert "memory_update_task_state" not in builder.toolkit.tools
     assert len(builder.run_hooks) == 1
     assert resolver.requests == [
-        MemoryV2AgentAttachmentRequest(
-            agent_name="normal-agent",
+        _request(
             mode="run",
             session_id=binding.session_id,
             attempt_id=binding.attempt_id,
             run_id=binding.run_id,
-            role=MemoryV2RunRole.ROOT,
-            root_run_id=binding.run_id,
         )
     ]
 
@@ -213,11 +253,19 @@ def test_non_root_resolver_none_adds_tools_without_a_terminal_hook(
         session_id="child-session",
         attempt_id="child-attempt",
         run_id="child-run",
-        run_role=MemoryV2RunRole.SUBAGENT,
-        root_run_id="root-run",
+        run_lineage=("root-run", "child-run"),
+        grant=ModuleGrant(
+            module_key=MEMORY_V2_MODULE_KEY,
+            capabilities=frozenset(
+                {MEMORY_WORKSPACE_READ, MEMORY_CANDIDATE_PROPOSE}
+            ),
+            delegable_capabilities=frozenset(
+                {MEMORY_WORKSPACE_READ, MEMORY_CANDIDATE_PROPOSE}
+            ),
+        ),
     )
 
-    MemoryV2AgentModule(host=host, attachment_factory=factory).configure(builder)
+    MemoryV2Module(host=host, attachment_factory=factory).configure(builder)
 
     assert tuple(
         name for name in builder.toolkit.tools if name.startswith("memory_")
@@ -242,14 +290,13 @@ def test_graph_step_attachment_persists_root_lineage_for_coordinator_completion(
         consolidation_factory,
     )
     graph_attachment = factory.attach(
-        MemoryV2AgentAttachmentRequest(
+        _request(
             agent_name="graph-step-agent",
-            mode="run",
             session_id="session-a",
             attempt_id="graph-step-attempt",
             run_id="graph-step-run",
-            role=MemoryV2RunRole.GRAPH_STEP,
-            root_run_id="graph-root-run",
+            run_lineage=("graph-root-run", "graph-step-run"),
+            capabilities={MEMORY_CANDIDATE_PROPOSE},
         )
     )
     candidate = graph_attachment.capabilities.candidates.propose(
@@ -262,14 +309,11 @@ def test_graph_step_attachment_persists_root_lineage_for_coordinator_completion(
         run_id="graph-root-run",
     )
     factory.attach(
-        MemoryV2AgentAttachmentRequest(
+        _request(
             agent_name="graph-root-agent",
-            mode="run",
             session_id=root_binding.session_id,
             attempt_id=root_binding.attempt_id,
             run_id=root_binding.run_id,
-            role=MemoryV2RunRole.ROOT,
-            root_run_id=root_binding.run_id,
         )
     )
 
@@ -292,17 +336,13 @@ def test_graph_step_attachment_persists_root_lineage_for_coordinator_completion(
         ("graph-step-attempt", "graph-step-run", "graph-root-run"),
     ]
 
-    with pytest.raises(SQLiteMemoryHostV2Error, match="root_completion_scope"):
-        factory.attach(
-            MemoryV2AgentAttachmentRequest(
-                agent_name="invalid-root-agent",
-                mode="run",
-                session_id="session-a",
-                attempt_id="invalid-root-attempt",
-                run_id="invalid-root-run",
-                role=MemoryV2RunRole.ROOT,
-                root_run_id="different-root-run",
-            )
+    with pytest.raises(ValueError, match="requires an authority"):
+        _request(
+            agent_name="invalid-completion-agent",
+            attempt_id="invalid-attempt",
+            run_id="invalid-run",
+            capabilities={MEMORY_EXECUTION_COMPLETE},
+            authority=None,
         )
 
 
@@ -326,7 +366,7 @@ def test_suspended_completion_factory_none_never_enqueues(
     )
     host = _enabled_host(repository, consolidation_factory, clock)
     builder = _builder()
-    MemoryV2AgentModule(host=host, attachment_factory=factory).configure(builder)
+    MemoryV2Module(host=host, attachment_factory=factory).configure(builder)
 
     suspended = _result("awaiting_interaction")
     builder.run_hooks[0](suspended)
@@ -357,14 +397,11 @@ def test_cold_factory_reuses_run_scope_workspace_and_candidate_receipt(
         source_refs=(source_ref,),
         operation_id="seed-workspace-before-attachment",
     )
-    request = MemoryV2AgentAttachmentRequest(
-        agent_name="normal-agent",
-        mode="run",
+    request = _request(
         session_id=binding.session_id,
         attempt_id=binding.attempt_id,
         run_id=binding.run_id,
-        role=MemoryV2RunRole.ROOT,
-        root_run_id=binding.run_id,
+        capabilities={MEMORY_WORKSPACE_READ, MEMORY_CANDIDATE_PROPOSE},
     )
     first_factory = _attachment_factory(
         repository,
@@ -412,7 +449,7 @@ def test_attachment_scope_and_resolver_drift_fail_closed(tmp_path: Path) -> None
         source_ref=source_ref,
     )
     with pytest.raises(SQLiteMemoryHostV2Error, match="repository_binding"):
-        SQLiteMemoryV2AgentAttachmentFactory(
+        SQLiteMemoryAttachmentFactory(
             binding_id="foreign-binding",
             repository=repository,
             workspace=workspace,
@@ -427,15 +464,7 @@ def test_attachment_scope_and_resolver_drift_fail_closed(tmp_path: Path) -> None
         consolidation_factory,
         resolver=resolver,
     )
-    request = MemoryV2AgentAttachmentRequest(
-        agent_name="normal-agent",
-        mode="run",
-        session_id="session-a",
-        attempt_id="attempt-a",
-        run_id="run-a",
-        role=MemoryV2RunRole.ROOT,
-        root_run_id="run-a",
-    )
+    request = _request()
     with pytest.raises(SQLiteMemoryHostV2Error, match="completion_factory_invalid"):
         factory.attach(request)
     with sqlite3.connect(tmp_path / "context_v2.sqlite3") as connection:
@@ -469,15 +498,7 @@ def test_long_term_refs_are_only_injected_when_explicit_and_distinct(
         allowed_long_term_refs=(allowed,),
     )
     attachment = factory.attach(
-        MemoryV2AgentAttachmentRequest(
-            agent_name="normal-agent",
-            mode="run",
-            session_id="session-a",
-            attempt_id="attempt-a",
-            run_id="run-a",
-            role=MemoryV2RunRole.ROOT,
-            root_run_id="run-a",
-        )
+        _request(capabilities={MEMORY_WORKSPACE_READ})
     )
     assert attachment.capabilities.long_term.space_id == long_term.space_id
     assert attachment.capabilities.allowed_long_term_refs == (allowed,)

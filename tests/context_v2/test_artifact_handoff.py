@@ -260,6 +260,21 @@ def test_small_tool_result_still_has_a_full_durable_ref_and_uses_sanitized_value
     }
 
 
+def test_text_preview_normalizes_a_whitespace_truncation_boundary() -> None:
+    repository = MemoryArtifactRepository()
+    service = ArtifactService(repository, sanitizer=identity_sanitizer)
+    content = (b"a" * (MAX_PREVIEW_BYTES - 1)) + b" " + b"tail"
+
+    artifact = service.persist(
+        content,
+        media_type="text/plain",
+        operation_id="artifact-whitespace-preview",
+    )
+
+    assert artifact.preview == "a" * (MAX_PREVIEW_BYTES - 1)
+    assert repository.put_calls[0][3] == artifact.preview
+
+
 def test_artifact_size_limit_is_enforced_before_repository_write() -> None:
     repository = MemoryArtifactRepository()
     service = ArtifactService(repository, sanitizer=identity_sanitizer)

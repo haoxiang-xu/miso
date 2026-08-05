@@ -64,6 +64,22 @@ are documented here and scheduled after the P0 production path is complete.
   process. A future requirement must first introduce an explicit process or
   native isolation boundary and a separate threat model.
 
+### CMV2-SEC-003: Durable completion-authority provenance assertion
+
+- **Status:** Deferred — non-blocking defense in depth
+- **Scope:** PuPu graph coordinator cold-resume snapshot
+- **Finding:** The durable snapshot validator requires a non-empty authority
+  whenever the completion capability is present, but does not independently
+  recompute the host's deterministic completion-authority value.
+- **Current boundary:** The snapshot is written and read through the
+  server-owned durable graph store, is bound to the exact chat, execution,
+  session, generation, attempt, lineage, and Memory grant, and is not a
+  renderer append surface. Under the process-and-disk trust model this is not
+  a current privilege escalation or P0 blocker.
+- **Disposition:** If coordinator snapshots ever become client-importable or
+  cross a new trust boundary, require provenance proof or recompute and compare
+  the deterministic authority before admitting resume.
+
 ## Locked implementation sequence
 
 1. `ProviderWireEnvelope`
@@ -72,4 +88,4 @@ are documented here and scheduled after the P0 production path is complete.
 4. OpenAI, Anthropic, Hyperspace, and Ollama integration
 5. ContextRuntime admission and restart recovery
 6. Artifact/Handoff and Curator/Toolkit host adapters
-7. Memory Agent, long-term promotion, Vault, UI/Trace, migration, and rollout
+7. Memory-module curator, long-term promotion, Vault, UI/Trace, migration, and rollout

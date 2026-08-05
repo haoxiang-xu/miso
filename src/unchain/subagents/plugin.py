@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..durability import is_durable_persistence_failure
 from ..execution import ExecutionGuard, _borrow_execution_guard
-from ..run_identity import MemoryV2RunRole
+from ..runtime.module_context import AgentRuntimeContext, ExecutionIdentity
 from ..tools.common import emit_loop_event
 from ..tools.runtime import ToolRuntimeOutcome, ToolRuntimePlugin
 from ..kernel.types import ToolCall
@@ -54,6 +54,10 @@ class _ChildRunError(RuntimeError):
         super().__init__(str(original))
         self.original = original
         self.subagent_state = copy.deepcopy(subagent_state)
+
+
+class SubagentRuntimeContextError(RuntimeError):
+    """A child run could not preserve its generic runtime binding."""
 
 
 class _BatchSiblingAborted(RuntimeError):
@@ -312,8 +316,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
     templates: tuple[SubagentTemplate, ...]
     policy: SubagentPolicy
     executor: SubagentExecutor
-    memory_v2_run_role: MemoryV2RunRole | None = None
-    root_run_id: str = ""
+    runtime_context: AgentRuntimeContext | None = None
 
     @property
     def template_map(self) -> dict[str, SubagentTemplate]:
@@ -475,6 +478,9 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         expected_output: str,
     ) -> tuple["KernelAgent", str, str | None]:
         memory_policy = template.memory_policy if template is not None else ("ephemeral" if mode != "handoff" else "scoped_persistent")
+        disabled_module_keys = (
+            ("memory",) if memory_policy == "ephemeral" else ()
+        )
         if template is not None:
             base_agent = template.agent or self.parent_agent
             child = base_agent.fork_for_subagent(
@@ -485,12 +491,16 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 task=task,
                 instructions=instructions,
                 expected_output=expected_output,
-                memory_policy=memory_policy,
+                disabled_module_keys=disabled_module_keys,
                 model=template.model,
                 allowed_tools=template.allowed_tools,
                 missing_tool_policy="warn_skip",
             )
-            child = self._inherit_parent_context_runtime(child)
+            child = self._resolve_child_modules(
+                child,
+                template_name=template.name,
+                disabled_module_keys=disabled_module_keys,
+            )
             return child, memory_policy, template.name
         if mode == "handoff" and self.policy.handoff_requires_template:
             raise ValueError("handoff_to_subagent requires a registered template")
@@ -506,105 +516,66 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             task=task,
             instructions=instructions,
             expected_output=expected_output,
-            memory_policy=memory_policy,
+            disabled_module_keys=disabled_module_keys,
             missing_tool_policy="warn_skip",
         )
-        child = self._inherit_parent_context_runtime(child)
+        child = self._resolve_child_modules(
+            child,
+            template_name=None,
+            disabled_module_keys=disabled_module_keys,
+        )
         return child, memory_policy, None
 
-    def _inherit_parent_context_runtime(self, child: "KernelAgent") -> "KernelAgent":
-        from ..agent.modules.context import ContextModule, ContextShadowModule
-        from ..agent.modules.memory_v2 import MemoryV2AgentModule
+    def _resolve_child_modules(
+        self,
+        child: "KernelAgent",
+        *,
+        template_name: str | None,
+        disabled_module_keys: tuple[str, ...],
+    ) -> "KernelAgent":
+        from ..agent.modules.propagation import (
+            ChildModuleRequest,
+            resolve_child_modules,
+        )
 
         parent_spec = getattr(self.parent_agent, "spec", None)
         parent_modules = tuple(getattr(parent_spec, "modules", ()) or ())
-        parent_context_modules = tuple(
-            module
-            for module in parent_modules
-            if isinstance(module, ContextModule)
-            or (
-                isinstance(module, ContextShadowModule)
-                and module.enabled
-            )
-        )
-        parent_memory_modules = tuple(
-            module
-            for module in parent_modules
-            if isinstance(module, MemoryV2AgentModule)
-        )
-        if len(parent_context_modules) > 1:
-            raise ValueError("parent must define exactly one ContextModule")
-        if len(parent_memory_modules) > 1:
-            raise ValueError("parent must define exactly one MemoryV2AgentModule")
-
         child_modules = tuple(getattr(child.spec, "modules", ()) or ())
-        child_context_modules = tuple(
-            module
-            for module in child_modules
-            if isinstance(module, ContextModule)
-            or (
-                isinstance(module, ContextShadowModule)
-                and module.enabled
-            )
+        resolved_modules = resolve_child_modules(
+            parent_modules=parent_modules,
+            child_modules=child_modules,
+            request=ChildModuleRequest(
+                parent_agent_name=self.parent_agent.name,
+                child_agent_name=child.name,
+                template_name=template_name,
+                disabled_module_keys=frozenset(disabled_module_keys),
+            ),
         )
-        child_memory_modules = tuple(
-            module
-            for module in child_modules
-            if isinstance(module, MemoryV2AgentModule)
-        )
-        inherited_modules = []
-        if parent_context_modules:
-            parent_context = parent_context_modules[0]
-            if child_context_modules:
-                if len(child_context_modules) != 1 or (
-                    type(child_context_modules[0]) is not type(parent_context)
-                ) or (
-                    child_context_modules[0].runtime is not parent_context.runtime
-                ):
-                    raise ValueError(
-                        "template subagents must use the exact parent ContextRuntime"
-                    )
-            else:
-                inherited_modules.append(parent_context)
-        if parent_memory_modules:
-            parent_memory = parent_memory_modules[0]
-            if child_memory_modules:
-                if len(child_memory_modules) != 1 or (
-                    child_memory_modules[0] is not parent_memory
-                ):
-                    raise ValueError(
-                        "template subagents must use the exact parent MemoryV2AgentModule"
-                    )
-            else:
-                inherited_modules.append(parent_memory)
-        if not inherited_modules:
+        if resolved_modules == child_modules:
             return child
-        return child.clone(
-            modules=(*child_modules, *inherited_modules),
-        )
+        return child.clone(modules=resolved_modules)
 
     def _subagent_completion_sink(self, context, tool_call: ToolCall):
-        from ..agent.modules.context import ContextModule, ContextShadowModule
-
         parent_spec = getattr(self.parent_agent, "spec", None)
         parent_modules = tuple(getattr(parent_spec, "modules", ()) or ())
-        context_modules = tuple(
+        providers = tuple(
             module
             for module in parent_modules
-            if isinstance(module, ContextModule)
-            or (
-                isinstance(module, ContextShadowModule)
-                and module.enabled
+            if callable(getattr(module, "prepare_subagent_completion_sink", None))
+            and bool(
+                getattr(module, "subagent_completion_provider_enabled", True)
             )
         )
-        if not context_modules:
+        if not providers:
             return None
-        if len(context_modules) != 1:
-            raise ValueError("parent must define exactly one ContextModule")
+        if len(providers) != 1:
+            raise ValueError(
+                "parent must define exactly one subagent completion provider"
+            )
         harness_context = getattr(context, "harness_context", None)
         if harness_context is None:
             return None
-        return context_modules[0].runtime.prepare_subagent_completion_sink(
+        return providers[0].prepare_subagent_completion_sink(
             harness_context,
             call_id=tool_call.call_id,
         )
@@ -670,27 +641,17 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         completion_sink: Any = None,
     ) -> SubagentResult:
         _assert_batch_active(batch_failure_event)
-        from ..agent.modules.memory_v2 import (
-            MemoryV2AgentModule,
-            MemoryV2AgentModuleError,
-        )
-
         child_modules = tuple(
             getattr(getattr(agent, "spec", None), "modules", ()) or ()
         )
-        enabled_memory_v2_child = any(
-            isinstance(module, MemoryV2AgentModule)
-            and bool(getattr(getattr(module, "host", None), "enabled", False))
+        runtime_context_required = any(
+            bool(getattr(module, "requires_runtime_context", False))
             for module in child_modules
         )
-        normalized_root_run_id = str(self.root_run_id or "").strip()
-        explicit_parent_identity = (
-            isinstance(self.memory_v2_run_role, MemoryV2RunRole)
-            and bool(normalized_root_run_id)
-        )
-        if enabled_memory_v2_child and not explicit_parent_identity:
-            raise MemoryV2AgentModuleError(
-                "enabled Memory V2 child requires an explicit parent root run identity"
+        parent_runtime_context = self.runtime_context
+        if runtime_context_required and parent_runtime_context is None:
+            raise SubagentRuntimeContextError(
+                "child modules require an explicit parent runtime context"
             )
         if not child_run_id:
             child_run_id = self._build_child_run_id(
@@ -715,15 +676,15 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 getattr(preparation, "execution_id", "") or ""
             ).strip()
             if not prepared_execution_id:
-                raise MemoryV2AgentModuleError(
+                raise SubagentRuntimeContextError(
                     "durable subagent input returned no execution identity"
                 )
             if (
-                explicit_parent_identity
+                parent_runtime_context is not None
                 and prepared_execution_id
-                != normalized_parent_context_v2_execution_id
+                != parent_runtime_context.identity.execution_id
             ):
-                raise MemoryV2AgentModuleError(
+                raise SubagentRuntimeContextError(
                     "durable subagent input changed its parent Context V2 "
                     "execution identity"
                 )
@@ -731,10 +692,43 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             recovered_result = getattr(preparation, "recovered_result", None)
             if recovered_result is not None:
                 if type(recovered_result) is not SubagentResult:
-                    raise MemoryV2AgentModuleError(
+                    raise SubagentRuntimeContextError(
                         "durable subagent input returned an invalid completion"
                     )
                 return recovered_result
+        if (
+            parent_runtime_context is not None
+            and normalized_parent_context_v2_execution_id
+            and normalized_parent_context_v2_execution_id
+            != parent_runtime_context.identity.execution_id
+        ):
+            raise SubagentRuntimeContextError(
+                "caller changed the parent runtime execution identity"
+            )
+        child_runtime_context = None
+        if parent_runtime_context is not None:
+            template = (
+                self.template_map.get(template_name)
+                if isinstance(template_name, str) and template_name
+                else None
+            )
+            requested_capabilities = (
+                template.requested_module_capabilities()
+                if template is not None and template.module_capabilities
+                else None
+            )
+            child_runtime_context = parent_runtime_context.delegated_to(
+                ExecutionIdentity(
+                    execution_id=effective_session_id,
+                    attempt_id=child_run_id,
+                    run_id=child_run_id,
+                    run_lineage=(
+                        *parent_runtime_context.identity.run_lineage,
+                        child_run_id,
+                    ),
+                ),
+                requested_capabilities=requested_capabilities,
+            )
         captured_state = SubagentState()
         captured_item_ids: set[str] = set()
 
@@ -818,27 +812,14 @@ class SubagentToolPlugin(ToolRuntimePlugin):
 
         if accepts_keyword("execution_owner_id"):
             guarded_run_kwargs["execution_owner_id"] = child_run_id
-        if explicit_parent_identity:
-            identity_keywords = {
-                "memory_v2_run_role": MemoryV2RunRole.SUBAGENT,
-                "root_run_id": normalized_root_run_id,
-            }
-            if enabled_memory_v2_child and not all(
-                accepts_keyword(name) for name in identity_keywords
-            ):
-                raise MemoryV2AgentModuleError(
-                    "enabled Memory V2 child run signature cannot carry its root identity"
-                )
-            for name, value in identity_keywords.items():
-                if accepts_keyword(name):
-                    guarded_run_kwargs[name] = value
-            if (
-                normalized_parent_context_v2_execution_id
-                and accepts_keyword("memory_v2_execution_id")
-            ):
-                guarded_run_kwargs["memory_v2_execution_id"] = (
-                    normalized_parent_context_v2_execution_id
-                )
+        if child_runtime_context is not None:
+            if not accepts_keyword("runtime_context"):
+                if runtime_context_required:
+                    raise SubagentRuntimeContextError(
+                        "child run signature cannot carry its runtime context"
+                    )
+            else:
+                guarded_run_kwargs["runtime_context"] = child_runtime_context
         if child_execution_guard is not None:
             if accepts_keyword("_execution_guard"):
                 guarded_run_kwargs["_execution_guard"] = child_execution_guard

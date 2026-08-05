@@ -10,9 +10,9 @@ class MemoryToolkitPackageMetadata:
     version: str = "0.1.0"
     contract_version: str = "unchain.memory_toolkit.v1"
     public_registry: bool = False
-    roles: tuple[str, ...] = (
-        "normal",
-        "curator",
+    capability_profiles: tuple[str, ...] = (
+        "agent_read_propose",
+        "workspace_curator",
         "consolidation_curator",
         "task_state_curator",
     )

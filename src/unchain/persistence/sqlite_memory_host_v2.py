@@ -19,11 +19,10 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
-from unchain.agent.modules.memory_v2 import (
-    MemoryV2AgentAttachment,
-    MemoryV2AgentAttachmentRequest,
-    MemoryV2RootCompletionFactory,
-    MemoryV2RunRole,
+from unchain.memory.module import (
+    MemoryAttachment,
+    MemoryAttachmentRequest,
+    MemoryCompletionFactory,
 )
 from unchain.journal import ResourceRef
 from unchain.journal.models import _required_text
@@ -122,13 +121,13 @@ class SQLiteMemoryHostV2IntegrityError(SQLiteMemoryHostV2Error):
     """Durable state no longer matches the frozen consolidation effect."""
 
 
-class MemoryV2RootCompletionFactoryResolver(Protocol):
+class MemoryCompletionFactoryResolver(Protocol):
     """Host policy deciding whether one attached run gets a terminal projector."""
 
     def resolve(
         self,
-        request: MemoryV2AgentAttachmentRequest,
-    ) -> MemoryV2RootCompletionFactory | None:
+        request: MemoryAttachmentRequest,
+    ) -> MemoryCompletionFactory | None:
         ...
 
 
@@ -224,7 +223,7 @@ class _SQLiteBoundChatReadCapability:
         )
 
 
-class SQLiteMemoryV2AgentAttachmentFactory:
+class SQLiteMemoryAttachmentFactory:
     """Attach the exact normal-agent Memory V2 capabilities for one run."""
 
     def __init__(
@@ -235,7 +234,7 @@ class SQLiteMemoryV2AgentAttachmentFactory:
         workspace: MemoryWorkspaceService,
         references: BoundExternalReferenceCodec,
         context: BoundContextMemoryCapability,
-        completion_factory_resolver: MemoryV2RootCompletionFactoryResolver
+        completion_factory_resolver: MemoryCompletionFactoryResolver
         | None = None,
         long_term: BoundMemoryReadCapability | None = None,
         allowed_long_term_refs: Sequence[ResourceRef] = (),
@@ -300,15 +299,10 @@ class SQLiteMemoryV2AgentAttachmentFactory:
 
     def attach(
         self,
-        request: MemoryV2AgentAttachmentRequest,
-    ) -> MemoryV2AgentAttachment:
-        if not isinstance(request, MemoryV2AgentAttachmentRequest):
-            raise TypeError("request must be a MemoryV2AgentAttachmentRequest")
-        if (
-            request.role is MemoryV2RunRole.ROOT
-            and request.run_id != request.root_run_id
-        ):
-            raise SQLiteMemoryHostV2Error("root_completion_scope_mismatch")
+        request: MemoryAttachmentRequest,
+    ) -> MemoryAttachment:
+        if not isinstance(request, MemoryAttachmentRequest):
+            raise TypeError("request must be a MemoryAttachmentRequest")
         binding = MemoryToolkitRunBinding(
             binding_id=self.binding_id,
             session_id=request.session_id,
@@ -342,7 +336,7 @@ class SQLiteMemoryV2AgentAttachmentFactory:
             long_term=self.long_term,
             allowed_long_term_refs=self.allowed_long_term_refs,
         )
-        return MemoryV2AgentAttachment(
+        return MemoryAttachment(
             binding=binding,
             capabilities=capabilities,
             completion_factory=completion_factory,
@@ -1209,9 +1203,9 @@ class _SQLiteBoundConsolidationCapability:
 
 
 __all__ = [
-    "MemoryV2RootCompletionFactoryResolver",
+    "MemoryCompletionFactoryResolver",
     "SQLiteConsolidationCapabilityFactory",
-    "SQLiteMemoryV2AgentAttachmentFactory",
+    "SQLiteMemoryAttachmentFactory",
     "SQLiteMemoryHostV2Error",
     "SQLiteMemoryHostV2IntegrityError",
 ]

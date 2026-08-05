@@ -4,12 +4,14 @@ This package owns Unchain's model-visible Memory V2 tools. It is a system
 toolkit, not a public recipe toolkit, so it deliberately has no discoverable
 `toolkit.toml` manifest.
 
-The host constructs one immutable run binding and one explicit role bundle:
+The host constructs one immutable run binding and one explicit capability
+profile. Profiles describe the bound services required by a task; they are
+not agent identities or authorization roles:
 
-- normal agent
-- generic memory curator
-- consolidation curator
-- task-state curator
+- agent read/propose
+- workspace curation
+- consolidation curation
+- task-state curation
 
 Scope identifiers never appear in model-callable signatures. External URI
 strings are decoded by the host-bound reference codec into `ResourceRef`

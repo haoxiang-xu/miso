@@ -118,7 +118,11 @@ def _normalize_media_type(value: object) -> str:
 def _bounded_utf8_preview(content: bytes, limit: int = MAX_PREVIEW_BYTES) -> str:
     if not content or limit <= 0:
         return ""
-    return content[:limit].decode("utf-8", errors="ignore")
+    # ArtifactRef stores optional text through the journal model's canonical
+    # whitespace normalization. Normalize at derivation time as well so the
+    # descriptor, operation receipt, and later integrity checks all agree even
+    # when the byte boundary lands on whitespace.
+    return content[:limit].decode("utf-8", errors="ignore").strip()
 
 
 def _supports_text_preview(media_type: str) -> bool:

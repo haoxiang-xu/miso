@@ -36,10 +36,10 @@ from ..runtime import (
     CompletionPolicyRunner,
     build_runtime_loop,
 )
+from ..runtime.module_context import AgentRuntimeContext
 from ..tools import Tool, Toolkit
 from ..tools.exposure import ToolExposureRuntime, ToolOptimizerConfig
 from .model_io import ModelIOFactoryRegistry
-from .run_identity import MemoryV2RunRole
 from .spec import AgentSpec, AgentState
 
 
@@ -66,13 +66,33 @@ class AgentCallContext:
     session_id: str | None = None
     memory_namespace: str | None = None
     run_id: str | None = None
-    memory_v2_run_role: MemoryV2RunRole | None = None
-    root_run_id: str | None = None
+    runtime_context: AgentRuntimeContext | None = None
     execution_owner_id: str | None = None
     execution_guard: ExecutionGuard | None = None
     tool_runtime_config: dict[str, Any] | None = None
     interaction_id: str | None = None
     submitted_by: str = "user"
+
+    def __post_init__(self) -> None:
+        runtime_context = self.runtime_context
+        if runtime_context is None:
+            return
+        if not isinstance(runtime_context, AgentRuntimeContext):
+            raise TypeError("runtime_context must be an AgentRuntimeContext")
+        identity = runtime_context.identity
+        for field_name, identity_value in (
+            ("session_id", identity.execution_id),
+            ("run_id", identity.run_id),
+            ("execution_owner_id", identity.attempt_id),
+        ):
+            supplied = getattr(self, field_name)
+            if supplied is None or supplied == "":
+                setattr(self, field_name, identity_value)
+                continue
+            if supplied != identity_value:
+                raise ValueError(
+                    f"runtime_context identity does not match {field_name}"
+                )
 
 
 @dataclass
