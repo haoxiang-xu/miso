@@ -1342,6 +1342,12 @@ class ContextRuntime:
         terminal_handler_manifest_sha256 = route.terminal_handler_manifest_sha256
         if confirmation.needs_confirmation_response:
             session_id = str(context.state.session_state.session_id or "").strip()
+            has_resume_request = "interaction_request" in context.event
+            has_resume_response = "interaction_response" in context.event
+            if has_resume_request != has_resume_response:
+                raise DurableToolExecutorContractError(
+                    "durable tool approval resume fields are incomplete"
+                )
             durable_snapshot = None
             with self._bundle_lock:
                 from ..interaction.runtime import DurableInteractionRuntime
@@ -1369,16 +1375,13 @@ class ContextRuntime:
                         "durable tool approval bootstrap interaction authority "
                         "changed"
                     )
-                try:
-                    durable_snapshot = DurableInteractionRuntime.require_receipt(
-                        interaction_binding.receipt_reader,
-                        session_id,
-                    )
-                except InteractionNotPendingError:
-                    if (
-                        "interaction_request" in context.event
-                        or "interaction_response" in context.event
-                    ):
+                if has_resume_request:
+                    try:
+                        durable_snapshot = DurableInteractionRuntime.require_receipt(
+                            interaction_binding.receipt_reader,
+                            session_id,
+                        )
+                    except InteractionNotPendingError:
                         raise DurableToolExecutorContractError(
                             "raw tool approval cannot replace a durable receipt"
                         ) from None

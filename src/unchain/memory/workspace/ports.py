@@ -261,6 +261,34 @@ class BoundMemoryWorkspaceRepository(ABC):
         """Apply an idempotent entry mutation under a revision precondition."""
 
 
+class BoundWorkspaceHierarchyRepository(_SpaceBoundCapability):
+    """Direct-child hierarchy reads bound to one immutable workspace scope."""
+
+    @abstractmethod
+    def list_children(
+        self,
+        *,
+        parent_path: str = "/",
+        expected_space_revision: int,
+        limit: int = 100,
+        cursor: str | None = None,
+    ):
+        """Page live direct children without materializing the descendant tree."""
+
+
+class BoundWorkspaceProjectionRepository(_SpaceBoundCapability):
+    """Durable projection receipts bound to one immutable workspace scope."""
+
+    @abstractmethod
+    def supersede_projection(self, **kwargs): ...
+
+    @abstractmethod
+    def commit_projection(self, **kwargs): ...
+
+    @abstractmethod
+    def list_projection_points(self, **kwargs): ...
+
+
 class BoundWorkspaceMutationRepository(_SpaceBoundCapability):
     """Atomically persist an entry revision and any accompanying content.
 

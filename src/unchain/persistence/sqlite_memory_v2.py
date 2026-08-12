@@ -9,7 +9,9 @@ not get to supply a different chat or space on individual operations.
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
+import math
 import os
 import re
 import sqlite3
@@ -18,17 +20,21 @@ import unicodedata
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping, Sequence
 
 from unchain.context import PinnedTaskState
 from unchain.journal import OperationRef, ResourceRef
-from unchain.journal.models import _required_text
+from unchain.journal.models import _bounded_int, _required_text
 from unchain.memory.workspace import (
     MemoryEntry,
+    MemoryChildEntry,
+    MemoryChildPage,
     MemoryEntryKind,
     MemoryEntryPage,
     MemoryLink,
     MemorySpace,
+    VectorProjectionPage,
+    VectorProjectionPoint,
 )
 from unchain.memory.workspace.paths import canonical_parent_path
 from unchain.memory.workspace.ports import (
@@ -36,6 +42,8 @@ from unchain.memory.workspace.ports import (
     BoundPinnedTaskStateRepository,
     BoundWorkspaceContentRepository,
     BoundWorkspaceHistoryRepository,
+    BoundWorkspaceHierarchyRepository,
+    BoundWorkspaceProjectionRepository,
     BoundWorkspaceLinkRepository,
     BoundWorkspaceMutationRepository,
     RepositoryConflictError,
@@ -51,6 +59,9 @@ from unchain.memory.workspace.ports import (
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _MAX_REPOSITORY_PAGE = 10_000
+_MAX_CHILD_PAGE = 500
+_CHILD_ORDER_VERSION = "unchain.path_key_entry_id.v1"
+_PROJECTION_ALGORITHM = "cosine_hash_2d_v1"
 
 
 class SQLiteMemoryV2StoreError(WorkspaceRepositoryError):
@@ -102,6 +113,106 @@ def _path_key(path: str) -> str:
 
 def _name_key(name: str) -> str:
     return unicodedata.normalize("NFKC", name).casefold()
+
+
+def _child_cursor_encode(
+    *,
+    space_id: str,
+    parent_path: str,
+    space_revision: int,
+    path_key: str,
+    entry_id: str,
+) -> str:
+    payload = _canonical_json_bytes(
+        {
+            "schema": "unchain.memory_child_cursor.v1",
+            "space_id": space_id,
+            "parent_path": parent_path,
+            "space_revision": space_revision,
+            "order_version": _CHILD_ORDER_VERSION,
+            "path_key": path_key,
+            "entry_id": entry_id,
+        }
+    )
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _child_cursor_decode(
+    value: str,
+    *,
+    space_id: str,
+    parent_path: str,
+    space_revision: int,
+) -> tuple[str, str]:
+    token = _required_text(value, "cursor", maximum=8192)
+    try:
+        padding = "=" * (-len(token) % 4)
+        raw = base64.b64decode(token + padding, altchars=b"-_", validate=True)
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise RepositoryScopeError("child cursor is invalid") from exc
+    expected = {
+        "schema",
+        "space_id",
+        "parent_path",
+        "space_revision",
+        "order_version",
+        "path_key",
+        "entry_id",
+    }
+    if not isinstance(payload, dict) or set(payload) != expected:
+        raise RepositoryScopeError("child cursor contract is invalid")
+    if (
+        payload["schema"] != "unchain.memory_child_cursor.v1"
+        or payload["space_id"] != space_id
+        or payload["parent_path"] != parent_path
+        or payload["space_revision"] != space_revision
+        or payload["order_version"] != _CHILD_ORDER_VERSION
+    ):
+        raise RepositoryConflictError("child cursor snapshot changed")
+    return (
+        _required_text(payload["path_key"], "cursor.path_key", maximum=2048),
+        _required_text(payload["entry_id"], "cursor.entry_id", identifier=True),
+    )
+
+
+def _projection_cursor_encode(*, space_id: str, backend_identity: str, basis_id: str, basis_version: int, corpus_epoch: int, chunk_id: str) -> str:
+    payload = _canonical_json_bytes(
+        {
+            "schema": "unchain.vector_projection_cursor.v1",
+            "space_id": space_id,
+            "backend_identity": backend_identity,
+            "basis_id": basis_id,
+            "basis_version": basis_version,
+            "corpus_epoch": corpus_epoch,
+            "chunk_id": chunk_id,
+        }
+    )
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _projection_cursor_decode(value: str, *, space_id: str, backend_identity: str, basis_id: str, basis_version: int, corpus_epoch: int) -> str:
+    token = _required_text(value, "cursor", maximum=8192)
+    try:
+        padding = "=" * (-len(token) % 4)
+        payload = json.loads(
+            base64.b64decode(token + padding, altchars=b"-_", validate=True).decode("utf-8")
+        )
+    except (UnicodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise RepositoryScopeError("projection cursor is invalid") from exc
+    expected = {"schema", "space_id", "backend_identity", "basis_id", "basis_version", "corpus_epoch", "chunk_id"}
+    if not isinstance(payload, dict) or set(payload) != expected:
+        raise RepositoryScopeError("projection cursor contract is invalid")
+    if (
+        payload["schema"] != "unchain.vector_projection_cursor.v1"
+        or payload["space_id"] != space_id
+        or payload["backend_identity"] != backend_identity
+        or payload["basis_id"] != basis_id
+        or payload["basis_version"] != basis_version
+        or payload["corpus_epoch"] != corpus_epoch
+    ):
+        raise RepositoryConflictError("projection cursor snapshot changed")
+    return _required_text(payload["chunk_id"], "cursor.chunk_id", identifier=True)
 
 
 class SQLiteMemoryV2Store:
@@ -279,6 +390,60 @@ class SQLiteMemoryV2Store:
                     revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
                     detail TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY (index_name, scope_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS vector_projection_receipts (
+                    space_id TEXT NOT NULL,
+                    entry_id TEXT NOT NULL,
+                    entry_revision INTEGER NOT NULL CHECK(entry_revision >= 1),
+                    backend_identity TEXT NOT NULL,
+                    chunker_version TEXT NOT NULL,
+                    basis_id TEXT NOT NULL,
+                    basis_version INTEGER NOT NULL CHECK(basis_version >= 1),
+                    algorithm TEXT NOT NULL,
+                    dimension INTEGER NOT NULL CHECK(dimension >= 1),
+                    expected_chunks INTEGER NOT NULL CHECK(expected_chunks >= 0),
+                    indexed_chunks INTEGER NOT NULL CHECK(indexed_chunks >= 0),
+                    content_digest TEXT NOT NULL,
+                    complete INTEGER NOT NULL CHECK(complete IN (0, 1)),
+                    PRIMARY KEY (
+                        space_id, entry_id, entry_revision,
+                        backend_identity, basis_id, basis_version
+                    )
+                );
+                CREATE TABLE IF NOT EXISTS vector_projection_points (
+                    space_id TEXT NOT NULL,
+                    entry_id TEXT NOT NULL,
+                    entry_revision INTEGER NOT NULL CHECK(entry_revision >= 1),
+                    backend_identity TEXT NOT NULL,
+                    basis_id TEXT NOT NULL,
+                    basis_version INTEGER NOT NULL CHECK(basis_version >= 1),
+                    chunk_id TEXT NOT NULL,
+                    ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+                    x REAL NOT NULL,
+                    y REAL NOT NULL,
+                    embedding_digest TEXT NOT NULL,
+                    external_receipt_id TEXT NOT NULL,
+                    PRIMARY KEY (
+                        space_id, backend_identity, basis_id,
+                        basis_version, chunk_id
+                    )
+                );
+                CREATE INDEX IF NOT EXISTS idx_vector_projection_page
+                    ON vector_projection_points(
+                        space_id, backend_identity, basis_id,
+                        basis_version, chunk_id
+                    );
+                CREATE TABLE IF NOT EXISTS vector_projection_watermarks (
+                    space_id TEXT NOT NULL,
+                    backend_identity TEXT NOT NULL,
+                    chunker_version TEXT NOT NULL,
+                    basis_id TEXT NOT NULL,
+                    basis_version INTEGER NOT NULL CHECK(basis_version >= 1),
+                    algorithm TEXT NOT NULL,
+                    dimension INTEGER NOT NULL CHECK(dimension >= 1),
+                    corpus_epoch INTEGER NOT NULL CHECK(corpus_epoch >= 1),
+                    PRIMARY KEY (space_id, backend_identity, basis_id, basis_version)
                 );
 
                 COMMIT;
@@ -670,6 +835,8 @@ class SQLiteMemoryV2Store:
 
 class _SQLiteBoundMemoryWorkspaceRepository(
     BoundMemoryWorkspaceRepository,
+    BoundWorkspaceHierarchyRepository,
+    BoundWorkspaceProjectionRepository,
     BoundWorkspaceMutationRepository,
     BoundWorkspaceContentRepository,
     BoundWorkspaceHistoryRepository,
@@ -684,6 +851,7 @@ class _SQLiteBoundMemoryWorkspaceRepository(
         owner_chat_id: str,
     ) -> None:
         BoundMemoryWorkspaceRepository.__init__(self, space)
+        BoundWorkspaceHierarchyRepository.__init__(self, space)
         BoundWorkspaceMutationRepository.__init__(self, space)
         BoundWorkspaceContentRepository.__init__(self, space)
         BoundWorkspaceHistoryRepository.__init__(self, space)
@@ -900,6 +1068,469 @@ class _SQLiteBoundMemoryWorkspaceRepository(
             next_cursor=selected[-1].entry_id if selected and has_more else None,
             has_more=has_more,
         )
+
+    def list_children(
+        self,
+        *,
+        parent_path: str = "/",
+        expected_space_revision: int,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> MemoryChildPage:
+        parent = canonical_parent_path(parent_path)
+        page_limit = _positive_limit(limit, maximum=_MAX_CHILD_PAGE)
+        current_space = self.space
+        if (
+            isinstance(expected_space_revision, bool)
+            or not isinstance(expected_space_revision, int)
+            or expected_space_revision < 1
+        ):
+            raise ValueError("expected_space_revision must be a positive integer")
+        if current_space.revision != expected_space_revision:
+            raise RepositoryConflictError("space revision changed")
+        last_path_key = ""
+        last_entry_id = ""
+        if cursor is not None:
+            last_path_key, last_entry_id = _child_cursor_decode(
+                cursor,
+                space_id=self._space_id,
+                parent_path=parent,
+                space_revision=expected_space_revision,
+            )
+        parent_key = _path_key(parent)
+        prefix = parent_key.rstrip("/") + "/"
+        root = parent == "/"
+        try:
+            with self._store._transaction(immediate=False) as connection:
+                rows = list(
+                    connection.execute(
+                        """
+                        SELECT r.*, e.path_key,
+                               CASE WHEN ? AND instr(substr(e.path_key, 2), '/') > 0
+                                    THEN 1 ELSE 0 END AS orphaned,
+                               EXISTS (
+                                 SELECT 1
+                                 FROM entries AS ce
+                                 JOIN entry_revisions AS cr
+                                   ON cr.space_id = ce.space_id
+                                  AND cr.entry_id = ce.entry_id
+                                  AND cr.revision = ce.current_revision
+                                 WHERE ce.space_id = e.space_id
+                                   AND ce.deleted = 0
+                                   AND substr(ce.path_key, 1, length(e.path_key) + 1)
+                                       = e.path_key || '/'
+                                   AND instr(substr(ce.path_key, length(e.path_key) + 2), '/') = 0
+                               ) AS has_children
+                        FROM entries AS e
+                        JOIN entry_revisions AS r
+                          ON r.space_id = e.space_id
+                         AND r.entry_id = e.entry_id
+                         AND r.revision = e.current_revision
+                        WHERE e.space_id = ?
+                          AND e.deleted = 0
+                          AND (
+                            (
+                              ?
+                              AND (
+                                instr(substr(e.path_key, 2), '/') = 0
+                                OR NOT EXISTS (
+                                  SELECT 1
+                                  FROM entries AS pe
+                                  JOIN entry_revisions AS pr
+                                    ON pr.space_id = pe.space_id
+                                   AND pr.entry_id = pe.entry_id
+                                   AND pr.revision = pe.current_revision
+                                  WHERE pe.space_id = e.space_id
+                                    AND pe.deleted = 0
+                                    AND json_extract(pr.entry_json, '$.kind') = 'folder'
+                                    AND substr(e.path_key, 1, length(pe.path_key) + 1)
+                                        = pe.path_key || '/'
+                                    AND instr(substr(e.path_key, length(pe.path_key) + 2), '/') = 0
+                                )
+                              )
+                            )
+                            OR (
+                              NOT ?
+                              AND substr(e.path_key, 1, length(?)) = ?
+                              AND instr(substr(e.path_key, length(?) + 1), '/') = 0
+                            )
+                          )
+                          AND (
+                            ? = '' OR e.path_key > ?
+                            OR (e.path_key = ? AND e.entry_id > ?)
+                          )
+                        ORDER BY e.path_key, e.entry_id
+                        LIMIT ?
+                        """,
+                        (
+                            int(root),
+                            self._space_id,
+                            int(root),
+                            int(root),
+                            prefix,
+                            prefix,
+                            prefix,
+                            last_path_key,
+                            last_path_key,
+                            last_path_key,
+                            last_entry_id,
+                            page_limit + 1,
+                        ),
+                    )
+                )
+        except sqlite3.Error as exc:
+            raise SQLiteMemoryV2StoreError("SQLite child listing failed") from exc
+        has_more = len(rows) > page_limit
+        selected_rows = rows[:page_limit]
+        children = tuple(
+            MemoryChildEntry(
+                entry=self._entry_from_row(row),
+                has_children=bool(row["has_children"]),
+                orphaned=bool(row["orphaned"]),
+            )
+            for row in selected_rows
+        )
+        next_cursor = None
+        if has_more and selected_rows:
+            last = selected_rows[-1]
+            next_cursor = _child_cursor_encode(
+                space_id=self._space_id,
+                parent_path=parent,
+                space_revision=expected_space_revision,
+                path_key=last["path_key"],
+                entry_id=last["entry_id"],
+            )
+        return MemoryChildPage(
+            space_id=self._space_id,
+            space_revision=expected_space_revision,
+            parent_path=parent,
+            order_version=_CHILD_ORDER_VERSION,
+            entries=children,
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
+
+    def supersede_projection(
+        self,
+        *,
+        entry_ref: ResourceRef,
+        deleted: bool,
+        backend_identity: str,
+    ) -> tuple[str, ...]:
+        if not isinstance(entry_ref, ResourceRef) or entry_ref.fragment != self._space_id:
+            raise RepositoryScopeError("projection entry belongs to another workspace")
+        backend = _required_text(backend_identity, "backend_identity", maximum=512)
+        with self._store._transaction(immediate=True) as connection:
+            head = connection.execute(
+                "SELECT current_revision, deleted FROM entries WHERE space_id = ? AND entry_id = ?",
+                (self._space_id, entry_ref.resource_id),
+            ).fetchone()
+            if head is None or int(head["current_revision"]) != entry_ref.revision:
+                raise RepositoryConflictError("projection entry revision is not current")
+            if bool(head["deleted"]) != bool(deleted):
+                raise RepositoryConflictError("projection deletion state is not current")
+            external_ids = tuple(
+                row[0]
+                for row in connection.execute(
+                    "SELECT external_receipt_id FROM vector_projection_points WHERE space_id = ? AND entry_id = ? AND backend_identity = ?",
+                    (self._space_id, entry_ref.resource_id, backend),
+                )
+            )
+            connection.execute(
+                "DELETE FROM vector_projection_points WHERE space_id = ? AND entry_id = ? AND backend_identity = ?",
+                (self._space_id, entry_ref.resource_id, backend),
+            )
+            connection.execute(
+                "DELETE FROM vector_projection_receipts WHERE space_id = ? AND entry_id = ? AND backend_identity = ?",
+                (self._space_id, entry_ref.resource_id, backend),
+            )
+            if deleted:
+                connection.execute(
+                    "UPDATE vector_projection_watermarks SET corpus_epoch = (SELECT revision FROM spaces WHERE space_id = ?) WHERE space_id = ? AND backend_identity = ?",
+                    (self._space_id, self._space_id, backend),
+                )
+        return external_ids
+
+    def commit_projection(
+        self,
+        *,
+        entry_ref: ResourceRef,
+        backend_identity: str,
+        chunker_version: str,
+        basis_id: str,
+        basis_version: int,
+        algorithm: str,
+        dimension: int,
+        content_digest: str,
+        points: Sequence[Mapping[str, Any]],
+    ) -> None:
+        if not isinstance(entry_ref, ResourceRef) or entry_ref.fragment != self._space_id:
+            raise RepositoryScopeError("projection entry belongs to another workspace")
+        backend = _required_text(backend_identity, "backend_identity", maximum=512)
+        chunker = _required_text(chunker_version, "chunker_version", maximum=128)
+        basis = _required_text(basis_id, "basis_id", maximum=512)
+        algo = _required_text(algorithm, "algorithm", maximum=128)
+        if algo != _PROJECTION_ALGORITHM:
+            raise ValueError("projection algorithm is unsupported")
+        basis_revision = _bounded_int(basis_version, "basis_version", minimum=1)
+        vector_dimension = _bounded_int(dimension, "dimension", minimum=1)
+        digest = _required_text(content_digest, "content_digest", maximum=128)
+        if isinstance(points, (str, bytes, bytearray)) or not isinstance(points, Sequence):
+            raise TypeError("points must be a sequence")
+        rebuilt: list[tuple[Any, ...]] = []
+        seen: set[str] = set()
+        for raw in points:
+            if not isinstance(raw, Mapping):
+                raise TypeError("projection point must be a mapping")
+            chunk_id = _required_text(raw.get("chunk_id"), "chunk_id", identifier=True)
+            if chunk_id in seen:
+                raise ValueError("projection chunk ids must be unique")
+            seen.add(chunk_id)
+            ordinal = _bounded_int(raw.get("ordinal"), "ordinal")
+            x = raw.get("x")
+            y = raw.get("y")
+            if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) for value in (x, y)):
+                raise ValueError("projection coordinates must be finite")
+            rebuilt.append(
+                (
+                    self._space_id,
+                    entry_ref.resource_id,
+                    entry_ref.revision,
+                    backend,
+                    basis,
+                    basis_revision,
+                    chunk_id,
+                    ordinal,
+                    float(x),
+                    float(y),
+                    _required_text(raw.get("embedding_digest"), "embedding_digest", maximum=128),
+                    _required_text(raw.get("external_receipt_id"), "external_receipt_id", maximum=512),
+                )
+            )
+        with self._store._transaction(immediate=True) as connection:
+            head = connection.execute(
+                "SELECT current_revision, deleted FROM entries WHERE space_id = ? AND entry_id = ?",
+                (self._space_id, entry_ref.resource_id),
+            ).fetchone()
+            if head is None or int(head["current_revision"]) != entry_ref.revision or bool(head["deleted"]):
+                raise RepositoryConflictError("projection entry revision is not current")
+            connection.execute(
+                "DELETE FROM vector_projection_points WHERE space_id = ? AND entry_id = ? AND backend_identity = ?",
+                (self._space_id, entry_ref.resource_id, backend),
+            )
+            connection.execute(
+                "DELETE FROM vector_projection_receipts WHERE space_id = ? AND entry_id = ? AND backend_identity = ?",
+                (self._space_id, entry_ref.resource_id, backend),
+            )
+            connection.execute(
+                """
+                INSERT INTO vector_projection_receipts(
+                    space_id, entry_id, entry_revision, backend_identity,
+                    chunker_version, basis_id, basis_version, algorithm,
+                    dimension, expected_chunks, indexed_chunks, content_digest, complete
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    self._space_id, entry_ref.resource_id, entry_ref.revision,
+                    backend, chunker, basis, basis_revision, algo,
+                    vector_dimension, len(rebuilt), len(rebuilt), digest,
+                ),
+            )
+            connection.executemany(
+                """
+                INSERT INTO vector_projection_points(
+                    space_id, entry_id, entry_revision, backend_identity,
+                    basis_id, basis_version, chunk_id, ordinal, x, y,
+                    embedding_digest, external_receipt_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rebuilt,
+            )
+            space_revision = int(connection.execute("SELECT revision FROM spaces WHERE space_id = ?", (self._space_id,)).fetchone()[0])
+            connection.execute(
+                """
+                INSERT INTO vector_projection_watermarks(
+                    space_id, backend_identity, chunker_version, basis_id,
+                    basis_version, algorithm, dimension, corpus_epoch
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(space_id, backend_identity, basis_id, basis_version)
+                DO UPDATE SET chunker_version=excluded.chunker_version,
+                    algorithm=excluded.algorithm, dimension=excluded.dimension,
+                    corpus_epoch=excluded.corpus_epoch
+                """,
+                (self._space_id, backend, chunker, basis, basis_revision, algo, vector_dimension, space_revision),
+            )
+
+    def list_projection_points(
+        self,
+        *,
+        backend_identity: str,
+        chunker_version: str,
+        basis_id: str,
+        basis_version: int,
+        algorithm: str,
+        dimension: int,
+        corpus_epoch: int | None = None,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> VectorProjectionPage:
+        backend = _required_text(backend_identity, "backend_identity", maximum=512)
+        chunker = _required_text(chunker_version, "chunker_version", maximum=128)
+        basis = _required_text(basis_id, "basis_id", maximum=512)
+        basis_revision = _bounded_int(basis_version, "basis_version", minimum=1)
+        vector_dimension = _bounded_int(dimension, "dimension", minimum=1)
+        if algorithm != _PROJECTION_ALGORITHM:
+            raise ValueError("projection algorithm is unsupported")
+        page_limit = _positive_limit(limit, maximum=_MAX_CHILD_PAGE)
+        current_epoch = self.space.revision
+        if corpus_epoch is not None and corpus_epoch != current_epoch:
+            raise RepositoryConflictError("projection corpus epoch changed")
+        last_chunk_id = ""
+        if cursor is not None:
+            last_chunk_id = _projection_cursor_decode(
+                cursor,
+                space_id=self._space_id,
+                backend_identity=backend,
+                basis_id=basis,
+                basis_version=basis_revision,
+                corpus_epoch=current_epoch,
+            )
+        with self._store._transaction(immediate=False) as connection:
+            watermark = connection.execute(
+                """
+                SELECT corpus_epoch FROM vector_projection_watermarks
+                WHERE space_id=? AND backend_identity=? AND basis_id=? AND basis_version=?
+                  AND chunker_version=? AND algorithm=? AND dimension=?
+                """,
+                (self._space_id, backend, basis, basis_revision, chunker, algorithm, vector_dimension),
+            ).fetchone()
+            eligible_entries = int(connection.execute("SELECT COUNT(*) FROM entries WHERE space_id=? AND deleted=0", (self._space_id,)).fetchone()[0])
+            counts = connection.execute(
+                """
+                SELECT COUNT(*) AS entries, COALESCE(SUM(r.expected_chunks),0) AS expected,
+                       COALESCE(SUM(r.indexed_chunks),0) AS indexed
+                FROM vector_projection_receipts AS r
+                JOIN entries AS e ON e.space_id=r.space_id AND e.entry_id=r.entry_id
+                    AND e.current_revision=r.entry_revision AND e.deleted=0
+                WHERE r.space_id=? AND r.backend_identity=? AND r.basis_id=?
+                  AND r.basis_version=? AND r.complete=1
+                """,
+                (self._space_id, backend, basis, basis_revision),
+            ).fetchone()
+            rows = list(
+                connection.execute(
+                    """
+                    SELECT p.* FROM vector_projection_points AS p
+                    JOIN entries AS e ON e.space_id=p.space_id AND e.entry_id=p.entry_id
+                        AND e.current_revision=p.entry_revision AND e.deleted=0
+                    WHERE p.space_id=? AND p.backend_identity=? AND p.basis_id=?
+                      AND p.basis_version=? AND (?='' OR p.chunk_id>?)
+                    ORDER BY p.chunk_id LIMIT ?
+                    """,
+                    (self._space_id, backend, basis, basis_revision, last_chunk_id, last_chunk_id, page_limit + 1),
+                )
+            )
+        has_more = len(rows) > page_limit
+        selected = rows[:page_limit]
+        next_cursor = (
+            _projection_cursor_encode(
+                space_id=self._space_id,
+                backend_identity=backend,
+                basis_id=basis,
+                basis_version=basis_revision,
+                corpus_epoch=current_epoch,
+                chunk_id=selected[-1]["chunk_id"],
+            )
+            if has_more and selected
+            else None
+        )
+        indexed_entries = int(counts["entries"])
+        complete = (
+            watermark is not None
+            and int(watermark["corpus_epoch"]) == current_epoch
+            and indexed_entries == eligible_entries
+        )
+        return VectorProjectionPage(
+            space_id=self._space_id,
+            backend_identity=backend,
+            chunker_version=chunker,
+            corpus_epoch=current_epoch,
+            basis_id=basis,
+            basis_version=basis_revision,
+            algorithm=algorithm,
+            dimension=vector_dimension,
+            status="complete" if complete else "partial",
+            stale=False,
+            eligible_entries=eligible_entries,
+            indexed_entries=indexed_entries,
+            eligible_chunks=int(counts["expected"]),
+            indexed_chunks=int(counts["indexed"]),
+            projected_chunks=int(counts["indexed"]),
+            points=tuple(
+                VectorProjectionPoint(
+                    chunk_id=row["chunk_id"],
+                    entry_id=row["entry_id"],
+                    entry_revision=int(row["entry_revision"]),
+                    ordinal=int(row["ordinal"]),
+                    x=float(row["x"]),
+                    y=float(row["y"]),
+                )
+                for row in selected
+            ),
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
+
+    def authorize_projection_hits(
+        self,
+        *,
+        backend_identity: str,
+        chunk_ids: Sequence[str],
+    ) -> dict[str, ResourceRef]:
+        backend = _required_text(backend_identity, "backend_identity", maximum=512)
+        normalized = tuple(
+            _required_text(chunk_id, "chunk_id", identifier=True)
+            for chunk_id in chunk_ids[:500]
+        )
+        if not normalized:
+            return {}
+        placeholders = ",".join("?" for _ in normalized)
+        with self._store._transaction(immediate=False) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT p.chunk_id, p.entry_id, p.entry_revision
+                FROM vector_projection_points AS p
+                JOIN entries AS e ON e.space_id=p.space_id AND e.entry_id=p.entry_id
+                    AND e.current_revision=p.entry_revision AND e.deleted=0
+                WHERE p.space_id=? AND p.backend_identity=?
+                  AND p.chunk_id IN ({placeholders})
+                """,
+                (self._space_id, backend, *normalized),
+            )
+            return {
+                row["chunk_id"]: ResourceRef(
+                    "memory",
+                    row["entry_id"],
+                    int(row["entry_revision"]),
+                    self._space_id,
+                )
+                for row in rows
+            }
+
+    def current_projection_contract(self, *, backend_identity: str) -> dict[str, Any] | None:
+        backend = _required_text(backend_identity, "backend_identity", maximum=512)
+        with self._store._transaction(immediate=False) as connection:
+            row = connection.execute(
+                """
+                SELECT chunker_version, basis_id, basis_version, algorithm,
+                       dimension, corpus_epoch
+                FROM vector_projection_watermarks
+                WHERE space_id=? AND backend_identity=?
+                ORDER BY corpus_epoch DESC, basis_version DESC LIMIT 1
+                """,
+                (self._space_id, backend),
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def search(self, *, query: str, limit: int = 20) -> tuple[MemoryEntry, ...]:
         normalized = _required_text(query, "query", maximum=4096)

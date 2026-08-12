@@ -26,6 +26,12 @@ from unchain.journal.models import (
 )
 from unchain.journal.resource_limits import BoundaryResourceLimitError
 
+from .message_contract import (
+    validate_anthropic_messages,
+    validate_ollama_messages,
+    validate_openai_input_items,
+)
+
 
 # Transport safety ceilings.  These do not express model context policy.
 MAX_PROVIDER_WIRE_BYTES = 64 * 1024 * 1024
@@ -480,6 +486,7 @@ def _validate_request(
             raise ProviderWireContractError("OpenAI stream must be exactly true")
         if type(request.get("input")) is not list:
             raise ProviderWireContractError("OpenAI input must be an exact array")
+        validate_openai_input_items(request["input"])
         return
 
     if provider in {"anthropic", "hyperspace"}:
@@ -492,6 +499,7 @@ def _validate_request(
             raise ProviderWireContractError(
                 "Anthropic-family messages must be a non-empty exact array"
             )
+        validate_anthropic_messages(messages)
         max_tokens = request.get("max_tokens")
         if type(max_tokens) is not int or max_tokens <= 0:
             raise ProviderWireContractError(
@@ -513,6 +521,7 @@ def _validate_request(
         raise ProviderWireContractError("Ollama stream must be exactly true")
     if type(request.get("messages")) is not list:
         raise ProviderWireContractError("Ollama messages must be an exact array")
+    validate_ollama_messages(request["messages"])
     tools = request.get("tools")
     if tools is None:
         if "tool_choice" in request:

@@ -148,6 +148,14 @@ class ContextExecutionBundle:
             raise ContextExecutionBundleError(
                 "durable sink and coordinator must share the same journal"
             )
+        model_projection = self.coordinator.model_projection
+        if (
+            model_projection is not None
+            and model_projection.artifacts is not self.artifacts
+        ):
+            raise ContextExecutionBundleError(
+                "model projection and bundle must share the same artifacts"
+            )
         if self.durable_event_sink.projector is not self.projector:
             raise ContextExecutionBundleError(
                 "durable sink and bundle must share the same projector"

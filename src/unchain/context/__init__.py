@@ -25,6 +25,11 @@ from .coordinator import (
     ContextCompileCoordinator,
     ContextCompileCoordinatorError,
 )
+from .model_projection import (
+    ContextModelProjectionError,
+    ModelContextProjection,
+    RemoteAttachmentSourceDecoder,
+)
 from .models import (
     ContextBudget,
     ContextBuildEnvelope,
@@ -196,6 +201,7 @@ __all__ = [
     "ContextCompileResult",
     "ContextCompileCoordinator",
     "ContextCompileCoordinatorError",
+    "ContextModelProjectionError",
     "ContextCompiler",
     "ContextCompilerError",
     "ContextCompilerHarness",
@@ -217,6 +223,8 @@ __all__ = [
     "ContextCheckpointPersistenceRequiredError",
     "ContextRequestFactory",
     "ContextRuntime",
+    "ModelContextProjection",
+    "RemoteAttachmentSourceDecoder",
     "DurableContextRuntimeFactory",
     "DerivedHandoffInputError",
     "DerivedHandoffInputIngress",

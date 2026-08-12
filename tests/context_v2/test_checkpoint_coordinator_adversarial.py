@@ -303,6 +303,48 @@ def test_two_pass_compile_uses_one_snapshot_and_exact_sparse_resource_refs() -> 
     assert result.checkpoint_requests == ()
 
 
+def test_plain_root_iteration_dependency_survives_checkpoint_reverification() -> None:
+    events = list(_events())
+    events[1] = _event(
+        event_id="event-2",
+        event_type="final_message",
+        store_seq=2,
+        attempt_id="attempt-history",
+        payload={
+            "run_id": "attempt-history",
+            "content": "old answer",
+            "iteration": 1,
+        },
+    )
+    events[3] = _event(
+        event_id="event-4",
+        event_type="run_completed",
+        store_seq=4,
+        attempt_id="attempt-history",
+        payload={
+            "run_id": "attempt-history",
+            "status": "completed",
+            "iteration": 1,
+            "receipt_note": "authoritative",
+        },
+        refs=(DEPENDENCY_REF,),
+    )
+    checkpoints = PreparedCheckpointRepository()
+
+    result = _coordinator(
+        journal=SnapshotJournal(events),
+        checkpoints=checkpoints,
+    ).compile(_request())
+
+    payload = json.loads(checkpoints.prepare_calls[0]["summary"])
+    dependency = payload["checkpoint_request"]["projection_dependencies"][0]
+    assert dependency["workflow_node_id"] == ""
+    assert dependency["workflow_step_index"] is None
+    assert dependency["workflow_step_count"] is None
+    assert dependency["iteration"] == 1
+    assert result.checkpoint_requests == ()
+
+
 def test_arbitrary_compiler_injection_is_not_a_supported_coordinator_surface() -> None:
     journal = SnapshotJournal()
     checkpoints = PreparedCheckpointRepository()

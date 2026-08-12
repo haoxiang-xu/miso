@@ -4,6 +4,12 @@ import copy
 from typing import Any, Callable
 
 from ..kernel.types import TokenUsage
+from .message_contract import (
+    ProviderMessageContractError,
+    validate_anthropic_messages,
+    validate_ollama_messages,
+    validate_openai_input_items,
+)
 
 
 def _parse_base64_data_url(value: Any, *, default_media_type: str) -> tuple[str, str] | None:
@@ -193,6 +199,7 @@ def _translate_content_blocks_for_anthropic(messages: list[dict[str, Any]]) -> N
             new_content.append(block)
 
         message["content"] = new_content
+    validate_anthropic_messages(messages)
 
 
 def _translate_content_blocks_for_openai(messages: list[dict[str, Any]]) -> None:
@@ -216,11 +223,15 @@ def _translate_content_blocks_for_openai(messages: list[dict[str, Any]]) -> None
         if not isinstance(content, list):
             continue
 
-        has_attachment = any(
+        has_native_input_block = any(
             isinstance(block, dict) and block.get("type") in ("image", "pdf")
             for block in content
         )
-        if not has_attachment:
+        has_canonical_text = any(
+            isinstance(block, dict) and block.get("type") == "text"
+            for block in content
+        )
+        if not has_native_input_block and not has_canonical_text:
             continue
 
         new_content: list[dict[str, Any]] = []
@@ -280,6 +291,80 @@ def _translate_content_blocks_for_openai(messages: list[dict[str, Any]]) -> None
             new_content.append(block)
 
         message["content"] = new_content
+    validate_openai_input_items(messages)
+
+
+def _translate_content_blocks_for_ollama(messages: list[dict[str, Any]]) -> None:
+    """Project canonical user media blocks into Ollama's text/images shape."""
+
+    for message_index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "developer":
+            message["role"] = "system"
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        text_parts: list[str] = []
+        images: list[str] = []
+        for block_index, block in enumerate(content):
+            if not isinstance(block, dict):
+                raise ProviderMessageContractError(
+                    "ollama",
+                    f"messages[{message_index}].content[{block_index}]",
+                    "content block must be an object",
+                )
+            block_type = block.get("type")
+            if block_type == "text":
+                text = block.get("text", "")
+                if not isinstance(text, str):
+                    raise ProviderMessageContractError(
+                        "ollama",
+                        f"messages[{message_index}].content[{block_index}].text",
+                        "must be text",
+                    )
+                if text:
+                    text_parts.append(text)
+                continue
+            if block_type == "image":
+                source = block.get("source")
+                if not isinstance(source, dict) or source.get("type") != "base64":
+                    raise ProviderMessageContractError(
+                        "ollama",
+                        f"messages[{message_index}].content[{block_index}].source",
+                        "only base64 image input is supported",
+                    )
+                data = source.get("data")
+                if not isinstance(data, str) or not data:
+                    raise ProviderMessageContractError(
+                        "ollama",
+                        f"messages[{message_index}].content[{block_index}].source.data",
+                        "base64 image data is required",
+                    )
+                images.append(data)
+                continue
+            raise ProviderMessageContractError(
+                "ollama",
+                f"messages[{message_index}].content[{block_index}]",
+                f"unsupported content block type: {block_type or '<missing>'}",
+            )
+        message["content"] = "\n".join(text_parts)
+        if images:
+            if message.get("role") != "user":
+                raise ProviderMessageContractError(
+                    "ollama",
+                    f"messages[{message_index}]",
+                    "image input is only supported on user messages",
+                )
+            existing = message.get("images")
+            if existing not in (None, []):
+                raise ProviderMessageContractError(
+                    "ollama",
+                    f"messages[{message_index}].images",
+                    "canonical media cannot be combined with preprojected images",
+                )
+            message["images"] = images
+    validate_ollama_messages(messages)
 
 
 class _NativeModelIOBase:

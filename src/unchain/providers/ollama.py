@@ -8,7 +8,7 @@ from typing import Any, Callable
 import httpx
 
 from .base import ModelTurnRequest
-from .native import _NativeModelIOBase
+from .native import _NativeModelIOBase, _translate_content_blocks_for_ollama
 from ..kernel.provider_replay import (
     redact_provider_replay_secrets,
     strict_json_copy,
@@ -43,9 +43,11 @@ class OllamaModelIO(_NativeModelIOBase):
         self._stream_factory = stream_factory
 
     def fetch_turn(self, request: ModelTurnRequest) -> ModelTurnResult:
+        messages = copy.deepcopy(request.messages)
+        _translate_content_blocks_for_ollama(messages)
         request_body: dict[str, Any] = {
             "model": self.model,
-            "messages": copy.deepcopy(request.messages),
+            "messages": messages,
             "stream": True,
         }
 
@@ -165,7 +167,10 @@ class OllamaModelIO(_NativeModelIOBase):
                         "format": "ollama.chat.v1",
                         "complete": True,
                         "items": strict_json_copy(
-                            [*copy.deepcopy(request.messages), assistant_message]
+                            [
+                                *copy.deepcopy(request_body["messages"]),
+                                assistant_message,
+                            ]
                         ),
                         "mode": "replace",
                         "source": "ollama_chat_message",
@@ -218,7 +223,10 @@ class OllamaModelIO(_NativeModelIOBase):
                             "format": "ollama.chat.v1",
                             "complete": True,
                             "items": strict_json_copy(
-                                [*copy.deepcopy(request.messages), raw_assistant_message]
+                                [
+                                    *copy.deepcopy(request_body["messages"]),
+                                    raw_assistant_message,
+                                ]
                             ),
                             "mode": "replace",
                             "source": "ollama_chat_message",

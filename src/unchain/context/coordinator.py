@@ -36,6 +36,10 @@ from .compiler import (
     project_canonical_journal_messages,
 )
 from .models import ContextCompileRequest
+from .model_projection import (
+    ContextModelProjectionError,
+    ModelContextProjection,
+)
 from .ports import (
     BoundCheckpointRepository,
     BoundContextBuildRepository,
@@ -719,6 +723,7 @@ class ContextCompileCoordinator:
         checkpoint_repository: BoundCheckpointRepository,
         build_repository: BoundContextBuildRepository,
         partial_attempt_sink: Callable[[ContextCompileRequest, Exception], None],
+        model_projection: ModelContextProjection | None = None,
     ) -> None:
         if not isinstance(journal, BoundExecutionJournal):
             raise TypeError("journal must be a BoundExecutionJournal")
@@ -736,15 +741,27 @@ class ContextCompileCoordinator:
             raise TypeError("build_repository must provide get_by_trigger")
         if not callable(partial_attempt_sink):
             raise TypeError("partial_attempt_sink must be callable")
+        if (
+            model_projection is not None
+            and type(model_projection) is not ModelContextProjection
+        ):
+            raise TypeError(
+                "model_projection must be the official ModelContextProjection"
+            )
         self._compiler = ContextCompiler()
         self._journal = journal
         self._checkpoint_repository = checkpoint_repository
         self._build_repository = build_repository
         self._partial_attempt_sink = partial_attempt_sink
+        self._model_projection = model_projection
 
     @property
     def journal(self) -> BoundExecutionJournal:
         return self._journal
+
+    @property
+    def model_projection(self) -> ModelContextProjection | None:
+        return self._model_projection
 
     def compile(self, request: ContextCompileRequest) -> ContextCompileResult:
         if not isinstance(request, ContextCompileRequest):
@@ -856,8 +873,16 @@ class ContextCompileCoordinator:
             self._mark_partial(request, error)
             raise error
         try:
-            recorded = self._record_build(
+            model_result = self._project_model_result(
                 final.result,
+                provider=request.provider or "",
+            )
+        except Exception as error:
+            self._mark_partial(request, error)
+            raise
+        try:
+            recorded = self._record_build(
+                model_result,
                 snapshot=journal_view.snapshot,
                 consumptions=consumptions,
                 trigger_cursor=EventCursor(
@@ -870,13 +895,31 @@ class ContextCompileCoordinator:
             if boundary_error is error:
                 raise
             raise boundary_error from None
-        if recorded != final.result.envelope:
+        if recorded != model_result.envelope:
             error = ContextCompileCoordinatorError(
                 "the context build repository changed the recorded envelope"
             )
             boundary_error = self._mark_durable_partial(request, error)
             raise boundary_error from None
-        return final.result
+        return model_result
+
+    def _project_model_result(
+        self,
+        result: ContextCompileResult,
+        *,
+        provider: str,
+    ) -> ContextCompileResult:
+        projection = self._model_projection
+        if projection is None:
+            if any("attachments" in message for message in result.messages):
+                raise ContextModelProjectionError(
+                    "attachment_materializer_unavailable"
+                )
+            return result
+        messages = projection.project(result.messages, provider=provider)
+        if messages == result.messages:
+            return result
+        return replace(result, messages=messages)
 
     def _compile_pass(
         self,

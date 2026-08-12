@@ -87,6 +87,33 @@ def test_multimodal_estimate_adds_the_p0_conservative_charge() -> None:
     assert estimate.total_tokens == estimate.text_tokens + estimate.multimodal_tokens
 
 
+def test_durable_remote_attachment_envelopes_keep_the_multimodal_charge() -> None:
+    estimate = estimate_context_tokens(
+        [
+            {
+                "role": "user",
+                "content": "inspect",
+                "attachments": [
+                    {
+                        "schema": "unchain.host_resolved_attachment.v1",
+                        "kind": "image",
+                        "media_type": "application/vnd.example+json",
+                    },
+                    {
+                        "schema": "unchain.host_resolved_attachment.v1",
+                        "kind": "pdf",
+                        "media_type": "application/vnd.example+json",
+                    },
+                ],
+            }
+        ]
+    )
+
+    assert estimate.image_count == 1
+    assert estimate.pdf_page_count == 1
+    assert estimate.multimodal_tokens == 2_048 + 4_096
+
+
 def test_token_estimate_counts_large_nested_tool_arguments() -> None:
     estimate = estimate_context_tokens(
         [

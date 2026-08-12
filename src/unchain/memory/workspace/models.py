@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
@@ -488,6 +489,194 @@ class MemoryEntryPage:
             next_cursor=raw["next_cursor"],
             has_more=raw["has_more"],
         )
+
+
+@dataclass(frozen=True)
+class MemoryChildEntry:
+    SCHEMA: ClassVar[str] = "unchain.memory_child_entry.v1"
+
+    entry: MemoryEntry
+    has_children: bool = False
+    orphaned: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.entry, MemoryEntry):
+            object.__setattr__(self, "entry", MemoryEntry.from_dict(self.entry))
+        if not isinstance(self.has_children, bool):
+            raise TypeError("has_children must be a boolean")
+        if not isinstance(self.orphaned, bool):
+            raise TypeError("orphaned must be a boolean")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": self.SCHEMA,
+            "entry": self.entry.to_dict(),
+            "has_children": self.has_children,
+            "orphaned": self.orphaned,
+        }
+
+
+@dataclass(frozen=True)
+class MemoryChildPage:
+    SCHEMA: ClassVar[str] = "unchain.memory_child_page.v1"
+
+    space_id: str
+    space_revision: int
+    parent_path: str
+    order_version: str
+    entries: tuple[MemoryChildEntry, ...] = ()
+    next_cursor: str | None = None
+    has_more: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "space_id", _required_text(self.space_id, "space_id", identifier=True)
+        )
+        object.__setattr__(
+            self,
+            "space_revision",
+            _bounded_int(self.space_revision, "space_revision", minimum=1),
+        )
+        object.__setattr__(self, "parent_path", _virtual_path(self.parent_path, "parent_path"))
+        object.__setattr__(
+            self,
+            "order_version",
+            _required_text(self.order_version, "order_version", maximum=128, identifier=True),
+        )
+        object.__setattr__(
+            self,
+            "entries",
+            _record_tuple(self.entries, MemoryChildEntry, "entries"),
+        )
+        if self.next_cursor is not None:
+            object.__setattr__(
+                self,
+                "next_cursor",
+                _required_text(self.next_cursor, "next_cursor", maximum=8192),
+            )
+        if not isinstance(self.has_more, bool):
+            raise TypeError("has_more must be a boolean")
+        if self.has_more != (self.next_cursor is not None):
+            raise ModelValidationError(
+                "next_cursor must be present exactly when has_more is true"
+            )
+        if self.has_more and not self.entries:
+            raise ModelValidationError(
+                "a continuation page must contain at least one child"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": self.SCHEMA,
+            "space_id": self.space_id,
+            "space_revision": self.space_revision,
+            "parent_path": self.parent_path,
+            "order_version": self.order_version,
+            "entries": [item.to_dict() for item in self.entries],
+            "next_cursor": self.next_cursor,
+            "has_more": self.has_more,
+        }
+
+
+@dataclass(frozen=True)
+class VectorProjectionPoint:
+    chunk_id: str
+    entry_id: str
+    entry_revision: int
+    ordinal: int
+    x: float
+    y: float
+
+    def __post_init__(self) -> None:
+        for field_name in ("chunk_id", "entry_id"):
+            object.__setattr__(
+                self,
+                field_name,
+                _required_text(getattr(self, field_name), field_name, identifier=True),
+            )
+        object.__setattr__(
+            self,
+            "entry_revision",
+            _bounded_int(self.entry_revision, "entry_revision", minimum=1),
+        )
+        object.__setattr__(self, "ordinal", _bounded_int(self.ordinal, "ordinal"))
+        for field_name in ("x", "y"):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise TypeError(f"{field_name} must be a finite number")
+            normalized = float(value)
+            if not math.isfinite(normalized):
+                raise ModelValidationError(f"{field_name} must be finite")
+            object.__setattr__(self, field_name, normalized)
+
+
+@dataclass(frozen=True)
+class VectorProjectionPage:
+    space_id: str
+    backend_identity: str
+    chunker_version: str
+    corpus_epoch: int
+    basis_id: str
+    basis_version: int
+    algorithm: str
+    dimension: int
+    status: str
+    stale: bool
+    eligible_entries: int
+    indexed_entries: int
+    eligible_chunks: int
+    indexed_chunks: int
+    projected_chunks: int
+    points: tuple[VectorProjectionPoint, ...] = ()
+    next_cursor: str | None = None
+    has_more: bool = False
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "space_id",
+            "backend_identity",
+            "chunker_version",
+            "basis_id",
+            "algorithm",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _required_text(getattr(self, field_name), field_name, maximum=512),
+            )
+        for field_name in (
+            "corpus_epoch",
+            "basis_version",
+            "dimension",
+            "eligible_entries",
+            "indexed_entries",
+            "eligible_chunks",
+            "indexed_chunks",
+            "projected_chunks",
+        ):
+            minimum = 1 if field_name in {"corpus_epoch", "basis_version", "dimension"} else 0
+            object.__setattr__(
+                self,
+                field_name,
+                _bounded_int(getattr(self, field_name), field_name, minimum=minimum),
+            )
+        if self.status not in {"complete", "partial", "disabled", "warming", "degraded"}:
+            raise ModelValidationError("projection status is invalid")
+        if not isinstance(self.stale, bool) or not isinstance(self.has_more, bool):
+            raise TypeError("projection flags must be booleans")
+        object.__setattr__(
+            self,
+            "points",
+            _record_tuple(self.points, VectorProjectionPoint, "points"),
+        )
+        if self.next_cursor is not None:
+            object.__setattr__(
+                self,
+                "next_cursor",
+                _required_text(self.next_cursor, "next_cursor", maximum=8192),
+            )
+        if self.has_more != (self.next_cursor is not None):
+            raise ModelValidationError("projection cursor and has_more disagree")
 
 
 @dataclass(frozen=True)

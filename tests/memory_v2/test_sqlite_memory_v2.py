@@ -25,7 +25,12 @@ from unchain.memory.workspace.ports import (
 )
 from unchain.memory.workspace.service import MemoryWorkspaceService
 from unchain.memory.workspace.task_state import TaskStateService
-from unchain.persistence.sqlite_memory_v2 import SQLiteMemoryV2Store
+from unchain.persistence.sqlite_memory_v2 import (
+    SQLiteMemoryV2Store,
+    _canonical_json_bytes,
+    _path_key,
+    _sha256,
+)
 from unchain.persistence.sqlite_v2 import SQLiteContextV2Store
 
 from .fakes import FakeReferenceAuthorizer, entry_ref, source_event
@@ -403,6 +408,225 @@ def test_sqlite_workspace_recursive_folder_archive_is_revisioned(
         item.revision
         for item in repository.list_revisions(ref=entry_ref(child_head), limit=10)
     ] == [2, 1]
+
+
+def test_sqlite_workspace_lists_direct_children_with_stable_snapshot_pages(
+    tmp_path: Path,
+) -> None:
+    _, repository, service, event = _build(tmp_path)
+    folder = service.create_folder(
+        path="/research",
+        description="Research root",
+        expected_space_revision=1,
+        source_refs=(event,),
+        operation_id="children-folder",
+    )
+    service.write_markdown(
+        path="/research/Alpha.md",
+        description="Alpha",
+        content="alpha",
+        expected_space_revision=2,
+        source_refs=(event,),
+        operation_id="children-alpha",
+    )
+    service.write_markdown(
+        path="/research/Beta.md",
+        description="Beta",
+        content="beta",
+        expected_space_revision=3,
+        source_refs=(event,),
+        operation_id="children-beta",
+    )
+    service.write_markdown(
+        path="/missing/Orphan.md",
+        description="Orphan",
+        content="orphan",
+        expected_space_revision=4,
+        source_refs=(event,),
+        operation_id="children-orphan",
+    )
+
+    revision = repository.space.revision
+    root = repository.list_children(
+        parent_path="/", expected_space_revision=revision, limit=10
+    )
+    assert [item.entry.entry_id for item in root.entries] == [
+        root.entries[0].entry.entry_id,
+        folder.entry_id,
+    ]
+    assert root.entries[0].entry.path == "/missing/Orphan.md"
+    assert root.entries[0].orphaned is True
+    assert root.entries[1].has_children is True
+
+    first = repository.list_children(
+        parent_path="/research", expected_space_revision=revision, limit=1
+    )
+    second = repository.list_children(
+        parent_path="/research",
+        expected_space_revision=revision,
+        limit=1,
+        cursor=first.next_cursor,
+    )
+    assert first.has_more is True
+    assert [item.entry.name for item in first.entries + second.entries] == [
+        "Alpha.md",
+        "Beta.md",
+    ]
+    with pytest.raises(RepositoryConflictError, match="space revision"):
+        repository.list_children(
+            parent_path="/research",
+            expected_space_revision=revision - 1,
+            limit=10,
+        )
+
+
+def test_sqlite_workspace_pages_ten_thousand_direct_children_without_materializing_them(
+    tmp_path: Path,
+) -> None:
+    _, repository, service, event = _build(tmp_path)
+    template = service.create_folder(
+        path="/template",
+        description="Bulk fixture template",
+        expected_space_revision=1,
+        source_refs=(event,),
+        operation_id="children-bulk-template",
+    )
+    entry_rows = []
+    revision_rows = []
+    for index in range(10_000):
+        entry_id = f"bulk-{index:05d}"
+        path = f"/bulk/{index:05d}"
+        payload = template.to_dict()
+        payload.update(entry_id=entry_id, path=path, name=f"{index:05d}")
+        encoded = _canonical_json_bytes(payload)
+        key = _path_key(path)
+        entry_rows.append(
+            (repository.space.space_id, entry_id, 1, key, f"{index:05d}", 0, 1)
+        )
+        revision_rows.append(
+            (
+                repository.space.space_id,
+                entry_id,
+                1,
+                key,
+                f"bulk-{index:05d}",
+                encoded,
+                _sha256(encoded),
+                None,
+                None,
+                None,
+            )
+        )
+    with sqlite3.connect(tmp_path / "context_v2.sqlite3") as connection:
+        connection.executemany(
+            "INSERT INTO entries(space_id,entry_id,current_revision,path_key,name_key,deleted,updated_seq) VALUES (?,?,?,?,?,?,?)",
+            entry_rows,
+        )
+        connection.executemany(
+            "INSERT INTO entry_revisions(space_id,entry_id,revision,path_key,operation_id,entry_json,entry_sha256,content_resource_id,object_sha256,byte_length) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            revision_rows,
+        )
+
+    first = repository.list_children(
+        parent_path="/bulk",
+        expected_space_revision=repository.space.revision,
+        limit=2,
+    )
+    second = repository.list_children(
+        parent_path="/bulk",
+        expected_space_revision=repository.space.revision,
+        limit=2,
+        cursor=first.next_cursor,
+    )
+
+    assert [item.entry.name for item in first.entries] == ["00000", "00001"]
+    assert [item.entry.name for item in second.entries] == ["00002", "00003"]
+    assert first.has_more is True
+
+
+def test_sqlite_projection_receipts_are_current_restart_stable_and_partial_on_miss(
+    tmp_path: Path,
+) -> None:
+    _, repository, service, event = _build(tmp_path)
+    entry = service.write_markdown(
+        path="/Projection.md",
+        description="Projection receipt",
+        content="same embedding batch",
+        expected_space_revision=1,
+        source_refs=(event,),
+        operation_id="projection-entry",
+    )
+    ref = entry_ref(entry)
+    repository.supersede_projection(
+        entry_ref=ref,
+        deleted=False,
+        backend_identity="backend-test",
+    )
+    repository.commit_projection(
+        entry_ref=ref,
+        backend_identity="backend-test",
+        chunker_version="unchain.workspace_index.v1",
+        basis_id="basis-test",
+        basis_version=1,
+        algorithm="cosine_hash_2d_v1",
+        dimension=3,
+        content_digest="a" * 64,
+        points=(
+            {
+                "chunk_id": "chunk-test-0",
+                "ordinal": 0,
+                "x": 0.25,
+                "y": -0.5,
+                "embedding_digest": "b" * 64,
+                "external_receipt_id": "external-test-0",
+            },
+        ),
+    )
+    page = repository.list_projection_points(
+        backend_identity="backend-test",
+        chunker_version="unchain.workspace_index.v1",
+        basis_id="basis-test",
+        basis_version=1,
+        algorithm="cosine_hash_2d_v1",
+        dimension=3,
+        corpus_epoch=2,
+    )
+    assert page.status == "complete"
+    assert [(point.chunk_id, point.x, point.y) for point in page.points] == [
+        ("chunk-test-0", 0.25, -0.5)
+    ]
+
+    _, reopened, reopened_service, _ = _build(tmp_path)
+    repeated = reopened.list_projection_points(
+        backend_identity="backend-test",
+        chunker_version="unchain.workspace_index.v1",
+        basis_id="basis-test",
+        basis_version=1,
+        algorithm="cosine_hash_2d_v1",
+        dimension=3,
+        corpus_epoch=2,
+    )
+    assert repeated == page
+    reopened_service.write_markdown(
+        entry_ref=ref,
+        path=entry.path,
+        description=entry.description,
+        content="new revision without a receipt",
+        expected_space_revision=2,
+        source_refs=(event,),
+        operation_id="projection-entry-update",
+    )
+    partial = reopened.list_projection_points(
+        backend_identity="backend-test",
+        chunker_version="unchain.workspace_index.v1",
+        basis_id="basis-test",
+        basis_version=1,
+        algorithm="cosine_hash_2d_v1",
+        dimension=3,
+        corpus_epoch=3,
+    )
+    assert partial.status == "partial"
+    assert partial.points == ()
 
 
 @pytest.mark.parametrize(

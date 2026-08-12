@@ -229,7 +229,13 @@ def test_durable_handoff_precedes_canonical_consumer_input_and_compiles(tmp_path
     assert request.source_message_cursors[0].store_seq == input_event.store_seq
     assert request.attempt_id == CONSUMER_ATTEMPT.attempt_id
     compiled = ContextCompiler().compile(request)
-    assert _thaw_json(compiled.messages[-1]) == derived_message
+    compiled_message = _thaw_json(compiled.messages[-1])
+    assert compiled_message == {
+        "role": derived_message["role"],
+        "content": derived_message["content"],
+    }
+    assert json.loads(compiled_message["content"]) == derived_content
+    assert compiled.diagnostics["compacted"] is False
 
 
 def test_exact_replay_is_idempotent_before_and_after_restart(tmp_path):

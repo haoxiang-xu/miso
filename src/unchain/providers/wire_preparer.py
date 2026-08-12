@@ -19,6 +19,7 @@ from .prepared_turn import (
 )
 from .native import (
     _translate_content_blocks_for_anthropic,
+    _translate_content_blocks_for_ollama,
     _translate_content_blocks_for_openai,
 )
 from .wire_envelope import ProviderWireEnvelope, ProviderWireRoute
@@ -452,6 +453,7 @@ def _ollama_route(
         raise TypeError("messages must be an exact JSON array")
     if any(type(message) is not dict for message in messages):
         raise TypeError("messages must contain exact JSON objects")
+    _translate_content_blocks_for_ollama(messages)
 
     request: dict[str, Any] = {
         "model": preparation.configured_model,

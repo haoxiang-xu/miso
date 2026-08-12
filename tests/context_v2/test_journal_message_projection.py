@@ -1175,6 +1175,118 @@ def test_derived_final_terminal_dependency_is_recorded_in_build_provenance() -> 
     assert result.envelope.transformed_ranges[-1].end.event_id == "event-2"
 
 
+def test_plain_root_final_and_terminal_accept_matching_iteration_identity() -> None:
+    events = (
+        _terminal_event(
+            "final_message",
+            "event-1",
+            1,
+            attempt_id="attempt-history",
+            content="final answer",
+            iteration=0,
+        ),
+        _terminal_event(
+            "run_completed",
+            "event-2",
+            2,
+            attempt_id="attempt-history",
+            status="completed",
+            iteration=0,
+        ),
+    )
+
+    result = ContextCompiler().compile(
+        _request(
+            source_messages=({"role": "user", "content": "current"},),
+            semantic_events=events,
+        )
+    )
+
+    assert [message["content"] for message in result.messages] == [
+        "final answer",
+        "current",
+    ]
+
+
+def test_plain_root_final_and_terminal_require_matching_iteration_identity() -> None:
+    events = (
+        _terminal_event(
+            "final_message",
+            "event-1",
+            1,
+            attempt_id="attempt-history",
+            content="must remain uncommitted",
+            iteration=0,
+        ),
+        _terminal_event(
+            "run_completed",
+            "event-2",
+            2,
+            attempt_id="attempt-history",
+            status="completed",
+            iteration=1,
+        ),
+    )
+
+    with pytest.raises(JournalMessageProjectionError) as raised:
+        ContextCompiler().compile(
+            _request(
+                source_messages=({"role": "user", "content": "current"},),
+                semantic_events=events,
+            )
+        )
+
+    assert raised.value.reason == "terminal_scope_conflict"
+
+
+@pytest.mark.parametrize("iteration", [-1, True])
+def test_plain_root_terminal_rejects_invalid_iteration(iteration: object) -> None:
+    events = (
+        _terminal_event(
+            "run_completed",
+            "event-1",
+            1,
+            attempt_id="attempt-history",
+            status="completed",
+            iteration=iteration,
+        ),
+    )
+
+    with pytest.raises(JournalMessageProjectionError) as raised:
+        ContextCompiler().compile(
+            _request(
+                source_messages=({"role": "user", "content": "current"},),
+                semantic_events=events,
+            )
+        )
+
+    assert raised.value.reason == "terminal_scope_conflict"
+
+
+def test_root_terminal_rejects_node_identity_without_workflow_step() -> None:
+    events = (
+        _terminal_event(
+            "run_completed",
+            "event-1",
+            1,
+            attempt_id="attempt-history",
+            status="completed",
+            workflow_node_id="node-without-step",
+            iteration=0,
+        ),
+    )
+
+    with pytest.raises(JournalMessageProjectionError) as raised:
+        ContextCompiler().compile(
+            _request(
+                source_messages=({"role": "user", "content": "current"},),
+                semantic_events=events,
+            )
+        )
+
+    assert raised.value.reason == "terminal_scope_conflict"
+
+
 @pytest.mark.parametrize("status", ["partial", "cancelled", "failed"])
 def test_canonical_assistant_is_not_projected_after_non_complete_terminal(
     status: str,

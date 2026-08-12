@@ -143,15 +143,29 @@ def estimate_context_tokens(messages: Sequence[Mapping[str, Any]]) -> ContextTok
         if not isinstance(value, Mapping):
             return
         block_type = str(value.get("type") or "").strip().lower()
+        attachment_kind = str(value.get("kind") or "").strip().lower()
+        attachment_schema = str(value.get("schema") or "").strip()
         media_type = str(
             value.get("media_type") or value.get("mime_type") or ""
         ).strip().lower()
-        if block_type in {"image", "image_url", "input_image"} or media_type.startswith(
-            "image/"
+        if (
+            block_type in {"image", "image_url", "input_image"}
+            or media_type.startswith("image/")
+            or (
+                attachment_schema == "unchain.host_resolved_attachment.v1"
+                and attachment_kind == "image"
+            )
         ):
             image_count += 1
             return
-        if block_type in {"pdf", "input_pdf"} or media_type == "application/pdf":
+        if (
+            block_type in {"pdf", "input_pdf"}
+            or media_type == "application/pdf"
+            or (
+                attachment_schema == "unchain.host_resolved_attachment.v1"
+                and attachment_kind == "pdf"
+            )
+        ):
             pdf_page_count += _pdf_pages(value)
             return
         for item in value.values():

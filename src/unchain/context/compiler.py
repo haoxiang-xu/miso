@@ -200,6 +200,25 @@ def _strip_internal_metadata(message: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _strip_model_metadata(message: Mapping[str, Any]) -> dict[str, Any]:
+    result = _strip_internal_metadata(message)
+    attachments = result.get("attachments")
+    if (
+        isinstance(attachments, list)
+        and attachments
+        and all(
+            isinstance(attachment, Mapping)
+            and attachment.get("schema") == HostResolvedAttachment.SCHEMA
+            and attachment.get("kind") == "handoff"
+            for attachment in attachments
+        )
+    ):
+        # The derived handoff descriptor remains in ``content``. Its attachment
+        # envelope is journal provenance, not a provider message field.
+        result.pop("attachments", None)
+    return result
+
+
 def _source_indexes(messages: Sequence[Mapping[str, Any]]) -> tuple[int, ...]:
     indexes = {
         index
@@ -1283,7 +1302,7 @@ def _workflow_identity(event: Mapping[str, Any]) -> _WorkflowIdentity | None:
         isinstance(iteration, bool) or not isinstance(iteration, int) or iteration < 0
     ):
         raise JournalMessageProjectionError("terminal_scope_conflict")
-    if normalized_step_index is None and (node_id is not None or iteration is not None):
+    if normalized_step_index is None and node_id is not None:
         raise JournalMessageProjectionError("terminal_scope_conflict")
     if node_id is None and normalized_step_index is None and iteration is None:
         return None
@@ -3407,7 +3426,7 @@ class ContextCompiler:
             ),
             "budget": budget.to_dict(),
         }
-        public_messages = [_strip_internal_metadata(message) for message in messages]
+        public_messages = [_strip_model_metadata(message) for message in messages]
         checkpoint_markers = tuple(
             (index, request_id)
             for index, message in enumerate(messages)

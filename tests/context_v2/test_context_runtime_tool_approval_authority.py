@@ -21,13 +21,17 @@ from unchain.context import (
 )
 from unchain.execution import ExecutionRuntime
 from unchain.interaction import (
+    INTERACTION_JOURNAL_KEY,
     INTERACTION_KIND_TOOL_APPROVAL,
     InteractionIntegrityError,
     InteractionNotPendingError,
     InteractionRequest,
     build_interaction_receipt,
 )
-from unchain.interaction.durable import strict_json_digest
+from unchain.interaction.durable import (
+    strict_json_digest,
+    validate_interaction_journal,
+)
 from unchain.interaction.runtime import DurableInteractionRuntime
 from unchain.kernel.harness import HarnessContext
 from unchain.kernel.loop import KernelLoop
@@ -226,14 +230,26 @@ def _persist_approval_pending(fixture, pending, response):
     return request, receipt_snapshot.receipt
 
 
+_AUTO_RESUME_FIELD = object()
+
+
 def _resume_approval_context(
     fixture,
     *,
     toolkit=None,
-    raw_request=None,
-    raw_response=None,
+    raw_request=_AUTO_RESUME_FIELD,
+    raw_response=_AUTO_RESUME_FIELD,
 ):
     original = fixture["context"]
+    if raw_request is _AUTO_RESUME_FIELD or raw_response is _AUTO_RESUME_FIELD:
+        durable_snapshot = fixture["interaction_runtime"].require_receipt(
+            fixture["execution_id"]
+        )
+        if raw_request is _AUTO_RESUME_FIELD:
+            raw_request = durable_snapshot.request.to_dict()
+        if raw_response is _AUTO_RESUME_FIELD:
+            assert durable_snapshot.receipt is not None
+            raw_response = copy.deepcopy(durable_snapshot.receipt.response)
     event = {
         **original.event,
         "toolkit": toolkit or fixture["toolkit"],
@@ -495,7 +511,7 @@ def test_cold_context_runtime_can_bind_new_official_runtime_on_same_store():
         pending = fixture["runtime"].prepare_tool_execution(
             fixture["context"]
         )
-        _persist_approval_pending(
+        request, receipt = _persist_approval_pending(
             fixture,
             pending,
             {
@@ -558,6 +574,8 @@ def test_cold_context_runtime_can_bind_new_official_runtime_on_same_store():
             event={
                 **fixture["context"].event,
                 "execution_guard": fixture["guard"],
+                "interaction_request": request.to_dict(),
+                "interaction_response": copy.deepcopy(receipt.response),
                 "loop": cold_loop,
             },
         )
@@ -628,7 +646,7 @@ def test_bootstrap_interaction_memory_authority_mutation_fails_closed(mutation):
         pending = fixture["runtime"].prepare_tool_execution(
             fixture["context"]
         )
-        _persist_approval_pending(
+        request, receipt = _persist_approval_pending(
             fixture,
             pending,
             {
@@ -660,7 +678,11 @@ def test_bootstrap_interaction_memory_authority_mutation_fails_closed(mutation):
             match="interaction.*authority|memory.*changed|store.*changed",
         ):
             fixture["runtime"].prepare_tool_execution(
-                _resume_approval_context(fixture)
+                _resume_approval_context(
+                    fixture,
+                    raw_request=request.to_dict(),
+                    raw_response=receipt.response,
+                )
             )
 
         assert fixture["invocations"] == []
@@ -758,6 +780,193 @@ def test_denied_approval_persists_synthetic_completion_without_invocation():
             "tool_result",
         ]
         assert completion.completion_artifact.byte_length > 0
+    finally:
+        fixture["guard"].release()
+
+
+@pytest.mark.parametrize("approved", [False, True])
+def test_answered_approval_does_not_bind_the_next_confirmable_call(approved):
+    fixture = _approval_tool_runtime(
+        attempt_id=f"attempt-next-approval-{approved}"
+    )
+    try:
+        first_pending = fixture["runtime"].prepare_tool_execution(
+            fixture["context"]
+        )
+        first_request, _first_receipt = _persist_approval_pending(
+            fixture,
+            first_pending,
+            {
+                "approved": approved,
+                "modified_arguments": None,
+                "reason": "" if approved else "not allowed",
+            },
+        )
+        session_snapshot = fixture["memory_runtime"].load_session_snapshot(
+            fixture["execution_id"]
+        )
+        fixture["context"].state.memory_state["session_revision"] = (
+            session_snapshot.revision
+        )
+        fixture["context"].state.iteration = 1
+
+        next_call = ToolCall(
+            call_id="call-next-approval",
+            name="lookup",
+            arguments={"query": "next-call"},
+        )
+        fixture["bundle"].durable_event_sink(
+            {
+                "type": "tool_call",
+                "run_id": fixture["attempt_id"],
+                "iteration": 1,
+                "tool_name": next_call.name,
+                "call_id": next_call.call_id,
+                "arguments": copy.deepcopy(next_call.arguments),
+            }
+        )
+        next_context = HarnessContext(
+            state=fixture["context"].state,
+            phase="on_tool_call",
+            event={
+                **fixture["context"].event,
+                "tool_call": next_call,
+                "tool_calls": [next_call],
+            },
+        )
+
+        next_pending = fixture["runtime"].prepare_tool_execution(next_context)
+        next_pending, next_request = _assert_durable_approval_pending(
+            next_pending
+        )
+
+        assert next_request.interaction_id != first_request.interaction_id
+        assert next_request.payload["call_id"] == next_call.call_id
+        assert next_request.payload["arguments"] == {"query": "next-call"}
+        assert fixture["invocations"] == []
+
+        state = next_context.state
+        state.run_status = "awaiting_interaction"
+        state.last_continuation = copy.deepcopy(next_pending.continuation)
+        state.suspend_state.signal_kind = "tool_approval"
+        state.suspend_state.payload = {
+            "interaction_request": next_request.to_dict(),
+            "continuation": copy.deepcopy(next_pending.continuation),
+        }
+        checkpoint = build_execution_checkpoint(
+            state,
+            status="awaiting_interaction",
+            run_id=fixture["attempt_id"],
+        )
+        fixture["memory_runtime"].save_execution_checkpoint_snapshot(
+            fixture["execution_id"],
+            checkpoint,
+            interaction_request=next_request.to_dict(),
+            expected_revision=next_request.created_revision,
+            execution_fence=fixture["guard"].fence,
+        )
+
+        journal = validate_interaction_journal(
+            fixture["memory_runtime"].load_session_state(
+                fixture["execution_id"]
+            )[INTERACTION_JOURNAL_KEY]
+        )
+        assert journal["active_id"] == next_request.interaction_id
+        assert journal["entries"][first_request.interaction_id][
+            "application"
+        ] == {
+            "schema_version": 1,
+            "receipt_id": journal["entries"][first_request.interaction_id][
+                "receipt"
+            ]["receipt_id"],
+            "applied_checkpoint_id": checkpoint["checkpoint_id"],
+        }
+        assert journal["entries"][next_request.interaction_id]["receipt"] is None
+    finally:
+        fixture["guard"].release()
+
+
+@pytest.mark.parametrize("present_field", ["request", "response"])
+def test_incomplete_tool_approval_resume_fields_fail_closed(present_field):
+    fixture = _approval_tool_runtime(
+        attempt_id=f"attempt-incomplete-resume-{present_field}"
+    )
+    try:
+        pending = fixture["runtime"].prepare_tool_execution(
+            fixture["context"]
+        )
+        request, receipt = _persist_approval_pending(
+            fixture,
+            pending,
+            {
+                "approved": True,
+                "modified_arguments": None,
+                "reason": "",
+            },
+        )
+        resume_context = _resume_approval_context(
+            fixture,
+            raw_request=None,
+            raw_response=None,
+        )
+        if present_field == "request":
+            resume_context.event["interaction_request"] = request.to_dict()
+        else:
+            resume_context.event["interaction_response"] = copy.deepcopy(
+                receipt.response
+            )
+
+        with pytest.raises(
+            DurableToolExecutorContractError,
+            match="resume fields are incomplete",
+        ):
+            fixture["runtime"].prepare_tool_execution(resume_context)
+
+        assert fixture["invocations"] == []
+        assert "tool.started" not in {
+            event.event_type for event in fixture["bundle"].journal.events
+        }
+    finally:
+        fixture["guard"].release()
+
+
+def test_resume_approval_uses_durable_receipt_not_raw_response():
+    fixture = _approval_tool_runtime(attempt_id="attempt-durable-response")
+    try:
+        pending = fixture["runtime"].prepare_tool_execution(
+            fixture["context"]
+        )
+        request, _receipt = _persist_approval_pending(
+            fixture,
+            pending,
+            {
+                "approved": False,
+                "modified_arguments": None,
+                "reason": "durably denied",
+            },
+        )
+        resume_context = _resume_approval_context(
+            fixture,
+            raw_request=request.to_dict(),
+            raw_response={
+                "approved": True,
+                "modified_arguments": {"query": "forged"},
+                "reason": "",
+            },
+        )
+
+        permit = fixture["runtime"].prepare_tool_execution(resume_context)
+        completion = fixture["runtime"].execute_prepared_tool(
+            resume_context,
+            permit,
+        )
+
+        assert completion.visible_result == {
+            "denied": True,
+            "tool": "lookup",
+            "reason": "durably denied",
+        }
+        assert fixture["invocations"] == []
     finally:
         fixture["guard"].release()
 

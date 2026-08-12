@@ -29,9 +29,11 @@ from unchain.journal.models import _required_text
 from unchain.memory.toolkit.models import MemoryToolContentPage
 from unchain.memory.workspace import (
     MemoryEntry,
+    MemoryChildPage,
     MemoryEntryKind,
     MemoryEntryPage,
     MemorySpace,
+    VectorProjectionPage,
     WorkspaceSearchResult,
     WorkspaceSearchService,
 )
@@ -1237,6 +1239,35 @@ class BoundSQLiteContextV2ReadService:
             include_deleted=include_deleted,
             limit=limit,
             cursor=cursor,
+        )
+
+    def list_workspace_children(
+        self,
+        *,
+        parent_path: str = "/",
+        expected_space_revision: int,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> MemoryChildPage:
+        return self._workspace.list_children(
+            parent_path=parent_path,
+            expected_space_revision=expected_space_revision,
+            limit=limit,
+            cursor=cursor,
+        )
+
+    def list_workspace_projection_points(self, **kwargs) -> VectorProjectionPage:
+        """Read current, authorized, persisted projection receipts only."""
+
+        return self._workspace.list_projection_points(**kwargs)
+
+    def current_workspace_projection_contract(
+        self,
+        *,
+        backend_identity: str,
+    ) -> dict[str, Any] | None:
+        return self._workspace.current_projection_contract(
+            backend_identity=backend_identity,
         )
 
     def workspace_tree(
