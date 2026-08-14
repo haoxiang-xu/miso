@@ -885,6 +885,7 @@ class DurableToolExecutor:
         self._execution_guard = execution_guard
         self._root_execution_guard = root_guard
         self._execution_guard_chain = guard_chain
+        self._execution_lock = threading.RLock()
         self._invocation_authority = object()
         self._invocation_binding_lock = threading.Lock()
         self._invocation_bindings: dict[int, _BoundDurableToolInvocation] = {}
@@ -964,6 +965,20 @@ class DurableToolExecutor:
         return invocation
 
     def execute(
+        self,
+        *,
+        request: DurableToolExecutionRequest,
+        guard: ExecutionGuard | None = None,
+        invocation: DurableToolInvocation | None,
+    ) -> DurableToolCompletionReceipt:
+        with self._execution_lock:
+            return self._execute_once(
+                request=request,
+                guard=guard,
+                invocation=invocation,
+            )
+
+    def _execute_once(
         self,
         *,
         request: DurableToolExecutionRequest,
