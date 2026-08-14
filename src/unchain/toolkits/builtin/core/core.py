@@ -26,6 +26,7 @@ class CoreToolkit(BuiltinToolkit):
         )
         self._web_backend = CoreWebBackend(
             runtime_config_provider=self._tool_runtime_config_for,
+            execution_context_provider=lambda: self.current_execution_context,
         )
         self._register_tools()
 

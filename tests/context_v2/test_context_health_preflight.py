@@ -51,6 +51,7 @@ def test_default_gate_is_explicitly_off_and_routes_only_non_admitted_legacy() ->
     [
         (DurableProviderTurnMode.OFF, True),
         (DurableProviderTurnMode.SHADOW, True),
+        (DurableProviderTurnMode.ENFORCE, False),
         (DurableProviderTurnMode.ENFORCE_TEST, False),
     ],
 )
@@ -112,6 +113,19 @@ def test_admitted_complete_run_is_ready_only_with_every_required_prerequisite() 
     assert report.ready_for_shadow_write is False
     assert report.fallback_forbidden is True
     assert report.blockers == ()
+
+
+def test_production_enforce_is_an_explicit_admitted_mode() -> None:
+    report = ContextV2HealthService(
+        admission=ContextV2Admission(
+            mode=DurableProviderTurnMode.ENFORCE,
+            admitted=True,
+        )
+    ).preflight(READY)
+
+    assert report.mode is DurableProviderTurnMode.ENFORCE
+    assert report.ready_for_model_tool_work is True
+    assert report.fallback_forbidden is True
 
 
 @pytest.mark.parametrize(

@@ -4,7 +4,8 @@ import copy
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Callable
 
 from ..artifacts import extract_authored_artifacts, upsert_artifacts
 from ..execution import ExecutionLeaseError
@@ -222,6 +223,7 @@ class DeferredToolExecutionPlugin:
             tool_name=target_name,
             call_id=tool_call.call_id,
             turn_id=f"{context.run_id}:turn-{context.iteration}",
+            run_state=context.state,
         )
         preparation = prepare_tool_confirmation(
             toolkit=self.runtime.full_toolkit,
@@ -285,6 +287,7 @@ class DeferredToolExecutionPlugin:
             call_id=tool_call.call_id,
             turn_id=f"{context.run_id}:turn-{context.iteration}",
             workspace_changes=workspace_tracker,
+            run_state=context.state,
         )
         preparation = prepare_tool_confirmation(
             toolkit=self.runtime.full_toolkit,
@@ -409,6 +412,10 @@ class ToolExposureRuntime:
         payload: dict[str, Any] | None = None,
         callback: Any = None,
         run_id: str | None = None,
+        on_model_attempt: Callable[
+            [ModelTurnRequest, ModelTurnResult | None, str], None
+        ]
+        | None = None,
     ) -> None:
         self.config = config
         self.full_toolkit = full_toolkit
@@ -420,6 +427,7 @@ class ToolExposureRuntime:
         self.payload = copy.deepcopy(payload or {})
         self.callback = callback
         self.run_id = str(run_id or "tool_optimizer")
+        self.on_model_attempt = on_model_attempt
         self.plan = ToolExposurePlan()
         self.exposed_toolkit: Toolkit = full_toolkit
         self._records_by_name: dict[str, ExposureToolRecord] = {}
@@ -740,7 +748,19 @@ class ToolExposureRuntime:
             emit_stream=False,
             previous_response_id=None,
         )
-        turn = self.model_io.fetch_turn(request)
+        occurred_at = (
+            datetime.now(timezone.utc)
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z")
+        )
+        try:
+            turn = self.model_io.fetch_turn(request)
+        except BaseException:
+            if self.on_model_attempt is not None:
+                self.on_model_attempt(request, None, occurred_at)
+            raise
+        if self.on_model_attempt is not None:
+            self.on_model_attempt(request, turn, occurred_at)
         parsed = self._parse_selector_turn(turn)
         return self._sanitize_selector_names(parsed)
 

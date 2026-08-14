@@ -767,7 +767,8 @@ def test_final_boundary_none_fetch_uses_the_same_request_for_legacy_once():
     assert observed["request"].toolkit is model_toolkit
     assert observed["request"].payload == {"temperature": 0.2}
     assert type(observed["retry_config"]) is RetryConfig
-    assert observed["before_attempt"] is None
+    assert callable(observed["before_attempt"])
+    assert callable(getattr(observed["before_attempt"], "after_attempt", None))
 
 
 def test_final_boundary_durable_fetch_bypasses_legacy_model_and_retry():
@@ -826,7 +827,8 @@ def test_final_boundary_durable_fetch_bypasses_legacy_model_and_retry():
     assert model_io.requests == []
     assert type(observed["request"]) is ModelTurnRequest
     assert observed["retry_config"] is retry_config
-    assert observed["before_attempt"] is None
+    assert callable(observed["before_attempt"])
+    assert callable(getattr(observed["before_attempt"], "after_attempt", None))
 
 
 def test_final_boundary_rejects_invalid_prepared_fetch_before_validation():

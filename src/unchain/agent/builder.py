@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import copy
 import logging
+import uuid
 from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..context import ContextRuntime
+    from ..providers.turn_ownership import ProviderTurnOwnershipFactory
+    from ..run_bundle_ledger import RunBundleLedger
 
 from ..memory import (
     ExecutionCheckpointResumeRequiredError,
@@ -22,6 +26,13 @@ from ..execution import ExecutionGuard
 from ..kernel.loop import KernelLoop
 from ..kernel.model_io import ModelIO
 from ..kernel.replay_handle import load_provider_replay_handle
+from ..kernel.run_ledger import (
+    build_model_attempt_receipt,
+    child_run_identity,
+    merge_run_bundle_values,
+    provider_call_route,
+    request_sha256,
+)
 from ..kernel.run_preparation import effective_payload_store, infer_model, infer_provider
 from ..kernel.types import KernelRunResult
 from ..interaction.durable import (
@@ -37,6 +48,12 @@ from ..runtime import (
     build_runtime_loop,
 )
 from ..runtime.module_context import AgentRuntimeContext
+from ..run_bundle import (
+    ProviderCallReceipt,
+    RunBundle,
+    RunIdentity,
+    canonical_sha256,
+)
 from ..tools import Tool, Toolkit
 from ..tools.exposure import ToolExposureRuntime, ToolOptimizerConfig
 from .model_io import ModelIOFactoryRegistry
@@ -67,6 +84,10 @@ class AgentCallContext:
     memory_namespace: str | None = None
     run_id: str | None = None
     runtime_context: AgentRuntimeContext | None = None
+    run_bundle_identity: "RunIdentity | None" = None
+    run_bundle_descriptor: Any = None
+    continued_from_run_id: str | None = None
+    provider_turn_ownership_factory: "ProviderTurnOwnershipFactory | None" = None
     execution_owner_id: str | None = None
     execution_guard: ExecutionGuard | None = None
     tool_runtime_config: dict[str, Any] | None = None
@@ -125,6 +146,11 @@ class PreparedAgent:
         init=False,
         repr=False,
     )
+    _root_run_bundle_ledger: "RunBundleLedger | None" = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
 
     def _merge_payloads(self, *payloads: dict[str, Any] | None) -> dict[str, Any] | None:
         merged: dict[str, Any] = {}
@@ -174,15 +200,19 @@ class PreparedAgent:
         execution_guard: ExecutionGuard | None = None,
         replay_plan: dict[str, Any] | None = None,
         require_durable_plan: bool = False,
-    ) -> tuple[Toolkit, list[Any]]:
+        run_bundle_identity: RunIdentity | None = None,
+        run_bundle_ledger: "RunBundleLedger | None" = None,
+        provider_turn_ownership: Any = None,
+    ) -> tuple[Toolkit, list[Any], tuple[ProviderCallReceipt, ...]]:
         plugins = list(self.tool_runtime_plugins)
+        receipts: list[ProviderCallReceipt] = []
         config = ToolOptimizerConfig.coerce(self.tool_optimizer_config)
         if replay_plan is not None and (config is None or not config.enabled):
             raise InteractionIntegrityError(
                 "durable tool exposure replay requires the tool optimizer"
             )
         if config is None or not config.enabled:
-            return self.toolkit, plugins
+            return self.toolkit, plugins, ()
         if (
             require_durable_plan
             and replay_plan is None
@@ -198,13 +228,140 @@ class PreparedAgent:
                 raise InteractionIntegrityError(
                     "durable tool exposure replay requires an active model runtime"
                 )
-            return self.toolkit, plugins
-        if execution_guard is not None:
+            return self.toolkit, plugins, ()
+        if execution_guard is not None and provider_turn_ownership is None:
             execution_guard.renew()
             model_io = execution_guard.guard_model_io(
                 model_io,
                 "model.tool_exposure",
             )
+        elif execution_guard is not None:
+            execution_guard.renew()
+
+        def record_selector_attempt(
+            request: Any,
+            turn: Any,
+            occurred_at: str,
+        ) -> None:
+            if run_bundle_identity is None:
+                raise RuntimeError(
+                    "tool selector provider call has no run bundle identity"
+                )
+            digest = request_sha256(
+                state=None,
+                payload=request.payload,
+                toolkit=request.toolkit,
+                response_format=request.response_format,
+                openai_text_format=request.openai_text_format,
+                provider=str(provider or self.spec.provider or "unknown"),
+                model=str(model or self.spec.model or "unknown-model"),
+                messages=request.messages,
+            )
+            receipt = build_model_attempt_receipt(
+                identity=run_bundle_identity,
+                provider=str(provider or self.spec.provider or "unknown"),
+                model=str(model or self.spec.model or "unknown-model"),
+                iteration=0,
+                retry_ordinal=0,
+                purpose="tool_exposure",
+                request_digest=digest,
+                route=provider_call_route(
+                    str(provider or self.spec.provider or "unknown")
+                ),
+                payload=request.payload,
+                started_at=occurred_at,
+                completed_at=(
+                    datetime.now(timezone.utc)
+                    .isoformat(timespec="microseconds")
+                    .replace("+00:00", "Z")
+                ),
+                turn=turn,
+                status="completed" if turn is not None else "uncertain",
+            )
+            prior = next(
+                (
+                    item
+                    for item in receipts
+                    if item.provider_call_id == receipt.provider_call_id
+                ),
+                None,
+            )
+            if prior is not None and prior != receipt:
+                raise RuntimeError(
+                    "tool selector produced conflicting provider receipts"
+                )
+            if prior is None:
+                receipts.append(receipt)
+                if run_bundle_ledger is not None:
+                    durable = run_bundle_ledger.append_receipt(receipt)
+                    if durable != receipt:
+                        raise RuntimeError(
+                            "durable tool selector receipt changed"
+                        )
+
+        if provider_turn_ownership is not None:
+            base_model_io = model_io
+            selector_request_sha256: str | None = None
+            selector_provider = str(
+                provider or self.spec.provider or "unknown"
+            )
+            selector_model = str(
+                model or self.spec.model or "unknown-model"
+            )
+
+            class _OwnedSelectorModelIO:
+                provider = selector_provider
+                model = selector_model
+
+                def fetch_turn(_self, request):
+                    nonlocal selector_request_sha256
+                    selector_request_sha256 = request_sha256(
+                        state=None,
+                        payload=request.payload,
+                        toolkit=request.toolkit,
+                        response_format=request.response_format,
+                        openai_text_format=request.openai_text_format,
+                        provider=_self.provider,
+                        model=_self.model,
+                        messages=request.messages,
+                    )
+                    return provider_turn_ownership.fetch_turn(
+                        state=selector_state,
+                        model_io=base_model_io,
+                        request=request,
+                        occurrence_id=(
+                            f"tool_exposure:{run_bundle_identity.run_id}"
+                        ),
+                        purpose="tool_exposure",
+                        iteration=0,
+                        request_sha256=selector_request_sha256,
+                        retry_config=self.loop.retry_config,
+                        before_attempt=(
+                            (lambda _attempt: execution_guard.renew())
+                            if execution_guard is not None
+                            else None
+                        ),
+                        provider=_self.provider,
+                        model=_self.model,
+                    )
+
+            selector_state = self.loop.seed_state(
+                copy.deepcopy(messages),
+                provider=str(provider or self.spec.provider or "unknown"),
+                model=str(model or self.spec.model or "unknown-model"),
+                session_id=run_bundle_identity.execution_id,
+                memory_namespace=self.call_context.memory_namespace,
+                max_context_window_tokens=self._resolved_max_context_window_tokens(),
+            )
+            selector_state.run_ledger.initialize(
+                state=selector_state,
+                run_id=run_bundle_identity.run_id,
+                explicit_identity=run_bundle_identity,
+            )
+            selector_state.run_ledger.bind_provider_turn_ownership(
+                provider_turn_ownership
+            )
+            model_io = _OwnedSelectorModelIO()
 
         runtime = ToolExposureRuntime(
             config=config,
@@ -217,12 +374,142 @@ class PreparedAgent:
             payload=payload,
             callback=self.call_context.callback,
             run_id=self.call_context.run_id,
+            on_model_attempt=(
+                None
+                if provider_turn_ownership is not None
+                else record_selector_attempt
+            ),
         )
         exposed_toolkit = runtime.prepare(replay_plan=replay_plan)
         if execution_guard is not None:
             execution_guard.assert_active()
         plugins.extend(runtime.build_plugins())
-        return exposed_toolkit, plugins
+        return exposed_toolkit, plugins, tuple(receipts)
+
+    def _prebind_run_bundle_ledger(
+        self,
+        *,
+        identity: RunIdentity,
+        run_id: str,
+        messages: list[dict[str, Any]],
+    ) -> tuple["RunBundleLedger | None", Any]:
+        state = self.loop.seed_state(
+            copy.deepcopy(messages),
+            provider=self.spec.provider,
+            model=self.spec.model,
+            session_id=identity.execution_id,
+            memory_namespace=self.call_context.memory_namespace,
+            max_context_window_tokens=self._resolved_max_context_window_tokens(),
+        )
+        ownership = None
+        ownership_factory = self.call_context.provider_turn_ownership_factory
+        if ownership_factory is not None:
+            from ..providers.turn_ownership import (
+                ProviderTurnOwnership,
+                ProviderTurnOwnershipFactory,
+            )
+
+            if not isinstance(ownership_factory, ProviderTurnOwnershipFactory):
+                raise TypeError(
+                    "provider turn ownership factory does not implement bind(identity=...)"
+                )
+            if (
+                self.context_runtime is not None
+                and self.context_runtime.provider_turns_enabled
+            ):
+                raise RuntimeError(
+                    "explicit provider turn ownership cannot overlap the active Context owner"
+                )
+            ownership = ownership_factory.bind(identity=identity)
+            if type(ownership) is not ProviderTurnOwnership:
+                raise TypeError(
+                    "provider turn ownership factory must return ProviderTurnOwnership"
+                )
+            if ownership.factory is None:
+                ownership = replace(ownership, factory=ownership_factory)
+            elif ownership.factory is not ownership_factory:
+                raise RuntimeError(
+                    "provider turn ownership changed its propagation factory"
+                )
+            ledger = ownership.ledger
+        elif self.context_runtime is not None:
+            ledger = self.context_runtime.prebind_run_bundle_ledger(
+                state=state,
+                run_id=run_id,
+            )
+            ownership = self.context_runtime.prebind_provider_turn_ownership(
+                state=state,
+                run_id=run_id,
+                identity=identity,
+            )
+            if ownership is not None and ownership.ledger is not ledger:
+                raise RuntimeError(
+                    "prebound provider owner changed the RunBundle ledger"
+                )
+        else:
+            ledger = None
+        if ledger is not None and ledger.execution_id != identity.execution_id:
+            raise RuntimeError(
+                "prebound run bundle ledger belongs to another execution"
+            )
+        if identity.parent_run_id is None and ledger is not None:
+            self._root_run_bundle_ledger = ledger
+        return ledger, ownership
+
+    def _resolve_run_bundle_invocation(
+        self,
+        *,
+        run_id_override: str | None = None,
+        identity_override: RunIdentity | None = None,
+    ) -> tuple[str, RunIdentity, AgentRuntimeContext | None]:
+        identity = identity_override or self.call_context.run_bundle_identity
+        runtime_context = self.call_context.runtime_context
+        run_id = str(
+            run_id_override
+            or self.call_context.run_id
+            or (identity.run_id if identity is not None else "")
+            or (
+                runtime_context.identity.run_id
+                if runtime_context is not None
+                else ""
+            )
+            or uuid.uuid4()
+        )
+        if identity is None and runtime_context is not None:
+            runtime_identity = runtime_context.identity
+            identity = RunIdentity(
+                execution_id=runtime_identity.execution_id,
+                attempt_id=runtime_identity.attempt_id,
+                root_run_id=runtime_identity.root_run_id,
+                run_id=runtime_identity.run_id,
+                parent_run_id=runtime_identity.parent_run_id,
+                relation=(
+                    "root"
+                    if runtime_identity.parent_run_id is None
+                    else "subagent"
+                ),
+            )
+        elif identity is None:
+            execution_id = str(self.call_context.session_id or run_id)
+            identity = RunIdentity(
+                execution_id=execution_id,
+                attempt_id=run_id,
+                root_run_id=run_id,
+                run_id=run_id,
+                parent_run_id=None,
+                relation="root",
+            )
+        if identity_override is not None:
+            runtime_identity = (
+                runtime_context.identity if runtime_context is not None else None
+            )
+            if (
+                runtime_identity is None
+                or runtime_identity.run_id != identity_override.run_id
+                or runtime_identity.attempt_id != identity_override.attempt_id
+            ):
+                runtime_context = None
+        return run_id, identity, runtime_context
 
     def _assert_fresh_run_has_no_pending_interaction(self) -> None:
         session_id = str(self.call_context.session_id or "")
@@ -340,6 +627,10 @@ class PreparedAgent:
         previous_response_id: str | None,
         max_iterations: int,
         execution_guard: ExecutionGuard | None = None,
+        run_bundle_purpose: str = "agent_turn",
+        run_id_override: str | None = None,
+        run_bundle_identity_override: "RunIdentity | None" = None,
+        continued_from_run_id: str | None = None,
     ) -> KernelRunResult:
         if self.session_history_owned_by_memory:
             ensure_no_external_provider_history(
@@ -347,12 +638,32 @@ class PreparedAgent:
                 previous_response_id=previous_response_id,
             )
         self._assert_fresh_run_has_no_pending_interaction()
-        toolkit, tool_runtime_plugins = self._prepare_tool_exposure(
+        (
+            resolved_run_id,
+            resolved_identity,
+            resolved_runtime_context,
+        ) = self._resolve_run_bundle_invocation(
+            run_id_override=run_id_override,
+            identity_override=run_bundle_identity_override,
+        )
+        run_bundle_ledger, provider_turn_ownership = self._prebind_run_bundle_ledger(
+            identity=resolved_identity,
+            run_id=resolved_run_id,
+            messages=messages,
+        )
+        (
+            toolkit,
+            tool_runtime_plugins,
+            exposure_receipts,
+        ) = self._prepare_tool_exposure(
             messages=messages,
             payload=payload,
             provider=self.spec.provider,
             model=self.spec.model,
             execution_guard=execution_guard,
+            run_bundle_identity=resolved_identity,
+            run_bundle_ledger=run_bundle_ledger,
+            provider_turn_ownership=provider_turn_ownership,
         )
         result = self.loop.run(
             messages=messages,
@@ -371,13 +682,20 @@ class PreparedAgent:
             model=self.spec.model,
             max_context_window_tokens=self._resolved_max_context_window_tokens(),
             toolkit=toolkit,
-            run_id=self.call_context.run_id,
+            run_id=resolved_run_id,
             tool_runtime_plugins=tool_runtime_plugins,
             tool_runtime_config=copy.deepcopy(self.call_context.tool_runtime_config or {}),
             _provider_replay_frame=copy.deepcopy(
                 self._completion_replay_frame
             ),
             _execution_guard=execution_guard,
+            _runtime_context=resolved_runtime_context,
+            _run_bundle_identity=resolved_identity,
+            _run_bundle_descriptor=self.call_context.run_bundle_descriptor,
+            _continued_from_run_id=continued_from_run_id,
+            _run_bundle_purpose=run_bundle_purpose,
+            _run_bundle_receipts=exposure_receipts,
+            _provider_turn_ownership=provider_turn_ownership,
         )
         self._completion_replay_frame = load_provider_replay_handle(
             result.provider_replay_handle
@@ -392,6 +710,8 @@ class PreparedAgent:
         previous_response_id: str | None,
         max_iterations: int,
         execution_guard: ExecutionGuard | None = None,
+        run_id_override: str | None = None,
+        run_bundle_identity_override: "RunIdentity | None" = None,
     ) -> KernelRunResult:
         if not self.session_history_owned_by_memory:
             use_remote_repair = bool(
@@ -417,6 +737,9 @@ class PreparedAgent:
                 previous_response_id=previous_response_id,
                 max_iterations=max_iterations,
                 execution_guard=execution_guard,
+                run_bundle_purpose="completion_repair",
+                run_id_override=run_id_override,
+                run_bundle_identity_override=run_bundle_identity_override,
             )
         feedback = copy.deepcopy(messages[-1]) if messages else None
         if not isinstance(feedback, dict) or feedback.get("role") != "user":
@@ -427,17 +750,53 @@ class PreparedAgent:
             previous_response_id=None,
             max_iterations=max_iterations,
             execution_guard=execution_guard,
+            run_bundle_purpose="completion_repair",
+            run_id_override=run_id_override,
+            run_bundle_identity_override=run_bundle_identity_override,
         )
 
     def _completion_policy_runner(
         self,
         execution_guard: ExecutionGuard | None = None,
+        run_bundle_sink: Callable[[dict[str, Any] | None], None] | None = None,
+        root_bundle_value: dict[str, Any] | None = None,
     ) -> CompletionPolicyRunner:
+        root_bundle = (
+            RunBundle.from_dict(root_bundle_value)
+            if isinstance(root_bundle_value, dict)
+            else None
+        )
+        repair_ordinal = 0
+
         def run_once(**kwargs: Any) -> KernelRunResult:
-            return self._run_completion_repair_once(
+            nonlocal repair_ordinal
+            repair_identity = None
+            repair_run_id = None
+            if root_bundle is not None:
+                repair_digest = canonical_sha256(
+                    {
+                        "bundle_id": root_bundle.bundle_id,
+                        "purpose": "completion_repair",
+                        "ordinal": repair_ordinal,
+                    }
+                )
+                repair_run_id = f"completion-repair-{repair_digest[:32]}"
+                repair_identity = child_run_identity(
+                    parent=root_bundle.identity,
+                    child_run_id=repair_run_id,
+                    child_attempt_id=f"attempt-{repair_digest[:32]}",
+                    relation="auxiliary",
+                )
+                repair_ordinal += 1
+            result = self._run_completion_repair_once(
                 execution_guard=execution_guard,
+                run_id_override=repair_run_id,
+                run_bundle_identity_override=repair_identity,
                 **kwargs,
             )
+            if run_bundle_sink is not None:
+                run_bundle_sink(copy.deepcopy(result.run_bundle))
+            return result
 
         return CompletionPolicyRunner(
             policy=self.completion_policy,
@@ -476,12 +835,32 @@ class PreparedAgent:
                 max_iterations=self._resolved_max_iterations(),
                 previous_response_id=self.call_context.previous_response_id,
                 execution_guard=execution_guard,
+                continued_from_run_id=self.call_context.continued_from_run_id,
             )
-            result = self._completion_policy_runner(execution_guard).apply(
+            run_bundles = [copy.deepcopy(result.run_bundle)]
+            result = self._completion_policy_runner(
+                execution_guard,
+                run_bundle_sink=run_bundles.append,
+                root_bundle_value=result.run_bundle,
+            ).apply(
                 result,
                 payload=payload,
                 max_iterations=self._resolved_max_iterations(),
             )
+            merged_bundle = merge_run_bundle_values(run_bundles)
+            if (
+                merged_bundle is not None
+                and self._root_run_bundle_ledger is not None
+            ):
+                durable_merged = self._root_run_bundle_ledger.persist_bundle(
+                    RunBundle.from_dict(merged_bundle)
+                )
+                if durable_merged.to_dict() != merged_bundle:
+                    raise RuntimeError(
+                        "durable completion aggregate changed run bundle"
+                    )
+            if merged_bundle is not None and merged_bundle != result.run_bundle:
+                result = replace(result, run_bundle=merged_bundle)
             return self._apply_run_hooks(result)
 
     def resume_human_input(self) -> KernelRunResult:
@@ -598,7 +977,28 @@ class PreparedAgent:
                 raise InteractionIntegrityError(
                     "durable interaction exposure plan must be an object"
                 )
-            toolkit, tool_runtime_plugins = self._prepare_tool_exposure(
+            (
+                resolved_run_id,
+                resolved_identity,
+                resolved_runtime_context,
+            ) = self._resolve_run_bundle_invocation(
+                run_id_override=str(
+                    self.call_context.run_id
+                    or provided_continuation.get("run_id")
+                    or ""
+                )
+                or None,
+            )
+            run_bundle_ledger, provider_turn_ownership = self._prebind_run_bundle_ledger(
+                identity=resolved_identity,
+                run_id=resolved_run_id,
+                messages=conversation,
+            )
+            (
+                toolkit,
+                tool_runtime_plugins,
+                exposure_receipts,
+            ) = self._prepare_tool_exposure(
                 messages=conversation,
                 payload=payload,
                 provider=(
@@ -618,6 +1018,9 @@ class PreparedAgent:
                     else None
                 ),
                 require_durable_plan=is_durable_continuation,
+                run_bundle_identity=resolved_identity,
+                run_bundle_ledger=run_bundle_ledger,
+                provider_turn_ownership=provider_turn_ownership,
             )
             result = self.loop.resume_interaction(
                 session_id=session_id,
@@ -636,12 +1039,17 @@ class PreparedAgent:
                 on_max_iterations=self._resolved_on_max_iterations(),
                 memory_namespace=self.call_context.memory_namespace,
                 toolkit=toolkit,
-                run_id=self.call_context.run_id,
+                run_id=resolved_run_id,
                 tool_runtime_plugins=tool_runtime_plugins,
                 tool_runtime_config=copy.deepcopy(
                     self.call_context.tool_runtime_config or {}
                 ),
                 _execution_guard=execution_guard,
+                _runtime_context=resolved_runtime_context,
+                _run_bundle_identity=resolved_identity,
+                _run_bundle_descriptor=self.call_context.run_bundle_descriptor,
+                _run_bundle_receipts=exposure_receipts,
+                _provider_turn_ownership=provider_turn_ownership,
             )
             return self._apply_run_hooks(result)
 
@@ -728,7 +1136,32 @@ class PreparedAgent:
             raise InteractionIntegrityError(
                 "durable interaction exposure plan must be an object"
             )
-        toolkit, tool_runtime_plugins = self._prepare_tool_exposure(
+        (
+            resolved_run_id,
+            resolved_identity,
+            resolved_runtime_context,
+        ) = self._resolve_run_bundle_invocation(
+            run_id_override=str(
+                self.call_context.run_id
+                or (
+                    provided_continuation.get("run_id")
+                    if isinstance(provided_continuation, dict)
+                    else ""
+                )
+                or ""
+            )
+            or None,
+        )
+        run_bundle_ledger, provider_turn_ownership = self._prebind_run_bundle_ledger(
+            identity=resolved_identity,
+            run_id=resolved_run_id,
+            messages=conversation,
+        )
+        (
+            toolkit,
+            tool_runtime_plugins,
+            exposure_receipts,
+        ) = self._prepare_tool_exposure(
             messages=conversation,
             payload=payload,
             provider=(
@@ -748,6 +1181,9 @@ class PreparedAgent:
                 else None
             ),
             require_durable_plan=durable_interaction,
+            run_bundle_identity=resolved_identity,
+            run_bundle_ledger=run_bundle_ledger,
+            provider_turn_ownership=provider_turn_ownership,
         )
         result = self.loop.resume_human_input(
             conversation=conversation,
@@ -763,10 +1199,15 @@ class PreparedAgent:
             session_id=self.call_context.session_id,
             memory_namespace=self.call_context.memory_namespace,
             toolkit=toolkit,
-            run_id=self.call_context.run_id,
+            run_id=resolved_run_id,
             tool_runtime_plugins=tool_runtime_plugins,
             tool_runtime_config=copy.deepcopy(self.call_context.tool_runtime_config or {}),
             _execution_guard=execution_guard,
+            _runtime_context=resolved_runtime_context,
+            _run_bundle_identity=resolved_identity,
+            _run_bundle_descriptor=self.call_context.run_bundle_descriptor,
+            _run_bundle_receipts=exposure_receipts,
+            _provider_turn_ownership=provider_turn_ownership,
         )
         return self._apply_run_hooks(result)
 

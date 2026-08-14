@@ -5,9 +5,11 @@ from typing import Any
 
 from .provider_replay import current_provider_replay_frame
 from .replay_handle import store_provider_replay_handle
+from .run_ledger import materialize_state_bundle
 from .state import RunState
 from .types import KernelRunResult
 from ..interaction.durable import InteractionRequest
+from ..run_bundle import opaque_metric_evidence_ref
 
 
 def _human_input_request_payload(state: RunState) -> dict[str, Any] | None:
@@ -27,12 +29,50 @@ def _interaction_request_payload(state: RunState) -> dict[str, Any] | None:
 
 
 def build_kernel_run_result(state: RunState, *, status: str) -> KernelRunResult:
+    ledger = state.run_ledger
+    if ledger.identity is None:
+        fallback_run_id = str(
+            state.session_state.session_id or "legacy-kernel"
+        )
+        ledger.initialize(state=state, run_id=fallback_run_id)
+    interaction_request = _interaction_request_payload(state)
+    if interaction_request is not None:
+        interaction_id = str(interaction_request.get("interaction_id") or "")
+        subject_id = interaction_id or (
+            f"interaction:{status}:{max(0, int(state.iteration))}"
+        )
+        ledger.record_metric_event(
+            kind="interaction",
+            subject_id=subject_id,
+            outcome="requested",
+            evidence_refs=(
+                (
+                    opaque_metric_evidence_ref(
+                        kind="interaction",
+                        source_id=interaction_id,
+                    ),
+                )
+                if interaction_id
+                else ()
+            ),
+        )
+    elif status == "awaiting_human_input":
+        call_id = str(state.tool_batch_state.human_input_tool_call_id or "")
+        ledger.record_metric_event(
+            kind="interaction",
+            subject_id=(
+                f"human-input:{call_id}"
+                if call_id
+                else f"human-input:{max(0, int(state.iteration))}"
+            ),
+            outcome="requested",
+        )
     return KernelRunResult(
         messages=copy.deepcopy(state.transcript),
         status=status,
         continuation=_continuation_payload(state),
         human_input_request=_human_input_request_payload(state),
-        interaction_request=_interaction_request_payload(state),
+        interaction_request=interaction_request,
         consumed_tokens=int(state.token_state.consumed_tokens or 0),
         input_tokens=int(state.token_state.input_tokens or 0),
         output_tokens=int(state.token_state.output_tokens or 0),
@@ -46,6 +86,7 @@ def build_kernel_run_result(state: RunState, *, status: str) -> KernelRunResult:
         provider_replay_handle=store_provider_replay_handle(
             current_provider_replay_frame(state)
         ),
+        run_bundle=materialize_state_bundle(state, status=status),
     )
 
 

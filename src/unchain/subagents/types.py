@@ -95,6 +95,7 @@ class SubagentState:
     blackboards: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     return_handoff_stack: list[dict[str, Any]] = field(default_factory=list)
     blocked_clarifications: list[dict[str, Any]] = field(default_factory=list)
+    run_bundles: dict[str, dict[str, Any]] = field(default_factory=dict)
     spawn_stats: dict[str, int] = field(
         default_factory=lambda: {"delegate": 0, "handoff": 0, "worker": 0}
     )
@@ -112,11 +113,12 @@ class SubagentState:
             blackboards=copy.deepcopy(self.blackboards),
             return_handoff_stack=copy.deepcopy(self.return_handoff_stack),
             blocked_clarifications=copy.deepcopy(self.blocked_clarifications),
+            run_bundles=copy.deepcopy(self.run_bundles),
             spawn_stats=dict(self.spawn_stats),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "root_agent_id": self.root_agent_id,
             "active_agent_id": self.active_agent_id,
             "active_lineage": list(self.active_lineage),
@@ -130,6 +132,11 @@ class SubagentState:
             "blocked_clarifications": copy.deepcopy(self.blocked_clarifications),
             "spawn_stats": dict(self.spawn_stats),
         }
+        # Preserve the legacy empty-state wire while still carrying canonical
+        # child bundles whenever accounting evidence actually exists.
+        if self.run_bundles:
+            value["run_bundles"] = copy.deepcopy(self.run_bundles)
+        return value
 
     @classmethod
     def from_raw(cls, raw: Any) -> "SubagentState":
@@ -159,6 +166,17 @@ class SubagentState:
         blocked = raw.get("blocked_clarifications")
         if isinstance(blocked, list):
             state.blocked_clarifications = [copy.deepcopy(item) for item in blocked if isinstance(item, dict)]
+        raw_run_bundles = raw.get("run_bundles")
+        if isinstance(raw_run_bundles, dict):
+            from ..run_bundle import RunBundle
+
+            for key, value in raw_run_bundles.items():
+                if not isinstance(key, str) or not isinstance(value, dict):
+                    continue
+                bundle = RunBundle.from_dict(value)
+                if key != bundle.bundle_id:
+                    raise ValueError("subagent run bundle key does not match bundle_id")
+                state.run_bundles[key] = bundle.to_dict()
         threads = raw.get("threads")
         if isinstance(threads, dict):
             state.threads = {
@@ -219,6 +237,29 @@ class SubagentState:
             current.running_batches.update(copy.deepcopy(update.running_batches))
         if update.blocked_clarifications:
             current.blocked_clarifications.extend(copy.deepcopy(update.blocked_clarifications))
+        if update.run_bundles:
+            from ..run_bundle import RunBundle, RunBundleProtocolError
+
+            for bundle_id, bundle in update.run_bundles.items():
+                prior = current.run_bundles.get(bundle_id)
+                if prior is not None:
+                    prior_bundle = RunBundle.from_dict(prior)
+                    incoming_bundle = RunBundle.from_dict(bundle)
+                    if prior_bundle.identity != incoming_bundle.identity:
+                        raise RunBundleProtocolError(
+                            "one child bundle_id changed its immutable identity"
+                        )
+                    if incoming_bundle.revision < prior_bundle.revision:
+                        continue
+                    if (
+                        incoming_bundle.revision == prior_bundle.revision
+                        and incoming_bundle.bundle_digest
+                        != prior_bundle.bundle_digest
+                    ):
+                        raise RunBundleProtocolError(
+                            "one child bundle revision has conflicting projections"
+                        )
+                current.run_bundles[bundle_id] = copy.deepcopy(bundle)
         if update.threads:
             current.threads.update(copy.deepcopy(update.threads))
         if update.mailboxes:
@@ -250,8 +291,29 @@ class SubagentResult:
     clarification_request: dict[str, Any] | None = None
     error: str = ""
     subagent_state: dict[str, Any] = field(default_factory=dict)
+    run_bundle: dict[str, Any] | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.run_bundle is None:
+            return
+        if not isinstance(self.run_bundle, dict):
+            raise TypeError("run_bundle must be a run bundle object or null")
+        from ..run_bundle import RunBundle
+
+        object.__setattr__(
+            self,
+            "run_bundle",
+            RunBundle.from_dict(self.run_bundle).to_dict(),
+        )
 
     def to_dict(self) -> dict[str, Any]:
+        model_visible_subagent_state = copy.deepcopy(self.subagent_state)
+        if isinstance(model_visible_subagent_state, dict):
+            # Canonical RunBundles are accounting evidence, not model context.
+            # They remain available through to_record_dict() and the parent
+            # SubagentState merge, but must never bloat or influence a tool
+            # result sent back to the model.
+            model_visible_subagent_state.pop("run_bundles", None)
         return {
             "mode": self.mode,
             "agent_name": self.agent_name,
@@ -263,5 +325,23 @@ class SubagentResult:
             "lineage": list(self.lineage),
             "clarification_request": copy.deepcopy(self.clarification_request),
             "error": self.error,
-            "subagent_state": copy.deepcopy(self.subagent_state),
+            "subagent_state": model_visible_subagent_state,
         }
+
+    def to_record_dict(self) -> dict[str, Any]:
+        """Serialize durable internal state without changing model-visible output."""
+
+        value = self.to_dict()
+        value["subagent_state"] = copy.deepcopy(self.subagent_state)
+        if self.run_bundle is not None:
+            value["run_bundle"] = copy.deepcopy(self.run_bundle)
+        return value
+
+    @classmethod
+    def from_record_dict(cls, value: dict[str, Any]) -> "SubagentResult":
+        if not isinstance(value, dict):
+            raise TypeError("subagent result record must be an object")
+        result = cls(**copy.deepcopy(value))
+        if result.to_record_dict() != value:
+            raise ValueError("subagent result record is not canonical")
+        return result

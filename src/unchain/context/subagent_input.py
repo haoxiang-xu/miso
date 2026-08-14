@@ -488,13 +488,13 @@ def recover_subagent_result(
                 "completed subagent result artifact is not an object"
             )
         try:
-            result = SubagentResult(**decoded)
-        except TypeError as exc:
+            result = SubagentResult.from_record_dict(decoded)
+        except (TypeError, ValueError) as exc:
             raise ContextSubagentInputError(
                 "completed subagent result artifact is malformed"
             ) from exc
         if (
-            result.to_dict() != decoded
+            result.to_record_dict() != decoded
             or result.mode != prepared.mode
             or result.agent_name != prepared.child_id
             or result.template_name != prepared.template_name

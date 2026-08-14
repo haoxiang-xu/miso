@@ -164,6 +164,16 @@ def test_boundary_enabled_cold_tool_approval_resume_fails_closed() -> None:
         toolkit=toolkit,
     )
     assert suspended.status == "awaiting_interaction"
+    assert suspended.run_bundle is not None
+    assert suspended.run_bundle["lifecycle"]["status"] == "suspended"
+    assert suspended.run_bundle["metrics"]["all"]["iterations"] == 1
+    iteration_events = [
+        event
+        for event in suspended.run_bundle["metrics"]["events"]
+        if event["kind"] == "iteration"
+    ]
+    assert len(iteration_events) == 1
+    assert iteration_events[0]["outcome"] == "uncertain"
 
     interaction = DurableInteractionRuntime(
         KernelMemoryRuntime.from_config(store=store)

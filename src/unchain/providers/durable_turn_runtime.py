@@ -12,6 +12,7 @@ import json
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Callable
 
@@ -30,6 +31,7 @@ from unchain.journal.provider_result import (
 )
 from unchain.journal.provider_wire import RecoveredProviderWireAuthority
 from unchain.kernel.types import ModelTurnResult
+from unchain.run_bundle import ProviderCallReceipt
 from unchain.retry import RetryConfig, RetriesExhaustedError
 from unchain.retry.backoff import compute_delay_ms
 from unchain.retry.classifier import extract_retry_after_ms
@@ -47,9 +49,18 @@ from .request_lease import (
 from .wire_envelope import ProviderWireEnvelope, ProviderWireRoute
 
 
+def _provider_attempt_completed_at() -> str:
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+
+
 class DurableProviderTurnMode(StrEnum):
     OFF = "off"
     SHADOW = "shadow"
+    ENFORCE = "enforce"
     ENFORCE_TEST = "enforce_test"
 
 
@@ -133,6 +144,7 @@ class DurableProviderTurnOutcome:
     status: DurableProviderTurnStatus
     result: ModelTurnResult | None = None
     recovered: bool = False
+    run_receipt: ProviderCallReceipt | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -144,10 +156,14 @@ class DurableProviderTurnOutcome:
             raise TypeError("result must be an exact ModelTurnResult or null")
         if type(self.recovered) is not bool:
             raise TypeError("recovered must be an exact boolean")
+        if self.run_receipt is not None and type(self.run_receipt) is not ProviderCallReceipt:
+            raise TypeError("run_receipt must be an exact ProviderCallReceipt or null")
         if status is DurableProviderTurnStatus.COMPLETED:
             if self.result is None:
                 raise ValueError("completed provider turn requires a result")
-        elif self.result is not None or self.recovered:
+            if self.recovered and self.run_receipt is not None:
+                raise ValueError("recovered provider turn cannot invent a live receipt")
+        elif self.result is not None or self.recovered or self.run_receipt is not None:
             raise ValueError("closed provider turn modes cannot contain a result")
 
 
@@ -462,6 +478,7 @@ class DurableProviderTurnRuntime:
         *,
         lease: ProviderRequestLease,
         result: ModelTurnResult,
+        run_receipt: ProviderCallReceipt | None = None,
     ) -> DurableProviderTurnOutcome:
         try:
             envelope = ProviderTurnResultEnvelope.from_model_turn_result(
@@ -493,14 +510,21 @@ class DurableProviderTurnRuntime:
                 artifact_operation=artifact_operation,
                 event_operation=event_operation,
                 event_id=event_id,
+                provider_call_receipt=run_receipt,
             )
         except BaseException as exc:
             self._raise_durable(exc)
         self._complete(lease, receipt)
         return DurableProviderTurnOutcome(
             status=DurableProviderTurnStatus.COMPLETED,
-            result=receipt.envelope.to_model_turn_result(),
+            # The durable v1 envelope remains intentionally unchanged.  A live
+            # send may nevertheless carry newer ephemeral accounting fields
+            # (for example canonical provider usage) to the RunBundle ledger.
+            # Cold recovery continues through ``_recover_or_complete`` and is
+            # therefore explicitly legacy-partial when v1 lacks those fields.
+            result=result,
             recovered=False,
+            run_receipt=run_receipt,
         )
 
     @staticmethod
@@ -533,6 +557,10 @@ class DurableProviderTurnRuntime:
         route_name: str,
         retry_config: RetryConfig,
         before_send: Callable[[], None] | None,
+        after_send: Callable[[int, str, str, str], None] | None,
+        build_run_receipt: Callable[
+            [int, str, str, str, ModelTurnResult | None], ProviderCallReceipt
+        ] | None,
         fallback_parent: ProviderRequestLease | None = None,
     ) -> DurableProviderTurnOutcome:
         envelope = authority.envelope
@@ -593,6 +621,8 @@ class DurableProviderTurnRuntime:
                         route_name="openai_previous_response_fallback",
                         retry_config=retry_config,
                         before_send=before_send,
+                        after_send=after_send,
+                        build_run_receipt=build_run_receipt,
                         fallback_parent=lease,
                     )
                 if not (
@@ -623,6 +653,13 @@ class DurableProviderTurnRuntime:
                     retry_ordinal=ordinal,
                 )
             except ExactProviderRouteFailure as exc:
+                if after_send is not None:
+                    after_send(
+                        ordinal,
+                        _provider_attempt_completed_at(),
+                        "failed",
+                        exc.kind.value,
+                    )
                 if is_durable_persistence_failure(exc.original):
                     raise exc.original
                 if exc.kind is ExactProviderRouteFailureKind.TRANSIENT_RETRY_SAFE:
@@ -656,6 +693,8 @@ class DurableProviderTurnRuntime:
                         route_name="openai_previous_response_fallback",
                         retry_config=retry_config,
                         before_send=before_send,
+                        after_send=after_send,
+                        build_run_receipt=build_run_receipt,
                         fallback_parent=failed,
                     )
                 self._record_failure(
@@ -667,13 +706,50 @@ class DurableProviderTurnRuntime:
                     "non_retryable"
                 ) from exc.original
             except BaseException as exc:
+                if after_send is not None:
+                    after_send(
+                        ordinal,
+                        _provider_attempt_completed_at(),
+                        "uncertain",
+                        "uncertain",
+                    )
                 if is_durable_persistence_failure(exc):
                     raise
                 raise DurableProviderTurnUncertainError() from exc
 
             if type(result) is not ModelTurnResult:
+                if after_send is not None:
+                    after_send(
+                        ordinal,
+                        _provider_attempt_completed_at(),
+                        "uncertain",
+                        "invalid_result",
+                    )
                 raise DurableProviderTurnUncertainError()
-            return self._persist_result(lease=lease, result=result)
+            completed_at = _provider_attempt_completed_at()
+            run_receipt = None
+            if build_run_receipt is not None:
+                run_receipt = build_run_receipt(
+                    ordinal,
+                    completed_at,
+                    "completed",
+                    "success",
+                    result,
+                )
+                if type(run_receipt) is not ProviderCallReceipt:
+                    raise DurableProviderTurnUncertainError()
+            if after_send is not None:
+                after_send(
+                    ordinal,
+                    completed_at,
+                    "completed",
+                    "success",
+                )
+            return self._persist_result(
+                lease=lease,
+                result=result,
+                run_receipt=run_receipt,
+            )
 
     def execute(
         self,
@@ -681,6 +757,10 @@ class DurableProviderTurnRuntime:
         authority: RecoveredProviderWireAuthority,
         retry_config: RetryConfig,
         before_send: Callable[[], None] | None = None,
+        after_send: Callable[[int, str, str, str], None] | None = None,
+        build_run_receipt: Callable[
+            [int, str, str, str, ModelTurnResult | None], ProviderCallReceipt
+        ] | None = None,
     ) -> DurableProviderTurnOutcome:
         self._validate_retry_config(retry_config)
         if type(authority) is not RecoveredProviderWireAuthority:
@@ -694,7 +774,10 @@ class DurableProviderTurnRuntime:
             )
         envelope.verify_against_catalog(authority.catalog)
 
-        if self._mode is not DurableProviderTurnMode.ENFORCE_TEST:
+        if self._mode not in {
+            DurableProviderTurnMode.ENFORCE,
+            DurableProviderTurnMode.ENFORCE_TEST,
+        }:
             route = self._route(envelope, "primary")
             subject = ProviderRequestSubject(
                 attempt=envelope.attempt,
@@ -723,6 +806,8 @@ class DurableProviderTurnRuntime:
             route_name="primary",
             retry_config=retry_config,
             before_send=before_send,
+            after_send=after_send,
+            build_run_receipt=build_run_receipt,
         )
 
 

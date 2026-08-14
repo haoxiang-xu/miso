@@ -584,6 +584,168 @@ def test_subagent_worker_batch_reports_partial_failure_for_mixed_results():
     assert result.messages[-1]["content"] == "handled mixed results"
 
 
+def test_failed_delegate_bundle_is_preserved_in_root_call_set_union():
+    def _raise_child_error(_request):
+        raise RuntimeError("delegate provider failed")
+
+    failing_child = Agent(
+        name="failing_delegate",
+        provider="openai",
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [_raise_child_error],
+        ),
+    )
+
+    def _after_delegate(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload["status"] == "failed"
+        return _text_turn("parent recovered")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="failing_delegate",
+                        description="Delegate whose provider fails",
+                        agent=failing_child,
+                        allowed_modes=("delegate",),
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="delegate_failure",
+                    name="delegate_to_subagent",
+                    arguments={
+                        "target": "failing_delegate",
+                        "task": "fail after one provider send",
+                    },
+                ),
+                _after_delegate,
+            ],
+        ),
+    )
+
+    result = parent.run("delegate", max_iterations=2, run_id="delegate-root")
+
+    assert result.status == "completed"
+    assert result.run_bundle is not None
+    bundle = result.run_bundle
+    assert len(bundle["children"]) == 1
+    child = bundle["children"][0]
+    assert child["status"] == "failed"
+    child_call_ids = {
+        receipt["provider_call_id"]
+        for receipt in bundle["provider_calls"]
+        if receipt["identity"]["owner_run_id"] == child["run_id"]
+    }
+    assert child_call_ids
+    assert child_call_ids.issubset(
+        set(bundle["aggregation"]["descendant_call_ids"])
+    )
+    assert set(bundle["aggregation"]["all_call_ids"]) == {
+        receipt["provider_call_id"] for receipt in bundle["provider_calls"]
+    }
+
+
+def test_failed_worker_bundle_is_preserved_in_root_call_set_union():
+    def _raise_worker_error(_request):
+        raise RuntimeError("worker provider failed")
+
+    completed_worker = Agent(
+        name="completed_worker",
+        provider="openai",
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [_text_turn("worker completed")],
+        ),
+    )
+    failed_worker = Agent(
+        name="failed_worker",
+        provider="openai",
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [_raise_worker_error],
+        ),
+    )
+
+    def _after_batch(request):
+        payload = json.loads(request.messages[-1]["output"])
+        assert payload.get("status") == "partial_failure", payload
+        return _text_turn("parent joined")
+
+    parent = Agent(
+        name="manager",
+        provider="openai",
+        modules=(
+            SubagentModule(
+                templates=(
+                    SubagentTemplate(
+                        name="completed_worker",
+                        description="Successful worker",
+                        agent=completed_worker,
+                        allowed_modes=("worker",),
+                        parallel_safe=True,
+                    ),
+                    SubagentTemplate(
+                        name="failed_worker",
+                        description="Failing worker",
+                        agent=failed_worker,
+                        allowed_modes=("worker",),
+                        parallel_safe=True,
+                    ),
+                ),
+            ),
+        ),
+        model_io_factory=lambda spec, ctx: SequenceModelIO(
+            "openai",
+            [
+                _openai_tool_turn(
+                    call_id="worker_failure",
+                    name="spawn_worker_batch",
+                    arguments={
+                        "tasks": [
+                            {"target": "completed_worker", "task": "complete"},
+                            {"target": "failed_worker", "task": "fail"},
+                        ],
+                    },
+                ),
+                _after_batch,
+            ],
+        ),
+    )
+
+    result = parent.run("fan out", max_iterations=2, run_id="worker-root")
+
+    assert result.status == "completed"
+    assert result.run_bundle is not None
+    bundle = result.run_bundle
+    assert sorted(child["status"] for child in bundle["children"]) == [
+        "completed",
+        "failed",
+    ]
+    child_run_ids = {child["run_id"] for child in bundle["children"]}
+    descendant_call_ids = {
+        receipt["provider_call_id"]
+        for receipt in bundle["provider_calls"]
+        if receipt["identity"]["owner_run_id"] in child_run_ids
+    }
+    assert descendant_call_ids
+    assert descendant_call_ids == set(
+        bundle["aggregation"]["descendant_call_ids"]
+    )
+    assert set(bundle["aggregation"]["all_call_ids"]) == {
+        receipt["provider_call_id"] for receipt in bundle["provider_calls"]
+    }
+
+
 def test_subagent_child_clarification_is_escalated_without_suspending_root_run():
     store = InMemorySessionStore()
     memory = MemoryManager(store=store)

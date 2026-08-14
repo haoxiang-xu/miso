@@ -16,6 +16,7 @@ from ..kernel.provider_replay import (
     tool_schema_manifest,
 )
 from ..kernel.types import ModelTurnResult, ToolCall
+from ..run_bundle import ProviderCallUsage, canonical_sha256
 
 
 class OllamaModelIO(_NativeModelIOBase):
@@ -88,6 +89,7 @@ class OllamaModelIO(_NativeModelIOBase):
         reasoning_chunks: list[str] = []
         latest_prompt_eval_count = 0
         latest_eval_count = 0
+        observed_usage: dict[str, Any] = {}
 
         with self._stream_factory(
             "POST",
@@ -115,8 +117,18 @@ class OllamaModelIO(_NativeModelIOBase):
                     raise ValueError(f"error: {data['error']} ( kernel.model_io -> OllamaModelIO.fetch_turn )")
                 if isinstance(data.get("prompt_eval_count"), int):
                     latest_prompt_eval_count = data["prompt_eval_count"]
+                    observed_usage["prompt_eval_count"] = data["prompt_eval_count"]
                 if isinstance(data.get("eval_count"), int):
                     latest_eval_count = data["eval_count"]
+                    observed_usage["eval_count"] = data["eval_count"]
+                for reasoning_count_key in (
+                    "thinking_eval_count",
+                    "reasoning_eval_count",
+                ):
+                    if reasoning_count_key in data:
+                        observed_usage[reasoning_count_key] = data[
+                            reasoning_count_key
+                        ]
 
                 message = data.get("message") or {}
                 content_delta = message.get("content", "") or ""
@@ -200,6 +212,15 @@ class OllamaModelIO(_NativeModelIOBase):
                         input_tokens=latest_prompt_eval_count,
                         output_tokens=latest_eval_count,
                         provider_replay_frame=provider_replay_frame,
+                        provider_call_usage=ProviderCallUsage.from_ollama_usage(
+                            observed_usage,
+                            reasoning_present=bool(reasoning_chunks),
+                        ),
+                        provider_raw_usage_sha256=(
+                            canonical_sha256(observed_usage)
+                            if observed_usage
+                            else None
+                        ),
                     )
 
                 if data.get("done", False):
@@ -219,6 +240,15 @@ class OllamaModelIO(_NativeModelIOBase):
                         consumed_tokens=latest_prompt_eval_count + latest_eval_count,
                         input_tokens=latest_prompt_eval_count,
                         output_tokens=latest_eval_count,
+                        provider_call_usage=ProviderCallUsage.from_ollama_usage(
+                            observed_usage,
+                            reasoning_present=bool(reasoning_chunks),
+                        ),
+                        provider_raw_usage_sha256=(
+                            canonical_sha256(observed_usage)
+                            if observed_usage
+                            else None
+                        ),
                         provider_replay_frame={
                             "format": "ollama.chat.v1",
                             "complete": True,

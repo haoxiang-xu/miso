@@ -18,6 +18,7 @@ from ..kernel.provider_replay import (
     tool_schema_manifest,
 )
 from ..kernel.types import ModelTurnResult, TokenUsage, ToolCall
+from ..run_bundle import ProviderCallUsage, canonical_sha256
 
 
 class OpenAIModelIO(_NativeModelIOBase):
@@ -149,6 +150,8 @@ class OpenAIModelIO(_NativeModelIOBase):
         completed_response = None
         created_response_id: str | None = None
         output_items_from_events: dict[int, dict[str, Any]] = {}
+        provider_call_usage = ProviderCallUsage()
+        raw_usage: dict[str, Any] = {}
 
         with openai_client.responses.create(**request_kwargs) as stream_response:
             for chunk in stream_response:
@@ -192,6 +195,7 @@ class OpenAIModelIO(_NativeModelIOBase):
                     completed_response = getattr(chunk, "response", None)
 
         cached_input_tokens = 0
+        cache_write_input_tokens = 0
         if completed_response is None:
             if output_items_from_events:
                 outputs = [
@@ -216,7 +220,12 @@ class OpenAIModelIO(_NativeModelIOBase):
         else:
             outputs = getattr(completed_response, "output", None) or []
             response_id = getattr(completed_response, "id", None)
-            usage, cached_input_tokens = self._extract_openai_token_usage(getattr(completed_response, "usage", None))
+            raw_usage = self._as_dict(getattr(completed_response, "usage", None))
+            usage, cached_input_tokens = self._extract_openai_token_usage(raw_usage)
+            provider_call_usage = ProviderCallUsage.from_openai_usage(raw_usage)
+            cache_write_input_tokens = (
+                provider_call_usage.input_cache_write_tokens or 0
+            )
 
         assistant_messages: list[dict[str, Any]] = []
         tool_calls: list[ToolCall] = []
@@ -332,7 +341,12 @@ class OpenAIModelIO(_NativeModelIOBase):
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             cache_read_input_tokens=cached_input_tokens,
+            cache_creation_input_tokens=cache_write_input_tokens,
             provider_replay_frame=provider_replay_frame,
+            provider_call_usage=provider_call_usage,
+            provider_raw_usage_sha256=(
+                canonical_sha256(raw_usage) if raw_usage else None
+            ),
         )
 
     def _normalize_input_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

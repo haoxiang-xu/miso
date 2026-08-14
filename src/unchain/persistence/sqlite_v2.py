@@ -16,6 +16,7 @@ import re
 import sqlite3
 import tempfile
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -79,9 +80,22 @@ from unchain.providers.request_lease import (
     ProviderRequestSubject,
 )
 from unchain.providers.wire_envelope import ProviderWireEnvelope
+from unchain.run_bundle import (
+    ProviderCallReceipt,
+    RunBundle,
+    RunIdentity,
+    deterministic_bundle_id,
+)
+from unchain.run_bundle_ledger import (
+    RunBundleContinuationError,
+    RunBundleLedgerConflictError,
+    RunBundleLedgerIntegrityError,
+    RunBundleLedgerScopeError,
+)
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_MAX_RUN_BUNDLE_LEDGER_ROWS = 10_000
 
 
 class SQLiteContextV2StoreError(RuntimeError):
@@ -575,6 +589,69 @@ class SQLiteContextV2Store:
                         REFERENCES events(execution_id, store_seq)
                         ON DELETE CASCADE
                 );
+
+                CREATE TABLE IF NOT EXISTS run_bundle_receipts_v1 (
+                    execution_id TEXT NOT NULL,
+                    provider_call_id TEXT NOT NULL,
+                    attempt_id TEXT NOT NULL,
+                    root_run_id TEXT NOT NULL,
+                    owner_run_id TEXT NOT NULL,
+                    receipt_json BLOB NOT NULL,
+                    receipt_sha256 TEXT NOT NULL,
+                    PRIMARY KEY (execution_id, provider_call_id),
+                    FOREIGN KEY (execution_id)
+                        REFERENCES executions(execution_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_run_bundle_receipts_v1_root
+                    ON run_bundle_receipts_v1(
+                        execution_id,
+                        root_run_id,
+                        owner_run_id,
+                        attempt_id,
+                        provider_call_id
+                    );
+
+                CREATE TABLE IF NOT EXISTS run_bundle_projections_v1 (
+                    execution_id TEXT NOT NULL,
+                    bundle_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL CHECK(revision >= 1),
+                    attempt_id TEXT NOT NULL,
+                    root_run_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    bundle_json BLOB NOT NULL,
+                    bundle_digest TEXT NOT NULL,
+                    PRIMARY KEY (execution_id, bundle_id, revision),
+                    FOREIGN KEY (execution_id)
+                        REFERENCES executions(execution_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_run_bundle_projections_v1_root
+                    ON run_bundle_projections_v1(
+                        execution_id,
+                        root_run_id,
+                        run_id,
+                        attempt_id,
+                        bundle_id,
+                        revision
+                    );
+
+                CREATE TABLE IF NOT EXISTS run_bundle_continuation_links_v1 (
+                    execution_id TEXT NOT NULL,
+                    successor_bundle_id TEXT NOT NULL,
+                    successor_run_id TEXT NOT NULL,
+                    successor_attempt_id TEXT NOT NULL,
+                    predecessor_bundle_id TEXT NOT NULL,
+                    predecessor_run_id TEXT NOT NULL,
+                    PRIMARY KEY (execution_id, successor_bundle_id),
+                    UNIQUE (execution_id, predecessor_bundle_id),
+                    FOREIGN KEY (execution_id)
+                        REFERENCES executions(execution_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_run_bundle_continuation_predecessor_v1
+                    ON run_bundle_continuation_links_v1(
+                        execution_id,
+                        predecessor_run_id,
+                        predecessor_bundle_id
+                    );
                 """
             )
             self._upgrade_provider_request_leases(connection)
@@ -705,6 +782,550 @@ class _SQLiteBoundContextV2Repository(
     def __init__(self, store: SQLiteContextV2Store, execution_id: str) -> None:
         BoundExecutionJournal.__init__(self, execution_id)
         self._store = store
+
+    @staticmethod
+    def _ledger_filter(value: str | None, field_name: str) -> str | None:
+        if value is None:
+            return None
+        if type(value) is not str or not value or len(value) > 256:
+            raise ValueError(f"{field_name} must be non-empty exact text or null")
+        return value
+
+    def _decode_run_bundle_receipt(
+        self,
+        row: sqlite3.Row,
+    ) -> ProviderCallReceipt:
+        try:
+            raw = bytes(row["receipt_json"])
+            if _sha256(raw) != row["receipt_sha256"]:
+                raise RunBundleLedgerIntegrityError(
+                    "provider receipt durable bytes changed"
+                )
+            decoded = json.loads(raw.decode("utf-8"))
+            receipt = ProviderCallReceipt.from_dict(decoded)
+            if (
+                type(decoded) is not dict
+                or _canonical_json_bytes(receipt.to_dict()) != raw
+                or receipt.identity.execution_id != self.execution_id
+                or receipt.provider_call_id != row["provider_call_id"]
+                or receipt.identity.attempt_id != row["attempt_id"]
+                or receipt.identity.root_run_id != row["root_run_id"]
+                or receipt.identity.owner_run_id != row["owner_run_id"]
+                or receipt.receipt_sha256 != row["receipt_sha256"]
+            ):
+                raise RunBundleLedgerIntegrityError(
+                    "provider receipt durable index changed"
+                )
+            return receipt
+        except RunBundleLedgerIntegrityError:
+            raise
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise RunBundleLedgerIntegrityError(
+                "provider receipt durable row is invalid"
+            ) from exc
+
+    def _decode_run_bundle_projection(self, row: sqlite3.Row) -> RunBundle:
+        try:
+            raw = bytes(row["bundle_json"])
+            decoded = json.loads(raw.decode("utf-8"))
+            bundle = RunBundle.from_dict(decoded)
+            if (
+                type(decoded) is not dict
+                or _canonical_json_bytes(bundle.to_dict()) != raw
+                or bundle.identity.execution_id != self.execution_id
+                or bundle.bundle_id != row["bundle_id"]
+                or bundle.revision != row["revision"]
+                or bundle.identity.attempt_id != row["attempt_id"]
+                or bundle.identity.root_run_id != row["root_run_id"]
+                or bundle.identity.run_id != row["run_id"]
+                or bundle.bundle_digest != row["bundle_digest"]
+            ):
+                raise RunBundleLedgerIntegrityError(
+                    "run bundle durable index changed"
+                )
+            return bundle
+        except RunBundleLedgerIntegrityError:
+            raise
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise RunBundleLedgerIntegrityError(
+                "run bundle durable row is invalid"
+            ) from exc
+
+    def _append_run_bundle_receipt_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        receipt: ProviderCallReceipt,
+    ) -> ProviderCallReceipt:
+        """Append one immutable accounting fact inside an existing CAS."""
+
+        if type(receipt) is not ProviderCallReceipt:
+            raise TypeError("receipt must be an exact ProviderCallReceipt")
+        if receipt.identity.execution_id != self.execution_id:
+            raise RunBundleLedgerScopeError(
+                "provider receipt belongs to another execution"
+            )
+        encoded = _canonical_json_bytes(receipt.to_dict())
+        existing = connection.execute(
+            """
+            SELECT * FROM run_bundle_receipts_v1
+            WHERE execution_id = ? AND provider_call_id = ?
+            """,
+            (self.execution_id, receipt.provider_call_id),
+        ).fetchone()
+        if existing is not None:
+            durable = self._decode_run_bundle_receipt(existing)
+            if durable != receipt:
+                raise RunBundleLedgerConflictError(
+                    "provider_call_id has conflicting immutable receipts"
+                )
+            return durable
+        connection.execute(
+            """
+            INSERT INTO run_bundle_receipts_v1(
+                execution_id,
+                provider_call_id,
+                attempt_id,
+                root_run_id,
+                owner_run_id,
+                receipt_json,
+                receipt_sha256
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                self.execution_id,
+                receipt.provider_call_id,
+                receipt.identity.attempt_id,
+                receipt.identity.root_run_id,
+                receipt.identity.owner_run_id,
+                encoded,
+                receipt.receipt_sha256,
+            ),
+        )
+        return receipt
+
+    def append_receipt(
+        self,
+        receipt: ProviderCallReceipt,
+    ) -> ProviderCallReceipt:
+        if type(receipt) is not ProviderCallReceipt:
+            raise TypeError("receipt must be an exact ProviderCallReceipt")
+        if receipt.identity.execution_id != self.execution_id:
+            raise RunBundleLedgerScopeError(
+                "provider receipt belongs to another execution"
+            )
+        try:
+            with self._store._transaction(immediate=True) as connection:
+                return self._append_run_bundle_receipt_in_transaction(
+                    connection,
+                    receipt,
+                )
+        except (RunBundleLedgerConflictError, RunBundleLedgerIntegrityError):
+            raise
+        except sqlite3.IntegrityError as exc:
+            raise RunBundleLedgerConflictError(
+                "provider receipt exact-once insert conflicted"
+            ) from exc
+        except sqlite3.Error as exc:
+            raise RunBundleLedgerIntegrityError(
+                "provider receipt persistence failed"
+            ) from exc
+
+    def load_receipts(
+        self,
+        *,
+        root_run_id: str | None = None,
+        owner_run_id: str | None = None,
+        attempt_id: str | None = None,
+    ) -> tuple[ProviderCallReceipt, ...]:
+        filters = {
+            "root_run_id": self._ledger_filter(root_run_id, "root_run_id"),
+            "owner_run_id": self._ledger_filter(owner_run_id, "owner_run_id"),
+            "attempt_id": self._ledger_filter(attempt_id, "attempt_id"),
+        }
+        clauses = ["execution_id = ?"]
+        parameters: list[Any] = [self.execution_id]
+        for field_name, value in filters.items():
+            if value is not None:
+                clauses.append(f"{field_name} = ?")
+                parameters.append(value)
+        parameters.append(_MAX_RUN_BUNDLE_LEDGER_ROWS + 1)
+        try:
+            with self._store._transaction(immediate=False) as connection:
+                rows = list(
+                    connection.execute(
+                        "SELECT * FROM run_bundle_receipts_v1 WHERE "
+                        + " AND ".join(clauses)
+                        + " ORDER BY provider_call_id LIMIT ?",
+                        parameters,
+                    )
+                )
+                if len(rows) > _MAX_RUN_BUNDLE_LEDGER_ROWS:
+                    raise RunBundleLedgerIntegrityError(
+                        "provider receipt query exceeds the bounded ledger limit"
+                    )
+                return tuple(self._decode_run_bundle_receipt(row) for row in rows)
+        except RunBundleLedgerIntegrityError:
+            raise
+        except sqlite3.Error as exc:
+            raise RunBundleLedgerIntegrityError(
+                "provider receipt load failed"
+            ) from exc
+
+    def persist_bundle(self, bundle: RunBundle) -> RunBundle:
+        if type(bundle) is not RunBundle:
+            raise TypeError("bundle must be an exact RunBundle")
+        if bundle.identity.execution_id != self.execution_id:
+            raise RunBundleLedgerScopeError(
+                "run bundle belongs to another execution"
+            )
+        encoded = _canonical_json_bytes(bundle.to_dict())
+        try:
+            with self._store._transaction(immediate=True) as connection:
+                identity_row = connection.execute(
+                    """
+                    SELECT * FROM run_bundle_projections_v1
+                    WHERE execution_id = ? AND bundle_id = ?
+                    ORDER BY revision DESC LIMIT 1
+                    """,
+                    (self.execution_id, bundle.bundle_id),
+                ).fetchone()
+                if identity_row is not None:
+                    durable_identity = self._decode_run_bundle_projection(identity_row)
+                    if durable_identity.identity != bundle.identity:
+                        raise RunBundleLedgerConflictError(
+                            "bundle_id changed its immutable run identity"
+                        )
+                    if bundle.revision < durable_identity.revision:
+                        raise RunBundleLedgerConflictError(
+                            "run bundle revision regressed below the durable head"
+                        )
+                existing = connection.execute(
+                    """
+                    SELECT * FROM run_bundle_projections_v1
+                    WHERE execution_id = ? AND bundle_id = ? AND revision = ?
+                    """,
+                    (self.execution_id, bundle.bundle_id, bundle.revision),
+                ).fetchone()
+                if existing is not None:
+                    durable = self._decode_run_bundle_projection(existing)
+                    if durable != bundle:
+                        raise RunBundleLedgerConflictError(
+                            "run bundle revision has conflicting projections"
+                        )
+                    return durable
+                connection.execute(
+                    """
+                    INSERT INTO run_bundle_projections_v1(
+                        execution_id,
+                        bundle_id,
+                        revision,
+                        attempt_id,
+                        root_run_id,
+                        run_id,
+                        bundle_json,
+                        bundle_digest
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        self.execution_id,
+                        bundle.bundle_id,
+                        bundle.revision,
+                        bundle.identity.attempt_id,
+                        bundle.identity.root_run_id,
+                        bundle.identity.run_id,
+                        encoded,
+                        bundle.bundle_digest,
+                    ),
+                )
+                return bundle
+        except (RunBundleLedgerConflictError, RunBundleLedgerIntegrityError):
+            raise
+        except sqlite3.IntegrityError as exc:
+            raise RunBundleLedgerConflictError(
+                "run bundle exact revision insert conflicted"
+            ) from exc
+        except sqlite3.Error as exc:
+            raise RunBundleLedgerIntegrityError(
+                "run bundle persistence failed"
+            ) from exc
+
+    def load_bundle(
+        self,
+        bundle_id: str,
+        *,
+        revision: int | None = None,
+    ) -> RunBundle | None:
+        normalized_bundle_id = self._ledger_filter(bundle_id, "bundle_id")
+        assert normalized_bundle_id is not None
+        if revision is not None and (
+            type(revision) is not int or revision <= 0
+        ):
+            raise ValueError("revision must be a positive exact integer or null")
+        statement = (
+            "SELECT * FROM run_bundle_projections_v1 "
+            "WHERE execution_id = ? AND bundle_id = ?"
+        )
+        parameters: list[Any] = [self.execution_id, normalized_bundle_id]
+        if revision is None:
+            statement += " ORDER BY revision DESC LIMIT 1"
+        else:
+            statement += " AND revision = ?"
+            parameters.append(revision)
+        try:
+            with self._store._transaction(immediate=False) as connection:
+                row = connection.execute(statement, parameters).fetchone()
+                return (
+                    self._decode_run_bundle_projection(row)
+                    if row is not None
+                    else None
+                )
+        except RunBundleLedgerIntegrityError:
+            raise
+        except sqlite3.Error as exc:
+            raise RunBundleLedgerIntegrityError(
+                "run bundle load failed"
+            ) from exc
+
+    def list_bundles(
+        self,
+        *,
+        root_run_id: str | None = None,
+        run_id: str | None = None,
+        attempt_id: str | None = None,
+    ) -> tuple[RunBundle, ...]:
+        filters = {
+            "root_run_id": self._ledger_filter(root_run_id, "root_run_id"),
+            "run_id": self._ledger_filter(run_id, "run_id"),
+            "attempt_id": self._ledger_filter(attempt_id, "attempt_id"),
+        }
+        clauses = ["execution_id = ?"]
+        parameters: list[Any] = [self.execution_id]
+        for field_name, value in filters.items():
+            if value is not None:
+                clauses.append(f"{field_name} = ?")
+                parameters.append(value)
+        parameters.append(_MAX_RUN_BUNDLE_LEDGER_ROWS + 1)
+        statement = (
+            "SELECT * FROM ("
+            "SELECT p.*, ROW_NUMBER() OVER ("
+            "PARTITION BY bundle_id ORDER BY revision DESC"
+            ") AS ledger_rank FROM run_bundle_projections_v1 AS p WHERE "
+            + " AND ".join(clauses)
+            + ") WHERE ledger_rank = 1 "
+            "ORDER BY run_id, attempt_id, bundle_id LIMIT ?"
+        )
+        try:
+            with self._store._transaction(immediate=False) as connection:
+                rows = list(connection.execute(statement, parameters))
+                if len(rows) > _MAX_RUN_BUNDLE_LEDGER_ROWS:
+                    raise RunBundleLedgerIntegrityError(
+                        "run bundle query exceeds the bounded ledger limit"
+                    )
+                return tuple(
+                    self._decode_run_bundle_projection(row) for row in rows
+                )
+        except RunBundleLedgerIntegrityError:
+            raise
+        except sqlite3.Error as exc:
+            raise RunBundleLedgerIntegrityError(
+                "run bundle list failed"
+            ) from exc
+
+    @staticmethod
+    def _continuation_lineage_matches(
+        predecessor: RunBundle,
+        successor: RunIdentity,
+    ) -> bool:
+        prior = predecessor.identity
+        if (
+            prior.execution_id != successor.execution_id
+            or prior.run_id == successor.run_id
+            or predecessor.lifecycle.status not in {"suspended", "cancelled"}
+        ):
+            return False
+        if successor.relation == "root":
+            return prior.relation == "root" and prior.parent_run_id is None
+        return (
+            prior.relation == successor.relation
+            and prior.parent_run_id == successor.parent_run_id
+            and prior.root_run_id == successor.root_run_id
+        )
+
+    @staticmethod
+    def _continuation_order(bundle: RunBundle) -> tuple[int, int, str]:
+        timestamp = bundle.lifecycle.completed_at
+        if timestamp is None:
+            instant = -1
+        else:
+            normalized = timestamp.replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(normalized)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+            delta = parsed.astimezone(timezone.utc) - epoch
+            instant = (
+                (delta.days * 86_400 + delta.seconds) * 1_000_000
+                + delta.microseconds
+            )
+        return (instant, bundle.revision, bundle.bundle_id)
+
+    def claim_continuation(
+        self,
+        *,
+        successor: RunIdentity,
+        requested_run_id: str | None = None,
+    ) -> RunBundle | None:
+        """Atomically consume one durable terminal predecessor for a fresh run."""
+
+        if type(successor) is not RunIdentity:
+            raise TypeError("successor must be an exact RunIdentity")
+        if successor.execution_id != self.execution_id:
+            raise RunBundleLedgerScopeError(
+                "continuation successor belongs to another execution"
+            )
+        requested = self._ledger_filter(requested_run_id, "requested_run_id")
+        successor_bundle_id = deterministic_bundle_id(identity=successor)
+        try:
+            with self._store._transaction(immediate=True) as connection:
+                existing_link = connection.execute(
+                    """
+                    SELECT * FROM run_bundle_continuation_links_v1
+                    WHERE execution_id = ? AND successor_bundle_id = ?
+                    """,
+                    (self.execution_id, successor_bundle_id),
+                ).fetchone()
+                if existing_link is not None:
+                    if (
+                        requested is not None
+                        and requested != existing_link["predecessor_run_id"]
+                    ):
+                        raise RunBundleContinuationError(
+                            "continued_from_successor_conflict"
+                        )
+                    predecessor_row = connection.execute(
+                        """
+                        SELECT * FROM run_bundle_projections_v1
+                        WHERE execution_id = ? AND bundle_id = ?
+                        ORDER BY revision DESC LIMIT 1
+                        """,
+                        (
+                            self.execution_id,
+                            existing_link["predecessor_bundle_id"],
+                        ),
+                    ).fetchone()
+                    if predecessor_row is None:
+                        raise RunBundleLedgerIntegrityError(
+                            "continuation predecessor projection is missing"
+                        )
+                    predecessor = self._decode_run_bundle_projection(
+                        predecessor_row
+                    )
+                    if not self._continuation_lineage_matches(
+                        predecessor,
+                        successor,
+                    ):
+                        raise RunBundleLedgerIntegrityError(
+                            "continuation predecessor no longer matches its lineage"
+                        )
+                    return predecessor
+
+                if requested is None:
+                    return None
+
+                rows = list(
+                    connection.execute(
+                        """
+                        SELECT * FROM (
+                            SELECT p.*, ROW_NUMBER() OVER (
+                                PARTITION BY p.bundle_id
+                                ORDER BY p.revision DESC
+                            ) AS ledger_rank
+                            FROM run_bundle_projections_v1 AS p
+                            WHERE p.execution_id = ?
+                        ) AS latest
+                        WHERE latest.ledger_rank = 1
+                        ORDER BY latest.bundle_id
+                        LIMIT ?
+                        """,
+                        (self.execution_id, _MAX_RUN_BUNDLE_LEDGER_ROWS + 1),
+                    )
+                )
+                if len(rows) > _MAX_RUN_BUNDLE_LEDGER_ROWS:
+                    raise RunBundleLedgerIntegrityError(
+                        "continuation candidate query exceeds the ledger limit"
+                    )
+                consumed = {
+                    str(row["predecessor_bundle_id"])
+                    for row in connection.execute(
+                        """
+                        SELECT predecessor_bundle_id
+                        FROM run_bundle_continuation_links_v1
+                        WHERE execution_id = ?
+                        """,
+                        (self.execution_id,),
+                    )
+                }
+                candidates = []
+                for row in rows:
+                    candidate = self._decode_run_bundle_projection(row)
+                    if candidate.bundle_id in consumed:
+                        continue
+                    if requested is not None and candidate.identity.run_id != requested:
+                        continue
+                    if self._continuation_lineage_matches(candidate, successor):
+                        candidates.append(candidate)
+                if not candidates:
+                    if requested is not None:
+                        raise RunBundleContinuationError(
+                            "continued_from_not_claimable"
+                        )
+                    return None
+                predecessor = max(candidates, key=self._continuation_order)
+                connection.execute(
+                    """
+                    INSERT INTO run_bundle_continuation_links_v1(
+                        execution_id,
+                        successor_bundle_id,
+                        successor_run_id,
+                        successor_attempt_id,
+                        predecessor_bundle_id,
+                        predecessor_run_id
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        self.execution_id,
+                        successor_bundle_id,
+                        successor.run_id,
+                        successor.attempt_id,
+                        predecessor.bundle_id,
+                        predecessor.identity.run_id,
+                    ),
+                )
+                return predecessor
+        except (
+            RunBundleContinuationError,
+            RunBundleLedgerConflictError,
+            RunBundleLedgerIntegrityError,
+        ):
+            raise
+        except sqlite3.IntegrityError as exc:
+            raise RunBundleContinuationError(
+                "continued_from_claim_conflict"
+            ) from exc
+        except sqlite3.Error as exc:
+            raise RunBundleLedgerIntegrityError(
+                "continuation claim failed"
+            ) from exc
 
     @staticmethod
     def _request_matches_event(
@@ -1648,6 +2269,11 @@ class _SQLiteBoundContextV2Repository(
                         raise ProviderTurnResultIntegrityError(
                             "provider result idempotent replay changed"
                         )
+                    if request.provider_call_receipt is not None:
+                        self._append_run_bundle_receipt_in_transaction(
+                            connection,
+                            request.provider_call_receipt,
+                        )
                     return ProviderTurnResultReceipt(
                         envelope=envelope,
                         artifact=artifact,
@@ -1826,6 +2452,11 @@ class _SQLiteBoundContextV2Repository(
                 if updated.rowcount != 1:
                     raise ProviderTurnResultIntegrityError(
                         "provider result journal sequence conflicted"
+                    )
+                if request.provider_call_receipt is not None:
+                    self._append_run_bundle_receipt_in_transaction(
+                        connection,
+                        request.provider_call_receipt,
                     )
                 return ProviderTurnResultReceipt(
                     envelope=envelope,

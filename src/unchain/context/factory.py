@@ -12,6 +12,7 @@ from unchain.journal import (
     GenerationRef,
 )
 from unchain.kernel.harness import HarnessContext
+from unchain.run_bundle_ledger import RunBundleLedger
 
 from .artifacts import ArtifactService
 from .coordinator import ContextCompileCoordinator
@@ -74,6 +75,7 @@ class ContextExecutionBundle:
     handoff_recorder: DurableHandoffRecorder
     partial_attempt_sink: Callable[[dict[str, Any], Exception], None]
     provider_turn_service: ContextProviderTurnExecutionService | None = None
+    run_bundle_ledger: RunBundleLedger | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.attempt, AttemptRef):
@@ -120,6 +122,19 @@ class ContextExecutionBundle:
             raise TypeError(
                 "provider_turn_service must be the official "
                 "ContextProviderTurnExecutionService or null"
+            )
+        if self.run_bundle_ledger is None and isinstance(
+            self.journal,
+            RunBundleLedger,
+        ):
+            object.__setattr__(self, "run_bundle_ledger", self.journal)
+        if self.run_bundle_ledger is not None and not isinstance(
+            self.run_bundle_ledger,
+            RunBundleLedger,
+        ):
+            raise TypeError(
+                "run_bundle_ledger must implement the RunBundleLedger protocol "
+                "or be null"
             )
         execution_id = self.attempt.generation.execution_id
         if any(
@@ -206,6 +221,13 @@ class ContextExecutionBundle:
         ):
             raise ContextExecutionBundleError(
                 "provider turn service does not share the exact bundle boundary"
+            )
+        if (
+            self.run_bundle_ledger is not None
+            and self.run_bundle_ledger.execution_id != execution_id
+        ):
+            raise ContextExecutionBundleError(
+                "run bundle ledger does not share the attempt execution"
             )
 
     def bootstrap(

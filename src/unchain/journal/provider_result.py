@@ -9,7 +9,10 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
+
+if TYPE_CHECKING:
+    from unchain.run_bundle import ProviderCallReceipt
 
 from unchain.kernel.types import ModelTurnResult, ToolCall
 from unchain.providers.request_lease import (
@@ -574,6 +577,7 @@ class ProviderTurnResultPersistRequest:
     artifact_operation: OperationRef
     event_operation: OperationRef
     event_id: str
+    provider_call_receipt: ProviderCallReceipt | None = None
 
     def __post_init__(self) -> None:
         if type(self.started_lease) is not ProviderRequestLease:
@@ -589,6 +593,13 @@ class ProviderTurnResultPersistRequest:
             "event_id",
             _required_text(self.event_id, "event_id", identifier=True),
         )
+        if self.provider_call_receipt is not None:
+            from unchain.run_bundle import ProviderCallReceipt
+
+            if type(self.provider_call_receipt) is not ProviderCallReceipt:
+                raise TypeError(
+                    "provider_call_receipt must be an exact ProviderCallReceipt or null"
+                )
         if self.started_lease.status is not ProviderRequestStatus.STARTED:
             raise ProviderTurnResultIntegrityError(
                 "provider result persistence requires a STARTED lease"
@@ -601,6 +612,19 @@ class ProviderTurnResultPersistRequest:
             raise ProviderTurnResultIntegrityError(
                 "provider result lease route digest changed"
             )
+        if self.provider_call_receipt is not None:
+            identity = self.provider_call_receipt.identity
+            subject = self.started_lease.subject
+            if (
+                identity.execution_id
+                != subject.attempt.generation.execution_id
+                or identity.attempt_id != subject.attempt.attempt_id
+                or identity.iteration != subject.iteration
+                or identity.retry_ordinal != subject.retry_ordinal
+            ):
+                raise ProviderTurnResultIntegrityError(
+                    "provider accounting receipt changed the durable send subject"
+                )
 
 
 class BoundProviderTurnResultStore(ABC):
@@ -625,6 +649,7 @@ class BoundProviderTurnResultStore(ABC):
         artifact_operation: OperationRef,
         event_operation: OperationRef,
         event_id: str,
+        provider_call_receipt: ProviderCallReceipt | None = None,
     ) -> ProviderTurnResultReceipt:
         """Atomically persist result artifact, event, and indexed receipt."""
 
@@ -634,6 +659,7 @@ class BoundProviderTurnResultStore(ABC):
             artifact_operation=artifact_operation,
             event_operation=event_operation,
             event_id=event_id,
+            provider_call_receipt=provider_call_receipt,
         )
         if self.execution_id != envelope.subject.attempt.generation.execution_id:
             raise ProviderTurnResultIntegrityError(

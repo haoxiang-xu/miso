@@ -27,6 +27,7 @@ from unchain.journal import (
     BoundToolReceiptIndex,
     DurableEventSink,
     EventCursor,
+    GenerationRef,
     JournalAppendResult,
     JournalEvent,
     JournalPage,
@@ -37,6 +38,10 @@ from unchain.journal import (
 )
 from unchain.kernel.harness import HarnessContext
 from unchain.kernel.state import RunState
+from unchain.persistence import SQLiteContextV2Store
+from unchain.providers.durable_turn_runtime import DurableProviderTurnMode
+from unchain.providers.turn_ownership import ProviderTurnOwnership
+from unchain.run_bundle import RunIdentity
 
 
 class _Journal(BoundToolReceiptIndex):
@@ -239,6 +244,82 @@ def _current_input(context, attempt):
         attempt=attempt,
         content=content,
     )
+
+
+def test_shadow_context_does_not_replace_explicit_provider_accounting_owner(
+    tmp_path,
+) -> None:
+    execution_id = "execution-shadow-owner"
+    run_id = "run-shadow-owner"
+    identity = RunIdentity(
+        execution_id=execution_id,
+        attempt_id=run_id,
+        root_run_id=run_id,
+        run_id=run_id,
+        parent_run_id=None,
+        relation="root",
+    )
+    generic_store = SQLiteContextV2Store(
+        database_path=tmp_path / "generic" / "context.sqlite3",
+        object_directory=tmp_path / "generic" / "objects",
+    ).bind_execution(execution_id)
+    shadow_store = SQLiteContextV2Store(
+        database_path=tmp_path / "shadow" / "context.sqlite3",
+        object_directory=tmp_path / "shadow" / "objects",
+    ).bind_execution(execution_id)
+    attempt = AttemptRef(
+        generation=GenerationRef(execution_id, "generation-generic-owner"),
+        attempt_id=run_id,
+    )
+    from unchain.context.provider_execution import (
+        ContextProviderTurnExecutionService,
+        official_provider_transport_target_sha256,
+    )
+
+    service = ContextProviderTurnExecutionService(
+        attempt=attempt,
+        store=generic_store,
+        mode=DurableProviderTurnMode.ENFORCE_TEST,
+        transport_target_sha256=official_provider_transport_target_sha256(),
+        sleep=lambda _seconds: None,
+    )
+    owner = ProviderTurnOwnership(
+        identity=identity,
+        service=service,
+        ledger=generic_store,
+    )
+    state = RunState()
+    state.session_state.session_id = execution_id
+    state.run_ledger.initialize(
+        state=state,
+        run_id=run_id,
+        explicit_identity=identity,
+    )
+    state.run_ledger.bind_provider_turn_ownership(owner)
+
+    factory = DurableContextRuntimeFactory(
+        bundle_builder=lambda shadow_attempt: _bundle(
+            shadow_attempt,
+            journal=shadow_store,
+        ),
+        generation_resolver=lambda _context, _execution_id: "generation-shadow",
+        current_input_resolver=_current_input,
+    )
+    runtime = ContextRuntime.from_factory(
+        owner_id="context-shadow",
+        execution_factory=factory,
+        provider_turns_enabled=False,
+    )
+    runtime.bind_context(
+        HarnessContext(
+            state=state,
+            phase="bootstrap",
+            event={"run_id": run_id, "current_input": "hello"},
+        )
+    )
+
+    assert state.run_ledger.provider_turn_ownership is owner
+    assert state.run_ledger.persistence is generic_store
 
 
 def test_factory_runtime_routes_two_executions_to_distinct_durable_bundles() -> None:

@@ -604,6 +604,13 @@ def test_nested_plaintext_secret_fields_are_rejected(field: str) -> None:
         payload={
             "token_budget": 12_000,
             "input_tokens": 100,
+            "cache_read_tokens": None,
+            "cache_write_tokens": None,
+            "cache_write_5m_tokens": None,
+            "cache_write_1h_tokens": None,
+            "uncached_tokens": None,
+            "visible_tokens": None,
+            "reasoning_tokens": None,
             "secret_handle": {
                 "schema": "unchain.opaque_secret_handle.v1",
                 "handle_id": "secret-handle-1",
@@ -617,6 +624,7 @@ def test_nested_plaintext_secret_fields_are_rejected(field: str) -> None:
         },
     )
     assert safe.payload["token_budget"] == 12_000
+    assert safe.payload["cache_read_tokens"] is None
 
     with pytest.raises(ValueError, match="opaque credential"):
         JournalEvent(
@@ -626,6 +634,34 @@ def test_nested_plaintext_secret_fields_are_rejected(field: str) -> None:
             operation=OperationRef("operation-3", SHA_A),
             store_seq=3,
             payload={"token_usage": {"input_tokens": -1}},
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cache_read_tokens", -1),
+        ("cache_read_tokens", True),
+        ("cache_read_tokens", "unknown"),
+        ("request_tokens", None),
+        ("access_token", None),
+    ],
+)
+def test_nullable_token_metrics_do_not_relax_credential_fields(
+    field: str,
+    value: object,
+) -> None:
+    with pytest.raises(ValueError, match="plaintext secret|opaque credential"):
+        JournalEvent(
+            event_id="event-token-metric-negative",
+            event_type="context.build",
+            attempt=AttemptRef(
+                GenerationRef("execution-1", "generation-1"),
+                "attempt-1",
+            ),
+            operation=OperationRef("operation-token-metric-negative", SHA_A),
+            store_seq=4,
+            payload={field: value},
         )
 
 

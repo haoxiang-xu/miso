@@ -298,6 +298,7 @@ class FinalModelToolBoundary:
         *,
         retry_config: Any,
         before_attempt: Callable[[int], None] | None = None,
+        after_attempt: Callable[[int, str, str, str], None] | None = None,
     ) -> ModelTurnResult | None:
         return _FINAL_MODEL_TOOL_BOUNDARY_ISSUER.fetch_prepared(
             self,
@@ -306,6 +307,7 @@ class FinalModelToolBoundary:
             request,
             retry_config,
             before_attempt,
+            after_attempt,
         )
 
     def prepare_tool_resume(
@@ -537,16 +539,32 @@ class _FinalModelToolBoundaryIssuer:
         request: Any,
         retry_config: Any,
         before_attempt: Callable[[int], None] | None,
+        after_attempt: Callable[[int, str, str, str], None] | None,
     ) -> ModelTurnResult | None:
         record = self.record_for(boundary)
         if record is None:
             raise TypeError("invalid final model boundary authority")
+        observed_before_attempt = before_attempt
+        if after_attempt is not None:
+            def observed_before_attempt(attempt: int) -> None:
+                if before_attempt is not None:
+                    before_attempt(attempt)
+
+            setattr(
+                observed_before_attempt,
+                "after_attempt",
+                after_attempt,
+            )
+            for attribute in ("run_receipt_factory", "run_receipt_observed"):
+                value = getattr(before_attempt, attribute, None)
+                if value is not None:
+                    setattr(observed_before_attempt, attribute, value)
         return record.fetch_prepared(
             context,
             preparation,
             request,
             retry_config,
-            before_attempt,
+            observed_before_attempt,
         )
 
     def prepare_tool_resume(

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ..run_bundle import ProviderCallReceipt, ProviderCallUsage
 
 
 @dataclass(frozen=True)
@@ -31,6 +34,19 @@ class ModelTurnResult:
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
     provider_replay_frame: dict[str, Any] | None = None
+    # Canonical usage is emitted on the new provider-call ledger boundary.
+    # provider_turn_result.v1 deliberately does not serialize this optional
+    # field; old durable receipts therefore recover as explicit legacy_partial.
+    provider_call_usage: ProviderCallUsage | None = None
+    # Content-free ephemeral evidence for RunBundle.  These fields are not
+    # serialized into provider_turn_result.v1.
+    provider_raw_usage_sha256: str | None = None
+    provider_request_id_sha256: str | None = None
+    provider_response_id_sha256: str | None = None
+    # Exact live accounting fact returned by the durable provider boundary.
+    # This is intentionally excluded from provider_turn_result.v1; the same
+    # receipt is committed beside that v1 result in the accounting ledger.
+    provider_call_receipt: ProviderCallReceipt | None = None
 
 
 @dataclass(frozen=True)
@@ -51,3 +67,6 @@ class KernelRunResult:
     iteration: int = 0
     provider_replay_handle: dict[str, Any] | None = None
     interaction_request: dict[str, Any] | None = None
+    # Renderer-safe unchain.run_bundle.v1 projection. Existing runtimes leave
+    # this null until the provider-call ledger integration is enabled.
+    run_bundle: dict[str, Any] | None = None

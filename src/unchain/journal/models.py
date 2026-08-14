@@ -62,6 +62,9 @@ _SAFE_TOKEN_METRIC_FIELDS = frozenset(
     {
         "available_input_tokens",
         "cache_read_tokens",
+        "cache_write_1h_tokens",
+        "cache_write_5m_tokens",
+        "cache_write_tokens",
         "cached_tokens",
         "completion_tokens",
         "consumed_tokens",
@@ -77,6 +80,8 @@ _SAFE_TOKEN_METRIC_FIELDS = frozenset(
         "reasoning_tokens",
         "total_tokens",
         "transport_margin_tokens",
+        "uncached_tokens",
+        "visible_tokens",
     }
 )
 TOOL_EXECUTION_RECEIPT_TYPES = frozenset(
@@ -110,7 +115,10 @@ def _normalize_key(value: str) -> str:
 
 def _credential_metadata_kind(normalized_key: str) -> str | None:
     if normalized_key in _SAFE_TOKEN_METRIC_FIELDS:
-        return "integer"
+        # Canonical usage contracts represent an unavailable observation as
+        # null.  Keep that exception limited to the explicitly registered
+        # metric names; arbitrary token-shaped keys remain credential fields.
+        return "nullable_integer"
     segments = normalized_key.split("_")
     sensitive_segment = re.compile(
         r"^(?:authorization|bearer|cookie|credential|passwd|password|secret|token)s?[0-9]*$"
@@ -170,6 +178,12 @@ def _validate_credential_metadata(
         return
     if metadata_kind == "integer":
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ModelValidationError(invalid_message)
+        return
+    if metadata_kind == "nullable_integer":
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+        ):
             raise ModelValidationError(invalid_message)
         return
     if metadata_kind == "usage":

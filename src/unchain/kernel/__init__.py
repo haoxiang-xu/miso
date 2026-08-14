@@ -8,6 +8,7 @@ from .delta import (
     SuspendSignal,
 )
 from .harness import BaseRuntimeHarness, HarnessContext, RuntimeHarness, RuntimePhase
+from .failure import KernelRunFailureRecord, kernel_run_failure_from_exception
 from .state import ProviderState, RunState, SessionState, SuspendState, TokenState
 from .types import KernelRunResult, ModelTurnResult, TokenUsage, ToolCall
 from .versioning import MessageVersion, MessageVersionGraph
@@ -21,6 +22,8 @@ __all__ = [
     "HarnessDelta",
     "InsertMessagesOp",
     "KernelLoop",
+    "KernelRunFailureRecord",
+    "kernel_run_failure_from_exception",
     "KernelRunResult",
     "ModelAdapter",
     "MessageVersion",

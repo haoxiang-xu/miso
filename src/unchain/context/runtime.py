@@ -15,6 +15,7 @@ from ..durability import (
 )
 from ..kernel.harness import HarnessContext
 from ..journal import AttemptRef, ContextBuildStatus
+from ..run_bundle import canonical_sha256, opaque_metric_evidence_ref
 from .compiler import ContextCompileResult, ContextCompiler
 from .coordinator import ContextCompileCoordinator
 from .factory import (
@@ -32,6 +33,7 @@ from .tool_permits import (
 )
 
 if TYPE_CHECKING:
+    from ..kernel.state import RunState
     from .subagent_input import PreparedSubagentInput
 
 
@@ -475,6 +477,32 @@ class ContextRuntime:
             raise ContextExecutionBundleError(
                 "provider turn service does not match the runtime gate"
             )
+        from ..kernel.run_ledger import attach_state_run_bundle_ledger
+
+        state_run_ledger = getattr(context.state, "run_ledger", None)
+        provider_turn_ownership = getattr(
+            state_run_ledger,
+            "provider_turn_ownership",
+            None,
+        )
+        if provider_turn_ownership is not None:
+            if self.provider_turns_enabled:
+                if provider_turn_ownership.ledger is not bundle.run_bundle_ledger:
+                    raise ContextExecutionBundleError(
+                        "active Context provider ownership changed its accounting ledger"
+                    )
+                attach_state_run_bundle_ledger(
+                    context.state,
+                    bundle.run_bundle_ledger,
+                )
+            # A shadow Context runtime owns semantic events only.  An explicit
+            # production provider owner already bound the accounting ledger
+            # before bootstrap and must remain authoritative for this run.
+        else:
+            attach_state_run_bundle_ledger(
+                context.state,
+                bundle.run_bundle_ledger,
+            )
         binding_key = (
             bundle.attempt.generation.execution_id,
             bundle.attempt.attempt_id,
@@ -594,6 +622,52 @@ class ContextRuntime:
                     )
             raise
 
+    def prebind_run_bundle_ledger(
+        self,
+        *,
+        state: RunState,
+        run_id: str,
+    ):
+        """Resolve only the attempt accounting capability before inference."""
+
+        if self.execution_factory is None:
+            return None
+        context = HarnessContext(
+            state=state,
+            phase="bootstrap",
+            event={"run_id": str(run_id or "")},
+        )
+        return self.execution_factory.bind(context).run_bundle_ledger
+
+    def prebind_provider_turn_ownership(
+        self,
+        *,
+        state: RunState,
+        run_id: str,
+        identity,
+    ):
+        """Resolve the generic exact-send owner before any auxiliary inference."""
+
+        if self.execution_factory is None or not self.provider_turns_enabled:
+            return None
+        context = HarnessContext(
+            state=state,
+            phase="bootstrap",
+            event={"run_id": str(run_id or "")},
+        )
+        bundle = self.execution_factory.bind(context)
+        if bundle.provider_turn_service is None or bundle.run_bundle_ledger is None:
+            raise ContextExecutionBundleError(
+                "enforcing provider turn bundle lacks its accounting owner"
+            )
+        from ..providers.turn_ownership import ProviderTurnOwnership
+
+        return ProviderTurnOwnership(
+            identity=identity,
+            service=bundle.provider_turn_service,
+            ledger=bundle.run_bundle_ledger,
+        )
+
     def compile_context(self, context: HarnessContext) -> ContextCompileResult:
         if self.execution_factory is None:
             request_factory = self.request_factory
@@ -620,18 +694,68 @@ class ContextRuntime:
             or request.checkpoint_request_id is not None
         ):
             raise ContextCheckpointBindingForbiddenError()
-        result = compiler.compile(request)
-        if not isinstance(result, ContextCompileResult):
-            raise TypeError("context runtime compiler must return ContextCompileResult")
-        if (
-            result.checkpoint_requests
-            or result.diagnostics.get("status") == "checkpoint_required"
-        ):
-            raise ContextCheckpointPersistenceRequiredError(result)
-        if result.envelope is None:
-            raise ContextBuildEnvelopeRequiredError(result)
-        if result.envelope.status is ContextBuildStatus.UNAVAILABLE:
-            raise ContextBuildUnavailableError(result)
+        state = getattr(context, "state", None)
+        ledger = getattr(state, "run_ledger", None)
+        capture_metrics = getattr(ledger, "identity", None) is not None
+        request_digest = canonical_sha256(request.to_dict())
+        subject_id = f"context-request:{request_digest}"
+        result = None
+        try:
+            result = compiler.compile(request)
+            if not isinstance(result, ContextCompileResult):
+                raise TypeError(
+                    "context runtime compiler must return ContextCompileResult"
+                )
+            if (
+                result.checkpoint_requests
+                or result.diagnostics.get("status") == "checkpoint_required"
+            ):
+                raise ContextCheckpointPersistenceRequiredError(result)
+            if result.envelope is None:
+                raise ContextBuildEnvelopeRequiredError(result)
+            if result.envelope.status is ContextBuildStatus.UNAVAILABLE:
+                raise ContextBuildUnavailableError(result)
+        except Exception as exc:
+            error_code = str(getattr(exc, "code", "context_build_failed") or "")
+            if re.fullmatch(r"[a-z][a-z0-9_.-]{0,127}", error_code) is None:
+                error_code = "context_build_failed"
+            if capture_metrics:
+                ledger.record_metric_event(
+                    kind="context_build",
+                    subject_id=subject_id,
+                    outcome="failed",
+                    error_category="context",
+                    error_code=error_code,
+                )
+                ledger.record_metric_event(
+                    kind="error",
+                    subject_id=f"context-error:{subject_id}",
+                    outcome="failed",
+                    error_category="context",
+                    error_code=error_code,
+                )
+            raise
+        assert result is not None and result.envelope is not None
+        build_id = str(result.envelope.build_id)
+        subject_id = build_id
+        evidence = (
+            opaque_metric_evidence_ref(
+                kind="context_event",
+                source_id=build_id,
+            ),
+        )
+        if capture_metrics:
+            ledger.record_metric_event(
+                kind="context_build",
+                subject_id=subject_id,
+                evidence_refs=evidence,
+            )
+            if result.diagnostics.get("compacted") is True:
+                ledger.record_metric_event(
+                    kind="context_compaction",
+                    subject_id=build_id,
+                    evidence_refs=evidence,
+                )
         return result
 
     def prepare_subagent_completion_sink(
@@ -1006,7 +1130,7 @@ class ContextRuntime:
                 checkpoint_identity.encode("utf-8")
             ).hexdigest()
             result_artifact = child_bundle.artifacts.persist_exact_json(
-                result.to_dict(),
+                result.to_record_dict(),
                 operation_id="artifact.subagent-result." + checkpoint_digest,
                 operation_binding={
                     "kind": "subagent_result_checkpoint",
@@ -1322,6 +1446,7 @@ class ContextRuntime:
             tool_name=tool_name,
             call_id=call_id,
             turn_id=f"{bundle.attempt.attempt_id}:turn-{iteration}",
+            run_state=context.state,
         )
         confirmation = prepare_tool_confirmation(
             toolkit=toolkit,
@@ -2146,6 +2271,17 @@ class ContextRuntime:
             request=request,
             retry_config=retry_config,
             before_attempt=before_attempt,
+            after_attempt=getattr(before_attempt, "after_attempt", None),
+            run_receipt_factory=getattr(
+                before_attempt,
+                "run_receipt_factory",
+                None,
+            ),
+            run_receipt_observed=getattr(
+                before_attempt,
+                "run_receipt_observed",
+                None,
+            ),
         )
 
     def _validate_provider_turn_boundary(

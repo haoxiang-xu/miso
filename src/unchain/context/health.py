@@ -25,7 +25,7 @@ class ContextV2PreflightBlocker(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ContextV2Admission:
-    """Explicit gate state; P0 has no production-enforcement mode."""
+    """Explicit gate state for shadow, test, or production enforcement."""
 
     mode: DurableProviderTurnMode = DurableProviderTurnMode.OFF
     admitted: bool = False
@@ -38,10 +38,13 @@ class ContextV2Admission:
         object.__setattr__(self, "mode", mode)
         if type(self.admitted) is not bool:
             raise TypeError("admitted must be an exact boolean")
-        enforce_test = mode is DurableProviderTurnMode.ENFORCE_TEST
-        if self.admitted is not enforce_test:
+        enforced = mode in {
+            DurableProviderTurnMode.ENFORCE,
+            DurableProviderTurnMode.ENFORCE_TEST,
+        }
+        if self.admitted is not enforced:
             raise ValueError(
-                "Context V2 admission must match the explicit enforce_test mode"
+                "Context V2 admission must match an explicit enforce mode"
             )
 
 

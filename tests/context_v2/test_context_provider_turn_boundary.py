@@ -306,6 +306,19 @@ def test_enabled_runtime_owns_the_final_kernel_provider_send(tmp_path):
     ]
     assert "provider.wire_snapshot" in event_types
     assert "provider.turn_result" in event_types
+    receipts = bundles["attempt-boundary"].run_bundle_ledger.load_receipts(
+        root_run_id="attempt-boundary",
+        owner_run_id="attempt-boundary",
+        attempt_id="attempt-boundary",
+    )
+    assert len(receipts) == 1
+    assert receipts[0].status == "completed"
+    assert receipts[0].timing.started_at is not None
+    assert receipts[0].timing.completed_at is not None
+    assert result.run_bundle is not None
+    assert result.run_bundle["aggregation"]["all_call_ids"] == [
+        receipts[0].provider_call_id
+    ]
 
 
 def test_graph_agent_mode_uses_the_same_durable_provider_boundary(tmp_path):

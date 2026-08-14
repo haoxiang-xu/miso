@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import time
+import hashlib
 from collections.abc import Callable
+from dataclasses import replace
+from datetime import datetime, timezone
 
-from unchain.journal import AttemptRef
+from unchain.journal import AttemptRef, GenerationRef
 from unchain.journal.provider_wire import BoundProviderWireStore
 from unchain.kernel.types import ModelTurnResult
+from unchain.run_bundle import ProviderCallReceipt
 from unchain.providers.anthropic import AnthropicModelIO
 from unchain.providers.base import ModelTurnRequest
 from unchain.providers.durable_turn_runtime import (
@@ -32,6 +36,19 @@ from .provider_turns import ProviderTurnAuthorityService
 
 class ContextProviderTurnExecutionError(RuntimeError):
     """The host could not resolve an exact provider transport."""
+
+
+_OFFICIAL_TRANSPORT_TARGET = (
+    "unchain.exact_provider_route_transport.v1|"
+    "openai.responses.create|anthropic.messages.stream|"
+    "hyperspace.anthropic.messages.stream|ollama.chat"
+)
+
+
+def official_provider_transport_target_sha256() -> str:
+    """Return the pinned identity of Unchain's official exact route family."""
+
+    return hashlib.sha256(_OFFICIAL_TRANSPORT_TARGET.encode("utf-8")).hexdigest()
 
 
 def _exact_transport(
@@ -89,6 +106,7 @@ class ContextProviderTurnExecutionService:
         self._store = store
         self._mode = resolved_mode
         self._sleep = sleep
+        self._transport_target_sha256 = transport_target_sha256
         resolved_toolkit_adapter = (
             toolkit_adapter
             if toolkit_adapter is not None
@@ -99,6 +117,7 @@ class ContextProviderTurnExecutionService:
                 "toolkit_adapter must be the official "
                 "ProviderToolkitAuthorityAdapter or null"
             )
+        self._toolkit_adapter = resolved_toolkit_adapter
         self._authority_service = ProviderTurnAuthorityService(
             attempt=self._attempt,
             store=store,
@@ -125,29 +144,73 @@ class ContextProviderTurnExecutionService:
         request: ModelTurnRequest,
         retry_config: RetryConfig,
         before_attempt: Callable[[int], None] | None = None,
+        after_attempt: Callable[[int, str, str, str], None] | None = None,
+        run_receipt_factory: Callable[
+            [int, str, str, str, str, ModelTurnResult | None], ProviderCallReceipt
+        ] | None = None,
+        run_receipt_observed: Callable[[ProviderCallReceipt], None] | None = None,
+        occurrence_sha256: str | None = None,
     ) -> ModelTurnResult | None:
         if type(request) is not ModelTurnRequest:
             raise TypeError("request must be an exact ModelTurnRequest")
         if before_attempt is not None and not callable(before_attempt):
             raise TypeError("before_attempt must be callable or null")
+        if after_attempt is not None and not callable(after_attempt):
+            raise TypeError("after_attempt must be callable or null")
+        if run_receipt_factory is not None and not callable(run_receipt_factory):
+            raise TypeError("run_receipt_factory must be callable or null")
+        if run_receipt_observed is not None and not callable(run_receipt_observed):
+            raise TypeError("run_receipt_observed must be callable or null")
+
+        authority_service = self._authority_service
+        effective_request = request
+        if occurrence_sha256 is not None:
+            if (
+                type(occurrence_sha256) is not str
+                or len(occurrence_sha256) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in occurrence_sha256
+                )
+            ):
+                raise ValueError(
+                    "occurrence_sha256 must be a lowercase SHA-256 digest or null"
+                )
+            occurrence_attempt = AttemptRef(
+                generation=GenerationRef(
+                    self._attempt.generation.execution_id,
+                    f"provider-call-{occurrence_sha256}",
+                ),
+                attempt_id=self._attempt.attempt_id,
+            )
+            authority_service = ProviderTurnAuthorityService(
+                attempt=occurrence_attempt,
+                store=self._store,
+                transport_target_sha256=self._transport_target_sha256,
+                toolkit_adapter=self._toolkit_adapter,
+            )
+            # Auxiliary calls get a full-digest generation namespace while
+            # preserving the owner attempt and its real iteration.  The
+            # durable subject is therefore unique without weakening the exact
+            # accounting-identity checks used by the atomic result CAS.
 
         if self._mode is DurableProviderTurnMode.OFF:
-            authority = self._authority_service.recover_existing(
+            authority = authority_service.recover_existing(
                 model_io=model_io,
-                request=request,
+                request=effective_request,
             )
             if authority is None:
                 return None
         else:
-            authority = self._authority_service.prepare(
+            authority = authority_service.prepare(
                 model_io=model_io,
-                request=request,
+                request=effective_request,
             )
 
         transport = _exact_transport(
             model_io=model_io,
             catalog=authority.catalog,
-            request=request,
+            request=effective_request,
         )
         runtime = DurableProviderTurnRuntime(
             mode=self._mode,
@@ -156,18 +219,104 @@ class ContextProviderTurnExecutionService:
             sleep=self._sleep,
         )
         send_number = 0
+        active_send_number: int | None = None
+        active_started_at: str | None = None
 
         def before_send() -> None:
-            nonlocal send_number
+            nonlocal active_send_number, active_started_at, send_number
+            if active_send_number is not None:
+                raise ContextProviderTurnExecutionError(
+                    "provider attempt completion was not observed"
+                )
+            active_send_number = send_number
+            active_started_at = (
+                datetime.now(timezone.utc)
+                .isoformat(timespec="microseconds")
+                .replace("+00:00", "Z")
+            )
             if before_attempt is not None:
                 before_attempt(send_number)
             send_number += 1
+
+        def after_send(
+            _route_ordinal: int,
+            completed_at: str,
+            outcome: str,
+            classification: str,
+        ) -> None:
+            nonlocal active_send_number, active_started_at
+            attempt_number = active_send_number
+            started_at = active_started_at
+            if attempt_number is None or started_at is None:
+                raise ContextProviderTurnExecutionError(
+                    "provider attempt completed without a matching start"
+                )
+            active_send_number = None
+            active_started_at = None
+            if outcome != "completed" and run_receipt_factory is not None:
+                run_receipt = run_receipt_factory(
+                    attempt_number,
+                    started_at,
+                    completed_at,
+                    outcome,
+                    classification,
+                    None,
+                )
+                append_receipt = getattr(self._store, "append_receipt", None)
+                if not callable(append_receipt):
+                    raise ContextProviderTurnExecutionError(
+                        "durable provider store lacks the accounting ledger"
+                    )
+                durable = append_receipt(run_receipt)
+                if durable != run_receipt:
+                    raise ContextProviderTurnExecutionError(
+                        "durable provider store changed the accounting receipt"
+                    )
+                if run_receipt_observed is not None:
+                    run_receipt_observed(run_receipt)
+            if after_attempt is not None:
+                after_attempt(
+                    attempt_number,
+                    completed_at,
+                    outcome,
+                    classification,
+                )
+
+        def build_run_receipt(
+            _route_ordinal: int,
+            completed_at: str,
+            outcome: str,
+            classification: str,
+            result: ModelTurnResult | None,
+        ) -> ProviderCallReceipt:
+            attempt_number = active_send_number
+            started_at = active_started_at
+            if (
+                run_receipt_factory is None
+                or attempt_number is None
+                or started_at is None
+            ):
+                raise ContextProviderTurnExecutionError(
+                    "provider accounting receipt has no matching live send"
+                )
+            return run_receipt_factory(
+                attempt_number,
+                started_at,
+                completed_at,
+                outcome,
+                classification,
+                result,
+            )
 
         try:
             outcome = runtime.execute(
                 authority=authority,
                 retry_config=retry_config,
                 before_send=before_send,
+                after_send=after_send,
+                build_run_receipt=(
+                    build_run_receipt if run_receipt_factory is not None else None
+                ),
             )
         except BaseException:
             transport.discard_buffered_events()
@@ -185,10 +334,18 @@ class ContextProviderTurnExecutionService:
             transport.discard_buffered_events()
         else:
             transport.release_buffered_events()
+        if outcome.run_receipt is not None:
+            if run_receipt_observed is not None:
+                run_receipt_observed(outcome.run_receipt)
+            return replace(
+                outcome.result,
+                provider_call_receipt=outcome.run_receipt,
+            )
         return outcome.result
 
 
 __all__ = [
     "ContextProviderTurnExecutionError",
     "ContextProviderTurnExecutionService",
+    "official_provider_transport_target_sha256",
 ]

@@ -192,7 +192,7 @@ class ContextArtifactHandoffHostAdapter:
             lambda: self._recorder.handoffs.persist_artifactized(
                 child_attempt=child_attempt,
                 status=_handoff_status(result.status),
-                full_output=result.to_dict(),
+                full_output=result.to_record_dict(),
                 source_event_range=source_event_range,
                 artifact_refs=refs,
                 operation_id=operation_id,

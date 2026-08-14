@@ -281,6 +281,7 @@ def fetch_built_model_turn(
     state: RunState,
     request: ModelTurnRequest,
     before_attempt: Callable[[int], None] | None = None,
+    after_attempt: Callable[[int, str, str, str], None] | None = None,
 ) -> ModelTurnResult:
     if model_io is None:
         raise RuntimeError("KernelLoop.model_io is not configured")
@@ -297,6 +298,7 @@ def fetch_built_model_turn(
         config=retry_config,
         context=context,
         before_attempt=before_attempt,
+        after_attempt=after_attempt,
     )
     return _with_fallback_replay_frame(
         state=state,
@@ -319,6 +321,7 @@ def fetch_model_turn(
     response_format: Any = None,
     openai_text_format: dict[str, Any] | None = None,
     before_attempt: Callable[[int], None] | None = None,
+    after_attempt: Callable[[int, str, str, str], None] | None = None,
 ) -> ModelTurnResult:
     request = build_model_turn_request(
         state,
@@ -337,6 +340,7 @@ def fetch_model_turn(
         state=state,
         request=request,
         before_attempt=before_attempt,
+        after_attempt=after_attempt,
     )
 
 

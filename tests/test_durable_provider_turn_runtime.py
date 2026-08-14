@@ -14,6 +14,7 @@ from unchain.journal.provider_wire import (
     recover_provider_wire_authority,
 )
 from unchain.kernel.types import ModelTurnResult
+from unchain.kernel.run_ledger import build_model_attempt_receipt
 from unchain.persistence.sqlite_v2 import SQLiteContextV2Store
 from unchain.providers.durable_turn_runtime import (
     DurableProviderTurnError,
@@ -32,6 +33,7 @@ from unchain.providers.request_lease import (
 )
 from unchain.providers.wire_envelope import ProviderWireEnvelope, ProviderWireRoute
 from unchain.retry import RetryConfig, RetriesExhaustedError
+from unchain.run_bundle import RunIdentity
 
 
 ATTEMPT = AttemptRef(
@@ -163,6 +165,36 @@ def _result(text: str = "durable result") -> ModelTurnResult:
         input_tokens=2,
         output_tokens=1,
     )
+
+
+def _receipt_factory():
+    identity = RunIdentity(
+        execution_id=ATTEMPT.generation.execution_id,
+        attempt_id=ATTEMPT.attempt_id,
+        root_run_id=ATTEMPT.attempt_id,
+        run_id=ATTEMPT.attempt_id,
+        parent_run_id=None,
+        relation="root",
+    )
+
+    def build(ordinal, completed_at, outcome, classification, result):
+        return build_model_attempt_receipt(
+            identity=identity,
+            provider="openai",
+            model="frontier-model",
+            iteration=ITERATION,
+            retry_ordinal=ordinal,
+            purpose="agent_turn",
+            request_digest="d" * 64,
+            route="openai.responses.create",
+            started_at="2026-08-13T18:00:00Z",
+            completed_at=completed_at,
+            turn=result,
+            status=outcome,
+            classification=classification,
+        )
+
+    return build
 
 
 class _Transport(ExactProviderRouteTransport):
@@ -598,9 +630,18 @@ def test_restart_finalizes_receipted_started_lease_without_resending(tmp_path) -
         _runtime(repository, transport).execute(
             authority=authority,
             retry_config=RetryConfig(max_retries=0),
+            build_run_receipt=_receipt_factory(),
         )
     assert is_durable_persistence_failure(caught.value)
     assert len(transport.calls) == 1
+
+    durable_run_receipts = repository.load_receipts(
+        root_run_id=ATTEMPT.attempt_id,
+        owner_run_id=ATTEMPT.attempt_id,
+        attempt_id=ATTEMPT.attempt_id,
+    )
+    assert len(durable_run_receipts) == 1
+    assert durable_run_receipts[0].status == "completed"
 
     reopened = _store(tmp_path).bind_execution(ATTEMPT.generation.execution_id)
     outcome = _runtime(reopened, _Transport([])).execute(
@@ -658,3 +699,85 @@ def test_exhausted_retry_is_durable_terminal_and_not_sent_after_restart(
             retry_config=RetryConfig(max_retries=2),
         )
     assert no_send.calls == []
+
+
+def test_after_send_closes_retry_attempts_immediately(tmp_path) -> None:
+    _store_value, repository, authority = _authority(tmp_path)
+    retry_failure = ExactProviderRouteFailure(
+        ExactProviderRouteFailureKind.TRANSIENT_RETRY_SAFE,
+        RuntimeError("retry safe"),
+    )
+    events = []
+    transport = _Transport(
+        [retry_failure, _result("after retry")],
+        before_send=lambda _envelope, route, ordinal: events.append(
+            ("send", route.name, ordinal)
+        ),
+    )
+
+    outcome = _runtime(repository, transport).execute(
+        authority=authority,
+        retry_config=RetryConfig(
+            max_retries=1,
+            base_delay_ms=0,
+            max_delay_ms=0,
+            jitter_ratio=0,
+        ),
+        after_send=lambda ordinal, completed_at, status, classification: events.append(
+            ("after", ordinal, completed_at, status, classification)
+        ),
+    )
+
+    assert outcome.result.final_text == "after retry"
+    assert [event[0] for event in events] == [
+        "send",
+        "after",
+        "send",
+        "after",
+    ]
+    after = [event for event in events if event[0] == "after"]
+    assert [(event[1], event[3], event[4]) for event in after] == [
+        (0, "failed", "transient_retry_safe"),
+        (1, "completed", "success"),
+    ]
+    assert all(event[2].endswith("Z") for event in after)
+
+
+def test_after_send_closes_fallback_and_success_attempts(tmp_path) -> None:
+    _store_value, repository, authority = _authority(tmp_path, fallback=True)
+    fallback_failure = ExactProviderRouteFailure(
+        ExactProviderRouteFailureKind.PREVIOUS_RESPONSE_FALLBACK,
+        RuntimeError("fallback"),
+    )
+    events = []
+
+    outcome = _runtime(
+        repository,
+        _Transport([fallback_failure, _result("local replay")]),
+    ).execute(
+        authority=authority,
+        retry_config=RetryConfig(max_retries=0),
+        after_send=lambda *event: events.append(event),
+    )
+
+    assert outcome.result.final_text == "local replay"
+    assert [(event[0], event[2], event[3]) for event in events] == [
+        (0, "failed", "previous_response_fallback"),
+        (0, "completed", "success"),
+    ]
+
+
+def test_after_send_closes_uncertain_final_error_once(tmp_path) -> None:
+    _store_value, repository, authority = _authority(tmp_path)
+    events = []
+
+    with pytest.raises(DurableProviderTurnUncertainError):
+        _runtime(repository, _Transport([RuntimeError("unknown")])).execute(
+            authority=authority,
+            retry_config=RetryConfig(max_retries=3),
+            after_send=lambda *event: events.append(event),
+        )
+
+    assert len(events) == 1
+    assert events[0][0] == 0
+    assert events[0][2:] == ("uncertain", "uncertain")

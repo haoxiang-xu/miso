@@ -154,3 +154,53 @@ def test_retry_after_header_overrides_backoff():
 
     # max_retries=2 → 1 initial + 2 retries = 3 attempts, 2 sleeps; retry-after wins each time.
     assert slept == [3.0, 3.0]
+
+
+def test_after_attempt_closes_each_attempt_before_backoff() -> None:
+    completions = []
+    sleep_observations = []
+    attempts = {"count": 0}
+
+    def op():
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise httpx.ConnectError("uncertain transport failure")
+        return "ok"
+
+    result = execute_with_retry(
+        op,
+        _make_config(max_retries=1),
+        _make_ctx(),
+        sleep=lambda seconds: sleep_observations.append(
+            (seconds, len(completions))
+        ),
+        after_attempt=lambda *event: completions.append(event),
+    )
+
+    assert result == "ok"
+    assert sleep_observations == [(0.01, 1)]
+    assert [(item[0], item[2], item[3]) for item in completions] == [
+        (0, "uncertain", "retryable"),
+        (1, "completed", "success"),
+    ]
+    assert all(item[1].endswith("Z") for item in completions)
+
+
+def test_after_attempt_marks_observed_http_error_failed() -> None:
+    request = httpx.Request("POST", "https://example.test")
+    response = httpx.Response(status_code=503, request=request)
+    error = httpx.HTTPStatusError("unavailable", request=request, response=response)
+    completions = []
+
+    with pytest.raises(RetriesExhaustedError):
+        execute_with_retry(
+            lambda: (_ for _ in ()).throw(error),
+            _make_config(max_retries=0),
+            _make_ctx(),
+            sleep=_noop_sleep,
+            after_attempt=lambda *event: completions.append(event),
+        )
+
+    assert len(completions) == 1
+    assert completions[0][0] == 0
+    assert completions[0][2:] == ("failed", "retryable")

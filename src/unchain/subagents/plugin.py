@@ -16,12 +16,14 @@ from ..runtime.module_context import AgentRuntimeContext, ExecutionIdentity
 from ..tools.common import emit_loop_event
 from ..tools.runtime import ToolRuntimeOutcome, ToolRuntimePlugin
 from ..kernel.types import ToolCall
+from ..kernel.run_ledger import child_run_identity
 from .communication import AgentCommunicationRuntime, AgentThreadRecord
 from .executor import SubagentExecutor
 from .types import SubagentPolicy, SubagentResult, SubagentState, SubagentTemplate
 
 if TYPE_CHECKING:
     from ..agent.agent import Agent as KernelAgent
+    from ..run_bundle import RunIdentity
 
 
 _SUBAGENT_TOOL_NAMES = {"delegate_to_subagent", "handoff_to_subagent", "spawn_worker_batch"}
@@ -603,9 +605,26 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         return f"{session_id}:{child_id}:{durable_identity}"
 
     def _merge_result_subagent_state(self, state: SubagentState, result: SubagentResult) -> SubagentState:
-        if not result.subagent_state:
-            return state
-        return state.merged(result.subagent_state)
+        merged = state.merged(result.subagent_state) if result.subagent_state else state
+        if result.run_bundle is None:
+            return merged
+        bundle_id = str(result.run_bundle.get("bundle_id") or "")
+        if not bundle_id:
+            raise SubagentRuntimeContextError("child run bundle has no bundle_id")
+        return merged.merged({"run_bundles": {bundle_id: result.run_bundle}})
+
+    @staticmethod
+    def _parent_run_bundle_identity(context) -> "RunIdentity | None":
+        from ..run_bundle import RunIdentity
+
+        ledger = getattr(getattr(context, "state", None), "run_ledger", None)
+        identity = getattr(ledger, "identity", None)
+        return identity if type(identity) is RunIdentity else None
+
+    @staticmethod
+    def _parent_provider_turn_ownership_factory(context):
+        ledger = getattr(getattr(context, "state", None), "run_ledger", None)
+        return getattr(ledger, "provider_turn_ownership_factory", None)
 
     def _subagent_state_from_child_exception(self, exc: Exception) -> dict[str, Any]:
         if isinstance(exc, _ChildRunError):
@@ -639,6 +658,8 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         execution_guard: ExecutionGuard | None = None,
         batch_failure_event: threading.Event | None = None,
         completion_sink: Any = None,
+        parent_run_bundle_identity: "RunIdentity | None" = None,
+        provider_turn_ownership_factory: Any = None,
     ) -> SubagentResult:
         _assert_batch_active(batch_failure_event)
         child_modules = tuple(
@@ -786,6 +807,18 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 batch_failure_event,
             )
 
+        child_bundle_identity = None
+        if parent_run_bundle_identity is not None:
+            child_bundle_identity = child_run_identity(
+                parent=parent_run_bundle_identity,
+                child_run_id=child_run_id,
+                child_attempt_id=(
+                    child_runtime_context.identity.attempt_id
+                    if child_runtime_context is not None
+                    else child_run_id
+                ),
+            )
+
         guarded_on_tool_confirm = on_tool_confirm
         if callable(on_tool_confirm) and batch_failure_event is not None:
             def guarded_on_tool_confirm(*args: Any, **kwargs: Any) -> Any:
@@ -820,6 +853,17 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                     )
             else:
                 guarded_run_kwargs["runtime_context"] = child_runtime_context
+        if child_bundle_identity is not None and accepts_keyword(
+            "_run_bundle_identity"
+        ):
+            guarded_run_kwargs["_run_bundle_identity"] = child_bundle_identity
+        if (
+            provider_turn_ownership_factory is not None
+            and accepts_keyword("_provider_turn_ownership_factory")
+        ):
+            guarded_run_kwargs["_provider_turn_ownership_factory"] = (
+                provider_turn_ownership_factory
+            )
         if child_execution_guard is not None:
             if accepts_keyword("_execution_guard"):
                 guarded_run_kwargs["_execution_guard"] = child_execution_guard
@@ -852,7 +896,16 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         except Exception as exc:
             if is_durable_persistence_failure(exc):
                 raise
-            raise _ChildRunError(exc, _captured_delta()) from exc
+            captured_delta = _captured_delta()
+            from ..kernel.failure import kernel_run_failure_from_exception
+
+            failure = kernel_run_failure_from_exception(exc)
+            if failure is not None:
+                failed_bundle = failure.run_bundle.to_dict()
+                captured_delta.setdefault("run_bundles", {})[
+                    failure.run_bundle.bundle_id
+                ] = failed_bundle
+            raise _ChildRunError(exc, captured_delta) from exc
         _assert_batch_active(batch_failure_event)
         output = _last_assistant_text(result.messages)
         captured_delta = _captured_delta()
@@ -868,6 +921,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 lineage=lineage,
                 clarification_request=copy.deepcopy(result.human_input_request),
                 subagent_state=captured_delta,
+                run_bundle=copy.deepcopy(getattr(result, "run_bundle", None)),
             )
         else:
             completed = SubagentResult(
@@ -880,6 +934,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 messages=copy.deepcopy(result.messages),
                 lineage=lineage,
                 subagent_state=captured_delta,
+                run_bundle=copy.deepcopy(getattr(result, "run_bundle", None)),
             )
         if completion_sink is not None:
             record = getattr(completion_sink, "record", None)
@@ -1048,6 +1103,10 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 completion_sink=self._subagent_completion_sink(
                     context,
                     tool_call,
+                ),
+                parent_run_bundle_identity=self._parent_run_bundle_identity(context),
+                provider_turn_ownership_factory=(
+                    self._parent_provider_turn_ownership_factory(context)
                 ),
             )
         except Exception as exc:
@@ -1287,6 +1346,10 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 completion_sink=self._subagent_completion_sink(
                     context,
                     tool_call,
+                ),
+                parent_run_bundle_identity=self._parent_run_bundle_identity(context),
+                provider_turn_ownership_factory=(
+                    self._parent_provider_turn_ownership_factory(context)
                 ),
             )
         except Exception as exc:
@@ -1866,6 +1929,10 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                     context,
                     tool_call,
                 ),
+                parent_run_bundle_identity=self._parent_run_bundle_identity(context),
+                provider_turn_ownership_factory=(
+                    self._parent_provider_turn_ownership_factory(context)
+                ),
             )
         except Exception as exc:
             if is_durable_persistence_failure(exc):
@@ -2038,6 +2105,10 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                     context,
                     tool_call,
                 ),
+                parent_run_bundle_identity=self._parent_run_bundle_identity(context),
+                provider_turn_ownership_factory=(
+                    self._parent_provider_turn_ownership_factory(context)
+                ),
             )
         except Exception as exc:
             if is_durable_persistence_failure(exc):
@@ -2177,6 +2248,10 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 completion_sink=self._subagent_completion_sink(
                     context,
                     tool_call,
+                ),
+                parent_run_bundle_identity=self._parent_run_bundle_identity(context),
+                provider_turn_ownership_factory=(
+                    self._parent_provider_turn_ownership_factory(context)
                 ),
             )
         except Exception as exc:
@@ -2446,10 +2521,17 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                         context,
                         tool_call,
                     ),
+                    parent_run_bundle_identity=self._parent_run_bundle_identity(context),
+                    provider_turn_ownership_factory=(
+                        self._parent_provider_turn_ownership_factory(context)
+                    ),
                 )
                 _assert_batch_active(batch_failure_event)
                 rendered = self._render_result(result=result, output_mode=output_mode, template_name=template_name)
-                result = SubagentResult(**rendered)
+                result = SubagentResult(
+                    **rendered,
+                    run_bundle=copy.deepcopy(result.run_bundle),
+                )
             except Exception as exc:
                 if is_durable_persistence_failure(exc):
                     raise
