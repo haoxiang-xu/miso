@@ -19,6 +19,7 @@ from unchain.context import (
     DurableToolExecutionSubject,
     DurableToolExecutionUncertainError,
     DurableToolRouteKind,
+    MAX_PREVIEW_BYTES,
 )
 from unchain.execution import ExecutionFence
 from unchain.context.ports import BoundArtifactRepository
@@ -471,6 +472,85 @@ def test_persisted_terminal_result_is_reused_without_new_execution_or_artifact()
     assert recovered.disposition is DurableToolExecutionDisposition.REUSE
     assert recovered.should_execute is False
     assert recovered.visible_result == written.visible_result
+    assert recovered.result_artifact == written.artifact
+    assert order == [
+        "journal:tool_call",
+        "journal:tool.started",
+        "artifact:put",
+        "journal:tool_result",
+    ]
+
+
+def test_terminal_result_reuses_canonical_whitespace_bounded_preview() -> None:
+    boundary, _journal, order = _boundary()
+    intent, arguments = _persist_intent(boundary)
+    subject = _subject_for_intent(intent, arguments)
+    authorization = boundary.authorize_execution(
+        tool_name="lookup",
+        call_id="call-1",
+        iteration=0,
+        subject=subject,
+    )
+    json_prefix_bytes = len(b'{"value":"')
+    value = (
+        "a" * (MAX_PREVIEW_BYTES - json_prefix_bytes - 1)
+        + " "
+        + "tail"
+    )
+
+    written = boundary.persist_result(authorization, {"value": value})
+    repository = boundary.projector.artifacts._repository
+    _stored_artifact, content = repository.by_id[
+        written.artifact.ref.resource_id
+    ]
+    raw_preview = content[:MAX_PREVIEW_BYTES].decode(
+        "utf-8",
+        errors="ignore",
+    )
+
+    assert raw_preview.endswith(" ")
+    assert written.artifact.preview == raw_preview.strip()
+    recovered = boundary.authorize_execution(
+        tool_name="lookup",
+        call_id="call-1",
+        iteration=0,
+        subject=subject,
+    )
+    assert recovered.disposition is DurableToolExecutionDisposition.REUSE
+    assert recovered.visible_result == written.visible_result
+    assert order == [
+        "journal:tool_call",
+        "journal:tool.started",
+        "artifact:put",
+        "journal:tool_result",
+    ]
+
+
+def test_terminal_result_reuses_nfc_canonical_artifact_preview() -> None:
+    boundary, _journal, order = _boundary()
+    intent, arguments = _persist_intent(boundary)
+    subject = _subject_for_intent(intent, arguments)
+    authorization = boundary.authorize_execution(
+        tool_name="lookup",
+        call_id="call-1",
+        iteration=0,
+        subject=subject,
+    )
+
+    written = boundary.persist_result(
+        authorization,
+        {"value": "e\u0301"},
+    )
+
+    assert written.artifact.preview == '{"value":"é"}'
+    recovered = boundary.authorize_execution(
+        tool_name="lookup",
+        call_id="call-1",
+        iteration=0,
+        subject=subject,
+    )
+    assert recovered.disposition is DurableToolExecutionDisposition.REUSE
+    assert recovered.visible_result == {"value": "e\u0301"}
     assert recovered.result_artifact == written.artifact
     assert order == [
         "journal:tool_call",

@@ -23,10 +23,10 @@ from unchain.journal.models import (
 )
 
 from .artifacts import (
-    MAX_PREVIEW_BYTES,
     ArtifactService,
     ToolCompletionArtifactization,
     ToolResultArtifactization,
+    _bounded_utf8_preview,
 )
 from .tool_boundary import (
     DurableToolApprovalState,
@@ -1498,10 +1498,7 @@ class DurableToolExecutor:
             completion_artifact,
             remaining_budget_bytes=completion_artifact.byte_length,
         )
-        expected_preview = content[:MAX_PREVIEW_BYTES].decode(
-            "utf-8",
-            errors="ignore",
-        )
+        expected_preview = _bounded_utf8_preview(content)
         if completion_artifact.preview != expected_preview:
             raise DurableToolExecutorContractError(
                 "durable completion preview changed"

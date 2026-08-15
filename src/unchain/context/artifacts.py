@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -119,10 +120,11 @@ def _bounded_utf8_preview(content: bytes, limit: int = MAX_PREVIEW_BYTES) -> str
     if not content or limit <= 0:
         return ""
     # ArtifactRef stores optional text through the journal model's canonical
-    # whitespace normalization. Normalize at derivation time as well so the
-    # descriptor, operation receipt, and later integrity checks all agree even
-    # when the byte boundary lands on whitespace.
-    return content[:limit].decode("utf-8", errors="ignore").strip()
+    # NFC and surrounding-whitespace normalization. Normalize at derivation
+    # time as well so the descriptor, operation receipt, and later integrity
+    # checks all agree after lossy decoding at the byte boundary.
+    decoded = content[:limit].decode("utf-8", errors="ignore")
+    return unicodedata.normalize("NFC", decoded.strip())
 
 
 def _supports_text_preview(media_type: str) -> bool:

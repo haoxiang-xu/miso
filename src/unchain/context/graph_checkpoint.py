@@ -25,6 +25,11 @@ from unchain.journal.models import (
     _sha256,
     _thaw_json,
 )
+from unchain.journal.interaction_resolution_compat import (
+    InteractionResolutionCompatibilityError,
+    interaction_resolution_compatibility_record,
+    legacy_interaction_resolution_supersession_pairs,
+)
 
 from .artifacts import ArtifactService, MAX_ARTIFACT_BYTES
 from .derived_handoff import (
@@ -131,6 +136,51 @@ def _interaction_id(event: JournalEvent) -> str:
         raise GraphCheckpointError(
             "graph interaction identity is missing or invalid"
         ) from error
+
+
+def _graph_interaction_resolution_suppressions(
+    events: Sequence[JournalEvent],
+) -> frozenset[int]:
+    records = tuple(
+        interaction_resolution_compatibility_record(
+            ordinal=event.store_seq,
+            event_type=event.event_type,
+            interaction_id=_interaction_id(event),
+            execution_id=event.attempt.generation.execution_id,
+            generation_id=event.attempt.generation.generation_id,
+            attempt_id=event.attempt.attempt_id,
+            payload=event.payload,
+            resource_refs=event.resource_refs,
+        )
+        for event in events
+        if event.event_type in {"interaction_resolved", "interaction.resolved"}
+    )
+    try:
+        pairs = legacy_interaction_resolution_supersession_pairs(records)
+    except InteractionResolutionCompatibilityError as error:
+        raise GraphCheckpointError(
+            "graph interaction resolution is ambiguous"
+        ) from error
+
+    admitted_resolution_store_seqs: set[int] = set()
+    for event in events:
+        if event.event_type != "graph.step.resume.admitted":
+            continue
+        raw_cursor = event.payload.get("resolution_cursor")
+        try:
+            admitted_resolution_store_seqs.add(
+                EventCursor.from_dict(raw_cursor).store_seq
+            )
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return frozenset(
+        (
+            pair.canonical_ordinal
+            if pair.legacy_ordinal in admitted_resolution_store_seqs
+            else pair.legacy_ordinal
+        )
+        for pair in pairs
+    )
 
 
 def _interaction_aliases(event: JournalEvent) -> frozenset[str]:
@@ -665,6 +715,9 @@ class JournalGraphCheckpointRepository:
         if snapshot.execution_id != plan.execution_id or snapshot.high_water is None:
             raise GraphCheckpointError("graph journal snapshot is unavailable")
         events = tuple(snapshot.events)
+        suppressed_interaction_resolutions = (
+            _graph_interaction_resolution_suppressions(events)
+        )
         admissions = tuple(
             event
             for event in events
@@ -789,6 +842,8 @@ class JournalGraphCheckpointRepository:
                 and event.store_seq >= start.store_seq
             )
             for event in step_events:
+                if event.store_seq in suppressed_interaction_resolutions:
+                    continue
                 if event.event_type in _INTERACTION_REQUESTS:
                     interaction_id = _interaction_id(event)
                     if active is not None and active.resume_receipt is None:

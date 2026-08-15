@@ -827,6 +827,123 @@ def test_resolved_human_interaction_closes_only_its_correlated_ask_call() -> Non
     )
 
 
+def test_authorized_canonical_resolution_supersedes_one_malformed_legacy_event():
+    response_preview = json.dumps(
+        {"selected_values": ["a"]},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    response_bytes = response_preview.encode("utf-8")
+    response_ref = ResourceRef("artifact", "interaction-answer-compat", 1)
+    result = ContextCompiler().compile(
+        _request(
+            [{"role": "user", "content": "continue after my answer"}],
+            events=[
+                {
+                    "type": "tool_call",
+                    "event_id": "call-human-compat-event",
+                    "store_seq": 1,
+                    "call_id": "call-human-compat",
+                    "tool_name": "ask_user_question",
+                    "arguments": {"question": "Choose one"},
+                },
+                {
+                    "type": "interaction.requested",
+                    "event_id": "interaction-requested-compat-event",
+                    "store_seq": 2,
+                    "interaction_id": "interaction-human-compat",
+                    "interaction_request": {
+                        "interaction_id": "interaction-human-compat",
+                        "kind": "human_input",
+                        "payload": {"request_id": "call-human-compat"},
+                    },
+                },
+                {
+                    "type": "interaction_resolved",
+                    "event_id": "interaction-resolved-legacy-event",
+                    "store_seq": 3,
+                    "interaction_id": "interaction-human-compat",
+                },
+                {
+                    "type": "interaction.resolved",
+                    "event_id": "interaction-resolved-canonical-event",
+                    "store_seq": 4,
+                    "interaction_id": "interaction-human-compat",
+                    "submitted_by": "ui:test",
+                    "content_ref": response_ref.to_dict(),
+                    "content_bytes": len(response_bytes),
+                    "content_sha256": hashlib.sha256(response_bytes).hexdigest(),
+                    "preview": response_preview,
+                    "preview_truncated": False,
+                    "resource_refs": [response_ref.to_dict()],
+                },
+            ],
+        )
+    )
+
+    history = _marker_payload(result.messages, "MEMORY_V2_UNTRUSTED_HISTORY")
+    [resolved] = history["resolved_human_interactions"]
+    assert resolved["interaction_id"] == "interaction-human-compat"
+    assert resolved["response"]["content_ref"] == {
+        "kind": "artifact",
+        "id": "interaction-answer-compat",
+        "revision": 1,
+    }
+    assert result.diagnostics["atomic_call_ids"] == ()
+
+
+def test_complete_looking_but_unauthorized_resolution_cannot_supersede_legacy():
+    response_preview = '{"selected_values":["a"]}'
+    response_bytes = response_preview.encode("utf-8")
+    with pytest.raises(
+        ContextCompilerError,
+        match="compatibility is ambiguous",
+    ):
+        ContextCompiler().compile(
+            _request(
+                [{"role": "user", "content": "continue"}],
+                events=[
+                    {
+                        "type": "interaction.requested",
+                        "event_id": "interaction-requested-untrusted",
+                        "store_seq": 1,
+                        "interaction_id": "interaction-untrusted",
+                        "interaction_request": {
+                            "interaction_id": "interaction-untrusted",
+                        },
+                    },
+                    {
+                        "type": "interaction_resolved",
+                        "event_id": "interaction-resolved-untrusted-legacy",
+                        "store_seq": 2,
+                        "interaction_id": "interaction-untrusted",
+                    },
+                    {
+                        "type": "interaction.resolved",
+                        "event_id": "interaction-resolved-untrusted-dotted",
+                        "store_seq": 3,
+                        "interaction_id": "interaction-untrusted",
+                        "submitted_by": "ui:test",
+                        "content_ref": ResourceRef(
+                            "artifact", "payload-only-ref", 1
+                        ).to_dict(),
+                        "content_bytes": len(response_bytes),
+                        "content_sha256": hashlib.sha256(
+                            response_bytes
+                        ).hexdigest(),
+                        "preview": response_preview,
+                        "preview_truncated": False,
+                        "resource_refs": [
+                            ResourceRef(
+                                "artifact", "foreign-ref", 1
+                            ).to_dict()
+                        ],
+                    },
+                ],
+            )
+        )
+
+
 def test_many_resolved_human_interactions_do_not_accumulate_under_pressure() -> None:
     messages = [
         {"role": "user", "content": "old " + ("x" * 30_000)},

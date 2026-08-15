@@ -22,6 +22,7 @@ from unchain.context import (
     ContextExecutionBundleError,
     DurableToolCompletionDraft,
     DurableToolCompletionEnvelope,
+    DurableToolApprovalState,
     DurableToolBoundaryCorruptError,
     DurableToolExecutionRequest,
     DurableToolExecutionSubject,
@@ -725,6 +726,75 @@ def test_executor_reuses_verified_completion_without_invoking_again() -> None:
         assert second.visible_result == first.visible_result
         assert second.result_artifact == first.result_artifact
         assert second.completion_artifact == first.completion_artifact
+    finally:
+        guard.release()
+
+
+def test_cold_executor_reuses_nfc_canonical_result_and_completion_previews() -> None:
+    attempt = AttemptRef(GenerationRef("e", "g"), "a")
+    boundary, _journal, _order = _boundary(attempt=attempt)
+    intent, arguments = _persist_intent(
+        boundary,
+        tool_name="t",
+        call_id="c",
+        arguments={"q": "safe"},
+    )
+    guard = ExecutionRuntime(InMemorySessionStore()).acquire("e", "o")
+    subject = _subject_for_intent(
+        intent,
+        arguments,
+        approval_state=DurableToolApprovalState.NOT_REQUIRED,
+        approval_request_sha256="",
+        approval_receipt_sha256="",
+        execution_fence=guard.fence,
+    )
+    request = DurableToolExecutionRequest(
+        tool_name="t",
+        call_id="c",
+        iteration=0,
+        subject=subject,
+    )
+    executor = DurableToolExecutor(
+        boundary=boundary,
+        artifacts=boundary.projector.artifacts,
+        execution_guard=guard,
+    )
+    calls = 0
+    try:
+        def invoke(_effective_arguments):
+            nonlocal calls
+            calls += 1
+            return DurableToolCompletionDraft(result={"value": "e\u0301"})
+
+        first = executor.execute(
+            request=request,
+            guard=guard,
+            invocation=_invocation(
+                executor,
+                request,
+                invoke,
+                effective_arguments=arguments,
+            ),
+        )
+        cold_executor = DurableToolExecutor(
+            boundary=executor.boundary,
+            artifacts=executor.artifacts,
+            execution_guard=guard,
+        )
+        recovered = cold_executor.execute(
+            request=request,
+            guard=guard,
+            invocation=None,
+        )
+
+        assert calls == 1
+        assert first.result_artifact.preview == '{"value":"é"}'
+        assert "é" in first.completion_artifact.preview
+        assert "e\u0301" not in first.completion_artifact.preview
+        assert recovered.reused is True
+        assert recovered.visible_result == {"value": "e\u0301"}
+        assert recovered.result_artifact == first.result_artifact
+        assert recovered.completion_artifact == first.completion_artifact
     finally:
         guard.release()
 

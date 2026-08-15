@@ -36,6 +36,11 @@ from unchain.journal.models import (
     _required_text,
     _sha256,
 )
+from unchain.journal.interaction_resolution_compat import (
+    InteractionResolutionCompatibilityError,
+    interaction_resolution_compatibility_record,
+    legacy_interaction_resolution_supersessions,
+)
 from unchain.persistence.sqlite_v2 import SQLiteContextV2Store
 
 
@@ -1039,6 +1044,30 @@ class SQLiteGenerationRebaseV2Service:
         events = tuple(
             self._verified_event_from_row(connection, row) for row in rows
         )
+        try:
+            suppressed_legacy_resolutions = (
+                legacy_interaction_resolution_supersessions(
+                    tuple(
+                        interaction_resolution_compatibility_record(
+                            ordinal=event.store_seq,
+                            event_type=event.event_type,
+                            interaction_id=self._interaction_id(event),
+                            execution_id=event.attempt.generation.execution_id,
+                            generation_id=event.attempt.generation.generation_id,
+                            attempt_id=event.attempt.attempt_id,
+                            payload=event.payload,
+                            resource_refs=event.resource_refs,
+                        )
+                        for event in events
+                        if event.event_type
+                        in _INTERACTION_RESOLUTION_EVENT_TYPES
+                    )
+                )
+            )
+        except InteractionResolutionCompatibilityError as error:
+            raise GenerationRebaseUnavailable(
+                "generation rebase interaction resolution is duplicated"
+            ) from error
         requests: dict[str, JournalEvent] = {}
         resolutions: dict[str, JournalEvent] = {}
         terminal_store_seqs: dict[str, int] = {}
@@ -1051,6 +1080,8 @@ class SQLiteGenerationRebaseV2Service:
                     )
                 requests[interaction_id] = event
             elif event.event_type in _INTERACTION_RESOLUTION_EVENT_TYPES:
+                if event.store_seq in suppressed_legacy_resolutions:
+                    continue
                 interaction_id = self._interaction_id(event)
                 if interaction_id in resolutions:
                     raise GenerationRebaseUnavailable(

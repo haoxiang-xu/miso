@@ -317,7 +317,7 @@ def load_verified_subagent_state(
 ):
     """Read one exact execution-scoped next-state artifact fail closed."""
 
-    from .artifacts import ArtifactService, MAX_PREVIEW_BYTES
+    from .artifacts import ArtifactService, _bounded_utf8_preview
     from ..subagents.types import SubagentState
 
     if type(artifacts) is not ArtifactService:
@@ -339,10 +339,7 @@ def load_verified_subagent_state(
         artifact,
         remaining_budget_bytes=artifact.byte_length,
     )
-    expected_preview = content[:MAX_PREVIEW_BYTES].decode(
-        "utf-8",
-        errors="ignore",
-    )
+    expected_preview = _bounded_utf8_preview(content)
     if artifact.preview != expected_preview:
         raise _contract_error("next-state artifact preview changed")
     try:

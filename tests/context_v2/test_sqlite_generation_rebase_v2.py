@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
@@ -153,6 +154,7 @@ def _append_event(
     attempt_id: str | None = None,
     operation_id: str | None = None,
     payload: dict | None = None,
+    resource_refs: tuple[ResourceRef, ...] = (),
 ):
     active_attempt_id = attempt_id or receipt.attempt_id
     attempt = AttemptRef(
@@ -171,6 +173,7 @@ def _append_event(
         attempt=attempt,
         operation_id=operation_id or f"operation-{event_id}",
         payload=event_payload,
+        resource_refs=resource_refs,
     )
     return store.bind_execution(EXECUTION).append(
         request=draft.to_append_request()
@@ -699,6 +702,133 @@ def test_resolved_canonical_interaction_allows_rebase(tmp_path: Path) -> None:
 
     assert edited.head_revision == 2
     assert edited.previous_generation_id == initial.generation_id
+
+
+def test_authorized_canonical_resolution_supersedes_malformed_legacy_for_rebase(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    _append_event(
+        store,
+        initial,
+        event_id="interaction-request-legacy-repair",
+        event_type="interaction.requested",
+        interaction_id="interaction-legacy-repair",
+    )
+    _append_event(
+        store,
+        initial,
+        event_id="interaction-resolution-malformed-legacy",
+        event_type="interaction_resolved",
+        interaction_id="interaction-legacy-repair",
+    )
+    artifact = ArtifactService(
+        store.bind_execution(EXECUTION),
+        sanitizer=lambda content, _media_type: content,
+    ).persist_exact_json(
+        {
+            "interaction_id": "interaction-legacy-repair",
+            "response": {"answer": "yes"},
+            "submitted_by": "ui:test",
+        },
+        operation_id="artifact-interaction-legacy-repair",
+    )
+    _append_event(
+        store,
+        initial,
+        event_id="interaction-resolution-canonical-repair",
+        event_type="interaction.resolved",
+        interaction_id="interaction-legacy-repair",
+        payload={
+            "submitted_by": "ui:test",
+            "content_ref": artifact.ref.to_dict(),
+            "content_bytes": artifact.byte_length,
+            "content_sha256": artifact.sha256,
+            "preview": artifact.preview,
+            "preview_truncated": False,
+        },
+        resource_refs=(artifact.ref,),
+    )
+    _append_event(
+        store,
+        initial,
+        event_id="run-completed-after-legacy-repair",
+        event_type="run_completed",
+    )
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+
+    edited = service.rebase(edit_request)
+
+    assert edited.head_revision == 2
+    assert edited.previous_generation_id == initial.generation_id
+
+
+def test_unauthorized_canonical_resolution_cannot_hide_legacy_during_rebase(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    interaction_id = "interaction-unauthorized-repair"
+    _append_event(
+        store,
+        initial,
+        event_id="interaction-request-unauthorized-repair",
+        event_type="interaction.requested",
+        interaction_id=interaction_id,
+    )
+    _append_event(
+        store,
+        initial,
+        event_id="interaction-resolution-malformed-unauthorized",
+        event_type="interaction_resolved",
+        interaction_id=interaction_id,
+    )
+    preview = '{"answer":"yes"}'
+    content = preview.encode("utf-8")
+    _append_event(
+        store,
+        initial,
+        event_id="interaction-resolution-unauthorized-repair",
+        event_type="interaction.resolved",
+        interaction_id=interaction_id,
+        payload={
+            "submitted_by": "ui:test",
+            "content_ref": {
+                "kind": "artifact",
+                "id": "payload-only-artifact",
+                "revision": 1,
+            },
+            "content_bytes": len(content),
+            "content_sha256": hashlib.sha256(content).hexdigest(),
+            "preview": preview,
+            "preview_truncated": False,
+        },
+    )
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+    before = _durable_counts(store)
+
+    with pytest.raises(
+        GenerationRebaseUnavailable,
+        match="resolution is duplicated",
+    ):
+        service.rebase(edit_request)
+
+    assert _durable_counts(store) == before
 
 
 def test_ambiguous_interaction_lifecycle_fails_closed_without_rebase_writes(

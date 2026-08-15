@@ -16,6 +16,7 @@ from unchain.context.artifacts import (
     ArtifactIntegrityError,
     ArtifactService,
     ArtifactTooLargeError,
+    _bounded_utf8_preview,
 )
 from unchain.context.handoff import DurableHandoffRecorder, HandoffService
 from unchain.context.models import HandoffStatus
@@ -273,6 +274,37 @@ def test_text_preview_normalizes_a_whitespace_truncation_boundary() -> None:
 
     assert artifact.preview == "a" * (MAX_PREVIEW_BYTES - 1)
     assert repository.put_calls[0][3] == artifact.preview
+
+
+def test_text_preview_matches_artifact_ref_nfc_canonicalization() -> None:
+    repository = MemoryArtifactRepository()
+    service = ArtifactService(repository, sanitizer=identity_sanitizer)
+    content = " e\u0301 ".encode("utf-8")
+
+    artifact = service.persist(
+        content,
+        media_type="text/plain",
+        operation_id="artifact-nfc-preview",
+    )
+
+    assert artifact.preview == "é"
+    assert repository.put_calls[0][3] == artifact.preview
+
+
+@pytest.mark.parametrize(
+    ("content", "limit", "expected"),
+    [
+        (b" \xffe\xcc\x81 \xfe", 99, "é"),
+        ("xe\u0301".encode("utf-8"), 3, "xe"),
+        ("xe\u0301".encode("utf-8"), 4, "xé"),
+    ],
+)
+def test_bounded_text_preview_normalizes_after_lossy_utf8_decode(
+    content: bytes,
+    limit: int,
+    expected: str,
+) -> None:
+    assert _bounded_utf8_preview(content, limit) == expected
 
 
 def test_artifact_size_limit_is_enforced_before_repository_write() -> None:

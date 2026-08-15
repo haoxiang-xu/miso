@@ -13,6 +13,11 @@ from typing import Any, ClassVar
 from urllib.parse import unquote, urlsplit
 
 from unchain.journal import EventCursor, EventRange, ResourceRef
+from unchain.journal.interaction_resolution_compat import (
+    InteractionResolutionCompatibilityError,
+    interaction_resolution_compatibility_record,
+    legacy_interaction_resolution_supersessions,
+)
 from unchain.kernel.types import ToolCall
 from unchain.tools.messages import (
     coalesce_provider_tool_result_messages,
@@ -763,6 +768,51 @@ def _stable_interaction_id(event: Mapping[str, Any]) -> str:
         if normalized:
             return normalized
     return ""
+
+
+def _legacy_interaction_resolution_suppressions(
+    projection_events: Sequence[
+        tuple[int, Mapping[str, Any], Mapping[str, Any]]
+    ],
+) -> frozenset[int]:
+    records = []
+    for event_index, raw, event in projection_events:
+        event_type = str(event.get("type") or "")
+        if event_type not in {"interaction_resolved", "interaction.resolved"}:
+            continue
+        interaction_id = _stable_interaction_id(event)
+        if not interaction_id:
+            continue
+        resource_refs = raw.get("resource_refs")
+        nested_event = raw.get("event")
+        if resource_refs is None and isinstance(nested_event, Mapping):
+            resource_refs = nested_event.get("resource_refs")
+        resource_refs = (
+            resource_refs
+            if isinstance(resource_refs, Sequence)
+            and not isinstance(resource_refs, (str, bytes, bytearray))
+            else ()
+        )
+        records.append(
+            interaction_resolution_compatibility_record(
+                ordinal=event_index,
+                event_type=event_type,
+                interaction_id=interaction_id,
+                execution_id=str(event.get("execution_id") or "").strip(),
+                generation_id=str(event.get("generation_id") or "").strip(),
+                attempt_id=str(
+                    event.get("attempt_id") or event.get("run_id") or ""
+                ).strip(),
+                payload=event,
+                resource_refs=resource_refs,
+            )
+        )
+    try:
+        return legacy_interaction_resolution_supersessions(tuple(records))
+    except InteractionResolutionCompatibilityError as error:
+        raise ContextCompilerError(
+            "interaction resolution compatibility is ambiguous"
+        ) from error
 
 
 def _interaction_call_ids(event: Mapping[str, Any]) -> set[str]:
@@ -2391,6 +2441,9 @@ def _neutral_context(
     handoff_refs: list[dict[str, Any]] = []
     consumed_event_indexes: list[int] = []
     projection_events = tuple(_validated_projection_events(request))
+    suppressed_legacy_resolutions = (
+        _legacy_interaction_resolution_suppressions(projection_events)
+    )
     pending_inputs = _pending_inputs(request)
     native_batch = _current_native_tool_batch(
         request,
@@ -2476,7 +2529,9 @@ def _neutral_context(
                 pending_interactions[interaction_id] = event
         elif event_type in {"interaction_resolved", "interaction.resolved"}:
             interaction_id = _stable_interaction_id(event)
-            if interaction_id and interaction_id in pending_interactions:
+            if event_index in suppressed_legacy_resolutions:
+                consumed = True
+            elif interaction_id and interaction_id in pending_interactions:
                 consumed = True
                 pending_interaction = pending_interactions.pop(interaction_id)
                 resolved_call_id = _resolved_human_interaction_call_id(

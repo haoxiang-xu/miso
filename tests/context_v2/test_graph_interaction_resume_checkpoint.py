@@ -235,6 +235,110 @@ def test_resolution_becomes_resume_ready_and_admission_becomes_resuming(tmp_path
         service.start_step(plan, 0)
 
 
+def test_canonical_resolution_supersedes_unadmitted_malformed_legacy_cursor(
+    tmp_path,
+):
+    _store, _journal, projectors, sinks, service, plan = _bootstrap(tmp_path)
+    request = _request(sinks[STEP], INTERACTION_ID, 1)
+    legacy = _append_lifecycle(
+        sinks[STEP],
+        "interaction_resolved",
+        10,
+        interaction_id=INTERACTION_ID,
+    )
+    canonical = _resolve(projectors[STEP], sinks[STEP], INTERACTION_ID)
+
+    ready = service.recover(plan)
+    evidence = service.resolved_interaction_for_step(
+        plan,
+        0,
+        interaction_id=INTERACTION_ID,
+    )
+
+    assert ready.resume_ready_step_index == 0
+    assert evidence.request_cursor == request.cursor
+    assert evidence.resolution_cursor == canonical.cursor
+    assert evidence.resolution_cursor != legacy.cursor
+
+
+def test_existing_resume_receipt_keeps_its_legacy_cursor_after_canonical_repair(
+    tmp_path,
+):
+    _store, _journal, projectors, sinks, service, plan = _bootstrap(tmp_path)
+    request = _request(sinks[STEP], INTERACTION_ID, 1)
+    legacy = _append_lifecycle(
+        sinks[STEP],
+        "interaction_resolved",
+        11,
+        interaction_id=INTERACTION_ID,
+    )
+    receipt = service.resume_step(
+        plan,
+        0,
+        interaction_id=INTERACTION_ID,
+        request_cursor=request.cursor,
+        resolution_cursor=legacy.cursor,
+    )
+    _resolve(projectors[STEP], sinks[STEP], INTERACTION_ID)
+
+    recovered = service.recover(plan)
+    evidence = service.resolved_interaction_for_step(
+        plan,
+        0,
+        interaction_id=INTERACTION_ID,
+    )
+
+    assert recovered.resuming_step_index == 0
+    assert evidence.resolution_cursor == legacy.cursor
+    assert service.resume_step(
+        plan,
+        0,
+        interaction_id=INTERACTION_ID,
+        request_cursor=request.cursor,
+        resolution_cursor=legacy.cursor,
+    ) == receipt
+
+
+def test_graph_rejects_complete_looking_dotted_resolution_with_foreign_ref(
+    tmp_path,
+):
+    _store, _journal, _projectors, sinks, service, plan = _bootstrap(tmp_path)
+    _request(sinks[STEP], INTERACTION_ID, 1)
+    _append_lifecycle(
+        sinks[STEP],
+        "interaction_resolved",
+        12,
+        interaction_id=INTERACTION_ID,
+    )
+    preview = '{"answer":"yes"}'
+    content = preview.encode("utf-8")
+    sinks[STEP].append_projected(
+        SemanticEventDraft(
+            event_id="event-unauthorized-dotted-resolution",
+            event_type="interaction.resolved",
+            attempt=STEP,
+            operation_id="operation-unauthorized-dotted-resolution",
+            payload={
+                "run_id": STEP.attempt_id,
+                "interaction_id": INTERACTION_ID,
+                "submitted_by": "ui:test",
+                "content_ref": {
+                    "kind": "artifact",
+                    "id": "payload-only-artifact",
+                    "revision": 1,
+                },
+                "content_bytes": len(content),
+                "content_sha256": hashlib.sha256(content).hexdigest(),
+                "preview": preview,
+                "preview_truncated": False,
+            },
+        )
+    )
+
+    with pytest.raises(GraphCheckpointError, match="resolution is ambiguous"):
+        service.recover(plan)
+
+
 def test_cold_restart_replays_resume_receipt_without_rewriting_start(tmp_path):
     _store, journal, projectors, sinks, service, plan = _bootstrap(tmp_path)
     request = _request(sinks[STEP], INTERACTION_ID, 1)

@@ -220,6 +220,162 @@ _REQUIRED_TABLES = frozenset(
 )
 
 
+_OPTIONAL_TABLE_GROUPS = {
+    "host_generation": frozenset(
+        {
+            "host_generation_schema",
+            "host_generation_chat_bindings",
+            "host_generation_records",
+            "host_generation_heads",
+            "host_generation_operations",
+            "host_generation_attempt_bindings",
+        }
+    ),
+    "run_bundle": frozenset(
+        {
+            "run_bundle_receipts_v1",
+            "run_bundle_projections_v1",
+            "run_bundle_continuation_links_v1",
+        }
+    ),
+    "vector_projection": frozenset(
+        {
+            "vector_projection_points",
+            "vector_projection_receipts",
+            "vector_projection_watermarks",
+        }
+    ),
+}
+
+
+_BASE_DELETION_ORDER = (
+        "legacy_bootstrap_chat_heads",
+        "legacy_bootstrap_manifests",
+        "memory_review_proposals",
+        "candidate_bindings",
+        "candidate_revisions",
+        "consolidation_job_revisions",
+        "curator_operation_receipts",
+        "candidates",
+        "consolidation_jobs",
+        "curation_run_scopes",
+        "curation_scopes",
+        "promotion_operation_receipts",
+        "promotion_revisions",
+        "promotion_proposals",
+        "promotion_bindings",
+        "links",
+        "entry_revisions",
+        "entries",
+        "workspace_entries_fts",
+        "memory_operation_receipts",
+        "task_state_heads",
+        "task_state_revisions",
+        "index_state",
+        "spaces",
+        "provider_turn_result_receipts",
+        "context_builds",
+        "checkpoints",
+        "provider_request_lease_heads",
+        "provider_request_lease_revisions",
+        "artifacts",
+        "event_receipts",
+        "events",
+        "operations",
+        "executions",
+)
+
+
+_OPTIONAL_DELETION_ORDERS = {
+    "host_generation": (
+        "host_generation_attempt_bindings",
+        "host_generation_heads",
+        "host_generation_operations",
+        "host_generation_records",
+        "host_generation_chat_bindings",
+    ),
+    "run_bundle": (
+        "run_bundle_continuation_links_v1",
+        "run_bundle_receipts_v1",
+        "run_bundle_projections_v1",
+    ),
+    "vector_projection": (
+        "vector_projection_receipts",
+        "vector_projection_watermarks",
+    ),
+}
+
+
+_DELETION_TABLES = frozenset(_BASE_DELETION_ORDER).union(
+    *(frozenset(order) for order in _OPTIONAL_DELETION_ORDERS.values())
+)
+
+
+_RETAINED_FOREIGN_KEY_EDGES = frozenset(
+    {
+        ("promotion_namespace_bindings", "spaces"),
+    }
+)
+
+
+_SCOPED_COLUMNS = frozenset(
+    {
+        "owner_chat_id",
+        "source_owner_chat_id",
+        "execution_id",
+        "space_id",
+        "chat_space_id",
+        "source_space_id",
+        "target_space_id",
+        "binding_id",
+        "scope_id",
+    }
+)
+
+
+_CORE_RETAINED_SCOPE_TABLES = {
+    "chat_deletion_tombstones": frozenset({"owner_chat_id"}),
+    "chat_deletion_execution_scopes": frozenset(
+        {"owner_chat_id", "execution_id"}
+    ),
+    "chat_deletion_space_scopes": frozenset({"owner_chat_id", "space_id"}),
+    "chat_deletion_binding_scopes": frozenset(
+        {"owner_chat_id", "binding_id"}
+    ),
+    "chat_deletion_operations": frozenset({"owner_chat_id"}),
+    "promotion_namespace_bindings": frozenset({"target_space_id"}),
+    "vector_projection_points": frozenset({"space_id"}),
+}
+
+
+_CORE_KNOWN_RETAINED_TABLES = frozenset(
+    {
+        "objects",
+        "context_v2_schema",
+        "context_compiler_v2_schema",
+        "memory_v2_schema",
+        "memory_host_v2_schema",
+        "curator_v2_schema",
+        "legacy_bootstrap_schema",
+        "generation_rebase_v2_schema",
+        "chat_deletion_v2_schema",
+        "workspace_entries_fts_config",
+        "workspace_entries_fts_content",
+        "workspace_entries_fts_data",
+        "workspace_entries_fts_docsize",
+        "workspace_entries_fts_idx",
+        "sqlite_sequence",
+        "sqlite_stat1",
+        "sqlite_stat4",
+    }
+)
+
+
+_DYNAMIC_GUARD_NAME_RE = re.compile(
+    r"^chat_deletion_guard_(?:insert|update|delete)_[0-9a-f]{16}$"
+)
+
+
 _GUARD_TRIGGERS = """
 CREATE TRIGGER IF NOT EXISTS chat_deletion_guard_execution_insert
 BEFORE INSERT ON executions
@@ -316,14 +472,384 @@ END;
 """
 
 
+def _guard_trigger_name(kind: str, table_name: str, action: str) -> str:
+    digest = hashlib.sha256(f"{kind}:{table_name}".encode("utf-8")).hexdigest()[:16]
+    return f"chat_deletion_guard_{action}_{digest}"
+
+
+def _owner_guard_triggers(table_name: str, *, protect_delete: bool = False) -> str:
+    insert_name = _guard_trigger_name("owner", table_name, "insert")
+    update_name = _guard_trigger_name("owner", table_name, "update")
+    delete_guard = ""
+    if protect_delete:
+        delete_name = _guard_trigger_name("owner", table_name, "delete")
+        delete_guard = f"""
+CREATE TRIGGER IF NOT EXISTS "{delete_name}"
+BEFORE DELETE ON "{table_name}"
+WHEN EXISTS (
+    SELECT 1 FROM chat_deletion_tombstones
+    WHERE owner_chat_id = OLD.owner_chat_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'chat_deleted');
+END;
+"""
+    return f"""
+CREATE TRIGGER IF NOT EXISTS "{insert_name}"
+BEFORE INSERT ON "{table_name}"
+WHEN EXISTS (
+    SELECT 1 FROM chat_deletion_tombstones
+    WHERE owner_chat_id = NEW.owner_chat_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'chat_deleted');
+END;
+CREATE TRIGGER IF NOT EXISTS "{update_name}"
+BEFORE UPDATE ON "{table_name}"
+WHEN EXISTS (
+    SELECT 1 FROM chat_deletion_tombstones
+    WHERE owner_chat_id IN (OLD.owner_chat_id, NEW.owner_chat_id)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'chat_deleted');
+END;
+""" + delete_guard
+
+
+def _retained_child_guard_triggers(
+    child_table: str,
+    parent_table: str,
+    join_column: str,
+) -> str:
+    guard_kind = f"owner_child:{parent_table}:{join_column}"
+    insert_name = _guard_trigger_name(guard_kind, child_table, "insert")
+    update_name = _guard_trigger_name(guard_kind, child_table, "update")
+    delete_name = _guard_trigger_name(guard_kind, child_table, "delete")
+    predicate = f"""
+EXISTS (
+    SELECT 1 FROM "{parent_table}" AS parent
+    JOIN chat_deletion_tombstones AS tombstone
+      ON tombstone.owner_chat_id = parent.owner_chat_id
+    WHERE parent."{join_column}" = {{row}}."{join_column}"
+)
+"""
+    return f"""
+CREATE TRIGGER IF NOT EXISTS "{insert_name}"
+BEFORE INSERT ON "{child_table}"
+WHEN {predicate.format(row="NEW")}
+BEGIN
+    SELECT RAISE(ABORT, 'chat_deleted');
+END;
+CREATE TRIGGER IF NOT EXISTS "{update_name}"
+BEFORE UPDATE ON "{child_table}"
+WHEN {predicate.format(row="OLD")} OR {predicate.format(row="NEW")}
+BEGIN
+    SELECT RAISE(ABORT, 'chat_deleted');
+END;
+CREATE TRIGGER IF NOT EXISTS "{delete_name}"
+BEFORE DELETE ON "{child_table}"
+WHEN {predicate.format(row="OLD")}
+BEGIN
+    SELECT RAISE(ABORT, 'chat_deleted');
+END;
+"""
+
+
+def _space_guard_triggers(table_name: str) -> str:
+    insert_name = _guard_trigger_name("space", table_name, "insert")
+    update_name = _guard_trigger_name("space", table_name, "update")
+    return f"""
+CREATE TRIGGER IF NOT EXISTS "{insert_name}"
+BEFORE INSERT ON "{table_name}"
+WHEN EXISTS (
+    SELECT 1 FROM chat_deletion_space_scopes WHERE space_id = NEW.space_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'chat_deleted');
+END;
+CREATE TRIGGER IF NOT EXISTS "{update_name}"
+BEFORE UPDATE ON "{table_name}"
+WHEN EXISTS (
+    SELECT 1 FROM chat_deletion_space_scopes
+    WHERE space_id IN (OLD.space_id, NEW.space_id)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'chat_deleted');
+END;
+"""
+
+
 class SQLiteChatDeletionV2Service:
     """Delete one exact chat scope and persist a non-resurrectable tombstone."""
 
-    def __init__(self, *, database_path: str | Path) -> None:
+    def __init__(
+        self,
+        *,
+        database_path: str | Path,
+        retained_scope_tables: Mapping[str, Iterable[str]] | None = None,
+        retained_owner_child_tables: Mapping[str, tuple[str, str]] | None = None,
+        owner_scoped_deletion_tables: Iterable[str] = (),
+    ) -> None:
         self.database_path = Path(database_path)
         if not self.database_path.is_file():
             raise ChatDeletionUnavailable("shared Context V2 database is unavailable")
+        if retained_scope_tables is not None and not isinstance(
+            retained_scope_tables, Mapping
+        ):
+            raise TypeError("retained_scope_tables must be a mapping")
+        retained = dict(_CORE_RETAINED_SCOPE_TABLES)
+        extension_retained: dict[str, frozenset[str]] = {}
+        for raw_table_name, raw_columns in (retained_scope_tables or {}).items():
+            table_name = _identifier(raw_table_name, "retained scope table")
+            columns = frozenset(
+                _identifiers(raw_columns, "retained scope table column")
+            )
+            if not columns.issubset(_SCOPED_COLUMNS):
+                raise ValueError("retained scope table columns are invalid")
+            existing = retained.get(table_name)
+            if existing is not None and existing != columns:
+                raise ValueError("retained scope table declaration conflicts")
+            retained[table_name] = columns
+            extension_retained[table_name] = columns
+        if isinstance(owner_scoped_deletion_tables, (str, bytes)):
+            raise TypeError("owner_scoped_deletion_tables must be identifiers")
+        extension_deletion = tuple(
+            _identifier(value, "owner-scoped deletion table")
+            for value in owner_scoped_deletion_tables
+        )
+        if len(extension_deletion) > 100 or len(set(extension_deletion)) != len(
+            extension_deletion
+        ):
+            raise ValueError("owner-scoped deletion table declaration is invalid")
+        conflicts = set(extension_deletion) & (
+            _DELETION_TABLES | frozenset(retained)
+        )
+        if conflicts:
+            raise ValueError("owner-scoped deletion table declaration conflicts")
+        if retained_owner_child_tables is not None and not isinstance(
+            retained_owner_child_tables, Mapping
+        ):
+            raise TypeError("retained_owner_child_tables must be a mapping")
+        retained_children: dict[str, tuple[str, str]] = {}
+        for raw_child, raw_declaration in (
+            retained_owner_child_tables or {}
+        ).items():
+            child_table = _identifier(raw_child, "retained owner child table")
+            if (
+                not isinstance(raw_declaration, tuple)
+                or len(raw_declaration) != 2
+            ):
+                raise TypeError("retained owner child declaration is invalid")
+            parent_table = _identifier(
+                raw_declaration[0], "retained owner parent table"
+            )
+            join_column = _identifier(
+                raw_declaration[1], "retained owner child join column"
+            )
+            if (
+                parent_table not in extension_retained
+                or "owner_chat_id" not in extension_retained[parent_table]
+                or child_table in retained
+                or child_table in extension_deletion
+                or child_table in _DELETION_TABLES
+            ):
+                raise ValueError("retained owner child declaration conflicts")
+            retained_children[child_table] = (parent_table, join_column)
+        self._retained_scope_tables = MappingProxyType(retained)
+        self._extension_retained_scope_tables = MappingProxyType(extension_retained)
+        self._retained_owner_child_tables = MappingProxyType(retained_children)
+        self._owner_scoped_deletion_tables = extension_deletion
         self._initialize()
+
+    def _validate_schema_closure(
+        self,
+        connection: sqlite3.Connection,
+    ) -> frozenset[str]:
+        tables = frozenset(
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        )
+        missing = sorted(_REQUIRED_TABLES - tables)
+        if missing:
+            raise ChatDeletionUnavailable(
+                "shared Context/Memory V2 schema is incomplete: "
+                + ", ".join(missing)
+            )
+        for group_name, group_tables in _OPTIONAL_TABLE_GROUPS.items():
+            present = group_tables & tables
+            if present and present != group_tables:
+                missing_group = sorted(group_tables - present)
+                raise ChatDeletionUnavailable(
+                    f"chat deletion {group_name} schema group is incomplete: "
+                    + ", ".join(missing_group)
+                )
+
+        extension_tables = frozenset(self._extension_retained_scope_tables).union(
+            self._owner_scoped_deletion_tables,
+            self._retained_owner_child_tables,
+        )
+        missing_extensions = sorted(extension_tables - tables)
+        if missing_extensions:
+            raise ChatDeletionUnavailable(
+                "chat deletion declared extension table is unavailable: "
+                + ", ".join(missing_extensions)
+            )
+        known_tables = (
+            _REQUIRED_TABLES
+            | _CORE_KNOWN_RETAINED_TABLES
+            | frozenset(_CORE_RETAINED_SCOPE_TABLES)
+            | frozenset().union(*_OPTIONAL_TABLE_GROUPS.values())
+            | extension_tables
+        )
+        unknown_tables = sorted(tables - known_tables)
+        if unknown_tables:
+            raise ChatDeletionUnavailable(
+                "chat deletion table-name closure is unknown: "
+                + ", ".join(unknown_tables)
+            )
+
+        for table_name, declared_columns in self._extension_retained_scope_tables.items():
+            actual_columns = frozenset(
+                str(row[1])
+                for row in connection.execute(
+                    "SELECT * FROM pragma_table_info(?)",
+                    (table_name,),
+                )
+                if str(row[1]) in _SCOPED_COLUMNS
+            )
+            if actual_columns != declared_columns:
+                raise ChatDeletionUnavailable(
+                    "chat deletion retained extension declaration changed: "
+                    f"{table_name}"
+                )
+        for table_name in self._owner_scoped_deletion_tables:
+            actual_columns = frozenset(
+                str(row[1])
+                for row in connection.execute(
+                    "SELECT * FROM pragma_table_info(?)",
+                    (table_name,),
+                )
+                if str(row[1]) in _SCOPED_COLUMNS
+            )
+            if actual_columns != {"owner_chat_id"}:
+                raise ChatDeletionUnavailable(
+                    "chat deletion owner-scoped extension declaration changed: "
+                    f"{table_name}"
+                )
+        for child_table, (
+            parent_table,
+            join_column,
+        ) in self._retained_owner_child_tables.items():
+            child_columns = {
+                str(row[1])
+                for row in connection.execute(
+                    "SELECT * FROM pragma_table_info(?)",
+                    (child_table,),
+                )
+            }
+            parent_columns = {
+                str(row[1])
+                for row in connection.execute(
+                    "SELECT * FROM pragma_table_info(?)",
+                    (parent_table,),
+                )
+            }
+            if (
+                join_column not in child_columns
+                or join_column not in parent_columns
+                or "owner_chat_id" not in parent_columns
+            ):
+                raise ChatDeletionUnavailable(
+                    "chat deletion retained owner child declaration changed: "
+                    f"{child_table}"
+                )
+            matching_foreign_keys = [
+                row
+                for row in connection.execute(
+                    "SELECT \"table\", \"from\", \"to\" "
+                    "FROM pragma_foreign_key_list(?)",
+                    (child_table,),
+                )
+                if str(row[0]) == parent_table
+                and str(row[1]) == join_column
+                and str(row[2]) == join_column
+            ]
+            if len(matching_foreign_keys) != 1:
+                raise ChatDeletionUnavailable(
+                    "chat deletion retained owner child foreign key changed: "
+                    f"{child_table}"
+                )
+
+        enabled_deletion_tables = (_DELETION_TABLES & tables).union(
+            self._owner_scoped_deletion_tables
+        )
+        for table_name in sorted(tables - enabled_deletion_tables):
+            actual_scope_columns = frozenset(
+                str(row[1])
+                for row in connection.execute(
+                    "SELECT * FROM pragma_table_info(?)",
+                    (table_name,),
+                )
+                if str(row[1]) in _SCOPED_COLUMNS
+            )
+            if not actual_scope_columns:
+                continue
+            declared_scope_columns = self._retained_scope_tables.get(table_name)
+            if declared_scope_columns != actual_scope_columns:
+                raise ChatDeletionUnavailable(
+                    "chat deletion scoped-column closure is unknown: "
+                    f"{table_name} has {', '.join(sorted(actual_scope_columns))}"
+                )
+        for child_table in sorted(tables - enabled_deletion_tables):
+            foreign_keys = connection.execute(
+                "SELECT \"table\" FROM pragma_foreign_key_list(?)",
+                (child_table,),
+            )
+            protected_parent = next(
+                (
+                    str(row[0])
+                    for row in foreign_keys
+                    if str(row[0]) in enabled_deletion_tables
+                    and (child_table, str(row[0]))
+                    not in _RETAINED_FOREIGN_KEY_EDGES
+                ),
+                None,
+            )
+            if protected_parent is not None:
+                raise ChatDeletionUnavailable(
+                    "chat deletion foreign key closure is unknown: "
+                    f"{child_table} references {protected_parent}"
+                )
+
+        deletion_order = list(self._owner_scoped_deletion_tables)
+        for group_name, group_tables in _OPTIONAL_TABLE_GROUPS.items():
+            if group_tables.issubset(tables):
+                deletion_order.extend(_OPTIONAL_DELETION_ORDERS[group_name])
+        deletion_order.extend(
+            table_name
+            for table_name in _BASE_DELETION_ORDER
+            if table_name in tables
+        )
+        positions = {
+            table_name: position
+            for position, table_name in enumerate(deletion_order)
+        }
+        for child_table in deletion_order:
+            for row in connection.execute(
+                "SELECT \"table\" FROM pragma_foreign_key_list(?)",
+                (child_table,),
+            ):
+                parent_table = str(row[0])
+                if parent_table not in positions:
+                    continue
+                if positions[child_table] >= positions[parent_table]:
+                    raise ChatDeletionUnavailable(
+                        "chat deletion foreign key order is incompatible: "
+                        f"{child_table} references {parent_table}"
+                    )
+        return tables
 
     def _initialize(self) -> None:
         connection = _connect(self.database_path)
@@ -331,18 +857,56 @@ class SQLiteChatDeletionV2Service:
             mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
             if str(mode).casefold() != "wal":
                 raise ChatDeletionUnavailable("SQLite WAL is unavailable")
-            existing = {
+            existing_tables = self._validate_schema_closure(connection)
+            mutable_owner_guard_tables = set(self._owner_scoped_deletion_tables)
+            retained_owner_guard_tables = {
+                table_name
+                for table_name, columns in self._extension_retained_scope_tables.items()
+                if "owner_chat_id" in columns
+            }
+            if _OPTIONAL_TABLE_GROUPS["host_generation"].issubset(
+                existing_tables
+            ):
+                mutable_owner_guard_tables.add("host_generation_chat_bindings")
+            dynamic_guards = "".join(
+                _owner_guard_triggers(table_name)
+                for table_name in sorted(mutable_owner_guard_tables)
+            )
+            dynamic_guards += "".join(
+                _owner_guard_triggers(table_name, protect_delete=True)
+                for table_name in sorted(retained_owner_guard_tables)
+            )
+            dynamic_guards += "".join(
+                _retained_child_guard_triggers(
+                    child_table,
+                    parent_table,
+                    join_column,
+                )
+                for child_table, (
+                    parent_table,
+                    join_column,
+                ) in sorted(self._retained_owner_child_tables.items())
+            )
+            if _OPTIONAL_TABLE_GROUPS["vector_projection"].issubset(
+                existing_tables
+            ):
+                dynamic_guards += "".join(
+                    _space_guard_triggers(table_name)
+                    for table_name in sorted(
+                        _OPTIONAL_TABLE_GROUPS["vector_projection"]
+                    )
+                )
+            stale_dynamic_guards = tuple(
                 str(row[0])
                 for row in connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
+                    "SELECT name FROM sqlite_master WHERE type = 'trigger'"
                 )
-            }
-            missing = sorted(_REQUIRED_TABLES - existing)
-            if missing:
-                raise ChatDeletionUnavailable(
-                    "shared Context/Memory V2 schema is incomplete: "
-                    + ", ".join(missing)
-                )
+                if _DYNAMIC_GUARD_NAME_RE.fullmatch(str(row[0])) is not None
+            )
+            reset_dynamic_guards = "".join(
+                f'DROP TRIGGER "{trigger_name}";'
+                for trigger_name in stale_dynamic_guards
+            )
             connection.executescript(
                 """
                 BEGIN IMMEDIATE;
@@ -394,7 +958,9 @@ class SQLiteChatDeletionV2Service:
                         REFERENCES chat_deletion_tombstones(owner_chat_id)
                 );
                 """
+                + reset_dynamic_guards
                 + _GUARD_TRIGGERS
+                + dynamic_guards
                 + "COMMIT;"
             )
             versions = {
@@ -537,9 +1103,72 @@ class SQLiteChatDeletionV2Service:
                 "chat deletion tombstone operation evidence changed"
             )
 
+    def _validate_retained_extension_scope(
+        self,
+        connection: sqlite3.Connection,
+        scope: ChatDeletionScope,
+    ) -> None:
+        dimensions = (
+            ("execution_id", set(scope.execution_ids)),
+            ("binding_id", set(scope.binding_ids)),
+            ("space_id", set(scope.space_ids)),
+            ("chat_space_id", set(scope.space_ids)),
+        )
+        for table_name, columns in self._extension_retained_scope_tables.items():
+            if "owner_chat_id" not in columns:
+                continue
+            for column_name, expected_scope in dimensions:
+                if column_name not in columns:
+                    continue
+                owner_values = {
+                    str(row[0])
+                    for row in connection.execute(
+                        f'SELECT "{column_name}" FROM "{table_name}" '
+                        "WHERE owner_chat_id = ?",
+                        (scope.owner_chat_id,),
+                    )
+                }
+                if not owner_values.issubset(expected_scope):
+                    raise ChatDeletionConflict(
+                        "retained deletion provenance exceeds the declared scope"
+                    )
+                if expected_scope:
+                    placeholders = ",".join("?" for _ in expected_scope)
+                    foreign_owner = connection.execute(
+                        f'SELECT 1 FROM "{table_name}" '
+                        f'WHERE "{column_name}" IN ({placeholders}) '
+                        "AND owner_chat_id != ? LIMIT 1",
+                        (*sorted(expected_scope), scope.owner_chat_id),
+                    ).fetchone()
+                    if foreign_owner is not None:
+                        raise ChatDeletionConflict(
+                            "retained deletion provenance has a foreign owner"
+                        )
+
+    def _validate_empty_scope_owner_evidence(
+        self,
+        connection: sqlite3.Connection,
+        scope: ChatDeletionScope,
+    ) -> None:
+        if scope.execution_ids or scope.space_ids or scope.binding_ids:
+            return
+        for table_name in self._owner_scoped_deletion_tables:
+            evidence = connection.execute(
+                f'SELECT 1 FROM "{table_name}" '
+                "WHERE owner_chat_id = ? LIMIT 1",
+                (scope.owner_chat_id,),
+            ).fetchone()
+            if evidence is not None:
+                raise ChatDeletionConflict(
+                    "empty chat deletion scope has owner evidence"
+                )
+
     @staticmethod
     def _validate_scope(
-        connection: sqlite3.Connection, scope: ChatDeletionScope
+        connection: sqlite3.Connection,
+        scope: ChatDeletionScope,
+        *,
+        tables: frozenset[str],
     ) -> None:
         owned_spaces = {
             str(row[0])
@@ -563,6 +1192,25 @@ class SQLiteChatDeletionV2Service:
                 row["owner_chat_id"] != scope.owner_chat_id for row in rows
             ):
                 raise ChatDeletionConflict("chat workspace owner scope changed")
+            retained_namespace_target = connection.execute(
+                f"SELECT 1 FROM promotion_namespace_bindings "
+                f"WHERE target_space_id IN ({placeholders}) LIMIT 1",
+                scope.space_ids,
+            ).fetchone()
+            if retained_namespace_target is not None:
+                raise ChatDeletionConflict(
+                    "chat workspace is a retained promotion namespace target"
+                )
+            if _OPTIONAL_TABLE_GROUPS["vector_projection"].issubset(tables):
+                external_vector_point = connection.execute(
+                    f"SELECT external_receipt_id FROM vector_projection_points "
+                    f"WHERE space_id IN ({placeholders}) LIMIT 1",
+                    scope.space_ids,
+                ).fetchone()
+                if external_vector_point is not None:
+                    raise ChatDeletionUnavailable(
+                        "chat deletion external vector cleanup is required"
+                    )
 
         owned_bindings = {
             str(row[0])
@@ -616,6 +1264,33 @@ class SQLiteChatDeletionV2Service:
             if foreign is not None:
                 raise ChatDeletionConflict("chat execution owner scope changed")
 
+        host_generation_tables = _OPTIONAL_TABLE_GROUPS["host_generation"]
+        if host_generation_tables.issubset(tables):
+            host_executions = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT execution_id FROM host_generation_chat_bindings "
+                    "WHERE owner_chat_id = ?",
+                    (scope.owner_chat_id,),
+                )
+            }
+            if not host_executions.issubset(scope.execution_ids):
+                raise ChatDeletionConflict(
+                    "host generation execution scope is incomplete"
+                )
+            if scope.execution_ids:
+                placeholders = ",".join("?" for _ in scope.execution_ids)
+                foreign_host = connection.execute(
+                    f"SELECT 1 FROM host_generation_chat_bindings "
+                    f"WHERE execution_id IN ({placeholders}) "
+                    "AND owner_chat_id != ? LIMIT 1",
+                    (*scope.execution_ids, scope.owner_chat_id),
+                ).fetchone()
+                if foreign_host is not None:
+                    raise ChatDeletionConflict(
+                        "host generation execution owner scope changed"
+                    )
+
         promoted_sources = {
             str(row[0])
             for row in connection.execute(
@@ -637,10 +1312,29 @@ class SQLiteChatDeletionV2Service:
         return max(int(cursor.rowcount), 0)
 
     @classmethod
+    def _delete_owner_scoped_extensions(
+        cls,
+        connection: sqlite3.Connection,
+        owner_chat_id: str,
+        table_names: tuple[str, ...],
+    ) -> dict[str, int]:
+        return {
+            table_name: cls._delete_rows(
+                connection,
+                f'DELETE FROM "{table_name}" WHERE owner_chat_id = ?',
+                (owner_chat_id,),
+            )
+            for table_name in table_names
+        }
+
+    @classmethod
     def _delete_scoped_rows(
         cls,
         connection: sqlite3.Connection,
         owner_chat_id: str,
+        *,
+        tables: frozenset[str],
+        owner_scoped_deletion_tables: tuple[str, ...],
     ) -> dict[str, int]:
         execution_scope = (
             "SELECT execution_id FROM chat_deletion_execution_scopes "
@@ -653,9 +1347,89 @@ class SQLiteChatDeletionV2Service:
             "SELECT binding_id FROM chat_deletion_binding_scopes "
             "WHERE owner_chat_id = ?"
         )
-        counts: dict[str, int] = {}
+        counts = cls._delete_owner_scoped_extensions(
+            connection,
+            owner_chat_id,
+            owner_scoped_deletion_tables,
+        )
 
-        statements = (
+        statements: list[tuple[str, str, tuple[object, ...]]] = []
+        if _OPTIONAL_TABLE_GROUPS["host_generation"].issubset(tables):
+            statements.extend(
+                (
+                    (
+                        "host_generation_attempt_bindings",
+                        "DELETE FROM host_generation_attempt_bindings "
+                        "WHERE owner_chat_id = ?",
+                        (owner_chat_id,),
+                    ),
+                    (
+                        "host_generation_heads",
+                        "DELETE FROM host_generation_heads WHERE owner_chat_id = ?",
+                        (owner_chat_id,),
+                    ),
+                    (
+                        "host_generation_operations",
+                        "DELETE FROM host_generation_operations "
+                        "WHERE owner_chat_id = ?",
+                        (owner_chat_id,),
+                    ),
+                    (
+                        "host_generation_records",
+                        "DELETE FROM host_generation_records WHERE owner_chat_id = ?",
+                        (owner_chat_id,),
+                    ),
+                    (
+                        "host_generation_chat_bindings",
+                        "DELETE FROM host_generation_chat_bindings "
+                        "WHERE owner_chat_id = ?",
+                        (owner_chat_id,),
+                    ),
+                )
+            )
+        if _OPTIONAL_TABLE_GROUPS["run_bundle"].issubset(tables):
+            statements.extend(
+                (
+                    (
+                        "run_bundle_continuation_links_v1",
+                        "DELETE FROM run_bundle_continuation_links_v1 "
+                        f"WHERE execution_id IN ({execution_scope})",
+                        (owner_chat_id,),
+                    ),
+                    (
+                        "run_bundle_receipts_v1",
+                        "DELETE FROM run_bundle_receipts_v1 "
+                        f"WHERE execution_id IN ({execution_scope})",
+                        (owner_chat_id,),
+                    ),
+                    (
+                        "run_bundle_projections_v1",
+                        "DELETE FROM run_bundle_projections_v1 "
+                        f"WHERE execution_id IN ({execution_scope})",
+                        (owner_chat_id,),
+                    ),
+                )
+            )
+        if _OPTIONAL_TABLE_GROUPS["vector_projection"].issubset(tables):
+            statements.extend(
+                (
+                    (
+                        "vector_projection_receipts",
+                        "DELETE FROM vector_projection_receipts "
+                        f"WHERE space_id IN ({space_scope})",
+                        (owner_chat_id,),
+                    ),
+                    (
+                        "vector_projection_watermarks",
+                        "DELETE FROM vector_projection_watermarks "
+                        f"WHERE space_id IN ({space_scope})",
+                        (owner_chat_id,),
+                    ),
+                )
+            )
+
+        statements.extend(
+            (
             (
                 "legacy_bootstrap_chat_heads",
                 "DELETE FROM legacy_bootstrap_chat_heads WHERE owner_chat_id = ?",
@@ -838,6 +1612,7 @@ class SQLiteChatDeletionV2Service:
                 f"DELETE FROM executions WHERE execution_id IN ({execution_scope})",
                 (owner_chat_id,),
             ),
+            )
         )
         for table_name, statement, values in statements:
             deleted = cls._delete_rows(connection, statement, values)
@@ -858,6 +1633,8 @@ class SQLiteChatDeletionV2Service:
         connection = _connect(self.database_path)
         try:
             connection.execute("BEGIN IMMEDIATE")
+            tables = self._validate_schema_closure(connection)
+            self._validate_retained_extension_scope(connection, scope)
             tombstone = connection.execute(
                 "SELECT * FROM chat_deletion_tombstones WHERE owner_chat_id = ?",
                 (scope.owner_chat_id,),
@@ -873,6 +1650,11 @@ class SQLiteChatDeletionV2Service:
                     connection,
                     row=tombstone,
                     scope=scope,
+                )
+                self._delete_owner_scoped_extensions(
+                    connection,
+                    scope.owner_chat_id,
+                    self._owner_scoped_deletion_tables,
                 )
                 existing_operation = connection.execute(
                     "SELECT payload_sha256, result_sha256 "
@@ -909,7 +1691,8 @@ class SQLiteChatDeletionV2Service:
                 connection.commit()
                 return receipt
 
-            self._validate_scope(connection, scope)
+            self._validate_empty_scope_owner_evidence(connection, scope)
+            self._validate_scope(connection, scope, tables=tables)
             connection.execute(
                 """
                 INSERT INTO chat_deletion_tombstones(
@@ -941,7 +1724,12 @@ class SQLiteChatDeletionV2Service:
                 "(owner_chat_id, binding_id) VALUES (?, ?)",
                 ((scope.owner_chat_id, value) for value in scope.binding_ids),
             )
-            deleted_rows = self._delete_scoped_rows(connection, scope.owner_chat_id)
+            deleted_rows = self._delete_scoped_rows(
+                connection,
+                scope.owner_chat_id,
+                tables=tables,
+                owner_scoped_deletion_tables=self._owner_scoped_deletion_tables,
+            )
             receipt = ChatDeletionReceipt(
                 owner_chat_id=scope.owner_chat_id,
                 tombstone_revision=1,

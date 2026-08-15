@@ -28,11 +28,11 @@ from unchain.journal.models import (
 
 from .artifacts import (
     MAX_INLINE_TOOL_RESULT_BYTES,
-    MAX_PREVIEW_BYTES,
     ArtifactService,
     ArtifactServiceError,
     ToolCompletionArtifactization,
     ToolResultArtifactization,
+    _bounded_utf8_preview,
 )
 from .projector import CanonicalSemanticEventProjector
 
@@ -1127,10 +1127,7 @@ class DurableToolBoundary:
                 raise DurableToolBoundaryCorruptError(
                     "sealed result artifact failed verification"
                 ) from exc
-            expected_preview = result_content[:MAX_PREVIEW_BYTES].decode(
-                "utf-8",
-                errors="ignore",
-            )
+            expected_preview = _bounded_utf8_preview(result_content)
             if result_artifact.preview != expected_preview:
                 raise DurableToolBoundaryCorruptError(
                     "sealed result artifact preview changed"
@@ -1289,10 +1286,7 @@ class DurableToolBoundary:
             raise DurableToolBoundaryCorruptError(
                 "durable tool result artifact is not valid JSON"
             ) from exc
-        expected_preview = content[:MAX_PREVIEW_BYTES].decode(
-            "utf-8",
-            errors="ignore",
-        )
+        expected_preview = _bounded_utf8_preview(content)
         if artifact.preview != expected_preview:
             raise DurableToolBoundaryCorruptError(
                 "durable tool result artifact preview changed"
