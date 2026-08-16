@@ -68,11 +68,15 @@ def test_runtime_protocol_manifest_advertises_every_frozen_required_feature() ->
     }
 
     assert "chat_deletion_sqlite_scope_closure" in protocols["context_memory"]
+    assert (
+        "context_contribution_manifest_v1" in protocols["context_memory"]
+    )
     assert "interaction_resolution_compat" in protocols["context_memory"]
     assert "expected_interaction_id_cas" in protocols["durable_interaction"]
     assert {
         "canonical_metrics",
         "completion_diagnostics_ref",
+        "context_composition_ref_v1",
         "continuation_claim",
         "immutable_pricing_snapshot",
         "provider_call_set_union",

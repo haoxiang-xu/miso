@@ -252,6 +252,7 @@ _PROTOCOLS = (
             "canonical_journal",
             "chat_deletion_sqlite_scope_closure",
             "context_compiler",
+            "context_contribution_manifest_v1",
             "interaction_resolution_compat",
             "long_term_promotion",
             "memory_curator",
@@ -290,6 +291,7 @@ _PROTOCOLS = (
         features=(
             "canonical_metrics",
             "completion_diagnostics_ref",
+            "context_composition_ref_v1",
             "continuation_claim",
             "immutable_pricing_snapshot",
             "provider_call_set_union",

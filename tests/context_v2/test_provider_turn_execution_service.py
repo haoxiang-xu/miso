@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
 from unchain.journal import AttemptRef, GenerationRef
+from unchain.context.composition import CONTEXT_COMPOSITION_EXTENSION_KEY
 from unchain.kernel.run_ledger import build_model_attempt_receipt
 from unchain.kernel.state import RunState
+from unchain.kernel.types import ModelTurnResult
 from unchain.persistence import SQLiteContextV2Store
 from unchain.providers import OpenAIModelIO
 from unchain.providers.base import ModelTurnRequest
@@ -20,7 +23,7 @@ from unchain.providers.durable_turn_runtime import (
     ExactProviderRouteTransport,
 )
 from unchain.retry import RetryConfig, RetriesExhaustedError
-from unchain.run_bundle import RunIdentity
+from unchain.run_bundle import ProviderCallUsage, RunIdentity
 from unchain.providers.turn_ownership import ProviderTurnOwnership
 from unchain.tools import Toolkit
 
@@ -85,6 +88,50 @@ def _request(events: list[dict] | None = None) -> ModelTurnRequest:
         toolkit=Toolkit(),
         emit_stream=True,
     )
+
+
+def _composition_manifest(*, fallback: bool = False):
+    def route(name, mode, retained, surface):
+        return {
+            "route_name": name,
+            "context_mode": mode,
+            "provider_retained": retained,
+            "manifest_items": 1,
+            "wire_surfaces": 1,
+            "contributions": [
+                {
+                    "category": "skills",
+                    "subtype": "expanded_invocation",
+                    "surface": surface,
+                    "utf8_bytes": 4,
+                    "source_count": 1,
+                }
+            ],
+        }
+
+    routes = [
+        route(
+            "primary",
+            "remote_continuation" if fallback else "semantic",
+            fallback,
+            "provider_state" if fallback else "messages",
+        )
+    ]
+    if fallback:
+        routes.append(
+            route(
+                "openai_previous_response_fallback",
+                "local_replay",
+                False,
+                "messages",
+            )
+        )
+    return {
+        "schema": "unchain.context/internal_context_composition_v1",
+        "method": "utf8_heuristic_v1",
+        "context_window_tokens": 272_000,
+        "routes": routes,
+    }
 
 
 def _repository(tmp_path):
@@ -153,6 +200,37 @@ class _FailingTransport(ExactProviderRouteTransport):
 
     def release_buffered_events(self):
         return None
+
+
+class _SequenceTransport(ExactProviderRouteTransport):
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = []
+
+    def send(self, *, envelope, route, retry_ordinal):
+        self.calls.append((route.name, retry_ordinal))
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    def discard_buffered_events(self):
+        return None
+
+    def release_buffered_events(self):
+        return None
+
+
+def _turn_result(text="composition result"):
+    return ModelTurnResult(
+        assistant_messages=[{"role": "assistant", "content": text}],
+        tool_calls=[],
+        final_text=text,
+        response_id="response-composition",
+        consumed_tokens=4,
+        input_tokens=2,
+        output_tokens=2,
+    )
 
 def test_off_is_a_read_only_legacy_fallthrough_without_durable_authority(tmp_path):
     send_calls: list[dict] = []
@@ -782,3 +860,527 @@ def test_failed_and_uncertain_sends_persist_one_atomic_receipt(
     assert receipts[0].status == expected_status
     assert receipts[0].timing.started_at is not None
     assert receipts[0].timing.completed_at is not None
+
+
+def test_exact_route_composition_enriches_the_valid_base_receipt(tmp_path):
+    service = _service(tmp_path, DurableProviderTurnMode.ENFORCE_TEST)
+    request = replace(
+        _request(),
+        internal_context_composition_v1=_composition_manifest(),
+    )
+
+    result = service.fetch_prepared(
+        model_io=_model_io([]),
+        request=request,
+        retry_config=RetryConfig(max_retries=0),
+        run_receipt_factory=_run_receipt_factory(),
+    )
+
+    extension = result.provider_call_receipt.extensions[
+        CONTEXT_COMPOSITION_EXTENSION_KEY
+    ]
+    assert extension["quality"] == "reconciled_estimate"
+    assert extension["attributed_tokens"] == 1
+    assert extension["residual_tokens"] == 1
+    assert extension["wire"]["route_name"] == "primary"
+    assert extension["coverage"] == {
+        "status": "complete",
+        "manifest_items": 1,
+        "matched_items": 1,
+        "wire_surfaces": 1,
+        "matched_surfaces": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_quality", "expected_tokens", "expected_total"),
+    (
+        ("reconciled", "reconciled_estimate", 1, 2),
+        ("provider_total_unavailable", "estimated", 1, None),
+        ("heuristic_overestimate", "estimated", 3, 2),
+        ("known_instrumentation_loss", "partial", 1, 2),
+    ),
+)
+def test_composition_quality_table_preserves_authoritative_usage_semantics(
+    tmp_path,
+    monkeypatch,
+    case,
+    expected_quality,
+    expected_tokens,
+    expected_total,
+):
+    manifest = _composition_manifest()
+    turn = replace(
+        _turn_result(case),
+        provider_call_usage=ProviderCallUsage.from_openai_usage(
+            {
+                "input_tokens": 2,
+                "output_tokens": 2,
+                "total_tokens": 4,
+            }
+        ),
+    )
+    if case == "provider_total_unavailable":
+        turn = replace(
+            turn,
+            provider_call_usage=ProviderCallUsage(source="unavailable"),
+        )
+    elif case == "heuristic_overestimate":
+        manifest["routes"][0]["contributions"][0]["utf8_bytes"] = 12
+    elif case == "known_instrumentation_loss":
+        manifest["routes"][0]["manifest_items"] = 2
+    transport = _SequenceTransport([turn])
+    monkeypatch.setattr(
+        "unchain.context.provider_execution._exact_transport",
+        lambda **_kwargs: transport,
+    )
+
+    result = _service(
+        tmp_path,
+        DurableProviderTurnMode.ENFORCE_TEST,
+    ).fetch_prepared(
+        model_io=_model_io([]),
+        request=replace(
+            _request(),
+            internal_context_composition_v1=manifest,
+        ),
+        retry_config=RetryConfig(max_retries=0),
+        run_receipt_factory=_run_receipt_factory(),
+    )
+    receipt = result.provider_call_receipt
+    extension = receipt.extensions[CONTEXT_COMPOSITION_EXTENSION_KEY]
+
+    assert extension["quality"] == expected_quality
+    assert extension["attributed_tokens"] == expected_tokens
+    assert extension["residual_tokens"] == (
+        1 if case == "reconciled" else None
+    )
+    assert extension["coverage"]["status"] == (
+        "partial" if case == "known_instrumentation_loss" else "complete"
+    )
+    assert receipt.usage.input_total_tokens == expected_total
+    assert "input_total_tokens" not in extension
+
+
+def test_fallback_receipts_use_distinct_physical_ordinals_and_exact_routes(
+    tmp_path,
+    monkeypatch,
+):
+    service = _service(tmp_path, DurableProviderTurnMode.ENFORCE_TEST)
+    fallback_failure = ExactProviderRouteFailure(
+        ExactProviderRouteFailureKind.PREVIOUS_RESPONSE_FALLBACK,
+        RuntimeError("remote state unavailable"),
+    )
+    transport = _SequenceTransport(
+        [fallback_failure, _turn_result("local replay")]
+    )
+    monkeypatch.setattr(
+        "unchain.context.provider_execution._exact_transport",
+        lambda **_kwargs: transport,
+    )
+    request = replace(
+        _request(),
+        previous_response_id="response-previous",
+        fallback_messages=[{"role": "user", "content": "local replay"}],
+        context_mode="remote_continuation",
+        internal_context_composition_v1=_composition_manifest(fallback=True),
+    )
+
+    result = service.fetch_prepared(
+        model_io=_model_io([]),
+        request=request,
+        retry_config=RetryConfig(max_retries=0),
+        run_receipt_factory=_run_receipt_factory(),
+    )
+    receipts = service.store.load_receipts(
+        root_run_id=ATTEMPT.attempt_id,
+        owner_run_id=ATTEMPT.attempt_id,
+        attempt_id=ATTEMPT.attempt_id,
+    )
+
+    assert transport.calls == [
+        ("primary", 0),
+        ("openai_previous_response_fallback", 0),
+    ]
+    receipts = sorted(receipts, key=lambda item: item.identity.retry_ordinal)
+    assert [receipt.identity.retry_ordinal for receipt in receipts] == [0, 1]
+    assert len({receipt.provider_call_id for receipt in receipts}) == 2
+    assert [
+        receipt.extensions[CONTEXT_COMPOSITION_EXTENSION_KEY]["wire"][
+            "route_name"
+        ]
+        for receipt in receipts
+    ] == ["primary", "openai_previous_response_fallback"]
+    assert result.provider_call_receipt.identity.retry_ordinal == 1
+
+
+def test_cold_retry_reopens_with_the_same_physical_receipt_identity(
+    tmp_path,
+    monkeypatch,
+):
+    from unchain.context.provider_execution import (
+        ContextProviderTurnExecutionService,
+    )
+
+    transient = ExactProviderRouteFailure(
+        ExactProviderRouteFailureKind.TRANSIENT_RETRY_SAFE,
+        RuntimeError("temporary before process restart"),
+    )
+    first_transport = _SequenceTransport([transient])
+    selected_transport = {"value": first_transport}
+    monkeypatch.setattr(
+        "unchain.context.provider_execution._exact_transport",
+        lambda **_kwargs: selected_transport["value"],
+    )
+
+    class ProcessRestart(RuntimeError):
+        pass
+
+    def restart_during_backoff(_seconds):
+        raise ProcessRestart("restart during backoff")
+
+    request = replace(
+        _request(),
+        internal_context_composition_v1=_composition_manifest(),
+    )
+    first_service = ContextProviderTurnExecutionService(
+        attempt=ATTEMPT,
+        store=_repository(tmp_path),
+        mode=DurableProviderTurnMode.ENFORCE_TEST,
+        transport_target_sha256=TARGET_SHA256,
+        sleep=restart_during_backoff,
+    )
+    retry_config = RetryConfig(
+        max_retries=1,
+        base_delay_ms=0,
+        max_delay_ms=0,
+        jitter_ratio=0,
+    )
+
+    with pytest.raises(ProcessRestart, match="restart during backoff"):
+        first_service.fetch_prepared(
+            model_io=_model_io([]),
+            request=request,
+            retry_config=retry_config,
+            run_receipt_factory=_run_receipt_factory(),
+        )
+
+    second_transport = _SequenceTransport([_turn_result("cold retry")])
+    selected_transport["value"] = second_transport
+    second_service = ContextProviderTurnExecutionService(
+        attempt=ATTEMPT,
+        store=_repository(tmp_path),
+        mode=DurableProviderTurnMode.ENFORCE_TEST,
+        transport_target_sha256=TARGET_SHA256,
+        sleep=lambda _seconds: None,
+    )
+    result = second_service.fetch_prepared(
+        model_io=_model_io([]),
+        request=request,
+        retry_config=retry_config,
+        run_receipt_factory=_run_receipt_factory(),
+    )
+    receipts = sorted(
+        second_service.store.load_receipts(
+            root_run_id=ATTEMPT.attempt_id,
+            owner_run_id=ATTEMPT.attempt_id,
+            attempt_id=ATTEMPT.attempt_id,
+        ),
+        key=lambda item: item.identity.retry_ordinal,
+    )
+
+    assert first_transport.calls == [("primary", 0)]
+    assert second_transport.calls == [("primary", 1)]
+    assert [receipt.identity.retry_ordinal for receipt in receipts] == [0, 1]
+    assert len({receipt.provider_call_id for receipt in receipts}) == 2
+    assert result.provider_call_receipt == receipts[1]
+
+    replay_transport = _SequenceTransport([])
+    selected_transport["value"] = replay_transport
+    replay_service = ContextProviderTurnExecutionService(
+        attempt=ATTEMPT,
+        store=_repository(tmp_path),
+        mode=DurableProviderTurnMode.ENFORCE_TEST,
+        transport_target_sha256=TARGET_SHA256,
+        sleep=lambda _seconds: None,
+    )
+    replay = replay_service.fetch_prepared(
+        model_io=_model_io([]),
+        request=request,
+        retry_config=retry_config,
+        run_receipt_factory=_run_receipt_factory(),
+    )
+
+    assert replay.final_text == "cold retry"
+    assert replay.provider_call_receipt is None
+    assert replay_transport.calls == []
+
+
+def test_base_receipt_factory_error_is_never_downgraded_by_composition(tmp_path):
+    class BaseReceiptFailure(RuntimeError):
+        pass
+
+    request = replace(
+        _request(),
+        internal_context_composition_v1=_composition_manifest(),
+    )
+
+    def fail_factory(*_args):
+        raise BaseReceiptFailure("base receipt failed")
+
+    with pytest.raises(BaseReceiptFailure, match="base receipt failed"):
+        _service(tmp_path, DurableProviderTurnMode.ENFORCE_TEST).fetch_prepared(
+            model_io=_model_io([]),
+            request=request,
+            retry_config=RetryConfig(max_retries=0),
+            run_receipt_factory=fail_factory,
+        )
+
+
+def test_base_receipt_physical_identity_mismatch_fails_before_ledger_append(
+    tmp_path,
+):
+    base_factory = _run_receipt_factory()
+
+    def changed_factory(*args):
+        receipt = base_factory(*args)
+        return replace(
+            receipt,
+            identity=replace(
+                receipt.identity,
+                retry_ordinal=receipt.identity.retry_ordinal + 1,
+            ),
+            extensions=dict(receipt.extensions),
+            provider_call_id="",
+        )
+
+    service = _service(tmp_path, DurableProviderTurnMode.ENFORCE_TEST)
+    with pytest.raises(RuntimeError, match="physical send subject"):
+        service.fetch_prepared(
+            model_io=_model_io([]),
+            request=replace(
+                _request(),
+                internal_context_composition_v1=_composition_manifest(),
+            ),
+            retry_config=RetryConfig(max_retries=0),
+            run_receipt_factory=changed_factory,
+        )
+
+    assert service.store.load_receipts(
+        root_run_id=ATTEMPT.attempt_id,
+        owner_run_id=ATTEMPT.attempt_id,
+        attempt_id=ATTEMPT.attempt_id,
+    ) == ()
+
+
+@pytest.mark.parametrize(
+    "transport_error",
+    [
+        ExactProviderRouteFailure(
+            ExactProviderRouteFailureKind.TRANSIENT_RETRY_SAFE,
+            RuntimeError("temporary"),
+        ),
+        RuntimeError("connection state unknown"),
+    ],
+)
+def test_failed_or_uncertain_receipt_identity_mismatch_never_reaches_ledger(
+    tmp_path,
+    monkeypatch,
+    transport_error,
+):
+    base_factory = _run_receipt_factory()
+
+    def changed_factory(*args):
+        receipt = base_factory(*args)
+        return replace(
+            receipt,
+            identity=replace(
+                receipt.identity,
+                attempt_id="conflicting-attempt",
+            ),
+            extensions=dict(receipt.extensions),
+            provider_call_id="",
+        )
+
+    service = _service(tmp_path, DurableProviderTurnMode.ENFORCE_TEST)
+    transport = _FailingTransport(transport_error)
+    monkeypatch.setattr(
+        "unchain.context.provider_execution._exact_transport",
+        lambda **_kwargs: transport,
+    )
+    observed = []
+
+    with pytest.raises(RuntimeError, match="physical send subject"):
+        service.fetch_prepared(
+            model_io=_model_io([]),
+            request=replace(
+                _request(),
+                internal_context_composition_v1=_composition_manifest(),
+            ),
+            retry_config=RetryConfig(max_retries=0),
+            run_receipt_factory=changed_factory,
+            run_receipt_observed=observed.append,
+        )
+
+    assert transport.calls == 1
+    assert observed == []
+    assert service.store.load_receipts(
+        root_run_id=ATTEMPT.attempt_id,
+        owner_run_id=ATTEMPT.attempt_id,
+        attempt_id=ATTEMPT.attempt_id,
+    ) == ()
+
+
+def test_known_uninstrumented_wire_sources_force_partial_composition(tmp_path):
+    toolkit = Toolkit()
+
+    @toolkit.tool
+    def lookup(query: str) -> str:
+        return query
+
+    manifest = _composition_manifest()
+    manifest["routes"][0]["manifest_items"] = 4
+    manifest["routes"][0]["wire_surfaces"] = 2
+    request = replace(
+        _request(),
+        messages=[
+            {"role": "system", "content": "system rules"},
+            {"role": "user", "content": "request"},
+        ],
+        toolkit=toolkit,
+        internal_context_composition_v1=manifest,
+    )
+
+    result = _service(tmp_path, DurableProviderTurnMode.ENFORCE_TEST).fetch_prepared(
+        model_io=_model_io([]),
+        request=request,
+        retry_config=RetryConfig(max_retries=0),
+        run_receipt_factory=_run_receipt_factory(),
+    )
+    extension = result.provider_call_receipt.extensions[
+        CONTEXT_COMPOSITION_EXTENSION_KEY
+    ]
+
+    assert extension["quality"] == "partial"
+    assert extension["residual_tokens"] is None
+    assert extension["coverage"] == {
+        "status": "partial",
+        "manifest_items": 4,
+        "matched_items": 1,
+        "wire_surfaces": 2,
+        "matched_surfaces": 1,
+    }
+
+
+@pytest.mark.parametrize("with_manifest", [False, True])
+def test_reserved_composition_extension_is_owned_only_by_official_enrichment(
+    tmp_path,
+    with_manifest,
+):
+    base_factory = _run_receipt_factory()
+
+    def injected_factory(*args):
+        receipt = base_factory(*args)
+        return replace(
+            receipt,
+            extensions={
+                **dict(receipt.extensions),
+                CONTEXT_COMPOSITION_EXTENSION_KEY: {
+                    "schema": "mutant.context_composition.v0",
+                    "content": "must-not-persist",
+                    "label": "mutant",
+                },
+            },
+        )
+
+    request = _request()
+    if with_manifest:
+        request = replace(
+            request,
+            internal_context_composition_v1=_composition_manifest(),
+        )
+    result = _service(tmp_path, DurableProviderTurnMode.ENFORCE_TEST).fetch_prepared(
+        model_io=_model_io([]),
+        request=request,
+        retry_config=RetryConfig(max_retries=0),
+        run_receipt_factory=injected_factory,
+    )
+    extensions = result.provider_call_receipt.extensions
+
+    if with_manifest:
+        official = extensions[CONTEXT_COMPOSITION_EXTENSION_KEY]
+        assert official["schema"] == "unchain.context/context_composition_v1"
+        assert "content" not in official
+        assert "label" not in official
+    else:
+        assert CONTEXT_COMPOSITION_EXTENSION_KEY not in extensions
+
+
+@pytest.mark.parametrize("failure_type", [TypeError, RuntimeError])
+def test_composition_failure_preserves_the_valid_base_receipt(
+    tmp_path,
+    monkeypatch,
+    failure_type,
+):
+    def fail_composition(**_kwargs):
+        raise failure_type("composition-only failure")
+
+    monkeypatch.setattr(
+        "unchain.context.composition.build_context_composition_extension",
+        fail_composition,
+    )
+    request = replace(
+        _request(),
+        internal_context_composition_v1=_composition_manifest(),
+    )
+
+    result = _service(
+        tmp_path,
+        DurableProviderTurnMode.ENFORCE_TEST,
+    ).fetch_prepared(
+        model_io=_model_io([]),
+        request=request,
+        retry_config=RetryConfig(max_retries=0),
+        run_receipt_factory=_run_receipt_factory(),
+    )
+
+    assert result.final_text == "durable result"
+    assert (
+        CONTEXT_COMPOSITION_EXTENSION_KEY
+        not in result.provider_call_receipt.extensions
+    )
+
+
+def test_malformed_composition_builder_output_never_reaches_the_receipt(
+    tmp_path,
+    monkeypatch,
+):
+    private_marker = "PRIVATE_RAW_MUST_NOT_PERSIST"
+    monkeypatch.setattr(
+        "unchain.context.composition.build_context_composition_extension",
+        lambda **_kwargs: {
+            "schema": "mutant.context.v0",
+            "content": private_marker,
+        },
+    )
+    request = replace(
+        _request(),
+        internal_context_composition_v1=_composition_manifest(),
+    )
+
+    result = _service(
+        tmp_path,
+        DurableProviderTurnMode.ENFORCE_TEST,
+    ).fetch_prepared(
+        model_io=_model_io([]),
+        request=request,
+        retry_config=RetryConfig(max_retries=0),
+        run_receipt_factory=_run_receipt_factory(),
+    )
+
+    assert result.final_text == "durable result"
+    assert (
+        CONTEXT_COMPOSITION_EXTENSION_KEY
+        not in result.provider_call_receipt.extensions
+    )
+    assert private_marker not in str(result.provider_call_receipt.extensions)

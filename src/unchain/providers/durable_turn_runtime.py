@@ -46,6 +46,10 @@ from .request_lease import (
     ProviderRequestSubject,
     ProviderTurnResultBinding,
 )
+from .physical_send import (
+    ProviderPhysicalSendContext,
+    provider_physical_ordinal,
+)
 from .wire_envelope import ProviderWireEnvelope, ProviderWireRoute
 
 
@@ -556,15 +560,37 @@ class DurableProviderTurnRuntime:
         authority: RecoveredProviderWireAuthority,
         route_name: str,
         retry_config: RetryConfig,
-        before_send: Callable[[], None] | None,
-        after_send: Callable[[int, str, str, str], None] | None,
+        before_send: Callable[[ProviderPhysicalSendContext], None] | None,
+        after_send: Callable[
+            [ProviderPhysicalSendContext, str, str, str], None
+        ] | None,
         build_run_receipt: Callable[
-            [int, str, str, str, ModelTurnResult | None], ProviderCallReceipt
+            [
+                ProviderPhysicalSendContext,
+                str,
+                str,
+                str,
+                ModelTurnResult | None,
+            ],
+            ProviderCallReceipt,
         ] | None,
         fallback_parent: ProviderRequestLease | None = None,
     ) -> DurableProviderTurnOutcome:
         envelope = authority.envelope
         route = self._route(envelope, route_name)
+        if route_name == "openai_previous_response_fallback":
+            if (
+                fallback_parent is None
+                or fallback_parent.subject.route != "primary"
+                or fallback_parent.subject.retry_ordinal != 0
+                or fallback_parent.status is not ProviderRequestStatus.FAILED
+                or fallback_parent.classification != "previous_response_fallback"
+            ):
+                self._raise_durable(
+                    ProviderTurnResultIntegrityError(
+                        "provider fallback requires the failed primary ordinal zero"
+                    )
+                )
         ordinal = 0
         previous: ProviderRequestLease | None = None
         while True:
@@ -574,6 +600,11 @@ class DurableProviderTurnRuntime:
                 envelope_sha256=envelope.envelope_sha256,
                 route=route.name,
                 retry_ordinal=ordinal,
+            )
+            send_context = ProviderPhysicalSendContext(
+                subject=subject,
+                route=route,
+                physical_ordinal=provider_physical_ordinal(subject),
             )
             lease, receipt = self._inspect_subject(
                 subject=subject,
@@ -643,7 +674,7 @@ class DurableProviderTurnRuntime:
 
             if before_send is not None:
                 try:
-                    before_send()
+                    before_send(send_context)
                 except BaseException as exc:
                     raise DurableProviderTurnUncertainError() from exc
             try:
@@ -655,7 +686,7 @@ class DurableProviderTurnRuntime:
             except ExactProviderRouteFailure as exc:
                 if after_send is not None:
                     after_send(
-                        ordinal,
+                        send_context,
                         _provider_attempt_completed_at(),
                         "failed",
                         exc.kind.value,
@@ -708,7 +739,7 @@ class DurableProviderTurnRuntime:
             except BaseException as exc:
                 if after_send is not None:
                     after_send(
-                        ordinal,
+                        send_context,
                         _provider_attempt_completed_at(),
                         "uncertain",
                         "uncertain",
@@ -720,7 +751,7 @@ class DurableProviderTurnRuntime:
             if type(result) is not ModelTurnResult:
                 if after_send is not None:
                     after_send(
-                        ordinal,
+                        send_context,
                         _provider_attempt_completed_at(),
                         "uncertain",
                         "invalid_result",
@@ -730,7 +761,7 @@ class DurableProviderTurnRuntime:
             run_receipt = None
             if build_run_receipt is not None:
                 run_receipt = build_run_receipt(
-                    ordinal,
+                    send_context,
                     completed_at,
                     "completed",
                     "success",
@@ -740,7 +771,7 @@ class DurableProviderTurnRuntime:
                     raise DurableProviderTurnUncertainError()
             if after_send is not None:
                 after_send(
-                    ordinal,
+                    send_context,
                     completed_at,
                     "completed",
                     "success",
@@ -756,10 +787,19 @@ class DurableProviderTurnRuntime:
         *,
         authority: RecoveredProviderWireAuthority,
         retry_config: RetryConfig,
-        before_send: Callable[[], None] | None = None,
-        after_send: Callable[[int, str, str, str], None] | None = None,
+        before_send: Callable[[ProviderPhysicalSendContext], None] | None = None,
+        after_send: Callable[
+            [ProviderPhysicalSendContext, str, str, str], None
+        ] | None = None,
         build_run_receipt: Callable[
-            [int, str, str, str, ModelTurnResult | None], ProviderCallReceipt
+            [
+                ProviderPhysicalSendContext,
+                str,
+                str,
+                str,
+                ModelTurnResult | None,
+            ],
+            ProviderCallReceipt,
         ] | None = None,
     ) -> DurableProviderTurnOutcome:
         self._validate_retry_config(retry_config)

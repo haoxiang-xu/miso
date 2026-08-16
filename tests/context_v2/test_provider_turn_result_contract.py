@@ -27,12 +27,14 @@ from unchain.journal.provider_result import (
     build_provider_turn_result_event_payload,
     recover_provider_turn_result,
 )
+from unchain.kernel.run_ledger import build_model_attempt_receipt
 from unchain.kernel.types import ModelTurnResult, ToolCall
 from unchain.providers.request_lease import (
     ProviderRequestLease,
     ProviderRequestStatus,
     ProviderRequestSubject,
 )
+from unchain.run_bundle import RunIdentity
 
 
 ATTEMPT = AttemptRef(
@@ -291,6 +293,67 @@ def test_atomic_store_entry_validates_started_lease_subject_route_and_scope() ->
     with pytest.raises(ProviderTurnResultIntegrityError, match="scope|execution"):
         foreign_store.persist_provider_turn_result_cas(**kwargs)
     assert not foreign_store.requests
+
+
+def test_fallback_result_receipt_uses_the_physical_send_ordinal() -> None:
+    fallback_subject = replace(
+        SUBJECT,
+        route="openai_previous_response_fallback",
+        retry_ordinal=0,
+    )
+    started_lease = replace(_started_lease(), subject=fallback_subject)
+    envelope = ProviderTurnResultEnvelope.from_model_turn_result(
+        subject=fallback_subject,
+        route_sha256=ROUTE_SHA256,
+        visible_output=True,
+        result=_result(),
+    )
+    identity = RunIdentity(
+        execution_id=ATTEMPT.generation.execution_id,
+        attempt_id=ATTEMPT.attempt_id,
+        root_run_id=ATTEMPT.attempt_id,
+        run_id=ATTEMPT.attempt_id,
+        parent_run_id=None,
+        relation="root",
+    )
+
+    def accounting_receipt(physical_ordinal: int):
+        return build_model_attempt_receipt(
+            identity=identity,
+            provider="openai",
+            model="gpt-test",
+            iteration=fallback_subject.iteration,
+            retry_ordinal=physical_ordinal,
+            purpose="agent_turn",
+            request_digest="f" * 64,
+            route="openai.responses.create",
+            started_at="2026-08-15T00:00:00Z",
+            completed_at="2026-08-15T00:00:01Z",
+            turn=_result(),
+        )
+
+    common = {
+        "started_lease": started_lease,
+        "envelope": envelope,
+        "artifact_operation": OperationRef("fallback-result-artifact", "1" * 64),
+        "event_operation": OperationRef("fallback-result-event", "2" * 64),
+        "event_id": "fallback-provider-turn-result",
+    }
+
+    request = ProviderTurnResultPersistRequest(
+        **common,
+        provider_call_receipt=accounting_receipt(1),
+    )
+    assert request.provider_call_receipt.identity.retry_ordinal == 1
+
+    with pytest.raises(
+        ProviderTurnResultIntegrityError,
+        match="durable send subject",
+    ):
+        ProviderTurnResultPersistRequest(
+            **common,
+            provider_call_receipt=accounting_receipt(0),
+        )
 
 
 def test_oversized_artifact_descriptor_is_rejected_before_any_read() -> None:

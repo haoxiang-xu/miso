@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol, runtime_checkable
 
@@ -28,6 +29,24 @@ class ModelTurnRequest:
     openai_text_format: dict[str, Any] | None = None
     fallback_messages: list[dict[str, Any]] | None = None
     context_mode: str = "semantic"
+    internal_context_composition_v1: Mapping[str, Any] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        if self.internal_context_composition_v1 is None:
+            return
+        from ..context.composition import freeze_internal_context_composition
+
+        object.__setattr__(
+            self,
+            "internal_context_composition_v1",
+            freeze_internal_context_composition(
+                self.internal_context_composition_v1
+            ),
+        )
 
     def copied_messages(self) -> list[dict[str, Any]]:
         return _deepcopy_messages(self.messages)

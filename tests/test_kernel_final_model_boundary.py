@@ -4,6 +4,7 @@ import copy
 import gc
 import pickle
 import weakref
+from dataclasses import replace
 
 import pytest
 
@@ -829,6 +830,55 @@ def test_final_boundary_durable_fetch_bypasses_legacy_model_and_retry():
     assert observed["retry_config"] is retry_config
     assert callable(observed["before_attempt"])
     assert callable(getattr(observed["before_attempt"], "after_attempt", None))
+
+
+def test_final_boundary_uses_a_cold_physical_ordinal_for_kernel_telemetry():
+    calls = []
+    completed_at = "2026-08-15T00:00:01Z"
+
+    def fetch_prepared(
+        _context,
+        _preparation,
+        _request,
+        _retry_config,
+        before_attempt,
+    ):
+        before_attempt(1)
+        turn = _text_turn()
+        receipt = before_attempt.run_receipt_factory(
+            1,
+            "2026-08-15T00:00:00Z",
+            completed_at,
+            "completed",
+            "success",
+            turn,
+        )
+        before_attempt.after_attempt(1, completed_at, "completed", "success")
+        return replace(turn, provider_call_receipt=receipt)
+
+    boundary = _issue_final_model_tool_boundary(
+        prepare=lambda _context: FinalModelToolPreparation(
+            model_toolkit=Toolkit(),
+            execution_toolkit=Toolkit(),
+            execution_binding=object(),
+        ),
+        fetch_prepared=fetch_prepared,
+        validate=lambda _context, _preparation, turn: turn,
+    )
+    model_io = _QueueModelIO(_text_turn(), calls)
+    loop = KernelLoop(model_io=model_io, harnesses=[boundary])
+    state = loop.seed_state([{"role": "user", "content": "start"}])
+
+    turn = loop.step_once(
+        state,
+        toolkit=Toolkit(),
+        run_id="attempt-cold-physical",
+    )
+
+    assert turn.final_text == "done"
+    assert model_io.requests == []
+    [receipt] = state.run_ledger.receipts.values()
+    assert receipt.identity.retry_ordinal == 1
 
 
 def test_final_boundary_rejects_invalid_prepared_fetch_before_validation():

@@ -462,8 +462,10 @@ class KernelLoop:
             # One callback invocation means one transport send is about to
             # happen.  Use a process-local monotonic ordinal so a boundary
             # hand-off cannot reuse retry 0 for a second physical send.
-            int(attempt)
-            retry_ordinal = len(provider_attempts)
+            source_attempt = int(attempt)
+            if source_attempt < 0:
+                raise ValueError("provider attempt ordinal cannot be negative")
+            retry_ordinal = max(len(provider_attempts), source_attempt)
             occurred_at = (
                 datetime.now(timezone.utc)
                 .isoformat(timespec="microseconds")
@@ -471,7 +473,7 @@ class KernelLoop:
             )
             provider_attempts.append(
                 {
-                    "source_attempt": int(attempt),
+                    "source_attempt": source_attempt,
                     "retry_ordinal": retry_ordinal,
                     "started_at": occurred_at,
                     "completed_at": None,

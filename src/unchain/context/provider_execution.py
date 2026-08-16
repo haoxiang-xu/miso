@@ -28,6 +28,7 @@ from unchain.providers.exact_route_transport import (
 )
 from unchain.providers.ollama import OllamaModelIO
 from unchain.providers.openai import OpenAIModelIO
+from unchain.providers.physical_send import ProviderPhysicalSendContext
 from unchain.retry import RetryConfig
 
 from .provider_toolkit import ProviderToolkitAuthorityAdapter
@@ -219,43 +220,102 @@ class ContextProviderTurnExecutionService:
             sleep=self._sleep,
         )
         send_number = 0
-        active_send_number: int | None = None
+        active_send_context: ProviderPhysicalSendContext | None = None
+        active_process_send_number: int | None = None
         active_started_at: str | None = None
 
-        def before_send() -> None:
-            nonlocal active_send_number, active_started_at, send_number
-            if active_send_number is not None:
+        def accounting_receipt(
+            send_context: ProviderPhysicalSendContext,
+            started_at: str,
+            completed_at: str,
+            outcome: str,
+            classification: str,
+            result: ModelTurnResult | None,
+        ) -> ProviderCallReceipt:
+            if run_receipt_factory is None:
+                raise ContextProviderTurnExecutionError(
+                    "provider accounting receipt factory is unavailable"
+                )
+            base_receipt = run_receipt_factory(
+                send_context.physical_ordinal,
+                started_at,
+                completed_at,
+                outcome,
+                classification,
+                result,
+            )
+            if type(base_receipt) is not ProviderCallReceipt:
+                raise TypeError(
+                    "run_receipt_factory must return an exact ProviderCallReceipt"
+                )
+            identity = base_receipt.identity
+            subject = send_context.subject
+            if (
+                identity.execution_id
+                != subject.attempt.generation.execution_id
+                or identity.attempt_id != subject.attempt.attempt_id
+                or identity.iteration != subject.iteration
+                or identity.retry_ordinal != send_context.physical_ordinal
+            ):
+                raise ContextProviderTurnExecutionError(
+                    "provider accounting receipt changed the physical send subject"
+                )
+            from .composition import enrich_provider_call_receipt
+
+            return enrich_provider_call_receipt(
+                receipt=base_receipt,
+                manifest=request.internal_context_composition_v1,
+                envelope=authority.envelope,
+                send_context=send_context,
+            )
+
+        def before_send(send_context: ProviderPhysicalSendContext) -> None:
+            nonlocal active_send_context, active_process_send_number
+            nonlocal active_started_at, send_number
+            if type(send_context) is not ProviderPhysicalSendContext:
+                raise TypeError(
+                    "send_context must be an exact ProviderPhysicalSendContext"
+                )
+            if active_send_context is not None:
                 raise ContextProviderTurnExecutionError(
                     "provider attempt completion was not observed"
                 )
-            active_send_number = send_number
+            active_send_context = send_context
+            active_process_send_number = send_number
             active_started_at = (
                 datetime.now(timezone.utc)
                 .isoformat(timespec="microseconds")
                 .replace("+00:00", "Z")
             )
             if before_attempt is not None:
-                before_attempt(send_number)
+                before_attempt(send_context.physical_ordinal)
             send_number += 1
 
         def after_send(
-            _route_ordinal: int,
+            send_context: ProviderPhysicalSendContext,
             completed_at: str,
             outcome: str,
             classification: str,
         ) -> None:
-            nonlocal active_send_number, active_started_at
-            attempt_number = active_send_number
+            nonlocal active_send_context, active_process_send_number
+            nonlocal active_started_at
+            observed_context = active_send_context
             started_at = active_started_at
-            if attempt_number is None or started_at is None:
+            if (
+                observed_context is None
+                or observed_context != send_context
+                or active_process_send_number is None
+                or started_at is None
+            ):
                 raise ContextProviderTurnExecutionError(
                     "provider attempt completed without a matching start"
                 )
-            active_send_number = None
+            active_send_context = None
+            active_process_send_number = None
             active_started_at = None
             if outcome != "completed" and run_receipt_factory is not None:
-                run_receipt = run_receipt_factory(
-                    attempt_number,
+                run_receipt = accounting_receipt(
+                    send_context,
                     started_at,
                     completed_at,
                     outcome,
@@ -276,31 +336,32 @@ class ContextProviderTurnExecutionService:
                     run_receipt_observed(run_receipt)
             if after_attempt is not None:
                 after_attempt(
-                    attempt_number,
+                    send_context.physical_ordinal,
                     completed_at,
                     outcome,
                     classification,
                 )
 
         def build_run_receipt(
-            _route_ordinal: int,
+            send_context: ProviderPhysicalSendContext,
             completed_at: str,
             outcome: str,
             classification: str,
             result: ModelTurnResult | None,
         ) -> ProviderCallReceipt:
-            attempt_number = active_send_number
+            observed_context = active_send_context
             started_at = active_started_at
             if (
                 run_receipt_factory is None
-                or attempt_number is None
+                or observed_context is None
+                or observed_context != send_context
                 or started_at is None
             ):
                 raise ContextProviderTurnExecutionError(
                     "provider accounting receipt has no matching live send"
                 )
-            return run_receipt_factory(
-                attempt_number,
+            return accounting_receipt(
+                send_context,
                 started_at,
                 completed_at,
                 outcome,

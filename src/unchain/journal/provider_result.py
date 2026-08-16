@@ -613,6 +613,8 @@ class ProviderTurnResultPersistRequest:
                 "provider result lease route digest changed"
             )
         if self.provider_call_receipt is not None:
+            from unchain.providers.physical_send import provider_physical_ordinal
+
             identity = self.provider_call_receipt.identity
             subject = self.started_lease.subject
             if (
@@ -620,7 +622,7 @@ class ProviderTurnResultPersistRequest:
                 != subject.attempt.generation.execution_id
                 or identity.attempt_id != subject.attempt.attempt_id
                 or identity.iteration != subject.iteration
-                or identity.retry_ordinal != subject.retry_ordinal
+                or identity.retry_ordinal != provider_physical_ordinal(subject)
             ):
                 raise ProviderTurnResultIntegrityError(
                     "provider accounting receipt changed the durable send subject"

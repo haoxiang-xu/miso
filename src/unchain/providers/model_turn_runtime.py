@@ -257,6 +257,33 @@ def build_model_turn_request(
         state,
         toolkit=resolved_toolkit,
     )
+    from ..context.composition import (
+        build_internal_context_composition,
+        freeze_internal_context_composition,
+    )
+
+    try:
+        response_schema_surface = None
+        if response_format is not None or openai_text_format is not None:
+            provider = str(state.provider_state.provider or "").strip().lower()
+            response_schema_surface = (
+                "messages"
+                if provider in {"anthropic", "hyperspace"}
+                else "response_schema"
+            )
+        internal_context_composition = freeze_internal_context_composition(
+            build_internal_context_composition(
+                state,
+                assembly,
+                tool_schema_count=len(resolved_toolkit.tools),
+                response_schema_surface=response_schema_surface,
+            )
+        )
+    except Exception:
+        # Context composition is optional and the provider assembly above is
+        # already authoritative. Only failures from this isolated projection
+        # are downgraded; provider assembly and send failures still propagate.
+        internal_context_composition = None
     return ModelTurnRequest(
         messages=assembly.messages,
         payload=dict(payload or {}),
@@ -271,6 +298,7 @@ def build_model_turn_request(
         fallback_messages=assembly.fallback_messages,
         openai_text_format=openai_text_format,
         context_mode=assembly.mode,
+        internal_context_composition_v1=internal_context_composition,
     )
 
 

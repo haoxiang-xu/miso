@@ -177,13 +177,13 @@ def _receipt_factory():
         relation="root",
     )
 
-    def build(ordinal, completed_at, outcome, classification, result):
+    def build(send_context, completed_at, outcome, classification, result):
         return build_model_attempt_receipt(
             identity=identity,
             provider="openai",
             model="frontier-model",
             iteration=ITERATION,
-            retry_ordinal=ordinal,
+            retry_ordinal=send_context.physical_ordinal,
             purpose="agent_turn",
             request_digest="d" * 64,
             route="openai.responses.create",
@@ -398,6 +398,138 @@ def test_retry_safe_failure_gets_a_new_lease_before_the_second_send(tmp_path) ->
     assert no_send.calls == []
 
 
+def test_cold_retry_preserves_the_physical_ordinal_after_restart(tmp_path) -> None:
+    _store_value, repository, authority = _authority(tmp_path)
+    transient = ExactProviderRouteFailure(
+        ExactProviderRouteFailureKind.TRANSIENT_RETRY_SAFE,
+        RuntimeError("temporary before restart"),
+    )
+    first_transport = _Transport([transient])
+    first_contexts = []
+
+    class ProcessRestart(RuntimeError):
+        pass
+
+    def restart_during_backoff(_seconds):
+        raise ProcessRestart("restart during retry backoff")
+
+    with pytest.raises(ProcessRestart, match="restart during retry backoff"):
+        _runtime(
+            repository,
+            first_transport,
+            sleep=restart_during_backoff,
+        ).execute(
+            authority=authority,
+            retry_config=RetryConfig(
+                max_retries=1,
+                base_delay_ms=0,
+                max_delay_ms=0,
+                jitter_ratio=0,
+            ),
+            after_send=lambda context, *_rest: first_contexts.append(context),
+        )
+
+    reopened = _store(tmp_path).bind_execution(ATTEMPT.generation.execution_id)
+    second_transport = _Transport([_result("cold retry")])
+    second_contexts = []
+    outcome = _runtime(reopened, second_transport).execute(
+        authority=authority,
+        retry_config=RetryConfig(
+            max_retries=1,
+            base_delay_ms=0,
+            max_delay_ms=0,
+            jitter_ratio=0,
+        ),
+        after_send=lambda context, *_rest: second_contexts.append(context),
+        build_run_receipt=_receipt_factory(),
+    )
+
+    assert [(call[1].name, call[2]) for call in first_transport.calls] == [
+        ("primary", 0)
+    ]
+    assert [(call[1].name, call[2]) for call in second_transport.calls] == [
+        ("primary", 1)
+    ]
+    assert [context.physical_ordinal for context in first_contexts] == [0]
+    assert [context.physical_ordinal for context in second_contexts] == [1]
+    assert outcome.run_receipt.identity.retry_ordinal == 1
+
+    no_send = _Transport([])
+    replay = _runtime(reopened, no_send).execute(
+        authority=authority,
+        retry_config=RetryConfig(max_retries=1),
+    )
+    assert replay.result.final_text == "cold retry"
+    assert replay.recovered is True
+    assert no_send.calls == []
+
+
+def test_fallback_retry_uses_consecutive_physical_ordinals(tmp_path) -> None:
+    _store_value, repository, authority = _authority(tmp_path, fallback=True)
+    primary_fallback = ExactProviderRouteFailure(
+        ExactProviderRouteFailureKind.PREVIOUS_RESPONSE_FALLBACK,
+        RuntimeError("remote continuation unavailable"),
+    )
+    fallback_transient = ExactProviderRouteFailure(
+        ExactProviderRouteFailureKind.TRANSIENT_RETRY_SAFE,
+        RuntimeError("local replay transport is temporarily unavailable"),
+    )
+    transport = _Transport(
+        [primary_fallback, fallback_transient, _result("fallback retry")]
+    )
+    contexts = []
+
+    outcome = _runtime(repository, transport).execute(
+        authority=authority,
+        retry_config=RetryConfig(
+            max_retries=1,
+            base_delay_ms=0,
+            max_delay_ms=0,
+            jitter_ratio=0,
+        ),
+        after_send=lambda context, *_rest: contexts.append(context),
+        build_run_receipt=_receipt_factory(),
+    )
+
+    assert [(call[1].name, call[2]) for call in transport.calls] == [
+        ("primary", 0),
+        ("openai_previous_response_fallback", 0),
+        ("openai_previous_response_fallback", 1),
+    ]
+    assert [context.physical_ordinal for context in contexts] == [0, 1, 2]
+    assert outcome.run_receipt.identity.retry_ordinal == 2
+
+
+def test_primary_retry_cannot_transition_to_fallback(tmp_path) -> None:
+    _store_value, repository, authority = _authority(tmp_path, fallback=True)
+    transient = ExactProviderRouteFailure(
+        ExactProviderRouteFailureKind.TRANSIENT_RETRY_SAFE,
+        RuntimeError("retry primary once"),
+    )
+    late_fallback = ExactProviderRouteFailure(
+        ExactProviderRouteFailureKind.PREVIOUS_RESPONSE_FALLBACK,
+        RuntimeError("late fallback is ambiguous"),
+    )
+    transport = _Transport([transient, late_fallback])
+
+    with pytest.raises(BaseException) as caught:
+        _runtime(repository, transport).execute(
+            authority=authority,
+            retry_config=RetryConfig(
+                max_retries=1,
+                base_delay_ms=0,
+                max_delay_ms=0,
+                jitter_ratio=0,
+            ),
+        )
+
+    assert is_durable_persistence_failure(caught.value)
+    assert [(call[1].name, call[2]) for call in transport.calls] == [
+        ("primary", 0),
+        ("primary", 1),
+    ]
+
+
 def test_before_send_runs_immediately_before_every_transport_send(tmp_path) -> None:
     _store_value, repository, authority = _authority(tmp_path)
     failure = ExactProviderRouteFailure(
@@ -422,14 +554,16 @@ def test_before_send_runs_immediately_before_every_transport_send(tmp_path) -> N
             max_delay_ms=0,
             jitter_ratio=0,
         ),
-        before_send=lambda: events.append(("guard",)),
+        before_send=lambda context: events.append(
+            ("guard", context.physical_ordinal)
+        ),
     )
 
     assert outcome.result.final_text == "after retry"
     assert events == [
-        ("guard",),
+        ("guard", 0),
         ("send", "primary", 0),
-        ("guard",),
+        ("guard", 1),
         ("send", "primary", 1),
     ]
 
@@ -438,7 +572,7 @@ def test_before_send_failure_leaves_started_lease_without_sending(tmp_path) -> N
     _store_value, repository, authority = _authority(tmp_path)
     transport = _Transport([_result()])
 
-    def fail_guard():
+    def fail_guard(_context):
         raise RuntimeError("execution lease lost")
 
     with pytest.raises(DurableProviderTurnUncertainError):
@@ -567,20 +701,22 @@ def test_before_send_runs_for_fresh_and_recovered_openai_fallback(
     outcome = _runtime(repository, transport).execute(
         authority=authority,
         retry_config=RetryConfig(max_retries=0),
-        before_send=lambda: events.append(("guard",)),
+        before_send=lambda context: events.append(
+            ("guard", context.physical_ordinal)
+        ),
     )
 
     assert outcome.result.final_text == "local replay"
     if recovered_primary_failure:
         assert events == [
-            ("guard",),
+            ("guard", 1),
             ("send", "openai_previous_response_fallback", 0),
         ]
     else:
         assert events == [
-            ("guard",),
+            ("guard", 0),
             ("send", "primary", 0),
-            ("guard",),
+            ("guard", 1),
             ("send", "openai_previous_response_fallback", 0),
         ]
 
@@ -723,8 +859,8 @@ def test_after_send_closes_retry_attempts_immediately(tmp_path) -> None:
             max_delay_ms=0,
             jitter_ratio=0,
         ),
-        after_send=lambda ordinal, completed_at, status, classification: events.append(
-            ("after", ordinal, completed_at, status, classification)
+        after_send=lambda context, completed_at, status, classification: events.append(
+            ("after", context, completed_at, status, classification)
         ),
     )
 
@@ -736,7 +872,7 @@ def test_after_send_closes_retry_attempts_immediately(tmp_path) -> None:
         "after",
     ]
     after = [event for event in events if event[0] == "after"]
-    assert [(event[1], event[3], event[4]) for event in after] == [
+    assert [(event[1].physical_ordinal, event[3], event[4]) for event in after] == [
         (0, "failed", "transient_retry_safe"),
         (1, "completed", "success"),
     ]
@@ -761,9 +897,9 @@ def test_after_send_closes_fallback_and_success_attempts(tmp_path) -> None:
     )
 
     assert outcome.result.final_text == "local replay"
-    assert [(event[0], event[2], event[3]) for event in events] == [
+    assert [(event[0].physical_ordinal, event[2], event[3]) for event in events] == [
         (0, "failed", "previous_response_fallback"),
-        (0, "completed", "success"),
+        (1, "completed", "success"),
     ]
 
 
@@ -779,5 +915,5 @@ def test_after_send_closes_uncertain_final_error_once(tmp_path) -> None:
         )
 
     assert len(events) == 1
-    assert events[0][0] == 0
+    assert events[0][0].physical_ordinal == 0
     assert events[0][2:] == ("uncertain", "uncertain")
