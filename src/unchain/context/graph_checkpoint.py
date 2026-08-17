@@ -30,6 +30,13 @@ from unchain.journal.interaction_resolution_compat import (
     interaction_resolution_compatibility_record,
     legacy_interaction_resolution_supersession_pairs,
 )
+from unchain.journal.graph_attempt_quiescence import (
+    CANCELLED_ATTEMPT_TERMINALS,
+    COMPLETED_ATTEMPT_TERMINALS,
+    FAILED_ATTEMPT_TERMINALS,
+    MAX_ITERATIONS_TERMINALS,
+    select_attempt_terminal,
+)
 
 from .artifacts import ArtifactService, MAX_ARTIFACT_BYTES
 from .derived_handoff import (
@@ -40,21 +47,9 @@ from .derived_handoff import (
 from .models import HandoffStatus
 
 
-_COMPLETED_TERMINALS = frozenset({"run_completed", "run.completed"})
-_FAILED_TERMINALS = frozenset(
-    {"run_failed", "run.failed", "run_max_iterations", "run.max_iterations"}
-)
-_CANCELLED_TERMINALS = frozenset(
-    {
-        "run_cancelled",
-        "run.cancelled",
-        "run_canceled",
-        "run.canceled",
-        "run_aborted",
-        "run.aborted",
-    }
-)
-_TERMINALS = _COMPLETED_TERMINALS | _FAILED_TERMINALS | _CANCELLED_TERMINALS
+_COMPLETED_TERMINALS = COMPLETED_ATTEMPT_TERMINALS
+_FAILED_TERMINALS = FAILED_ATTEMPT_TERMINALS | MAX_ITERATIONS_TERMINALS
+_CANCELLED_TERMINALS = CANCELLED_ATTEMPT_TERMINALS
 _INTERACTION_REQUESTS = frozenset(
     {
         "interaction_requested",
@@ -368,6 +363,38 @@ class GraphExecutionPlan:
             "steps": [step.to_dict() for step in self.steps],
         }
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "GraphExecutionPlan":
+        if not isinstance(value, Mapping) or set(value) != {
+            "schema",
+            "orchestration_attempt",
+            "topology_sha256",
+            "initial_input_cursor",
+            "steps",
+        }:
+            raise ValueError("graph execution plan descriptor is not closed")
+        if value.get("schema") != "unchain.graph_execution_plan.v1":
+            raise ValueError("graph execution plan schema is unsupported")
+        raw_steps = value.get("steps")
+        if isinstance(raw_steps, (str, bytes, bytearray)) or not isinstance(
+            raw_steps,
+            Sequence,
+        ):
+            raise ValueError("graph execution plan steps must be a sequence")
+        plan = cls(
+            orchestration_attempt=AttemptRef.from_dict(
+                value.get("orchestration_attempt")
+            ),
+            topology_sha256=value.get("topology_sha256"),
+            initial_input_cursor=EventCursor.from_dict(
+                value.get("initial_input_cursor")
+            ),
+            steps=tuple(GraphStepBinding.from_dict(step) for step in raw_steps),
+        )
+        if plan.to_dict() != _thaw_json(value):
+            raise ValueError("graph execution plan descriptor is not canonical")
+        return plan
+
 
 @dataclass(frozen=True)
 class GraphStepCompletion:
@@ -550,6 +577,79 @@ class _GraphScan:
     resume_receipts: Mapping[tuple[int, str], GraphStepResumeReceipt]
 
 
+def _validated_graph_plan_admission(
+    events: Sequence[JournalEvent],
+    *,
+    execution_id: str,
+    generation_id: str,
+    orchestration_attempt_id: str,
+) -> tuple[JournalEvent, GraphExecutionPlan]:
+    admissions = tuple(
+        event
+        for event in events
+        if event.event_type == "graph.execution.admitted"
+        and event.attempt.generation.execution_id == execution_id
+        and event.attempt.generation.generation_id == generation_id
+        and event.attempt.attempt_id == orchestration_attempt_id
+    )
+    if len(admissions) != 1:
+        raise GraphCheckpointError("graph plan descriptor is missing or ambiguous")
+    admission = admissions[0]
+    if set(admission.payload) != {
+        "graph_plan_id",
+        "graph_scope_id",
+        "plan",
+    }:
+        raise GraphCheckpointError("graph plan descriptor is not closed")
+    try:
+        plan = GraphExecutionPlan.from_dict(
+            _thaw_json(admission.payload.get("plan"))
+        )
+    except (AttributeError, TypeError, ValueError) as error:
+        raise GraphCheckpointError("graph plan descriptor is invalid") from error
+    if (
+        plan.execution_id != execution_id
+        or plan.orchestration_attempt != admission.attempt
+        or plan.orchestration_attempt.generation.generation_id != generation_id
+        or admission.payload.get("graph_plan_id") != plan.plan_id
+        or admission.payload.get("graph_scope_id") != plan.scope_id
+    ):
+        raise GraphCheckpointError("graph plan descriptor changed identity")
+    return admission, plan
+
+
+def locate_graph_execution_plan(
+    journal: BoundExecutionJournal,
+    *,
+    generation_id: str,
+    orchestration_attempt_id: str,
+) -> GraphExecutionPlan:
+    """Rebuild one exact admitted plan without appending or persisting data."""
+
+    if not isinstance(journal, BoundExecutionJournal):
+        raise TypeError("journal must be a BoundExecutionJournal")
+    generation_id = _required_text(
+        generation_id,
+        "generation_id",
+        identifier=True,
+    )
+    orchestration_attempt_id = _required_text(
+        orchestration_attempt_id,
+        "orchestration_attempt_id",
+        identifier=True,
+    )
+    snapshot = journal.capture_snapshot()
+    if snapshot.execution_id != journal.execution_id:
+        raise GraphCheckpointError("graph journal snapshot changed execution")
+    _admission, plan = _validated_graph_plan_admission(
+        snapshot.events,
+        execution_id=journal.execution_id,
+        generation_id=generation_id,
+        orchestration_attempt_id=orchestration_attempt_id,
+    )
+    return plan
+
+
 class JournalGraphCheckpointRepository:
     """Store graph control-plane checkpoints in the canonical execution journal."""
 
@@ -718,19 +818,13 @@ class JournalGraphCheckpointRepository:
         suppressed_interaction_resolutions = (
             _graph_interaction_resolution_suppressions(events)
         )
-        admissions = tuple(
-            event
-            for event in events
-            if event.event_type == "graph.execution.admitted"
-            and event.attempt == plan.orchestration_attempt
-            and event.payload.get("graph_scope_id") == plan.scope_id
+        _admission, persisted_plan = _validated_graph_plan_admission(
+            events,
+            execution_id=plan.execution_id,
+            generation_id=plan.orchestration_attempt.generation.generation_id,
+            orchestration_attempt_id=plan.orchestration_attempt.attempt_id,
         )
-        if len(admissions) != 1:
-            raise GraphCheckpointError("graph plan admission is missing or ambiguous")
-        persisted_plan = _thaw_json(admissions[0].payload.get("plan"))
-        if persisted_plan != plan.to_dict() or admissions[0].payload.get(
-            "graph_plan_id"
-        ) != plan.plan_id:
+        if persisted_plan != plan:
             raise GraphCheckpointConflict("graph plan changed after admission")
 
         starts: dict[int, JournalEvent] = {}
@@ -1117,16 +1211,17 @@ class GraphCheckpointService:
         if start is None:
             return None
         step = scan.recovery.plan.steps[step_index]
-        terminals = tuple(
+        attempt_events = tuple(
             event
             for event in scan.snapshot_events
             if event.attempt == step.attempt
             and event.store_seq > start.store_seq
-            and event.event_type in _TERMINALS
         )
-        if len(terminals) > 1:
+        selection = select_attempt_terminal(attempt_events)
+        if selection.ambiguous:
             raise GraphCheckpointError("graph step has ambiguous canonical terminals")
-        return terminals[0] if terminals else None
+        terminal = selection.event
+        return terminal if isinstance(terminal, JournalEvent) else None
 
     def _completed_output(
         self,
@@ -1619,4 +1714,5 @@ __all__ = [
     "GraphStepStartReceipt",
     "GraphTerminalStatus",
     "JournalGraphCheckpointRepository",
+    "locate_graph_execution_plan",
 ]

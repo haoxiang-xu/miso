@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
@@ -8,16 +9,40 @@ from pathlib import Path
 from threading import Barrier
 
 import pytest
+import unchain.persistence.sqlite_generation_rebase_v2 as generation_rebase_module
 
 from unchain.context import (
+    MAX_ARTIFACT_BYTES,
     ArtifactService,
     ContextCompileRequest,
     SourceMessageCursor,
     resolve_context_budget,
 )
+from unchain.context.attachments import HostResolvedAttachment
 from unchain.context.coordinator import ContextCompileCoordinator
+from unchain.context.derived_handoff import (
+    DerivedHandoffInputIngress,
+    HostResolvedDerivedHandoffInput,
+)
+from unchain.context.graph_checkpoint import (
+    GraphCheckpointService,
+    GraphExecutionPlan,
+    GraphStepBinding,
+    GraphTerminalStatus,
+    JournalGraphCheckpointRepository,
+)
+from unchain.context.handoff import DurableHandoffRecorder, HandoffService
+from unchain.context.ingress import (
+    ContextInputIngress,
+    HostResolvedCurrentInput,
+    HostResolvedInteractionInput,
+)
+from unchain.context.projector import CanonicalSemanticEventProjector
+from unchain.context.models import HandoffStatus
 from unchain.journal import (
     AttemptRef,
+    DurableEventSink,
+    EventCursor,
     EventRange,
     GenerationRef,
     OperationRef,
@@ -34,16 +59,21 @@ from unchain.persistence.sqlite_generation_lifecycle_v2 import (
 from unchain.persistence.sqlite_generation_rebase_v2 import (
     GenerationRebaseConflict,
     GenerationRebaseError,
+    GenerationRebaseFailureReason,
     GenerationRebaseIntent,
+    GenerationRebaseJournalIncompatible,
     GenerationRebaseKind,
     GenerationRebasePreflight,
     GenerationRebasePreflightBlocked,
+    GenerationRebaseRecoveryRequired,
     GenerationRebaseRequest,
     GenerationRebaseUnavailable,
     GenerationSnapshotMessage,
     GenerationTaskStateDescriptor,
     SQLiteGenerationRebaseV2Service,
     build_generation_rebase_operation,
+    generation_rebase_failure_detail,
+    recover_generation_rebase_attempt,
 )
 from unchain.persistence.sqlite_legacy_bootstrap_v2 import (
     SQLiteLegacyBootstrapService,
@@ -194,6 +224,57 @@ def _durable_counts(store: SQLiteContextV2Store) -> dict[str, int]:
         }
 
 
+def _durable_authority_image(
+    store: SQLiteContextV2Store,
+) -> tuple[tuple[str, ...], tuple[tuple[str, int, bytes], ...]]:
+    def object_image(path: Path) -> tuple[str, int, bytes]:
+        with path.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").digest()
+        return path.name, path.stat().st_size, digest
+
+    with sqlite3.connect(store.database_path) as connection:
+        database = tuple(connection.iterdump())
+    objects = tuple(
+        object_image(path)
+        for path in sorted(store.object_directory.iterdir())
+        if path.is_file()
+    )
+    return database, objects
+
+
+def _rewrite_event_record(
+    store: SQLiteContextV2Store,
+    event,
+    mutate,
+) -> None:
+    with sqlite3.connect(store.database_path) as connection:
+        raw = connection.execute(
+            "SELECT event_json FROM events WHERE execution_id = ? AND store_seq = ?",
+            (EXECUTION, event.store_seq),
+        ).fetchone()[0]
+        record = json.loads(bytes(raw).decode("utf-8"))
+        mutate(record)
+        encoded = json.dumps(
+            record,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        connection.execute(
+            """
+            UPDATE events SET event_json = ?, event_sha256 = ?
+            WHERE execution_id = ? AND store_seq = ?
+            """,
+            (
+                encoded,
+                hashlib.sha256(encoded).hexdigest(),
+                EXECUTION,
+                event.store_seq,
+            ),
+        )
+
+
 def _checkpoint_repository(store: SQLiteContextV2Store):
     journal = store.bind_execution(EXECUTION)
     artifacts = ArtifactService(
@@ -206,6 +287,196 @@ def _checkpoint_repository(store: SQLiteContextV2Store):
         EXECUTION,
         artifacts=artifacts,
     ).checkpoints
+
+
+def _graph_checkpoint_runtime(
+    store: SQLiteContextV2Store,
+    receipt,
+    *,
+    step_count: int = 1,
+    root_input_kind: str = "message",
+    root_attachment: bool = False,
+):
+    generation = GenerationRef(EXECUTION, receipt.generation_id)
+    orchestration = AttemptRef(generation, "graph-orchestration")
+    step_attempts = tuple(
+        AttemptRef(generation, f"graph-step-{index}")
+        for index in range(step_count)
+    )
+    journal = store.bind_execution(EXECUTION)
+    artifacts = ArtifactService(
+        journal,
+        sanitizer=lambda content, _media_type: content,
+    )
+    attempts = (orchestration, *step_attempts)
+    projectors = {
+        attempt: CanonicalSemanticEventProjector(
+            attempt=attempt,
+            artifacts=artifacts,
+            payload_sanitizer=lambda _event_type, payload: payload,
+        )
+        for attempt in attempts
+    }
+    sinks = {
+        attempt: DurableEventSink(journal, attempt, projectors[attempt])
+        for attempt in attempts
+    }
+
+    def derived_ingress(
+        consumer_attempt: AttemptRef,
+        source_attempt: AttemptRef,
+    ) -> DerivedHandoffInputIngress:
+        projector = projectors[consumer_attempt]
+        sink = sinks[consumer_attempt]
+        return DerivedHandoffInputIngress(
+            consumer_attempt=consumer_attempt,
+            source_attempt=source_attempt,
+            handoff_recorder=DurableHandoffRecorder(
+                attempt=consumer_attempt,
+                handoffs=HandoffService(artifacts),
+                projector=projector,
+                sink=sink,
+            ),
+            input_ingress=ContextInputIngress(
+                attempt=consumer_attempt,
+                projector=projector,
+                sink=sink,
+            ),
+        )
+
+    service = GraphCheckpointService(
+        repository=JournalGraphCheckpointRepository(journal),
+        artifacts=artifacts,
+        derived_ingress_resolver=derived_ingress,
+    )
+    steps = []
+    source = orchestration
+    for index, attempt in enumerate(step_attempts):
+        steps.append(
+            GraphStepBinding(
+                index=index,
+                node_id=f"node-{index}",
+                attempt=attempt,
+                source_attempt=source,
+                provider="openai",
+                model="gpt-test",
+                configuration_sha256=hashlib.sha256(
+                    f"node-{index}-configuration".encode("utf-8")
+                ).hexdigest(),
+            )
+        )
+        source = attempt
+    root_ingress = ContextInputIngress(
+        attempt=orchestration,
+        projector=projectors[orchestration],
+        sink=sinks[orchestration],
+    )
+    if root_input_kind == "message":
+        root_attachments = ()
+        if root_attachment:
+            root_attachment_artifact = artifacts.persist(
+                b"root graph attachment",
+                media_type="text/plain",
+                operation_id="root-graph-attachment",
+            )
+            root_attachments = (
+                HostResolvedAttachment(
+                    artifact=root_attachment_artifact,
+                    kind="input",
+                    name="root.txt",
+                    media_type="text/plain",
+                ),
+            )
+        root_input = root_ingress.persist(
+            HostResolvedCurrentInput(
+                attempt=orchestration,
+                content="run the graph",
+                message_index=0,
+                attachments=root_attachments,
+            )
+        )
+    elif root_input_kind == "interaction":
+        if root_attachment:
+            raise ValueError("interaction root input cannot carry attachments")
+        root_interaction_id = "root-graph-interaction"
+        sinks[orchestration].append_projected(
+            SemanticEventDraft(
+                event_id="root-graph-interaction-request",
+                event_type="interaction.requested",
+                attempt=orchestration,
+                operation_id="root-graph-interaction-request-operation",
+                payload={
+                    "run_id": orchestration.attempt_id,
+                    "interaction_id": root_interaction_id,
+                },
+            )
+        )
+        root_input = root_ingress.persist(
+            HostResolvedInteractionInput(
+                attempt=orchestration,
+                interaction_id=root_interaction_id,
+                response={"instruction": "run the graph"},
+            )
+        )
+    else:
+        raise ValueError("root_input_kind is unsupported")
+    plan = GraphExecutionPlan(
+        orchestration_attempt=orchestration,
+        topology_sha256=hashlib.sha256(b"graph-topology").hexdigest(),
+        initial_input_cursor=root_input.cursor,
+        steps=tuple(steps),
+    )
+    service.admit(plan)
+    return service, plan, sinks
+
+
+def _append_graph_runtime_event(
+    sink: DurableEventSink,
+    attempt: AttemptRef,
+    event_type: str,
+    sequence: int,
+    **payload,
+):
+    return sink.append_projected(
+        SemanticEventDraft(
+            event_id=f"event-{attempt.attempt_id}-{sequence}-{event_type}",
+            event_type=event_type,
+            attempt=attempt,
+            operation_id=(
+                f"operation-{attempt.attempt_id}-{sequence}-{event_type}"
+            ),
+            payload={"run_id": attempt.attempt_id, **payload},
+        )
+    )
+
+
+def _complete_graph_runtime(
+    sink: DurableEventSink,
+    attempt: AttemptRef,
+    *,
+    output: str,
+):
+    _append_graph_runtime_event(
+        sink,
+        attempt,
+        "run_started",
+        1,
+        status="running",
+    )
+    _append_graph_runtime_event(
+        sink,
+        attempt,
+        "final_message",
+        2,
+        content=output,
+    )
+    return _append_graph_runtime_event(
+        sink,
+        attempt,
+        "run_completed",
+        3,
+        status="completed",
+    )
 
 
 def test_create_commits_all_authorities_and_existing_readers_can_verify(
@@ -823,7 +1094,7 @@ def test_unauthorized_canonical_resolution_cannot_hide_legacy_during_rebase(
     before = _durable_counts(store)
 
     with pytest.raises(
-        GenerationRebaseUnavailable,
+        GenerationRebaseJournalIncompatible,
         match="resolution is duplicated",
     ):
         service.rebase(edit_request)
@@ -855,7 +1126,7 @@ def test_ambiguous_interaction_lifecycle_fails_closed_without_rebase_writes(
     before = _durable_counts(store)
 
     with pytest.raises(
-        GenerationRebaseUnavailable,
+        GenerationRebaseJournalIncompatible,
         match="request is duplicated",
     ):
         service.rebase(edit_request)
@@ -1101,7 +1372,7 @@ def test_duplicate_tool_lifecycle_fails_without_rebase_writes(
     before = _durable_counts(store)
 
     with pytest.raises(
-        GenerationRebaseUnavailable,
+        GenerationRebaseJournalIncompatible,
         match="tool lifecycle is not uniquely paired",
     ):
         service.rebase(edit_request)
@@ -1137,12 +1408,1421 @@ def test_duplicate_attempt_terminal_fails_without_rebase_writes(
     before = _durable_counts(store)
 
     with pytest.raises(
-        GenerationRebaseUnavailable,
+        GenerationRebaseJournalIncompatible,
         match="duplicate terminal events",
     ):
         service.rebase(edit_request)
 
     assert _durable_counts(store) == before
+
+
+def test_failure_detail_and_old_consumer_type_order_remain_closed() -> None:
+    recovery = GenerationRebaseRecoveryRequired(
+        "generation rebase graph checkpoint recovery is required",
+        reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_MISSING,
+        subject={
+            "execution_id": EXECUTION,
+            "generation_id": "generation-1",
+        },
+    )
+    incompatible = GenerationRebaseJournalIncompatible(
+        "generation rebase attempt has duplicate terminal events",
+        reason=GenerationRebaseFailureReason.ATTEMPT_DUPLICATE_TERMINAL,
+        subject={
+            "execution_id": EXECUTION,
+            "generation_id": "generation-1",
+        },
+    )
+
+    assert isinstance(recovery, GenerationRebasePreflightBlocked)
+    assert not isinstance(incompatible, GenerationRebasePreflightBlocked)
+    assert isinstance(incompatible, GenerationRebaseConflict)
+    assert incompatible.retryable is False
+    for error in (recovery, incompatible):
+        detail = generation_rebase_failure_detail(error)
+        assert detail is not None
+        assert set(detail) == {"schema", "reason", "subject"}
+        assert detail["schema"] == "unchain.generation_rebase_failure.v1"
+
+    def old_consumer(error: GenerationRebaseError) -> str:
+        if isinstance(error, GenerationRebasePreflightBlocked):
+            return "in_progress"
+        if isinstance(error, GenerationRebaseConflict):
+            return "conflict"
+        return "unavailable"
+
+    assert old_consumer(recovery) == "in_progress"
+    assert old_consumer(incompatible) == "conflict"
+
+
+def test_real_graph_crash_windows_recover_one_seal_at_a_time(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    rebase_service = SQLiteGenerationRebaseV2Service(store)
+    initial = rebase_service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    graph_service, plan, sinks = _graph_checkpoint_runtime(store, initial)
+    graph_service.start_step(plan, 0)
+    step = plan.steps[0]
+    _complete_graph_runtime(
+        sinks[step.attempt],
+        step.attempt,
+        output="completed graph output",
+    )
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+    before = _durable_counts(store)
+
+    with pytest.raises(GenerationRebaseRecoveryRequired) as step_failure_info:
+        rebase_service.rebase(edit_request)
+
+    step_failure = step_failure_info.value
+    assert step_failure.code == "recovery_required"
+    assert step_failure.reason == "graph_step_seal_missing"
+    assert _durable_counts(store) == before
+    step_recovery = recover_generation_rebase_attempt(
+        service=rebase_service,
+        request=edit_request,
+        failure=step_failure,
+        artifact_sanitizer=lambda content, _media_type: content,
+    )
+    assert step_recovery.action == "step_recovered"
+    assert step_recovery.appended_event_count == 1
+    assert step_recovery.artifact_count == 1
+
+    before_finalize_preflight = _durable_counts(store)
+    with pytest.raises(GenerationRebaseRecoveryRequired) as execution_failure_info:
+        rebase_service.rebase(edit_request)
+    assert _durable_counts(store) == before_finalize_preflight
+    execution_failure = execution_failure_info.value
+    assert execution_failure.reason == "graph_execution_seal_missing"
+    execution_recovery = recover_generation_rebase_attempt(
+        service=rebase_service,
+        request=edit_request,
+        failure=execution_failure,
+        artifact_sanitizer=lambda content, _media_type: content,
+    )
+    assert execution_recovery.action == "execution_finalized"
+    assert execution_recovery.appended_event_count == 1
+    assert execution_recovery.artifact_count == 0
+    assert recover_generation_rebase_attempt(
+        service=rebase_service,
+        request=edit_request,
+        failure=execution_failure,
+        artifact_sanitizer=lambda content, _media_type: content,
+    ).action == "unchanged"
+
+    edited = rebase_service.rebase(edit_request)
+
+    assert edited.head_revision == 2
+
+
+def test_stale_step_recovery_never_seals_a_later_terminal(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    rebase_service = SQLiteGenerationRebaseV2Service(store)
+    initial = rebase_service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    graph_service, plan, sinks = _graph_checkpoint_runtime(
+        store,
+        initial,
+        step_count=2,
+    )
+    graph_service.start_step(plan, 0)
+    first_step = plan.steps[0]
+    _complete_graph_runtime(
+        sinks[first_step.attempt],
+        first_step.attempt,
+        output="first completed output",
+    )
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+    with pytest.raises(GenerationRebaseRecoveryRequired) as stale_info:
+        rebase_service.rebase(edit_request)
+    stale_failure = stale_info.value
+    assert stale_failure.reason == "graph_step_seal_missing"
+
+    graph_service.complete_step(
+        plan,
+        0,
+        full_output={"output": "first completed output"},
+    )
+    graph_service.start_step(plan, 1)
+    second_step = plan.steps[1]
+    _complete_graph_runtime(
+        sinks[second_step.attempt],
+        second_step.attempt,
+        output="second terminal must remain unsealed",
+    )
+    before = _durable_authority_image(store)
+
+    recovered = recover_generation_rebase_attempt(
+        service=rebase_service,
+        request=edit_request,
+        failure=stale_failure,
+        artifact_sanitizer=lambda content, _media_type: content,
+    )
+
+    assert recovered.action == "unchanged"
+    assert recovered.appended_event_count == 0
+    assert recovered.artifact_count == 0
+    assert _durable_authority_image(store) == before
+    second_events = tuple(
+        event
+        for event in store.bind_execution(EXECUTION).capture_snapshot().events
+        if event.attempt == second_step.attempt
+    )
+    assert not any(
+        event.event_type in {
+            "graph.step.completed",
+            "graph.step.failed",
+            "graph.step.cancelled",
+        }
+        for event in second_events
+    )
+
+
+def test_event_sha256_corruption_is_nonretryable_and_zero_write(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            """
+            UPDATE events SET event_sha256 = ?
+            WHERE execution_id = ? AND store_seq = ?
+            """,
+            ("0" * 64, EXECUTION, initial.first_cursor.store_seq),
+        )
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+    before = _durable_authority_image(store)
+
+    with pytest.raises(GenerationRebaseJournalIncompatible) as incompatible:
+        service.rebase(edit_request)
+
+    assert incompatible.value.code == "journal_incompatible"
+    assert incompatible.value.retryable is False
+    assert incompatible.value.reason == "journal_authority_invalid"
+    assert _durable_authority_image(store) == before
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "delete",
+        "truncate",
+        "content_tamper",
+        "descriptor_row",
+        "oversized",
+    ],
+)
+@pytest.mark.parametrize(
+    "artifact_role",
+    [
+        "plan_initial_input",
+        "plan_initial_attachment",
+        "plan_initial_resolution",
+        "start_provenance",
+        "input_content",
+        "step_output",
+    ],
+)
+def test_graph_artifact_corruption_is_nonretryable_and_zero_write(
+    tmp_path: Path,
+    mutation: str,
+    artifact_role: str,
+) -> None:
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    graph_service, plan, sinks = _graph_checkpoint_runtime(
+        store,
+        initial,
+        root_input_kind=(
+            "interaction"
+            if artifact_role == "plan_initial_resolution"
+            else "message"
+        ),
+        root_attachment=artifact_role == "plan_initial_attachment",
+    )
+    graph_service.start_step(plan, 0)
+    step = plan.steps[0]
+    output = "completed graph output with verified artifact bytes"
+    _complete_graph_runtime(
+        sinks[step.attempt],
+        step.attempt,
+        output=output,
+    )
+    graph_service.complete_step(
+        plan,
+        0,
+        full_output={"output": output},
+    )
+    graph_service.finalize(plan)
+    graph_events = store.bind_execution(EXECUTION).capture_snapshot().events
+    plan_initial_input = next(
+        event
+        for event in graph_events
+        if event.store_seq == plan.initial_input_cursor.store_seq
+        and event.event_id == plan.initial_input_cursor.event_id
+    )
+    step_start = next(
+        event
+        for event in graph_events
+        if event.attempt == step.attempt
+        and event.event_type == "graph.step.started"
+    )
+    input_event = next(
+        event
+        for event in graph_events
+        if event.attempt == step.attempt
+        and event.event_type == "message.user"
+    )
+    step_seal = next(
+        event
+        for event in graph_events
+        if event.event_type == "graph.step.completed"
+    )
+    if artifact_role == "plan_initial_attachment":
+        artifact_ref = plan_initial_input.resource_refs[1]
+    else:
+        artifact_ref = {
+            "plan_initial_input": plan_initial_input.resource_refs[0],
+            "plan_initial_resolution": plan_initial_input.resource_refs[0],
+            "start_provenance": step_start.resource_refs[0],
+            "input_content": input_event.resource_refs[0],
+            "step_output": step_seal.resource_refs[0],
+        }[artifact_role]
+    with sqlite3.connect(store.database_path) as connection:
+        object_sha256 = connection.execute(
+            """
+            SELECT object_sha256 FROM artifacts
+            WHERE execution_id = ? AND artifact_id = ? AND revision = ?
+            """,
+            (
+                EXECUTION,
+                artifact_ref.resource_id,
+                artifact_ref.revision,
+            ),
+        ).fetchone()[0]
+    object_path = store.object_directory / object_sha256
+    original_bytes = object_path.read_bytes()
+    if mutation == "delete":
+        object_path.unlink()
+    elif mutation == "truncate":
+        object_path.write_bytes(original_bytes[: len(original_bytes) // 2])
+    elif mutation == "content_tamper":
+        object_path.write_bytes(
+            bytes([original_bytes[0] ^ 1]) + original_bytes[1:]
+        )
+    elif mutation == "descriptor_row":
+        with sqlite3.connect(store.database_path) as connection:
+            connection.execute(
+                """
+                UPDATE artifacts SET artifact_record_sha256 = ?
+                WHERE execution_id = ? AND object_sha256 = ?
+                """,
+                ("0" * 64, EXECUTION, object_sha256),
+            )
+    else:
+        with object_path.open("r+b") as stream:
+            stream.truncate(MAX_ARTIFACT_BYTES + 1)
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+    before = _durable_authority_image(store)
+
+    with pytest.raises(GenerationRebaseJournalIncompatible) as incompatible:
+        service.rebase(edit_request)
+
+    assert incompatible.value.code == "journal_incompatible"
+    assert incompatible.value.retryable is False
+    expected_reason = (
+        "graph_plan_descriptor_invalid"
+        if artifact_role.startswith("plan_initial_")
+        else "graph_step_seal_foreign"
+    )
+    assert incompatible.value.reason == expected_reason
+    assert _durable_authority_image(store) == before
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_reason"),
+    [
+        ("plan_extra_ref", "graph_plan_descriptor_invalid"),
+        ("plan_content_descriptor_drift", "graph_plan_descriptor_invalid"),
+        ("plan_message_artifact_divergence", "graph_plan_descriptor_invalid"),
+        ("plan_attachment_descriptor_drift", "graph_plan_descriptor_invalid"),
+        ("plan_resolution_extra_ref", "graph_plan_descriptor_invalid"),
+        ("plan_resolution_descriptor_drift", "graph_plan_descriptor_invalid"),
+        ("plan_resolution_artifact_divergence", "graph_plan_descriptor_invalid"),
+        ("handoff_extra_ref", "graph_step_seal_foreign"),
+        ("handoff_full_output_descriptor_drift", "graph_step_seal_foreign"),
+        ("handoff_envelope_artifact_ref_drift", "graph_step_seal_foreign"),
+        ("input_extra_ref", "graph_step_seal_foreign"),
+        ("input_nonartifact_ref", "graph_step_seal_foreign"),
+        ("input_attachment_descriptor_drift", "graph_step_seal_foreign"),
+        ("input_message_artifact_divergence", "graph_step_seal_foreign"),
+        ("request_extra_ref", "graph_step_seal_foreign"),
+        ("resolution_extra_ref", "graph_step_seal_foreign"),
+        ("resolution_descriptor_drift", "graph_step_seal_foreign"),
+        ("resolution_artifact_divergence", "graph_step_seal_foreign"),
+        ("tool_confirmed_extra_ref", "graph_step_seal_foreign"),
+        ("tool_denied_extra_ref", "graph_step_seal_foreign"),
+        ("runtime_terminal_extra_ref", "graph_step_seal_foreign"),
+        ("root_terminal_extra_ref", "graph_execution_seal_mismatched"),
+    ],
+)
+def test_graph_trusted_event_artifact_closure_is_exact_and_zero_write(
+    tmp_path: Path,
+    mutation: str,
+    expected_reason: str,
+) -> None:
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    plan_resolution = mutation.startswith("plan_resolution_")
+    graph_service, plan, sinks = _graph_checkpoint_runtime(
+        store,
+        initial,
+        root_input_kind="interaction" if plan_resolution else "message",
+        root_attachment=not plan_resolution,
+    )
+    graph_service.start_step(plan, 0)
+    step = plan.steps[0]
+    journal = store.bind_execution(EXECUTION)
+    repository = JournalGraphCheckpointRepository(journal)
+    interaction_id = "artifact-closure-interaction"
+    request_event = _append_event(
+        store,
+        initial,
+        event_id="artifact-closure-request",
+        event_type="interaction.requested",
+        interaction_id=interaction_id,
+        attempt_id=step.attempt.attempt_id,
+    )
+    resolution_receipt = ContextInputIngress(
+        attempt=step.attempt,
+        projector=sinks[step.attempt].projector,
+        sink=sinks[step.attempt],
+    ).persist(
+        HostResolvedInteractionInput(
+            attempt=step.attempt,
+            interaction_id=interaction_id,
+            response={"answer": "continue"},
+        )
+    )
+    repository.resume(
+        plan,
+        step,
+        interaction_id=interaction_id,
+        request_cursor=EventCursor(
+            request_event.store_seq,
+            request_event.event_id,
+        ),
+        resolution_cursor=resolution_receipt.cursor,
+    )
+    tool_confirmed = _append_event(
+        store,
+        initial,
+        event_id="artifact-closure-tool-confirmed",
+        event_type="tool_confirmed",
+        interaction_id=interaction_id,
+        attempt_id=step.attempt.attempt_id,
+    )
+    tool_denied = _append_event(
+        store,
+        initial,
+        event_id="artifact-closure-tool-denied",
+        event_type="tool_denied",
+        interaction_id=interaction_id,
+        attempt_id=step.attempt.attempt_id,
+    )
+    terminal_receipt = _complete_graph_runtime(
+        sinks[step.attempt],
+        step.attempt,
+        output="artifact closure output",
+    )
+    graph_service.complete_step(
+        plan,
+        0,
+        full_output={"output": "artifact closure output"},
+    )
+    graph_service.finalize(plan)
+    root_terminal_receipt = _append_graph_runtime_event(
+        sinks[plan.orchestration_attempt],
+        plan.orchestration_attempt,
+        "run_completed",
+        10,
+        status="completed",
+    )
+    events = journal.capture_snapshot().events
+    plan_input = next(
+        event
+        for event in events
+        if event.store_seq == plan.initial_input_cursor.store_seq
+        and event.event_id == plan.initial_input_cursor.event_id
+    )
+    handoff = next(
+        event
+        for event in events
+        if event.attempt == step.attempt
+        and event.event_type == "handoff.recorded"
+    )
+    step_input = next(
+        event
+        for event in events
+        if event.attempt == step.attempt
+        and event.event_type == "message.user"
+    )
+    step_seal = next(
+        event
+        for event in events
+        if event.attempt == step.attempt
+        and event.event_type == "graph.step.completed"
+    )
+    extra_ref = step_seal.resource_refs[0].to_dict()
+
+    targets = {
+        "plan_extra_ref": plan_input,
+        "plan_content_descriptor_drift": plan_input,
+        "plan_message_artifact_divergence": plan_input,
+        "plan_attachment_descriptor_drift": plan_input,
+        "plan_resolution_extra_ref": plan_input,
+        "plan_resolution_descriptor_drift": plan_input,
+        "plan_resolution_artifact_divergence": plan_input,
+        "handoff_extra_ref": handoff,
+        "handoff_full_output_descriptor_drift": handoff,
+        "handoff_envelope_artifact_ref_drift": handoff,
+        "input_extra_ref": step_input,
+        "input_nonartifact_ref": step_input,
+        "input_attachment_descriptor_drift": step_input,
+        "input_message_artifact_divergence": step_input,
+        "request_extra_ref": request_event,
+        "resolution_extra_ref": resolution_receipt.event,
+        "resolution_descriptor_drift": resolution_receipt.event,
+        "resolution_artifact_divergence": resolution_receipt.event,
+        "tool_confirmed_extra_ref": tool_confirmed,
+        "tool_denied_extra_ref": tool_denied,
+        "runtime_terminal_extra_ref": terminal_receipt.event,
+        "root_terminal_extra_ref": root_terminal_receipt.event,
+    }
+
+    def mutate(record: dict) -> None:
+        if mutation.endswith("extra_ref"):
+            record["resource_refs"].append(extra_ref)
+        elif mutation in {
+            "plan_content_descriptor_drift",
+            "plan_resolution_descriptor_drift",
+            "resolution_descriptor_drift",
+        }:
+            record["payload"]["content_sha256"] = "0" * 64
+        elif mutation == "plan_attachment_descriptor_drift":
+            record["payload"]["attachments"][0]["artifact"]["sha256"] = (
+                "0" * 64
+            )
+        elif mutation in {
+            "plan_message_artifact_divergence",
+            "input_message_artifact_divergence",
+        }:
+            record["payload"]["message"]["content"] = "drifted message"
+        elif mutation in {
+            "plan_resolution_artifact_divergence",
+            "resolution_artifact_divergence",
+        }:
+            record["payload"]["submitted_by"] = "drifted-user"
+        elif mutation == "handoff_full_output_descriptor_drift":
+            record["payload"]["full_output_artifact"]["sha256"] = "0" * 64
+        elif mutation == "handoff_envelope_artifact_ref_drift":
+            record["payload"]["handoff_envelope"]["artifact_refs"].append(
+                plan_input.resource_refs[0].to_dict()
+            )
+        elif mutation == "input_nonartifact_ref":
+            record["resource_refs"][0]["kind"] = "checkpoint"
+        elif mutation == "input_attachment_descriptor_drift":
+            record["payload"]["attachments"][0]["artifact"]["sha256"] = (
+                "0" * 64
+            )
+        else:
+            raise AssertionError("artifact closure mutation is unsupported")
+
+    _rewrite_event_record(store, targets[mutation], mutate)
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+    before = _durable_authority_image(store)
+
+    with pytest.raises(GenerationRebaseJournalIncompatible) as incompatible:
+        service.rebase(edit_request)
+
+    assert incompatible.value.code == "journal_incompatible"
+    assert incompatible.value.retryable is False
+    assert incompatible.value.reason == expected_reason
+    assert _durable_authority_image(store) == before
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "step0_child_attempt",
+        "step0_source_range",
+        "step0_artifact_refs",
+        "step1_child_attempt",
+        "step1_source_range",
+        "step1_predecessor_ref",
+    ],
+)
+def test_graph_handoff_source_provenance_is_exact_and_zero_write(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    graph_service, plan, sinks = _graph_checkpoint_runtime(
+        store,
+        initial,
+        step_count=2,
+    )
+    for step in plan.steps:
+        graph_service.start_step(plan, step.index)
+        output = f"handoff source output {step.index}"
+        _complete_graph_runtime(
+            sinks[step.attempt],
+            step.attempt,
+            output=output,
+        )
+        graph_service.complete_step(
+            plan,
+            step.index,
+            full_output={"output": output},
+        )
+    graph_service.finalize(plan)
+    events = store.bind_execution(EXECUTION).capture_snapshot().events
+    handoffs = tuple(
+        next(
+            event
+            for event in events
+            if event.attempt == step.attempt
+            and event.event_type == "handoff.recorded"
+        )
+        for step in plan.steps
+    )
+    predecessor_seal = next(
+        event
+        for event in events
+        if event.attempt == plan.steps[0].attempt
+        and event.event_type == "graph.step.completed"
+    )
+    target_index = 0 if mutation.startswith("step0_") else 1
+
+    def mutate(record: dict) -> None:
+        envelope = record["payload"]["handoff_envelope"]
+        if mutation == "step0_child_attempt":
+            envelope["child_attempt"] = plan.steps[0].attempt.to_dict()
+            envelope["child_run_id"] = plan.steps[0].attempt.attempt_id
+        elif mutation == "step0_source_range":
+            envelope["source_event_range"] = EventRange(
+                EventCursor(handoffs[0].store_seq, handoffs[0].event_id),
+                EventCursor(handoffs[0].store_seq, handoffs[0].event_id),
+            ).to_dict()
+        elif mutation == "step0_artifact_refs":
+            predecessor_ref = predecessor_seal.resource_refs[0].to_dict()
+            envelope["artifact_refs"].append(predecessor_ref)
+            record["resource_refs"].append(predecessor_ref)
+        elif mutation == "step1_child_attempt":
+            envelope["child_attempt"] = plan.orchestration_attempt.to_dict()
+            envelope["child_run_id"] = plan.orchestration_attempt.attempt_id
+        elif mutation == "step1_source_range":
+            envelope["source_event_range"] = EventRange(
+                plan.initial_input_cursor,
+                plan.initial_input_cursor,
+            ).to_dict()
+        elif mutation == "step1_predecessor_ref":
+            envelope["artifact_refs"] = []
+            record["resource_refs"] = [envelope["full_output_ref"]]
+        else:
+            raise AssertionError("handoff source mutation is unsupported")
+
+    _rewrite_event_record(store, handoffs[target_index], mutate)
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+    before = _durable_authority_image(store)
+
+    with pytest.raises(GenerationRebaseJournalIncompatible) as incompatible:
+        service.rebase(edit_request)
+
+    assert incompatible.value.code == "journal_incompatible"
+    assert incompatible.value.retryable is False
+    assert incompatible.value.reason == "graph_step_seal_foreign"
+    assert _durable_authority_image(store) == before
+
+
+def test_graph_handoff_full_output_must_equal_its_exact_source(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    graph_service, plan, sinks = _graph_checkpoint_runtime(store, initial)
+    step = plan.steps[0]
+    ingress = graph_service._derived_ingress_resolver(
+        step.attempt,
+        step.source_attempt,
+    )
+    handoff = ingress.persist(
+        HostResolvedDerivedHandoffInput(
+            consumer_attempt=step.attempt,
+            source_attempt=step.source_attempt,
+            status=HandoffStatus.COMPLETE,
+            full_output={
+                "schema": "unchain.graph_input_seed.v1",
+                "input_event": {"malicious": True},
+            },
+            source_event_range=EventRange(
+                plan.initial_input_cursor,
+                plan.initial_input_cursor,
+            ),
+            operation_id="malicious-graph-source-handoff",
+        )
+    )
+    JournalGraphCheckpointRepository(
+        store.bind_execution(EXECUTION)
+    ).start(plan, step, handoff)
+    output = "output after malicious source handoff"
+    _complete_graph_runtime(
+        sinks[step.attempt],
+        step.attempt,
+        output=output,
+    )
+    graph_service.complete_step(
+        plan,
+        0,
+        full_output={"output": output},
+    )
+    graph_service.finalize(plan)
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+    before = _durable_authority_image(store)
+
+    with pytest.raises(GenerationRebaseJournalIncompatible) as incompatible:
+        service.rebase(edit_request)
+
+    assert incompatible.value.code == "journal_incompatible"
+    assert incompatible.value.retryable is False
+    assert incompatible.value.reason == "graph_step_seal_foreign"
+    assert _durable_authority_image(store) == before
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "shape",
+        "plan",
+        "scope",
+        "step",
+        "attempt",
+        "request_cursor",
+        "resolution_cursor",
+        "resources",
+    ],
+)
+def test_foreign_graph_resume_admission_is_journal_incompatible(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    graph_service, plan, _sinks = _graph_checkpoint_runtime(
+        store,
+        initial,
+        step_count=2,
+    )
+    graph_service.start_step(plan, 0)
+    step = plan.steps[0]
+    interaction_id = "foreign-resume-interaction"
+    request_event = _append_event(
+        store,
+        initial,
+        event_id="foreign-resume-request",
+        event_type="interaction.requested",
+        interaction_id=interaction_id,
+        attempt_id=step.attempt.attempt_id,
+    )
+    resolution_event = _append_event(
+        store,
+        initial,
+        event_id="foreign-resume-resolution",
+        event_type="interaction.resolved",
+        interaction_id=interaction_id,
+        attempt_id=step.attempt.attempt_id,
+    )
+    payload = {
+        "graph_plan_id": plan.plan_id,
+        "graph_scope_id": plan.scope_id,
+        "step": step.to_dict(),
+        "interaction_id": interaction_id,
+        "request_cursor": EventCursor(
+            request_event.store_seq,
+            request_event.event_id,
+        ).to_dict(),
+        "resolution_cursor": EventCursor(
+            resolution_event.store_seq,
+            resolution_event.event_id,
+        ).to_dict(),
+    }
+    resource_refs: tuple[ResourceRef, ...] = ()
+    resume_attempt = step.attempt
+    if mutation == "shape":
+        payload["foreign_field"] = "forbidden"
+    elif mutation == "plan":
+        payload["graph_plan_id"] = "foreign-graph-plan"
+    elif mutation == "scope":
+        payload["graph_scope_id"] = "foreign-graph-scope"
+    elif mutation == "step":
+        payload["step"] = plan.steps[1].to_dict()
+    elif mutation == "attempt":
+        resume_attempt = plan.steps[1].attempt
+    elif mutation == "request_cursor":
+        payload["request_cursor"] = plan.initial_input_cursor.to_dict()
+    elif mutation == "resolution_cursor":
+        payload["resolution_cursor"] = plan.initial_input_cursor.to_dict()
+    elif mutation == "resources":
+        start = next(
+            event
+            for event in store.bind_execution(EXECUTION).capture_snapshot().events
+            if event.attempt == step.attempt
+            and event.event_type == "graph.step.started"
+        )
+        resource_refs = start.resource_refs
+    store.bind_execution(EXECUTION).append(
+        request=SemanticEventDraft(
+            event_id=f"foreign-resume-{mutation}",
+            event_type="graph.step.resume.admitted",
+            attempt=resume_attempt,
+            operation_id=f"foreign-resume-operation-{mutation}",
+            payload=payload,
+            resource_refs=resource_refs,
+        ).to_append_request()
+    )
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+    before = _durable_authority_image(store)
+
+    with pytest.raises(GenerationRebaseJournalIncompatible) as incompatible:
+        service.rebase(edit_request)
+
+    assert incompatible.value.code == "journal_incompatible"
+    assert incompatible.value.reason in {
+        "graph_attempt_kind_ambiguous",
+        "graph_step_seal_foreign",
+    }
+    assert incompatible.value.retryable is False
+    assert _durable_authority_image(store) == before
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "duplicate_same_evidence",
+        "crossed_cycle_cursors",
+        "second_cycle_mutation",
+    ],
+)
+def test_noncanonical_graph_resume_cycles_are_nonretryable_and_zero_write(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    graph_service, plan, sinks = _graph_checkpoint_runtime(store, initial)
+    graph_service.start_step(plan, 0)
+    step = plan.steps[0]
+
+    def interaction_cycle(ordinal: int):
+        interaction_id = f"resume-cycle-{ordinal}"
+        request_event = _append_event(
+            store,
+            initial,
+            event_id=f"resume-cycle-{ordinal}-request",
+            event_type="interaction.requested",
+            interaction_id=interaction_id,
+            attempt_id=step.attempt.attempt_id,
+        )
+        resolution_event = _append_event(
+            store,
+            initial,
+            event_id=f"resume-cycle-{ordinal}-resolution",
+            event_type="interaction.resolved",
+            interaction_id=interaction_id,
+            attempt_id=step.attempt.attempt_id,
+        )
+        return interaction_id, request_event, resolution_event
+
+    def append_resume(
+        label: str,
+        interaction_id: str,
+        request_event,
+        resolution_event,
+    ) -> None:
+        store.bind_execution(EXECUTION).append(
+            request=SemanticEventDraft(
+                event_id=f"resume-cycle-{mutation}-{label}",
+                event_type="graph.step.resume.admitted",
+                attempt=step.attempt,
+                operation_id=f"resume-cycle-{mutation}-{label}-operation",
+                payload={
+                    "graph_plan_id": plan.plan_id,
+                    "graph_scope_id": plan.scope_id,
+                    "step": step.to_dict(),
+                    "interaction_id": interaction_id,
+                    "request_cursor": EventCursor(
+                        request_event.store_seq,
+                        request_event.event_id,
+                    ).to_dict(),
+                    "resolution_cursor": EventCursor(
+                        resolution_event.store_seq,
+                        resolution_event.event_id,
+                    ).to_dict(),
+                },
+            ).to_append_request()
+        )
+
+    first_id, first_request, first_resolution = interaction_cycle(1)
+    if mutation == "duplicate_same_evidence":
+        append_resume("first", first_id, first_request, first_resolution)
+        append_resume("duplicate", first_id, first_request, first_resolution)
+    elif mutation == "crossed_cycle_cursors":
+        second_id, second_request, second_resolution = interaction_cycle(2)
+        append_resume("first", first_id, first_request, first_resolution)
+        append_resume("second", second_id, second_request, second_resolution)
+    else:
+        append_resume("first", first_id, first_request, first_resolution)
+        second_id, _second_request, second_resolution = interaction_cycle(2)
+        append_resume("second", second_id, first_request, second_resolution)
+
+    terminal = _append_graph_runtime_event(
+        sinks[step.attempt],
+        step.attempt,
+        "run_failed",
+        99,
+        status="failed",
+    )
+    JournalGraphCheckpointRepository(
+        store.bind_execution(EXECUTION)
+    ).terminal(
+        plan,
+        step,
+        status=GraphTerminalStatus.FAILED,
+        terminal_cursor=terminal.cursor,
+    )
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+    before = _durable_authority_image(store)
+
+    with pytest.raises(GenerationRebaseJournalIncompatible) as incompatible:
+        service.rebase(edit_request)
+
+    assert incompatible.value.code == "journal_incompatible"
+    assert incompatible.value.retryable is False
+    assert incompatible.value.reason == "graph_step_seal_foreign"
+    assert _durable_authority_image(store) == before
+
+
+def test_two_canonical_graph_resume_cycles_allow_rebase(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    graph_service, plan, sinks = _graph_checkpoint_runtime(store, initial)
+    graph_service.start_step(plan, 0)
+    step = plan.steps[0]
+    repository = JournalGraphCheckpointRepository(
+        store.bind_execution(EXECUTION)
+    )
+    interaction_ingress = ContextInputIngress(
+        attempt=step.attempt,
+        projector=sinks[step.attempt].projector,
+        sink=sinks[step.attempt],
+    )
+    for ordinal in (1, 2):
+        interaction_id = f"canonical-resume-cycle-{ordinal}"
+        request_event = _append_event(
+            store,
+            initial,
+            event_id=f"canonical-resume-cycle-{ordinal}-request",
+            event_type="interaction.requested",
+            interaction_id=interaction_id,
+            attempt_id=step.attempt.attempt_id,
+        )
+        resolution_event = interaction_ingress.persist(
+            HostResolvedInteractionInput(
+                attempt=step.attempt,
+                interaction_id=interaction_id,
+                response={"answer": f"response-{ordinal}"},
+            )
+        )
+        repository.resume(
+            plan,
+            step,
+            interaction_id=interaction_id,
+            request_cursor=EventCursor(
+                request_event.store_seq,
+                request_event.event_id,
+            ),
+            resolution_cursor=resolution_event.cursor,
+        )
+    terminal = _append_graph_runtime_event(
+        sinks[step.attempt],
+        step.attempt,
+        "run_failed",
+        99,
+        status="failed",
+    )
+    repository.terminal(
+        plan,
+        step,
+        status=GraphTerminalStatus.FAILED,
+        terminal_cursor=terminal.cursor,
+    )
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+
+    assert service.rebase(edit_request).head_revision == 2
+
+
+def test_multistep_graph_verification_does_not_retain_output_bytes(
+    tmp_path: Path,
+) -> None:
+    assert (
+        "output_bytes"
+        not in generation_rebase_module._GraphStepQuiescence.__dataclass_fields__
+    )
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    graph_service, plan, sinks = _graph_checkpoint_runtime(
+        store,
+        initial,
+        step_count=3,
+    )
+    for step in plan.steps:
+        graph_service.start_step(plan, step.index)
+        output = f"verified output for step {step.index}"
+        _complete_graph_runtime(
+            sinks[step.attempt],
+            step.attempt,
+            output=output,
+        )
+        graph_service.complete_step(
+            plan,
+            step.index,
+            full_output={"output": output},
+        )
+    graph_service.finalize(plan)
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+
+    assert service.rebase(edit_request).head_revision == 2
+
+
+def test_real_root_terminal_and_dead_graph_prefix_are_quiescent(
+    tmp_path: Path,
+) -> None:
+    root_store = _store(tmp_path / "root")
+    root_rebase = SQLiteGenerationRebaseV2Service(root_store)
+    root_initial = root_rebase.rebase(
+        _request(_intent(), operation_id="rebase-operation-root")
+    )
+    root_graph, root_plan, root_sinks = _graph_checkpoint_runtime(
+        root_store,
+        root_initial,
+    )
+    root_graph.start_step(root_plan, 0)
+    root_step = root_plan.steps[0]
+    _complete_graph_runtime(
+        root_sinks[root_step.attempt],
+        root_step.attempt,
+        output="root output",
+    )
+    root_graph.complete_step(
+        root_plan,
+        0,
+        full_output={"output": "root output"},
+    )
+    root_graph.finalize(root_plan)
+    _append_graph_runtime_event(
+        root_sinks[root_plan.orchestration_attempt],
+        root_plan.orchestration_attempt,
+        "run_completed",
+        10,
+        status="completed",
+    )
+    _root_intent, root_request = _next(
+        root_initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+
+    assert root_rebase.rebase(root_request).head_revision == 2
+
+    dead_store = _store(tmp_path / "dead")
+    dead_rebase = SQLiteGenerationRebaseV2Service(dead_store)
+    dead_initial = dead_rebase.rebase(
+        _request(_intent(), operation_id="rebase-operation-dead")
+    )
+    dead_graph, dead_plan, dead_sinks = _graph_checkpoint_runtime(
+        dead_store,
+        dead_initial,
+    )
+    dead_graph.start_step(dead_plan, 0)
+    dead_step = dead_plan.steps[0]
+    _append_graph_runtime_event(
+        dead_sinks[dead_step.attempt],
+        dead_step.attempt,
+        "run_failed",
+        1,
+        status="failed",
+    )
+    dead_graph.recover(dead_plan)
+    _dead_intent, dead_request = _next(
+        dead_initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+
+    assert dead_rebase.rebase(dead_request).head_revision == 2
+
+
+def test_max_iterations_never_suppresses_pending_interaction(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    _append_event(
+        store,
+        initial,
+        event_id="interaction-request-before-max",
+        event_type="interaction.requested",
+        interaction_id="interaction-before-max",
+        attempt_id="attempt-max-wait",
+    )
+    _append_event(
+        store,
+        initial,
+        event_id="run-max-iterations-wait",
+        event_type="run_max_iterations",
+        attempt_id="attempt-max-wait",
+    )
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+
+    with pytest.raises(GenerationRebasePreflightBlocked) as blocked_info:
+        service.rebase(edit_request)
+
+    assert blocked_info.value.reason == "pending_interaction"
+
+
+def test_max_iterations_is_narrow_terminal_equivalent(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    for event_id, event_type in (
+        ("run-started-extended", "run_started"),
+        ("run-max-extended", "run_max_iterations"),
+        ("run-completed-extended", "run_completed"),
+    ):
+        _append_event(
+            store,
+            initial,
+            event_id=event_id,
+            event_type=event_type,
+            attempt_id="attempt-extended",
+        )
+    _append_event(
+        store,
+        initial,
+        event_id="run-max-final",
+        event_type="run.max_iterations",
+        attempt_id="attempt-max-final",
+    )
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+
+    assert service.rebase(edit_request).head_revision == 2
+
+
+@pytest.mark.parametrize(
+    "terminal_type",
+    ["run_max_iterations", "run_cancelled"],
+)
+def test_real_graph_terminal_families_form_a_dead_prefix(
+    tmp_path: Path,
+    terminal_type: str,
+) -> None:
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    graph_service, plan, sinks = _graph_checkpoint_runtime(store, initial)
+    graph_service.start_step(plan, 0)
+    step = plan.steps[0]
+    _append_graph_runtime_event(
+        sinks[step.attempt],
+        step.attempt,
+        terminal_type,
+        1,
+        status="terminal",
+    )
+    graph_service.recover(plan)
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+
+    assert service.rebase(edit_request).head_revision == 2
+
+
+def test_graph_seal_followed_by_any_event_is_journal_incompatible(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    graph_service, plan, sinks = _graph_checkpoint_runtime(store, initial)
+    graph_service.start_step(plan, 0)
+    step = plan.steps[0]
+    _complete_graph_runtime(
+        sinks[step.attempt],
+        step.attempt,
+        output="sealed output",
+    )
+    graph_service.complete_step(
+        plan,
+        0,
+        full_output={"output": "sealed output"},
+    )
+    _append_graph_runtime_event(
+        sinks[step.attempt],
+        step.attempt,
+        "runtime.after_seal",
+        10,
+    )
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+
+    with pytest.raises(GenerationRebaseJournalIncompatible) as incompatible:
+        service.rebase(edit_request)
+
+    assert incompatible.value.reason == "graph_step_seal_not_last"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "terminal_type", "expected_reason"),
+    (
+        (
+            "status",
+            "run_completed",
+            "graph_step_seal_mismatched_terminal",
+        ),
+        ("cursor", "run_failed", "graph_step_seal_foreign"),
+        ("scope", "run_failed", "graph_step_seal_foreign"),
+    ),
+)
+def test_graph_seal_identity_and_status_mismatches_fail_closed(
+    tmp_path: Path,
+    mutation: str,
+    terminal_type: str,
+    expected_reason: str,
+) -> None:
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    graph_service, plan, sinks = _graph_checkpoint_runtime(store, initial)
+    graph_service.start_step(plan, 0)
+    step = plan.steps[0]
+    terminal = _append_graph_runtime_event(
+        sinks[step.attempt],
+        step.attempt,
+        terminal_type,
+        1,
+        status="terminal",
+    )
+    terminal_cursor = terminal.cursor
+    graph_scope_id = plan.scope_id
+    if mutation == "cursor":
+        terminal_cursor = EventCursor(
+            terminal.cursor.store_seq,
+            "mismatched-terminal-event",
+        )
+    elif mutation == "scope":
+        graph_scope_id = "mismatched-graph-scope"
+    seal = SemanticEventDraft(
+        event_id=f"invalid-seal-{mutation}",
+        event_type="graph.step.failed",
+        attempt=step.attempt,
+        operation_id=f"invalid-seal-operation-{mutation}",
+        payload={
+            "graph_plan_id": plan.plan_id,
+            "graph_scope_id": graph_scope_id,
+            "step": step.to_dict(),
+            "terminal_cursor": terminal_cursor.to_dict(),
+        },
+    )
+    store.bind_execution(EXECUTION).append(request=seal.to_append_request())
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+
+    with pytest.raises(GenerationRebaseJournalIncompatible) as incompatible:
+        service.rebase(edit_request)
+
+    assert incompatible.value.reason == expected_reason
+
+
+def test_completed_graph_seal_execution_range_must_start_at_step_start(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    graph_service, plan, sinks = _graph_checkpoint_runtime(store, initial)
+    graph_service.start_step(plan, 0)
+    step = plan.steps[0]
+    _append_graph_runtime_event(
+        sinks[step.attempt],
+        step.attempt,
+        "final_message",
+        1,
+        content="range output",
+    )
+    terminal = _append_graph_runtime_event(
+        sinks[step.attempt],
+        step.attempt,
+        "run_completed",
+        2,
+        status="completed",
+    )
+    journal = store.bind_execution(EXECUTION)
+    artifact = ArtifactService(
+        journal,
+        sanitizer=lambda content, _media_type: content,
+    ).persist_exact_json(
+        {"output": "range output"},
+        operation_id="invalid-range-artifact",
+    )
+    seal = SemanticEventDraft(
+        event_id="invalid-range-seal",
+        event_type="graph.step.completed",
+        attempt=step.attempt,
+        operation_id="invalid-range-seal-operation",
+        payload={
+            "graph_plan_id": plan.plan_id,
+            "graph_scope_id": plan.scope_id,
+            "step": step.to_dict(),
+            "terminal_cursor": terminal.cursor.to_dict(),
+            "execution_event_range": EventRange(
+                terminal.cursor,
+                terminal.cursor,
+            ).to_dict(),
+            "output_artifact": artifact.to_dict(),
+        },
+        resource_refs=(artifact.ref,),
+    )
+    journal.append(request=seal.to_append_request())
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+
+    with pytest.raises(GenerationRebaseJournalIncompatible) as incompatible:
+        service.rebase(edit_request)
+
+    assert incompatible.value.reason == "graph_step_sequence_invalid"
 
 
 def test_empty_snapshot_uses_a_marker_and_survives_restart(tmp_path: Path) -> None:

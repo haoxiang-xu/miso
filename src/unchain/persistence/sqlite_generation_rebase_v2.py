@@ -16,7 +16,21 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, ClassVar, Iterator, Mapping
+from typing import Any, Callable, ClassVar, Iterator, Mapping
+
+from unchain.context.artifacts import MAX_ARTIFACT_BYTES, ArtifactService
+from unchain.context.attachments import HostResolvedAttachment
+from unchain.context.graph_checkpoint import (
+    GraphCheckpointError,
+    GraphCheckpointService,
+    GraphExecutionPlan,
+    GraphStepBinding,
+    GraphTerminalStatus,
+    JournalGraphCheckpointRepository,
+    locate_graph_execution_plan,
+)
+from unchain.context.models import HandoffEnvelope
+from unchain.context.ports import ContextRepositoryError, ContextScopeError
 
 from unchain.journal import (
     ArtifactRef,
@@ -35,13 +49,28 @@ from unchain.journal.models import (
     _record_tuple,
     _required_text,
     _sha256,
+    _thaw_json,
 )
 from unchain.journal.interaction_resolution_compat import (
     InteractionResolutionCompatibilityError,
     interaction_resolution_compatibility_record,
+    legacy_interaction_resolution_supersession_pairs,
     legacy_interaction_resolution_supersessions,
 )
-from unchain.persistence.sqlite_v2 import SQLiteContextV2Store
+from unchain.journal.graph_attempt_quiescence import (
+    ATTEMPT_TERMINAL_EQUIVALENTS,
+    CANONICAL_ATTEMPT_TERMINALS,
+    GRAPH_STEP_COMPLETED,
+    GRAPH_STEP_SEALS,
+    GRAPH_STEP_SEAL_TERMINALS,
+    MAX_ITERATIONS_TERMINALS,
+    select_attempt_terminal,
+)
+from unchain.persistence.sqlite_v2 import (
+    SQLiteContextV2Store,
+    SQLiteContextV2StoreIntegrityError,
+    _SQLiteBoundContextV2Repository,
+)
 
 
 _MAX_MESSAGES = 10_000
@@ -53,20 +82,25 @@ _INTERACTION_REQUEST_EVENT_TYPES = frozenset(
 _INTERACTION_RESOLUTION_EVENT_TYPES = frozenset(
     {"interaction.resolved", "interaction_resolved"}
 )
-_ATTEMPT_TERMINAL_EVENT_TYPES = frozenset(
+_GRAPH_INTERACTION_REQUEST_EVENT_TYPES = frozenset(
     {
-        "run_completed",
-        "run_failed",
-        "run_cancelled",
-        "run_canceled",
-        "run_aborted",
-        "run.completed",
-        "run.failed",
-        "run.cancelled",
-        "run.canceled",
-        "run.aborted",
+        "interaction_requested",
+        "interaction.requested",
+        "human_input_requested",
+        "tool_confirmation_requested",
+        "continuation_request",
+        "input_requested",
     }
 )
+_GRAPH_INTERACTION_RESOLUTION_EVENT_TYPES = frozenset(
+    {
+        "interaction_resolved",
+        "interaction.resolved",
+        "tool_confirmed",
+        "tool_denied",
+    }
+)
+_ATTEMPT_TERMINAL_EVENT_TYPES = CANONICAL_ATTEMPT_TERMINALS
 _TOOL_INTENT_EVENT_TYPES = frozenset({"tool_call"})
 _TOOL_STARTED_EVENT_TYPES = frozenset({"tool.started"})
 _TOOL_SEALED_EVENT_TYPES = frozenset({"tool.subagent_completion.sealed"})
@@ -79,20 +113,1685 @@ _TOOL_LIFECYCLE_EVENT_TYPES = (
 )
 
 
+class GenerationRebaseFailureReason(StrEnum):
+    """Closed reason vocabulary consumed across the Unchain/PuPu boundary."""
+
+    INFRASTRUCTURE_UNAVAILABLE = "infrastructure_unavailable"
+    JOURNAL_AUTHORITY_INVALID = "journal_authority_invalid"
+    CURRENT_RECEIPT_UNAVAILABLE = "current_receipt_unavailable"
+    HOST_SNAPSHOT_UNSANITIZED = "host_snapshot_unsanitized"
+    CHECKPOINT_PREPARED = "checkpoint_prepared"
+    PENDING_INTERACTION = "pending_interaction"
+    ATTEMPT_OPEN = "attempt_open"
+    TOOL_OPEN = "tool_open"
+    OPERATION_IDENTITY_CONFLICT = "operation_identity_conflict"
+    HEAD_REVISION_CONFLICT = "head_revision_conflict"
+    SOURCE_GENERATION_CONFLICT = "source_generation_conflict"
+    CHAT_BINDING_CONFLICT = "chat_binding_conflict"
+    INTERACTION_RESOLUTION_DUPLICATED = "interaction_resolution_duplicated"
+    INTERACTION_REQUEST_DUPLICATED = "interaction_request_duplicated"
+    INTERACTION_LIFECYCLE_NOT_PAIRED = "interaction_lifecycle_not_paired"
+    TOOL_CALL_IDENTITY_UNSTABLE = "tool_call_identity_unstable"
+    TOOL_LIFECYCLE_NOT_PAIRED = "tool_lifecycle_not_paired"
+    TOOL_START_PRECEDES_INTENT = "tool_start_precedes_intent"
+    TOOL_SEAL_PRECEDES_START = "tool_seal_precedes_start"
+    TOOL_RESULT_PRECEDES_START = "tool_result_precedes_start"
+    TOOL_RESULT_PRECEDES_SEAL = "tool_result_precedes_seal"
+    TOOL_IDENTITY_CHANGED = "tool_identity_changed"
+    ATTEMPT_DUPLICATE_TERMINAL = "attempt_duplicate_terminal"
+    ATTEMPT_CONTINUED_AFTER_TERMINAL = "attempt_continued_after_terminal"
+    GRAPH_ATTEMPT_KIND_AMBIGUOUS = "graph_attempt_kind_ambiguous"
+    GRAPH_PLAN_DESCRIPTOR_INVALID = "graph_plan_descriptor_invalid"
+    GRAPH_STEP_TERMINAL_AMBIGUOUS = "graph_step_terminal_ambiguous"
+    GRAPH_STEP_SEAL_DUPLICATED = "graph_step_seal_duplicated"
+    GRAPH_STEP_SEAL_NOT_LAST = "graph_step_seal_not_last"
+    GRAPH_STEP_SEAL_NOT_ADJACENT = "graph_step_seal_not_adjacent"
+    GRAPH_STEP_SEAL_MISMATCHED_TERMINAL = (
+        "graph_step_seal_mismatched_terminal"
+    )
+    GRAPH_STEP_SEAL_FOREIGN = "graph_step_seal_foreign"
+    GRAPH_STEP_SEQUENCE_INVALID = "graph_step_sequence_invalid"
+    GRAPH_EXECUTION_SEAL_DUPLICATED = "graph_execution_seal_duplicated"
+    GRAPH_EXECUTION_SEAL_MISMATCHED = "graph_execution_seal_mismatched"
+    GRAPH_STEP_SEAL_MISSING = "graph_step_seal_missing"
+    GRAPH_EXECUTION_SEAL_MISSING = "graph_execution_seal_missing"
+
+
+_FAILURE_DETAIL_SCHEMA = "unchain.generation_rebase_failure.v1"
+_FAILURE_SUBJECT_KEYS = frozenset(
+    {
+        "execution_id",
+        "generation_id",
+        "attempt_id",
+        "orchestration_attempt_id",
+        "call_id",
+        "interaction_id",
+        "step_index",
+        "event_type",
+        "store_seq",
+        "event_id",
+        "graph_plan_id",
+        "graph_scope_id",
+    }
+)
+
+
+def _generation_rebase_failure_detail(
+    reason: GenerationRebaseFailureReason,
+    subject: Mapping[str, Any] | None,
+) -> Mapping[str, Any]:
+    if not isinstance(reason, GenerationRebaseFailureReason):
+        raise TypeError("generation rebase failure reason is not closed")
+    normalized: dict[str, str | int] = {}
+    if subject is not None:
+        if not isinstance(subject, Mapping) or len(subject) > 12:
+            raise TypeError("generation rebase failure subject is invalid")
+        for raw_key, raw_value in subject.items():
+            if raw_key not in _FAILURE_SUBJECT_KEYS:
+                raise ValueError("generation rebase failure subject key is forbidden")
+            if isinstance(raw_value, str):
+                if not raw_value or len(raw_value) > 256 or "\x00" in raw_value:
+                    raise ValueError(
+                        "generation rebase failure subject text is invalid"
+                    )
+                normalized[raw_key] = raw_value
+            elif (
+                not isinstance(raw_value, bool)
+                and isinstance(raw_value, int)
+                and raw_value >= 0
+            ):
+                normalized[raw_key] = raw_value
+            else:
+                raise TypeError("generation rebase failure subject value is invalid")
+    raw = json.dumps(
+        normalized,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(raw) > 2048:
+        raise ValueError("generation rebase failure subject is too large")
+    return MappingProxyType(
+        {
+            "schema": _FAILURE_DETAIL_SCHEMA,
+            "reason": reason.value,
+            "subject": MappingProxyType(normalized),
+        }
+    )
+
+
 class GenerationRebaseError(RuntimeError):
     """Base failure at the atomic generation-rebase boundary."""
+
+    code = "unavailable"
+    retryable = True
+    default_reason = GenerationRebaseFailureReason.INFRASTRUCTURE_UNAVAILABLE
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: GenerationRebaseFailureReason | None = None,
+        subject: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        selected = self.default_reason if reason is None else reason
+        self.reason = selected.value
+        self.detail = _generation_rebase_failure_detail(selected, subject)
 
 
 class GenerationRebaseConflict(GenerationRebaseError):
     """A generation identity, CAS precondition, or operation payload drifted."""
 
+    code = "generation_conflict"
+    default_reason = GenerationRebaseFailureReason.SOURCE_GENERATION_CONFLICT
+
 
 class GenerationRebaseUnavailable(GenerationRebaseError):
-    """The atomic durable rebase could not be completed or verified."""
+    """SQLite or storage infrastructure could not complete the boundary."""
+
+    default_reason = GenerationRebaseFailureReason.INFRASTRUCTURE_UNAVAILABLE
 
 
 class GenerationRebasePreflightBlocked(GenerationRebaseConflict):
     """Current durable state does not permit a generation cutover."""
+
+    code = "in_progress"
+    default_reason = GenerationRebaseFailureReason.ATTEMPT_OPEN
+
+
+class GenerationRebaseRecoveryRequired(GenerationRebasePreflightBlocked):
+    """A canonical graph terminal needs exactly one deterministic seal."""
+
+    code = "recovery_required"
+
+
+class GenerationRebaseJournalIncompatible(GenerationRebaseConflict):
+    """Durable business state is deterministic but cannot be safely rebased."""
+
+    code = "journal_incompatible"
+    retryable = False
+    default_reason = GenerationRebaseFailureReason.JOURNAL_AUTHORITY_INVALID
+
+
+def generation_rebase_failure_detail(
+    error: object,
+) -> Mapping[str, Any] | None:
+    """Read a validated detail without requiring new exception subclasses."""
+
+    detail = getattr(error, "detail", None)
+    if not isinstance(detail, Mapping) or set(detail) != {
+        "schema",
+        "reason",
+        "subject",
+    }:
+        return None
+    if detail.get("schema") != _FAILURE_DETAIL_SCHEMA:
+        return None
+    raw_reason = detail.get("reason")
+    try:
+        reason = GenerationRebaseFailureReason(raw_reason)
+    except (TypeError, ValueError):
+        return None
+    subject = detail.get("subject")
+    try:
+        return _generation_rebase_failure_detail(reason, subject)
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass(frozen=True)
+class GenerationRebaseRecoveryResult:
+    """Bounded result of one host-invoked graph recovery action."""
+
+    action: str
+    reason: str
+    execution_id: str
+    generation_id: str
+    appended_event_count: int
+    artifact_count: int
+    schema: str = "unchain.generation_rebase_recovery.v1"
+
+    def __post_init__(self) -> None:
+        if self.schema != "unchain.generation_rebase_recovery.v1":
+            raise ValueError("generation rebase recovery schema is unsupported")
+        if self.action not in {
+            "step_recovered",
+            "execution_finalized",
+            "unchanged",
+        }:
+            raise ValueError("generation rebase recovery action is invalid")
+        if self.reason not in {
+            GenerationRebaseFailureReason.GRAPH_STEP_SEAL_MISSING.value,
+            GenerationRebaseFailureReason.GRAPH_EXECUTION_SEAL_MISSING.value,
+        }:
+            raise ValueError("generation rebase recovery reason is invalid")
+        for field_name in ("execution_id", "generation_id"):
+            _required_text(getattr(self, field_name), field_name, identifier=True)
+        for field_name in ("appended_event_count", "artifact_count"):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or value not in {0, 1}:
+                raise ValueError(
+                    "generation rebase recovery counts must be zero or one"
+                )
+
+
+@dataclass(frozen=True)
+class _GraphStepQuiescence:
+    status: str
+    step: GraphStepBinding
+    terminal: JournalEvent | None = None
+    seal: JournalEvent | None = None
+    output_artifact: ArtifactRef | None = None
+
+
+def _failure_subject_for_event(
+    event: JournalEvent,
+    *,
+    plan: GraphExecutionPlan | None = None,
+    step_index: int | None = None,
+) -> dict[str, Any]:
+    subject: dict[str, Any] = {
+        "execution_id": event.attempt.generation.execution_id,
+        "generation_id": event.attempt.generation.generation_id,
+        "attempt_id": event.attempt.attempt_id,
+        "event_type": event.event_type,
+        "store_seq": event.store_seq,
+        "event_id": event.event_id,
+    }
+    if plan is not None:
+        subject.update(
+            {
+                "orchestration_attempt_id": (
+                    plan.orchestration_attempt.attempt_id
+                ),
+                "graph_plan_id": plan.plan_id,
+                "graph_scope_id": plan.scope_id,
+            }
+        )
+    if step_index is not None:
+        subject["step_index"] = step_index
+    return subject
+
+
+def _journal_incompatible(
+    message: str,
+    *,
+    reason: GenerationRebaseFailureReason,
+    event: JournalEvent,
+    plan: GraphExecutionPlan | None = None,
+    step_index: int | None = None,
+) -> GenerationRebaseJournalIncompatible:
+    return GenerationRebaseJournalIncompatible(
+        message,
+        reason=reason,
+        subject=_failure_subject_for_event(
+            event,
+            plan=plan,
+            step_index=step_index,
+        ),
+    )
+
+
+def _parse_graph_plan_admission(event: JournalEvent) -> GraphExecutionPlan:
+    if (
+        event.event_type != "graph.execution.admitted"
+        or set(event.payload)
+        != {"graph_plan_id", "graph_scope_id", "plan"}
+        or event.resource_refs
+    ):
+        raise _journal_incompatible(
+            "generation rebase graph plan descriptor is invalid",
+            reason=GenerationRebaseFailureReason.GRAPH_PLAN_DESCRIPTOR_INVALID,
+            event=event,
+        )
+    try:
+        plan = GraphExecutionPlan.from_dict(event.payload.get("plan"))
+    except (AttributeError, TypeError, ValueError) as error:
+        raise _journal_incompatible(
+            "generation rebase graph plan descriptor is invalid",
+            reason=GenerationRebaseFailureReason.GRAPH_PLAN_DESCRIPTOR_INVALID,
+            event=event,
+        ) from error
+    if (
+        plan.orchestration_attempt != event.attempt
+        or event.payload.get("graph_plan_id") != plan.plan_id
+        or event.payload.get("graph_scope_id") != plan.scope_id
+    ):
+        raise _journal_incompatible(
+            "generation rebase graph plan descriptor changed identity",
+            reason=GenerationRebaseFailureReason.GRAPH_PLAN_DESCRIPTOR_INVALID,
+            event=event,
+            plan=plan,
+        )
+    return plan
+
+
+def _closed_cursor(value: object) -> EventCursor:
+    if not isinstance(value, Mapping) or set(value) != {
+        "schema",
+        "store_seq",
+        "event_id",
+    }:
+        raise ValueError("cursor is not closed")
+    cursor = EventCursor.from_dict(value)
+    if cursor.to_dict() != dict(value):
+        raise ValueError("cursor is not canonical")
+    return cursor
+
+
+def _event_at_graph_cursor(
+    events: tuple[JournalEvent, ...],
+    cursor: EventCursor,
+) -> JournalEvent:
+    matches = tuple(
+        event
+        for event in events
+        if event.store_seq == cursor.store_seq and event.event_id == cursor.event_id
+    )
+    if len(matches) != 1:
+        raise ValueError("graph cursor has no exact journal event")
+    return matches[0]
+
+
+def _graph_interaction_id(event: JournalEvent) -> str:
+    raw = event.payload.get("interaction_id")
+    request = event.payload.get("interaction_request")
+    if raw is None and isinstance(request, Mapping):
+        raw = request.get("interaction_id")
+    if raw is None:
+        for field_name in ("confirmation_id", "request_id", "call_id"):
+            candidate = event.payload.get(field_name)
+            if candidate is not None:
+                raw = candidate
+                break
+    return _required_text(raw, "interaction_id", identifier=True)
+
+
+def _graph_interaction_aliases(event: JournalEvent) -> frozenset[str]:
+    candidates: list[object] = []
+
+    def collect(value: object) -> None:
+        if not isinstance(value, Mapping):
+            return
+        for field_name in (
+            "interaction_id",
+            "confirmation_id",
+            "request_id",
+            "call_id",
+            "tool_call_id",
+        ):
+            candidates.append(value.get(field_name))
+
+    collect(event.payload)
+    request = event.payload.get("interaction_request")
+    collect(request)
+    if isinstance(request, Mapping):
+        collect(request.get("payload"))
+        collect(request.get("subject"))
+    aliases: set[str] = set()
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        aliases.add(_required_text(candidate, "interaction_alias", identifier=True))
+    return frozenset(aliases)
+
+
+def _validate_graph_step_interaction_cycles(
+    events: tuple[JournalEvent, ...],
+    *,
+    journal_events: tuple[JournalEvent, ...],
+    start: JournalEvent,
+    plan: GraphExecutionPlan,
+    expected_step: GraphStepBinding,
+    artifact_repository: _SQLiteBoundContextV2Repository,
+) -> None:
+    resumes = tuple(
+        event
+        for event in events
+        if event.event_type == "graph.step.resume.admitted"
+    )
+    anchor = resumes[0] if resumes else start
+
+    def incompatible(message: str, event: JournalEvent) -> None:
+        raise _journal_incompatible(
+            message,
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+            event=event,
+            plan=plan,
+            step_index=expected_step.index,
+        )
+
+    try:
+        admitted_resolution_store_seqs = {
+            _closed_cursor(resume.payload.get("resolution_cursor")).store_seq
+            for resume in resumes
+        }
+        supersession_pairs = legacy_interaction_resolution_supersession_pairs(
+            tuple(
+                interaction_resolution_compatibility_record(
+                    ordinal=event.store_seq,
+                    event_type=event.event_type,
+                    interaction_id=_graph_interaction_id(event),
+                    execution_id=event.attempt.generation.execution_id,
+                    generation_id=event.attempt.generation.generation_id,
+                    attempt_id=event.attempt.attempt_id,
+                    payload=event.payload,
+                    resource_refs=event.resource_refs,
+                )
+                for event in journal_events
+                if event.event_type
+                in {"interaction_resolved", "interaction.resolved"}
+            )
+        )
+    except (
+        AttributeError,
+        InteractionResolutionCompatibilityError,
+        TypeError,
+        ValueError,
+    ) as error:
+        raise _journal_incompatible(
+            "generation rebase graph interaction resolution is ambiguous",
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+            event=anchor,
+            plan=plan,
+            step_index=expected_step.index,
+        ) from error
+    suppressed_resolution_store_seqs = frozenset(
+        pair.canonical_ordinal
+        if pair.legacy_ordinal in admitted_resolution_store_seqs
+        else pair.legacy_ordinal
+        for pair in supersession_pairs
+    )
+
+    active_interaction_id: str | None = None
+    active_request_cursor: EventCursor | None = None
+    active_aliases = frozenset[str]()
+    active_resolution_cursor: EventCursor | None = None
+    active_resume_cursor: EventCursor | None = None
+    seen_interaction_ids: set[str] = set()
+    seen_request_cursors: set[tuple[int, str]] = set()
+    seen_resolution_cursors: set[tuple[int, str]] = set()
+    admitted_interaction_ids: set[str] = set()
+    admitted_request_cursors: set[tuple[int, str]] = set()
+    admitted_resolution_cursors: set[tuple[int, str]] = set()
+    admitted_cycles: set[tuple[str, tuple[int, str], tuple[int, str]]] = set()
+
+    for event in events:
+        if event.store_seq < start.store_seq:
+            continue
+        if event.store_seq in suppressed_resolution_store_seqs:
+            continue
+        if event.event_type in _GRAPH_INTERACTION_REQUEST_EVENT_TYPES:
+            if event.resource_refs:
+                incompatible(
+                    "generation rebase graph interaction request carries resources",
+                    event,
+                )
+            try:
+                interaction_id = _graph_interaction_id(event)
+                request_aliases = _graph_interaction_aliases(event)
+            except (TypeError, ValueError) as error:
+                raise _journal_incompatible(
+                    "generation rebase graph interaction request is invalid",
+                    reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+                    event=event,
+                    plan=plan,
+                    step_index=expected_step.index,
+                ) from error
+            request_key = (event.store_seq, event.event_id)
+            if (
+                active_interaction_id is not None
+                and active_resume_cursor is None
+            ):
+                incompatible(
+                    "generation rebase graph interaction cycles overlap",
+                    event,
+                )
+            if (
+                interaction_id in seen_interaction_ids
+                or request_key in seen_request_cursors
+            ):
+                incompatible(
+                    "generation rebase graph interaction request is ambiguous",
+                    event,
+                )
+            seen_interaction_ids.add(interaction_id)
+            seen_request_cursors.add(request_key)
+            active_interaction_id = interaction_id
+            active_request_cursor = EventCursor(event.store_seq, event.event_id)
+            active_aliases = request_aliases
+            active_resolution_cursor = None
+            active_resume_cursor = None
+            continue
+        if event.event_type in _GRAPH_INTERACTION_RESOLUTION_EVENT_TYPES:
+            if event.event_type in {"tool_confirmed", "tool_denied"}:
+                if event.resource_refs:
+                    incompatible(
+                        "generation rebase graph tool resolution carries resources",
+                        event,
+                    )
+            else:
+                _verified_graph_input_event_artifacts(
+                    event,
+                    artifact_repository=artifact_repository,
+                    plan=plan,
+                    step_index=expected_step.index,
+                    reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+                )
+            try:
+                interaction_id = _graph_interaction_id(event)
+            except (TypeError, ValueError) as error:
+                raise _journal_incompatible(
+                    "generation rebase graph interaction resolution is invalid",
+                    reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+                    event=event,
+                    plan=plan,
+                    step_index=expected_step.index,
+                ) from error
+            compatible_resolution = event.event_type in {
+                "tool_confirmed",
+                "tool_denied",
+            }
+            if active_interaction_id is None:
+                if compatible_resolution:
+                    continue
+                incompatible(
+                    "generation rebase graph resolution has no exact request",
+                    event,
+                )
+            if (
+                interaction_id != active_interaction_id
+                and not (
+                    compatible_resolution
+                    and interaction_id in active_aliases
+                )
+            ):
+                if compatible_resolution:
+                    continue
+                incompatible(
+                    "generation rebase graph resolution changed interaction",
+                    event,
+                )
+            if active_resolution_cursor is not None:
+                if compatible_resolution and active_resume_cursor is not None:
+                    continue
+                incompatible(
+                    "generation rebase graph resolution is ambiguous",
+                    event,
+                )
+            resolution_key = (event.store_seq, event.event_id)
+            if (
+                resolution_key in seen_resolution_cursors
+                or active_request_cursor is None
+                or event.store_seq <= active_request_cursor.store_seq
+            ):
+                incompatible(
+                    "generation rebase graph resolution cursor is ambiguous",
+                    event,
+                )
+            seen_resolution_cursors.add(resolution_key)
+            active_resolution_cursor = EventCursor(
+                event.store_seq,
+                event.event_id,
+            )
+            continue
+        if event.event_type != "graph.step.resume.admitted":
+            continue
+        try:
+            interaction_id = _required_text(
+                event.payload.get("interaction_id"),
+                "interaction_id",
+                identifier=True,
+            )
+            request_cursor = _closed_cursor(event.payload.get("request_cursor"))
+            resolution_cursor = _closed_cursor(
+                event.payload.get("resolution_cursor")
+            )
+        except (AttributeError, TypeError, ValueError) as error:
+            raise _journal_incompatible(
+                "generation rebase graph resume admission is invalid",
+                reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+                event=event,
+                plan=plan,
+                step_index=expected_step.index,
+            ) from error
+        request_key = (request_cursor.store_seq, request_cursor.event_id)
+        resolution_key = (
+            resolution_cursor.store_seq,
+            resolution_cursor.event_id,
+        )
+        cycle_key = (interaction_id, request_key, resolution_key)
+        if (
+            active_interaction_id != interaction_id
+            or active_request_cursor != request_cursor
+            or active_resolution_cursor != resolution_cursor
+            or active_resume_cursor is not None
+            or interaction_id in admitted_interaction_ids
+            or request_key in admitted_request_cursors
+            or resolution_key in admitted_resolution_cursors
+            or cycle_key in admitted_cycles
+        ):
+            incompatible(
+                "generation rebase graph resume admission is ambiguous",
+                event,
+            )
+        admitted_interaction_ids.add(interaction_id)
+        admitted_request_cursors.add(request_key)
+        admitted_resolution_cursors.add(resolution_key)
+        admitted_cycles.add(cycle_key)
+        active_resume_cursor = EventCursor(event.store_seq, event.event_id)
+
+
+def _assert_bounded_graph_artifact_object(
+    artifact: ArtifactRef,
+    *,
+    artifact_repository: _SQLiteBoundContextV2Repository,
+    event: JournalEvent,
+    plan: GraphExecutionPlan,
+    step_index: int | None,
+    reason: GenerationRebaseFailureReason,
+) -> None:
+    if artifact.byte_length > MAX_ARTIFACT_BYTES:
+        raise _journal_incompatible(
+            "generation rebase graph artifact exceeds the bounded read limit",
+            reason=reason,
+            event=event,
+            plan=plan,
+            step_index=step_index,
+        )
+    try:
+        actual_size = artifact_repository._store._object_path(
+            artifact.sha256
+        ).stat().st_size
+    except FileNotFoundError as error:
+        raise _journal_incompatible(
+            "generation rebase graph artifact object is missing",
+            reason=reason,
+            event=event,
+            plan=plan,
+            step_index=step_index,
+        ) from error
+    except OSError as error:
+        raise GenerationRebaseUnavailable(
+            "generation rebase graph artifact object stat failed",
+            reason=GenerationRebaseFailureReason.INFRASTRUCTURE_UNAVAILABLE,
+            subject=_failure_subject_for_event(
+                event,
+                plan=plan,
+                step_index=step_index,
+            ),
+        ) from error
+    if actual_size != artifact.byte_length:
+        raise _journal_incompatible(
+            "generation rebase graph artifact object length changed",
+            reason=reason,
+            event=event,
+            plan=plan,
+            step_index=step_index,
+        )
+
+
+def _verified_graph_artifact_bytes(
+    artifact: ArtifactRef,
+    *,
+    artifact_repository: _SQLiteBoundContextV2Repository,
+    event: JournalEvent,
+    plan: GraphExecutionPlan,
+    step_index: int | None,
+    reason: GenerationRebaseFailureReason,
+) -> bytes:
+    _assert_bounded_graph_artifact_object(
+        artifact,
+        artifact_repository=artifact_repository,
+        event=event,
+        plan=plan,
+        step_index=step_index,
+        reason=reason,
+    )
+    try:
+        content = artifact_repository.read_full_verified(artifact=artifact)
+    except (ContextScopeError, SQLiteContextV2StoreIntegrityError) as error:
+        raise _journal_incompatible(
+            "generation rebase graph seal artifact failed exact verification",
+            reason=reason,
+            event=event,
+            plan=plan,
+            step_index=step_index,
+        ) from error
+    except ContextRepositoryError as error:
+        raise GenerationRebaseUnavailable(
+            "generation rebase graph seal artifact read failed",
+            reason=GenerationRebaseFailureReason.INFRASTRUCTURE_UNAVAILABLE,
+            subject=_failure_subject_for_event(
+                event,
+                plan=plan,
+                step_index=step_index,
+            ),
+        ) from error
+    if (
+        type(content) is not bytes
+        or len(content) != artifact.byte_length
+        or hashlib.sha256(content).hexdigest() != artifact.sha256
+    ):
+        raise _journal_incompatible(
+            "generation rebase graph seal artifact bytes changed",
+            reason=reason,
+            event=event,
+            plan=plan,
+            step_index=step_index,
+        )
+    return content
+
+
+def _verified_graph_resource_artifact(
+    resource_ref: ResourceRef,
+    *,
+    artifact_repository: _SQLiteBoundContextV2Repository,
+    event: JournalEvent,
+    plan: GraphExecutionPlan,
+    step_index: int | None,
+    reason: GenerationRebaseFailureReason,
+) -> ArtifactRef:
+    if resource_ref.kind != "artifact" or resource_ref.fragment:
+        raise _journal_incompatible(
+            "generation rebase graph provenance resource is not a whole artifact",
+            reason=reason,
+            event=event,
+            plan=plan,
+            step_index=step_index,
+        )
+    try:
+        with artifact_repository._store._transaction(immediate=False) as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM artifacts
+                WHERE execution_id = ? AND artifact_id = ? AND revision = ?
+                """,
+                (
+                    artifact_repository.execution_id,
+                    resource_ref.resource_id,
+                    resource_ref.revision,
+                ),
+            ).fetchone()
+            if row is None:
+                raise ContextScopeError(
+                    "graph provenance artifact does not belong to the execution"
+                )
+            artifact = artifact_repository._artifact_from_row(row)
+            if artifact.ref != resource_ref:
+                raise SQLiteContextV2StoreIntegrityError(
+                    "graph provenance artifact resource identity changed"
+                )
+            object_row = connection.execute(
+                "SELECT byte_length FROM objects WHERE sha256 = ?",
+                (artifact.sha256,),
+            ).fetchone()
+            if (
+                object_row is None
+                or object_row["byte_length"] != artifact.byte_length
+            ):
+                raise SQLiteContextV2StoreIntegrityError(
+                    "graph provenance artifact object metadata changed"
+                )
+        _assert_bounded_graph_artifact_object(
+            artifact,
+            artifact_repository=artifact_repository,
+            event=event,
+            plan=plan,
+            step_index=step_index,
+            reason=reason,
+        )
+        artifact_repository._store._read_object(
+            digest=artifact.sha256,
+            byte_length=artifact.byte_length,
+        )
+    except (ContextScopeError, SQLiteContextV2StoreIntegrityError) as error:
+        raise _journal_incompatible(
+            "generation rebase graph provenance artifact failed exact verification",
+            reason=reason,
+            event=event,
+            plan=plan,
+            step_index=step_index,
+        ) from error
+    except (ContextRepositoryError, sqlite3.Error) as error:
+        raise GenerationRebaseUnavailable(
+            "generation rebase graph provenance artifact read failed",
+            reason=GenerationRebaseFailureReason.INFRASTRUCTURE_UNAVAILABLE,
+            subject=_failure_subject_for_event(
+                event,
+                plan=plan,
+                step_index=step_index,
+            ),
+        ) from error
+    return artifact
+
+
+def _closed_graph_artifact_resource(value: object) -> ResourceRef:
+    if not isinstance(value, Mapping):
+        raise TypeError("graph artifact resource must be an object")
+    resource_ref = ResourceRef.from_dict(value)
+    if (
+        resource_ref.to_dict() != dict(value)
+        or resource_ref.kind != "artifact"
+        or resource_ref.fragment
+    ):
+        raise ValueError("graph artifact resource is not one whole artifact")
+    return resource_ref
+
+
+def _verified_graph_input_event_artifacts(
+    event: JournalEvent,
+    *,
+    artifact_repository: _SQLiteBoundContextV2Repository,
+    plan: GraphExecutionPlan,
+    step_index: int | None,
+    reason: GenerationRebaseFailureReason,
+) -> tuple[ArtifactRef, ...]:
+    """Verify the exact artifact closure of one graph-trusted input event."""
+
+    message: Mapping[str, Any] | None = None
+    try:
+        if event.event_type == "message.user":
+            message = event.payload.get("message")
+            if not isinstance(message, Mapping):
+                raise TypeError("graph input message is not an object")
+            raw_attachments = event.payload.get("attachments")
+            raw_attachment_refs = event.payload.get("attachment_refs")
+            message_attachments = message.get("attachments")
+            has_attachments = any(
+                value is not None
+                for value in (
+                    raw_attachments,
+                    raw_attachment_refs,
+                    message_attachments,
+                )
+            )
+            if has_attachments:
+                if (
+                    not isinstance(raw_attachments, (list, tuple))
+                    or not raw_attachments
+                    or not isinstance(raw_attachment_refs, (list, tuple))
+                    or not isinstance(message_attachments, (list, tuple))
+                ):
+                    raise ValueError(
+                        "graph input attachment descriptors are incomplete"
+                    )
+                attachments = tuple(
+                    HostResolvedAttachment.from_dict(value)
+                    for value in raw_attachments
+                )
+                attachment_refs = tuple(
+                    _closed_graph_artifact_resource(value)
+                    for value in raw_attachment_refs
+                )
+                if (
+                    tuple(attachment.to_dict() for attachment in attachments)
+                    != tuple(_thaw_json(value) for value in raw_attachments)
+                    or tuple(_thaw_json(value) for value in message_attachments)
+                    != tuple(attachment.to_dict() for attachment in attachments)
+                    or attachment_refs
+                    != tuple(attachment.artifact.ref for attachment in attachments)
+                    or len(set(attachment_refs)) != len(attachment_refs)
+                    or set(message) != {"role", "content", "attachments"}
+                ):
+                    raise ValueError(
+                        "graph input attachment descriptors changed identity"
+                    )
+            else:
+                attachments = ()
+                attachment_refs = ()
+                if (
+                    "attachments" in event.payload
+                    or "attachment_refs" in event.payload
+                    or "attachments" in message
+                    or set(message) != {"role", "content"}
+                ):
+                    raise ValueError(
+                        "graph input attachment descriptors are not closed"
+                    )
+            if message.get("role") != "user" or not isinstance(
+                message.get("content"), str
+            ):
+                raise ValueError("graph input message is not canonical")
+            content_ref = _closed_graph_artifact_resource(
+                event.payload.get("content_ref")
+            )
+            expected_refs = (content_ref, *attachment_refs)
+            if event.resource_refs != expected_refs:
+                raise ValueError("graph input resource closure changed")
+        elif event.event_type in {
+            "interaction.resolved",
+            "interaction_resolved",
+        }:
+            descriptor_keys = {
+                "content_ref",
+                "content_bytes",
+                "content_sha256",
+                "preview",
+                "preview_truncated",
+            }
+            descriptor_present = bool(
+                descriptor_keys.intersection(event.payload)
+            )
+            if (
+                event.event_type == "interaction_resolved"
+                and not descriptor_present
+                and not event.resource_refs
+            ):
+                return ()
+            if not descriptor_keys.issubset(event.payload):
+                raise ValueError(
+                    "graph interaction response descriptor is incomplete"
+                )
+            content_ref = _closed_graph_artifact_resource(
+                event.payload.get("content_ref")
+            )
+            attachments = ()
+            expected_refs = (content_ref,)
+            if event.resource_refs != expected_refs:
+                raise ValueError(
+                    "graph interaction response resource closure changed"
+                )
+        else:
+            raise ValueError("graph input event type is unsupported")
+    except (AttributeError, KeyError, TypeError, ValueError) as error:
+        raise _journal_incompatible(
+            "generation rebase graph input artifact descriptor is invalid",
+            reason=reason,
+            event=event,
+            plan=plan,
+            step_index=step_index,
+        ) from error
+
+    verified = tuple(
+        _verified_graph_resource_artifact(
+            resource_ref,
+            artifact_repository=artifact_repository,
+            event=event,
+            plan=plan,
+            step_index=step_index,
+            reason=reason,
+        )
+        for resource_ref in expected_refs
+    )
+    content_artifact = verified[0]
+    content = _verified_graph_artifact_bytes(
+        content_artifact,
+        artifact_repository=artifact_repository,
+        event=event,
+        plan=plan,
+        step_index=step_index,
+        reason=reason,
+    )
+    try:
+        if event.event_type == "message.user":
+            content_binding_valid = (
+                content_artifact.media_type == "application/json"
+                and message is not None
+                and content == _canonical_bytes(_thaw_json(message))
+            )
+        else:
+            decoded = json.loads(content.decode("utf-8"))
+            content_binding_valid = (
+                content_artifact.media_type == "application/json"
+                and type(decoded) is dict
+                and set(decoded) == {
+                    "interaction_id",
+                    "response",
+                    "submitted_by",
+                }
+                and decoded.get("interaction_id")
+                == event.payload.get("interaction_id")
+                and decoded.get("submitted_by")
+                == event.payload.get("submitted_by")
+                and _canonical_bytes(decoded) == content
+            )
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+        content_binding_valid = False
+    preview = event.payload.get("preview")
+    preview_truncated = event.payload.get("preview_truncated")
+    if (
+        not content_binding_valid
+        or event.payload.get("content_bytes") != content_artifact.byte_length
+        or event.payload.get("content_sha256") != content_artifact.sha256
+        or preview != content_artifact.preview
+        or type(preview_truncated) is not bool
+        or preview_truncated
+        != (
+            content_artifact.byte_length
+            > len(content_artifact.preview.encode("utf-8"))
+        )
+        or any(
+            artifact != attachment.artifact
+            for artifact, attachment in zip(
+                verified[1:],
+                attachments,
+                strict=True,
+            )
+        )
+    ):
+        raise _journal_incompatible(
+            "generation rebase graph input artifact binding changed",
+            reason=reason,
+            event=event,
+            plan=plan,
+            step_index=step_index,
+        )
+    return verified
+
+
+def _classify_graph_step_attempt(
+    events: tuple[JournalEvent, ...],
+    *,
+    journal_events: tuple[JournalEvent, ...],
+    plan: GraphExecutionPlan,
+    expected_step: GraphStepBinding,
+    artifact_repository: _SQLiteBoundContextV2Repository,
+) -> _GraphStepQuiescence:
+    graph_events = tuple(
+        event for event in events if event.event_type.startswith("graph.")
+    )
+    allowed_graph_types = {
+        "graph.step.started",
+        "graph.step.resume.admitted",
+        *GRAPH_STEP_SEALS,
+    }
+    starts = tuple(
+        event for event in graph_events if event.event_type == "graph.step.started"
+    )
+    if (
+        len(starts) != 1
+        or any(event.event_type not in allowed_graph_types for event in graph_events)
+    ):
+        anchor = graph_events[0] if graph_events else events[0]
+        raise _journal_incompatible(
+            "generation rebase graph attempt kind is ambiguous",
+            reason=GenerationRebaseFailureReason.GRAPH_ATTEMPT_KIND_AMBIGUOUS,
+            event=anchor,
+            plan=plan,
+            step_index=expected_step.index,
+        )
+    start = starts[0]
+    if set(start.payload) != {
+        "graph_plan_id",
+        "graph_scope_id",
+        "step",
+        "handoff_cursor",
+        "input_cursor",
+    }:
+        raise _journal_incompatible(
+            "generation rebase graph step start descriptor is invalid",
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+            event=start,
+            plan=plan,
+            step_index=expected_step.index,
+        )
+    try:
+        persisted_step = GraphStepBinding.from_dict(start.payload.get("step"))
+    except (AttributeError, TypeError, ValueError) as error:
+        raise _journal_incompatible(
+            "generation rebase graph step binding is invalid",
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+            event=start,
+            plan=plan,
+            step_index=expected_step.index,
+        ) from error
+    if (
+        persisted_step != expected_step
+        or persisted_step.to_dict() != start.payload.get("step")
+        or start.attempt != expected_step.attempt
+        or start.payload.get("graph_plan_id") != plan.plan_id
+        or start.payload.get("graph_scope_id") != plan.scope_id
+    ):
+        raise _journal_incompatible(
+            "generation rebase graph step binding changed identity",
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+            event=start,
+            plan=plan,
+            step_index=expected_step.index,
+        )
+
+    try:
+        handoff_cursor = _closed_cursor(start.payload.get("handoff_cursor"))
+        input_cursor = _closed_cursor(start.payload.get("input_cursor"))
+        handoff_event = _event_at_graph_cursor(journal_events, handoff_cursor)
+        input_event = _event_at_graph_cursor(journal_events, input_cursor)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise _journal_incompatible(
+            "generation rebase graph step start cursor provenance is invalid",
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+            event=start,
+            plan=plan,
+            step_index=expected_step.index,
+        ) from error
+    if (
+        handoff_event.attempt != expected_step.attempt
+        or handoff_event.event_type != "handoff.recorded"
+        or input_event.attempt != expected_step.attempt
+        or input_event.event_type != "message.user"
+        or not handoff_cursor.store_seq < input_cursor.store_seq < start.store_seq
+        or len(start.resource_refs) != 1
+        or start.resource_refs[0].kind != "artifact"
+        or start.resource_refs[0].fragment
+        or start.resource_refs[0] not in handoff_event.resource_refs
+        or start.resource_refs[0] not in input_event.resource_refs
+    ):
+        raise _journal_incompatible(
+            "generation rebase graph step start provenance changed",
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+            event=start,
+            plan=plan,
+            step_index=expected_step.index,
+        )
+    try:
+        raw_handoff_envelope = handoff_event.payload.get("handoff_envelope")
+        if not isinstance(raw_handoff_envelope, Mapping):
+            raise TypeError("graph handoff envelope is not an object")
+        handoff_envelope = HandoffEnvelope.from_dict(raw_handoff_envelope)
+        handoff_artifact = ArtifactRef.from_dict(
+            handoff_event.payload.get("full_output_artifact")
+        )
+        if (
+            handoff_envelope.to_dict() != _thaw_json(raw_handoff_envelope)
+            or handoff_artifact.to_dict()
+            != _thaw_json(
+                handoff_event.payload.get("full_output_artifact")
+            )
+        ):
+            raise ValueError("graph handoff descriptor is not exact")
+    except (AttributeError, TypeError, ValueError) as error:
+        raise _journal_incompatible(
+            "generation rebase graph start artifact descriptor is invalid",
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+            event=start,
+            plan=plan,
+            step_index=expected_step.index,
+        ) from error
+    if expected_step.index == 0:
+        expected_source_attempt = plan.orchestration_attempt
+        expected_source_range = EventRange(
+            plan.initial_input_cursor,
+            plan.initial_input_cursor,
+        )
+        expected_source_artifact_refs: tuple[ResourceRef, ...] = ()
+        expected_source_artifact: ArtifactRef | None = None
+    else:
+        predecessor = plan.steps[expected_step.index - 1]
+        predecessor_seals = tuple(
+            event
+            for event in journal_events
+            if event.attempt == predecessor.attempt
+            and event.event_type == GRAPH_STEP_COMPLETED
+            and event.store_seq < handoff_event.store_seq
+        )
+        try:
+            if len(predecessor_seals) != 1:
+                raise ValueError(
+                    "graph handoff predecessor seal is not unique"
+                )
+            predecessor_seal = predecessor_seals[0]
+            predecessor_artifact = ArtifactRef.from_dict(
+                predecessor_seal.payload.get("output_artifact")
+            )
+            if (
+                predecessor_artifact.to_dict()
+                != _thaw_json(
+                    predecessor_seal.payload.get("output_artifact")
+                )
+                or predecessor_seal.resource_refs
+                != (predecessor_artifact.ref,)
+            ):
+                raise ValueError(
+                    "graph handoff predecessor artifact changed identity"
+                )
+        except (AttributeError, TypeError, ValueError) as error:
+            raise _journal_incompatible(
+                "generation rebase graph handoff predecessor is invalid",
+                reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+                event=handoff_event,
+                plan=plan,
+                step_index=expected_step.index,
+            ) from error
+        expected_source_attempt = predecessor.attempt
+        predecessor_cursor = EventCursor(
+            predecessor_seal.store_seq,
+            predecessor_seal.event_id,
+        )
+        expected_source_range = EventRange(
+            predecessor_cursor,
+            predecessor_cursor,
+        )
+        expected_source_artifact_refs = (predecessor_artifact.ref,)
+        expected_source_artifact = predecessor_artifact
+    if (
+        expected_step.source_attempt != expected_source_attempt
+        or handoff_envelope.child_attempt != expected_source_attempt
+        or handoff_envelope.child_run_id
+        != expected_source_attempt.attempt_id
+        or handoff_envelope.source_event_range != expected_source_range
+        or handoff_envelope.artifact_refs
+        != expected_source_artifact_refs
+    ):
+        raise _journal_incompatible(
+            "generation rebase graph handoff source provenance changed",
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+            event=handoff_event,
+            plan=plan,
+            step_index=expected_step.index,
+        )
+    expected_handoff_refs = tuple(
+        dict.fromkeys(
+            (
+                handoff_envelope.full_output_ref,
+                *handoff_envelope.artifact_refs,
+            )
+        )
+    )
+    if (
+        any(
+            resource_ref.kind != "artifact" or resource_ref.fragment
+            for resource_ref in expected_handoff_refs
+        )
+        or handoff_event.resource_refs != expected_handoff_refs
+        or handoff_artifact.ref != handoff_envelope.full_output_ref
+        or handoff_artifact.media_type != "application/json"
+        or handoff_artifact.byte_length != handoff_envelope.byte_length
+        or handoff_artifact.sha256 != handoff_envelope.sha256
+    ):
+        raise _journal_incompatible(
+            "generation rebase graph handoff artifact closure changed",
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+            event=handoff_event,
+            plan=plan,
+            step_index=expected_step.index,
+        )
+    verified_handoff = {
+        ref: _verified_graph_resource_artifact(
+            ref,
+            artifact_repository=artifact_repository,
+            event=handoff_event,
+            plan=plan,
+            step_index=expected_step.index,
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+        )
+        for ref in expected_handoff_refs
+    }
+    input_artifacts = _verified_graph_input_event_artifacts(
+        input_event,
+        artifact_repository=artifact_repository,
+        plan=plan,
+        step_index=expected_step.index,
+        reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+    )
+    shared_provenance = verified_handoff.get(start.resource_refs[0])
+    if expected_source_artifact is None:
+        source_event = _event_at_graph_cursor(
+            journal_events,
+            plan.initial_input_cursor,
+        )
+        expected_source_bytes = _canonical_bytes(
+            {
+                "schema": "unchain.graph_input_seed.v1",
+                "input_event": source_event.to_dict(),
+            }
+        )
+        source_content_matches = (
+            handoff_artifact.byte_length == len(expected_source_bytes)
+            and handoff_artifact.sha256
+            == hashlib.sha256(expected_source_bytes).hexdigest()
+        )
+    else:
+        verified_source = verified_handoff.get(expected_source_artifact.ref)
+        source_content_matches = (
+            verified_source == expected_source_artifact
+            and handoff_artifact.byte_length
+            == expected_source_artifact.byte_length
+            and handoff_artifact.sha256 == expected_source_artifact.sha256
+        )
+    if (
+        len(input_artifacts) != 2
+        or handoff_artifact != input_artifacts[1]
+        or handoff_artifact.ref != start.resource_refs[0]
+        or shared_provenance is None
+        or shared_provenance != handoff_artifact
+        or not source_content_matches
+    ):
+        raise _journal_incompatible(
+            "generation rebase graph start artifact binding changed",
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+            event=start,
+            plan=plan,
+            step_index=expected_step.index,
+        )
+
+    resumes = tuple(
+        event
+        for event in graph_events
+        if event.event_type == "graph.step.resume.admitted"
+    )
+    for resume in resumes:
+        expected_resume_keys = {
+            "graph_plan_id",
+            "graph_scope_id",
+            "step",
+            "interaction_id",
+            "request_cursor",
+            "resolution_cursor",
+        }
+        try:
+            resumed_step = GraphStepBinding.from_dict(resume.payload.get("step"))
+            interaction_id = _required_text(
+                resume.payload.get("interaction_id"),
+                "interaction_id",
+                identifier=True,
+            )
+            request_cursor = _closed_cursor(resume.payload.get("request_cursor"))
+            resolution_cursor = _closed_cursor(
+                resume.payload.get("resolution_cursor")
+            )
+            request_event = _event_at_graph_cursor(journal_events, request_cursor)
+            resolution_event = _event_at_graph_cursor(
+                journal_events,
+                resolution_cursor,
+            )
+            request_interaction_id = _graph_interaction_id(request_event)
+            resolution_interaction_id = _graph_interaction_id(resolution_event)
+            request_aliases = _graph_interaction_aliases(request_event)
+        except (AttributeError, TypeError, ValueError) as error:
+            raise _journal_incompatible(
+                "generation rebase graph resume admission is invalid",
+                reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+                event=resume,
+                plan=plan,
+                step_index=expected_step.index,
+            ) from error
+        compatible_resolution = resolution_event.event_type in {
+            "tool_confirmed",
+            "tool_denied",
+        }
+        if (
+            set(resume.payload) != expected_resume_keys
+            or resumed_step != expected_step
+            or resumed_step.to_dict() != resume.payload.get("step")
+            or resume.attempt != expected_step.attempt
+            or resume.payload.get("graph_plan_id") != plan.plan_id
+            or resume.payload.get("graph_scope_id") != plan.scope_id
+            or resume.resource_refs
+            or request_event.attempt != expected_step.attempt
+            or request_event.event_type
+            not in _GRAPH_INTERACTION_REQUEST_EVENT_TYPES
+            or resolution_event.attempt != expected_step.attempt
+            or resolution_event.event_type
+            not in _GRAPH_INTERACTION_RESOLUTION_EVENT_TYPES
+            or request_interaction_id != interaction_id
+            or (
+                resolution_interaction_id != interaction_id
+                and not (
+                    compatible_resolution
+                    and resolution_interaction_id in request_aliases
+                )
+            )
+            or not (
+                start.store_seq
+                < request_cursor.store_seq
+                < resolution_cursor.store_seq
+                < resume.store_seq
+            )
+        ):
+            raise _journal_incompatible(
+                "generation rebase graph resume admission changed provenance",
+                reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+                event=resume,
+                plan=plan,
+                step_index=expected_step.index,
+            )
+
+    _validate_graph_step_interaction_cycles(
+        events,
+        journal_events=journal_events,
+        start=start,
+        plan=plan,
+        expected_step=expected_step,
+        artifact_repository=artifact_repository,
+    )
+
+    after_start = tuple(
+        event for event in events if event.store_seq > start.store_seq
+    )
+    resource_bearing_terminals = tuple(
+        event
+        for event in after_start
+        if event.event_type in ATTEMPT_TERMINAL_EQUIVALENTS
+        and event.resource_refs
+    )
+    if resource_bearing_terminals:
+        raise _journal_incompatible(
+            "generation rebase graph runtime terminal carries resources",
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+            event=resource_bearing_terminals[0],
+            plan=plan,
+            step_index=expected_step.index,
+        )
+    selection = select_attempt_terminal(
+        after_start,
+        allowed_following_event_types=GRAPH_STEP_SEALS,
+    )
+    seals = tuple(
+        event for event in graph_events if event.event_type in GRAPH_STEP_SEALS
+    )
+    if selection.ambiguous:
+        raise _journal_incompatible(
+            "generation rebase graph step has ambiguous canonical terminals",
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_TERMINAL_AMBIGUOUS,
+            event=start,
+            plan=plan,
+            step_index=expected_step.index,
+        )
+    if len(seals) > 1:
+        raise _journal_incompatible(
+            "generation rebase graph step has duplicate seals",
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_DUPLICATED,
+            event=seals[1],
+            plan=plan,
+            step_index=expected_step.index,
+        )
+    if seals and seals[0].store_seq != events[-1].store_seq:
+        raise _journal_incompatible(
+            "generation rebase graph step seal is not last",
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_NOT_LAST,
+            event=seals[0],
+            plan=plan,
+            step_index=expected_step.index,
+        )
+    terminal = selection.event
+    if terminal is None:
+        canonical = tuple(
+            event
+            for event in after_start
+            if event.event_type in CANONICAL_ATTEMPT_TERMINALS
+        )
+        if canonical or seals:
+            anchor = seals[0] if seals else canonical[-1]
+            raise _journal_incompatible(
+                "generation rebase graph step continued after its terminal",
+                reason=(
+                    GenerationRebaseFailureReason.GRAPH_STEP_SEAL_NOT_ADJACENT
+                    if seals
+                    else GenerationRebaseFailureReason.ATTEMPT_CONTINUED_AFTER_TERMINAL
+                ),
+                event=anchor,
+                plan=plan,
+                step_index=expected_step.index,
+            )
+        return _GraphStepQuiescence("blocked", expected_step)
+    if not isinstance(terminal, JournalEvent):
+        raise TypeError("selected terminal must be a JournalEvent")
+    if not seals:
+        if terminal.store_seq != events[-1].store_seq:
+            raise _journal_incompatible(
+                "generation rebase graph step continued after its terminal",
+                reason=GenerationRebaseFailureReason.ATTEMPT_CONTINUED_AFTER_TERMINAL,
+                event=terminal,
+                plan=plan,
+                step_index=expected_step.index,
+            )
+        return _GraphStepQuiescence(
+            "recovery_required",
+            expected_step,
+            terminal=terminal,
+        )
+
+    seal = seals[0]
+    terminal_position = events.index(terminal)
+    if terminal_position + 1 >= len(events) or events[terminal_position + 1] != seal:
+        raise _journal_incompatible(
+            "generation rebase graph step seal is not terminal-adjacent",
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_NOT_ADJACENT,
+            event=seal,
+            plan=plan,
+            step_index=expected_step.index,
+        )
+    if terminal.event_type not in GRAPH_STEP_SEAL_TERMINALS[seal.event_type]:
+        raise _journal_incompatible(
+            "generation rebase graph step seal mismatches its terminal",
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_MISMATCHED_TERMINAL,
+            event=seal,
+            plan=plan,
+            step_index=expected_step.index,
+        )
+    expected_keys = {
+        "graph_plan_id",
+        "graph_scope_id",
+        "step",
+        "terminal_cursor",
+    }
+    if seal.event_type == GRAPH_STEP_COMPLETED:
+        expected_keys |= {"output_artifact", "execution_event_range"}
+    if set(seal.payload) != expected_keys:
+        raise _journal_incompatible(
+            "generation rebase graph step seal descriptor is not closed",
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+            event=seal,
+            plan=plan,
+            step_index=expected_step.index,
+        )
+    try:
+        sealed_step = GraphStepBinding.from_dict(seal.payload.get("step"))
+        terminal_cursor = _closed_cursor(seal.payload.get("terminal_cursor"))
+    except (AttributeError, TypeError, ValueError) as error:
+        raise _journal_incompatible(
+            "generation rebase graph step seal descriptor is invalid",
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+            event=seal,
+            plan=plan,
+            step_index=expected_step.index,
+        ) from error
+    if (
+        sealed_step != expected_step
+        or sealed_step.to_dict() != seal.payload.get("step")
+        or seal.attempt != expected_step.attempt
+        or seal.payload.get("graph_plan_id") != plan.plan_id
+        or seal.payload.get("graph_scope_id") != plan.scope_id
+        or terminal_cursor != EventCursor(terminal.store_seq, terminal.event_id)
+    ):
+        raise _journal_incompatible(
+            "generation rebase graph step seal changed identity",
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+            event=seal,
+            plan=plan,
+            step_index=expected_step.index,
+        )
+    output_artifact: ArtifactRef | None = None
+    if seal.event_type == GRAPH_STEP_COMPLETED:
+        try:
+            execution_range = EventRange.from_dict(
+                seal.payload.get("execution_event_range")
+            )
+            artifact = ArtifactRef.from_dict(seal.payload.get("output_artifact"))
+        except (AttributeError, TypeError, ValueError) as error:
+            raise _journal_incompatible(
+                "generation rebase completed graph seal is invalid",
+                reason=GenerationRebaseFailureReason.GRAPH_STEP_SEQUENCE_INVALID,
+                event=seal,
+                plan=plan,
+                step_index=expected_step.index,
+            ) from error
+        if (
+            execution_range.to_dict()
+            != seal.payload.get("execution_event_range")
+            or artifact.to_dict() != seal.payload.get("output_artifact")
+            or execution_range.start != EventCursor(start.store_seq, start.event_id)
+            or execution_range.end != terminal_cursor
+            or seal.resource_refs != (artifact.ref,)
+        ):
+            raise _journal_incompatible(
+                "generation rebase completed graph seal range changed",
+                reason=GenerationRebaseFailureReason.GRAPH_STEP_SEQUENCE_INVALID,
+                event=seal,
+                plan=plan,
+                step_index=expected_step.index,
+            )
+        _verified_graph_artifact_bytes(
+            artifact,
+            artifact_repository=artifact_repository,
+            event=seal,
+            plan=plan,
+            step_index=expected_step.index,
+            reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+        )
+        output_artifact = artifact
+        status = "completed"
+    else:
+        if seal.resource_refs:
+            raise _journal_incompatible(
+                "generation rebase terminal graph seal carries resources",
+                reason=GenerationRebaseFailureReason.GRAPH_STEP_SEAL_FOREIGN,
+                event=seal,
+                plan=plan,
+                step_index=expected_step.index,
+            )
+        status = seal.event_type.removeprefix("graph.step.")
+    return _GraphStepQuiescence(
+        status,
+        expected_step,
+        terminal=terminal,
+        seal=seal,
+        output_artifact=output_artifact,
+    )
+
+
+def _validate_graph_execution_seal(
+    event: JournalEvent,
+    *,
+    plan: GraphExecutionPlan,
+    final_step: _GraphStepQuiescence | None,
+    artifact_repository: _SQLiteBoundContextV2Repository,
+) -> None:
+    expected_keys = {
+        "graph_plan_id",
+        "graph_scope_id",
+        "status",
+        "final_step_index",
+        "output_artifact",
+        "source_event_range",
+    }
+    try:
+        artifact = ArtifactRef.from_dict(event.payload.get("output_artifact"))
+        source_range = EventRange.from_dict(event.payload.get("source_event_range"))
+        final_artifact = ArtifactRef.from_dict(
+            final_step.seal.payload.get("output_artifact")
+            if final_step is not None and final_step.seal is not None
+            else None
+        )
+    except (AttributeError, TypeError, ValueError) as error:
+        raise _journal_incompatible(
+            "generation rebase graph execution seal is invalid",
+            reason=GenerationRebaseFailureReason.GRAPH_EXECUTION_SEAL_MISMATCHED,
+            event=event,
+            plan=plan,
+        ) from error
+    if (
+        set(event.payload) != expected_keys
+        or event.attempt != plan.orchestration_attempt
+        or event.payload.get("graph_plan_id") != plan.plan_id
+        or event.payload.get("graph_scope_id") != plan.scope_id
+        or event.payload.get("status") != "completed"
+        or event.payload.get("final_step_index") != len(plan.steps) - 1
+        or artifact.to_dict() != event.payload.get("output_artifact")
+        or source_range.to_dict() != event.payload.get("source_event_range")
+        or final_step is None
+        or final_step.status != "completed"
+        or final_step.seal is None
+        or source_range.start
+        != EventCursor(final_step.seal.store_seq, final_step.seal.event_id)
+        or source_range.end != source_range.start
+        or event.store_seq <= source_range.end.store_seq
+        or artifact != final_artifact
+        or event.resource_refs != (artifact.ref,)
+    ):
+        raise _journal_incompatible(
+            "generation rebase graph execution seal changed identity",
+            reason=GenerationRebaseFailureReason.GRAPH_EXECUTION_SEAL_MISMATCHED,
+            event=event,
+            plan=plan,
+        )
+    _verified_graph_artifact_bytes(
+        artifact,
+        artifact_repository=artifact_repository,
+        event=event,
+        plan=plan,
+        step_index=None,
+        reason=GenerationRebaseFailureReason.GRAPH_EXECUTION_SEAL_MISMATCHED,
+    )
+    if final_step.output_artifact != artifact:
+        raise _journal_incompatible(
+            "generation rebase graph execution artifact changed from final step",
+            reason=GenerationRebaseFailureReason.GRAPH_EXECUTION_SEAL_MISMATCHED,
+            event=event,
+            plan=plan,
+        )
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -249,7 +1948,7 @@ class GenerationTaskStateDescriptor:
     ) -> GenerationTaskStateDescriptor:
         raw = dict(value)
         if raw.pop("schema", None) != "unchain.legacy_task_state_descriptor.v1":
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation task-state descriptor schema changed"
             )
         if set(raw) != {
@@ -258,7 +1957,7 @@ class GenerationTaskStateDescriptor:
             "descriptor_sha256",
             "refs",
         }:
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation task-state descriptor shape changed"
             )
         try:
@@ -269,7 +1968,7 @@ class GenerationTaskStateDescriptor:
                 refs=tuple(ResourceRef.from_dict(ref) for ref in raw["refs"]),
             )
         except (TypeError, ValueError) as error:
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation task-state descriptor is invalid"
             ) from error
 
@@ -558,7 +2257,10 @@ class SQLiteGenerationRebaseV2Service:
             mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
             if str(mode).casefold() != "wal":
                 raise GenerationRebaseUnavailable(
-                    "generation rebase SQLite WAL mode is unavailable"
+                    "generation rebase SQLite WAL mode is unavailable",
+                    reason=(
+                        GenerationRebaseFailureReason.INFRASTRUCTURE_UNAVAILABLE
+                    ),
                 )
             connection.executescript(
                 """
@@ -721,11 +2423,17 @@ class SQLiteGenerationRebaseV2Service:
                 }
                 if versions != {self._SCHEMA_VERSION}:
                     raise GenerationRebaseUnavailable(
-                        "generation rebase SQLite schema is unsupported"
+                        "generation rebase SQLite schema is unsupported",
+                        reason=(
+                            GenerationRebaseFailureReason.INFRASTRUCTURE_UNAVAILABLE
+                        ),
                     )
             if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise GenerationRebaseUnavailable(
-                    "generation rebase SQLite quick_check failed"
+                    "generation rebase SQLite quick_check failed",
+                    reason=(
+                        GenerationRebaseFailureReason.INFRASTRUCTURE_UNAVAILABLE
+                    ),
                 )
         except GenerationRebaseError:
             try:
@@ -739,7 +2447,10 @@ class SQLiteGenerationRebaseV2Service:
             except sqlite3.Error:
                 pass
             raise GenerationRebaseUnavailable(
-                "generation rebase SQLite schema initialization failed"
+                "generation rebase SQLite schema initialization failed",
+                reason=(
+                    GenerationRebaseFailureReason.INFRASTRUCTURE_UNAVAILABLE
+                ),
             ) from error
         finally:
             connection.close()
@@ -874,7 +2585,10 @@ class SQLiteGenerationRebaseV2Service:
             ):
                 return False
             raise GenerationRebaseConflict(
-                "generation rebase operation payload or target changed"
+                "generation rebase operation payload or target changed",
+                reason=(
+                    GenerationRebaseFailureReason.OPERATION_IDENTITY_CONFLICT
+                ),
             )
         connection.execute(
             """
@@ -913,7 +2627,7 @@ class SQLiteGenerationRebaseV2Service:
         try:
             return GenerationRebaseKind(value)
         except (TypeError, ValueError) as error:
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation rebase manifest kind is invalid"
             ) from error
 
@@ -938,7 +2652,7 @@ class SQLiteGenerationRebaseV2Service:
         bootstrap: sqlite3.Row | None,
     ) -> None:
         if (host is None) != (bootstrap is None):
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation lifecycle and bootstrap heads diverged"
             )
         if host is None:
@@ -951,7 +2665,7 @@ class SQLiteGenerationRebaseV2Service:
             != bootstrap["current_generation_id"]
             or int(host["revision"]) != int(bootstrap["head_revision"])
         ):
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation lifecycle and bootstrap heads changed independently"
             )
 
@@ -962,7 +2676,7 @@ class SQLiteGenerationRebaseV2Service:
     ) -> JournalEvent:
         raw = bytes(row["event_json"])
         if hashlib.sha256(raw).hexdigest() != row["event_sha256"]:
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation rebase journal event digest changed"
             )
         try:
@@ -973,7 +2687,7 @@ class SQLiteGenerationRebaseV2Service:
             TypeError,
             ValueError,
         ) as error:
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation rebase journal event is unreadable"
             ) from error
         operation = self._operation_row(
@@ -995,7 +2709,7 @@ class SQLiteGenerationRebaseV2Service:
             or operation["target_kind"] != "journal_event"
             or operation["target_key"] != event.event_id
         ):
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation rebase journal event authority changed"
             )
         return event
@@ -1011,7 +2725,7 @@ class SQLiteGenerationRebaseV2Service:
             if isinstance(value, str) and value.strip()
         }
         if len(values) != 1:
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation rebase interaction identity is ambiguous"
             )
         interaction_id = next(iter(values))
@@ -1022,7 +2736,7 @@ class SQLiteGenerationRebaseV2Service:
                 identifier=True,
             )
         except (TypeError, ValueError) as error:
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation rebase interaction identity is invalid"
             ) from error
 
@@ -1065,8 +2779,15 @@ class SQLiteGenerationRebaseV2Service:
                 )
             )
         except InteractionResolutionCompatibilityError as error:
-            raise GenerationRebaseUnavailable(
-                "generation rebase interaction resolution is duplicated"
+            raise GenerationRebaseJournalIncompatible(
+                "generation rebase interaction resolution is duplicated",
+                reason=(
+                    GenerationRebaseFailureReason.INTERACTION_RESOLUTION_DUPLICATED
+                ),
+                subject={
+                    "execution_id": intent.execution_id,
+                    "generation_id": intent.previous_generation_id,
+                },
             ) from error
         requests: dict[str, JournalEvent] = {}
         resolutions: dict[str, JournalEvent] = {}
@@ -1075,8 +2796,17 @@ class SQLiteGenerationRebaseV2Service:
             if event.event_type in _INTERACTION_REQUEST_EVENT_TYPES:
                 interaction_id = self._interaction_id(event)
                 if interaction_id in requests:
-                    raise GenerationRebaseUnavailable(
-                        "generation rebase interaction request is duplicated"
+                    raise GenerationRebaseJournalIncompatible(
+                        "generation rebase interaction request is duplicated",
+                        reason=(
+                            GenerationRebaseFailureReason.INTERACTION_REQUEST_DUPLICATED
+                        ),
+                        subject={
+                            "execution_id": intent.execution_id,
+                            "generation_id": intent.previous_generation_id,
+                            "attempt_id": event.attempt.attempt_id,
+                            "interaction_id": interaction_id,
+                        },
                     )
                 requests[interaction_id] = event
             elif event.event_type in _INTERACTION_RESOLUTION_EVENT_TYPES:
@@ -1084,8 +2814,17 @@ class SQLiteGenerationRebaseV2Service:
                     continue
                 interaction_id = self._interaction_id(event)
                 if interaction_id in resolutions:
-                    raise GenerationRebaseUnavailable(
-                        "generation rebase interaction resolution is duplicated"
+                    raise GenerationRebaseJournalIncompatible(
+                        "generation rebase interaction resolution is duplicated",
+                        reason=(
+                            GenerationRebaseFailureReason.INTERACTION_RESOLUTION_DUPLICATED
+                        ),
+                        subject={
+                            "execution_id": intent.execution_id,
+                            "generation_id": intent.previous_generation_id,
+                            "attempt_id": event.attempt.attempt_id,
+                            "interaction_id": interaction_id,
+                        },
                     )
                 resolutions[interaction_id] = event
             elif event.event_type in _ATTEMPT_TERMINAL_EVENT_TYPES:
@@ -1098,8 +2837,17 @@ class SQLiteGenerationRebaseV2Service:
         for interaction_id, resolution in resolutions.items():
             request = requests.get(interaction_id)
             if request is None or resolution.store_seq <= request.store_seq:
-                raise GenerationRebaseUnavailable(
-                    "generation rebase interaction lifecycle is not uniquely paired"
+                raise GenerationRebaseJournalIncompatible(
+                    "generation rebase interaction lifecycle is not uniquely paired",
+                    reason=(
+                        GenerationRebaseFailureReason.INTERACTION_LIFECYCLE_NOT_PAIRED
+                    ),
+                    subject={
+                        "execution_id": intent.execution_id,
+                        "generation_id": intent.previous_generation_id,
+                        "attempt_id": resolution.attempt.attempt_id,
+                        "interaction_id": interaction_id,
+                    },
                 )
 
         pending = tuple(
@@ -1110,8 +2858,17 @@ class SQLiteGenerationRebaseV2Service:
             <= request.store_seq
         )
         if pending:
+            interaction_id = pending[0]
+            request = requests[interaction_id]
             raise GenerationRebasePreflightBlocked(
-                "generation rebase found a pending durable interaction"
+                "generation rebase found a pending durable interaction",
+                reason=GenerationRebaseFailureReason.PENDING_INTERACTION,
+                subject={
+                    "execution_id": intent.execution_id,
+                    "generation_id": intent.previous_generation_id,
+                    "attempt_id": request.attempt.attempt_id,
+                    "interaction_id": interaction_id,
+                },
             )
 
     @staticmethod
@@ -1136,7 +2893,7 @@ class SQLiteGenerationRebaseV2Service:
     ) -> None:
         has_schema, has_checkpoints = self._checkpoint_tables(connection)
         if has_schema != has_checkpoints:
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation rebase compiler checkpoint schema is incomplete"
             )
         if not has_checkpoints:
@@ -1149,7 +2906,7 @@ class SQLiteGenerationRebaseV2Service:
                 (intent.execution_id,),
             ).fetchone()
             if orphan is not None:
-                raise GenerationRebaseUnavailable(
+                raise GenerationRebaseJournalIncompatible(
                     "generation rebase found checkpoint operations without a store"
                 )
             return
@@ -1160,7 +2917,7 @@ class SQLiteGenerationRebaseV2Service:
             )
         }
         if versions != {1}:
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation rebase compiler checkpoint schema is unsupported"
             )
 
@@ -1179,7 +2936,7 @@ class SQLiteGenerationRebaseV2Service:
                 semantic_raw = bytes(row["semantic_json"])
                 artifact_raw = bytes(row["artifact_json"])
             except (TypeError, ValueError) as error:
-                raise GenerationRebaseUnavailable(
+                raise GenerationRebaseJournalIncompatible(
                     "generation rebase checkpoint record bytes are invalid"
                 ) from error
             if (
@@ -1188,7 +2945,7 @@ class SQLiteGenerationRebaseV2Service:
                 or hashlib.sha256(artifact_raw).hexdigest()
                 != row["artifact_sha256"]
             ):
-                raise GenerationRebaseUnavailable(
+                raise GenerationRebaseJournalIncompatible(
                     "generation rebase checkpoint record digest changed"
                 )
             try:
@@ -1214,7 +2971,7 @@ class SQLiteGenerationRebaseV2Service:
                 TypeError,
                 ValueError,
             ) as error:
-                raise GenerationRebaseUnavailable(
+                raise GenerationRebaseJournalIncompatible(
                     "generation rebase checkpoint record is unreadable"
                 ) from error
             expected_semantic = {
@@ -1247,7 +3004,7 @@ class SQLiteGenerationRebaseV2Service:
                 or operation_row["target_kind"] != "checkpoint"
                 or operation_row["target_key"] != checkpoint_id
             ):
-                raise GenerationRebaseUnavailable(
+                raise GenerationRebaseJournalIncompatible(
                     "generation rebase checkpoint authority changed"
                 )
             endpoint_rows = list(
@@ -1270,7 +3027,7 @@ class SQLiteGenerationRebaseV2Service:
                 else 2
             )
             if len(endpoint_rows) != expected_endpoint_count:
-                raise GenerationRebaseUnavailable(
+                raise GenerationRebaseJournalIncompatible(
                     "generation rebase checkpoint endpoints are unavailable"
                 )
             endpoints = tuple(
@@ -1281,7 +3038,7 @@ class SQLiteGenerationRebaseV2Service:
                 endpoints[0].event_id != source_range.start.event_id
                 or endpoints[-1].event_id != source_range.end.event_id
             ):
-                raise GenerationRebaseUnavailable(
+                raise GenerationRebaseJournalIncompatible(
                     "generation rebase checkpoint endpoint identity changed"
                 )
             overlaps_current = connection.execute(
@@ -1300,7 +3057,12 @@ class SQLiteGenerationRebaseV2Service:
             ).fetchone()
             if overlaps_current is not None:
                 raise GenerationRebasePreflightBlocked(
-                    "generation rebase found a prepared durable checkpoint"
+                    "generation rebase found a prepared durable checkpoint",
+                    reason=GenerationRebaseFailureReason.CHECKPOINT_PREPARED,
+                    subject={
+                        "execution_id": intent.execution_id,
+                        "generation_id": intent.previous_generation_id,
+                    },
                 )
 
     def _assert_durable_preflight(
@@ -1312,8 +3074,13 @@ class SQLiteGenerationRebaseV2Service:
         if intent.kind is GenerationRebaseKind.CREATE:
             return
         if current_receipt is None:
-            raise GenerationRebaseUnavailable(
-                "generation rebase current receipt is unavailable"
+            raise GenerationRebaseJournalIncompatible(
+                "generation rebase current receipt is unavailable",
+                reason=GenerationRebaseFailureReason.CURRENT_RECEIPT_UNAVAILABLE,
+                subject={
+                    "execution_id": intent.execution_id,
+                    "generation_id": intent.previous_generation_id,
+                },
             )
         self._assert_no_prepared_checkpoint(connection, intent)
         self._assert_no_pending_interaction(connection, intent)
@@ -1359,7 +3126,14 @@ class SQLiteGenerationRebaseV2Service:
         )
         if not runtime_events:
             return
+        artifact_repository = _SQLiteBoundContextV2Repository(
+            self._store,
+            intent.execution_id,
+        )
 
+        blocked_failures: list[
+            tuple[str, GenerationRebaseFailureReason, Mapping[str, Any]]
+        ] = []
         tool_groups: dict[tuple[str, str], list[JournalEvent]] = {}
         for event in runtime_events:
             if event.event_type not in _TOOL_LIFECYCLE_EVENT_TYPES:
@@ -1370,8 +3144,12 @@ class SQLiteGenerationRebaseV2Service:
                 or not call_id
                 or call_id != call_id.strip()
             ):
-                raise GenerationRebaseUnavailable(
-                    "generation rebase tool lifecycle has no stable call identity"
+                raise _journal_incompatible(
+                    "generation rebase tool lifecycle has no stable call identity",
+                    reason=(
+                        GenerationRebaseFailureReason.TOOL_CALL_IDENTITY_UNSTABLE
+                    ),
+                    event=event,
                 )
             tool_groups.setdefault(
                 (event.attempt.attempt_id, call_id),
@@ -1407,25 +3185,35 @@ class SQLiteGenerationRebaseV2Service:
                 or len(seals) > 1
                 or len(results) > 1
             ):
-                raise GenerationRebaseUnavailable(
-                    "generation rebase tool lifecycle is not uniquely paired"
+                raise _journal_incompatible(
+                    "generation rebase tool lifecycle is not uniquely paired",
+                    reason=GenerationRebaseFailureReason.TOOL_LIFECYCLE_NOT_PAIRED,
+                    event=lifecycle[-1],
                 )
             ordered = intents[0], starts[0]
             if ordered[1].store_seq <= ordered[0].store_seq:
-                raise GenerationRebaseUnavailable(
-                    "generation rebase tool start precedes its durable intent"
+                raise _journal_incompatible(
+                    "generation rebase tool start precedes its durable intent",
+                    reason=GenerationRebaseFailureReason.TOOL_START_PRECEDES_INTENT,
+                    event=starts[0],
                 )
             if seals and seals[0].store_seq <= starts[0].store_seq:
-                raise GenerationRebaseUnavailable(
-                    "generation rebase sealed tool completion precedes its start"
+                raise _journal_incompatible(
+                    "generation rebase sealed tool completion precedes its start",
+                    reason=GenerationRebaseFailureReason.TOOL_SEAL_PRECEDES_START,
+                    event=seals[0],
                 )
             if results and results[0].store_seq <= starts[0].store_seq:
-                raise GenerationRebaseUnavailable(
-                    "generation rebase tool result precedes its start"
+                raise _journal_incompatible(
+                    "generation rebase tool result precedes its start",
+                    reason=GenerationRebaseFailureReason.TOOL_RESULT_PRECEDES_START,
+                    event=results[0],
                 )
             if seals and results and results[0].store_seq <= seals[0].store_seq:
-                raise GenerationRebaseUnavailable(
-                    "generation rebase tool result precedes sealed completion"
+                raise _journal_incompatible(
+                    "generation rebase tool result precedes sealed completion",
+                    reason=GenerationRebaseFailureReason.TOOL_RESULT_PRECEDES_SEAL,
+                    event=results[0],
                 )
             tool_names = {
                 event.payload.get("tool_name") for event in lifecycle
@@ -1436,35 +3224,497 @@ class SQLiteGenerationRebaseV2Service:
                 or not tool_name
                 or tool_name != tool_name.strip()
             ):
-                raise GenerationRebaseUnavailable(
-                    "generation rebase tool lifecycle identity changed"
+                raise _journal_incompatible(
+                    "generation rebase tool lifecycle identity changed",
+                    reason=GenerationRebaseFailureReason.TOOL_IDENTITY_CHANGED,
+                    event=lifecycle[-1],
                 )
             if not results:
-                raise GenerationRebasePreflightBlocked(
-                    "generation rebase found an unfinished durable tool"
+                blocked_failures.append(
+                    (
+                        "generation rebase found an unfinished durable tool",
+                        GenerationRebaseFailureReason.TOOL_OPEN,
+                        {
+                        "execution_id": lifecycle[-1].attempt.generation.execution_id,
+                        "generation_id": lifecycle[-1].attempt.generation.generation_id,
+                        "attempt_id": lifecycle[-1].attempt.attempt_id,
+                        "call_id": str(lifecycle[-1].payload.get("call_id")),
+                        },
+                    )
                 )
 
         attempts: dict[str, list[JournalEvent]] = {}
         for event in runtime_events:
             attempts.setdefault(event.attempt.attempt_id, []).append(event)
-        for attempt_events in attempts.values():
-            terminals = [
+        ordered_attempts = {
+            attempt_id: tuple(sorted(values, key=lambda event: event.store_seq))
+            for attempt_id, values in attempts.items()
+        }
+
+        plans_by_identity: dict[
+            tuple[str, str],
+            GraphExecutionPlan,
+        ] = {}
+        orchestration_groups: dict[str, GraphExecutionPlan] = {}
+        step_owners: dict[str, tuple[GraphExecutionPlan, GraphStepBinding]] = {}
+        for attempt_id, attempt_events in ordered_attempts.items():
+            admissions = tuple(
                 event
                 for event in attempt_events
-                if event.event_type in _ATTEMPT_TERMINAL_EVENT_TYPES
+                if event.event_type == "graph.execution.admitted"
+            )
+            if not admissions:
+                continue
+            if len(admissions) != 1 or any(
+                event.event_type == "graph.step.started"
+                for event in attempt_events
+            ):
+                raise _journal_incompatible(
+                    "generation rebase graph attempt kind is ambiguous",
+                    reason=(
+                        GenerationRebaseFailureReason.GRAPH_ATTEMPT_KIND_AMBIGUOUS
+                    ),
+                    event=admissions[-1],
+                )
+            plan = _parse_graph_plan_admission(admissions[0])
+            if (
+                plan.execution_id != intent.execution_id
+                or plan.orchestration_attempt.generation.generation_id
+                != intent.previous_generation_id
+            ):
+                raise _journal_incompatible(
+                    "generation rebase graph plan escaped the current generation",
+                    reason=(
+                        GenerationRebaseFailureReason.GRAPH_PLAN_DESCRIPTOR_INVALID
+                    ),
+                    event=admissions[0],
+                    plan=plan,
+                )
+            try:
+                initial_input = _event_at_graph_cursor(
+                    runtime_events,
+                    plan.initial_input_cursor,
+                )
+            except ValueError as error:
+                raise _journal_incompatible(
+                    "generation rebase graph initial input is unavailable",
+                    reason=(
+                        GenerationRebaseFailureReason.GRAPH_PLAN_DESCRIPTOR_INVALID
+                    ),
+                    event=admissions[0],
+                    plan=plan,
+                ) from error
+            if (
+                initial_input.attempt != plan.orchestration_attempt
+                or initial_input.event_type
+                not in {"message.user", "interaction.resolved"}
+                or initial_input.store_seq >= admissions[0].store_seq
+            ):
+                raise _journal_incompatible(
+                    "generation rebase graph initial input changed provenance",
+                    reason=(
+                        GenerationRebaseFailureReason.GRAPH_PLAN_DESCRIPTOR_INVALID
+                    ),
+                    event=admissions[0],
+                    plan=plan,
+                )
+            _verified_graph_input_event_artifacts(
+                initial_input,
+                artifact_repository=artifact_repository,
+                plan=plan,
+                step_index=None,
+                reason=(
+                    GenerationRebaseFailureReason.GRAPH_PLAN_DESCRIPTOR_INVALID
+                ),
+            )
+            identity = (plan.plan_id, plan.scope_id)
+            if identity in plans_by_identity or attempt_id in orchestration_groups:
+                raise _journal_incompatible(
+                    "generation rebase graph plan admission is ambiguous",
+                    reason=(
+                        GenerationRebaseFailureReason.GRAPH_PLAN_DESCRIPTOR_INVALID
+                    ),
+                    event=admissions[0],
+                    plan=plan,
+                )
+            plans_by_identity[identity] = plan
+            orchestration_groups[attempt_id] = plan
+            for step in plan.steps:
+                if step.attempt.attempt_id in step_owners:
+                    raise _journal_incompatible(
+                        "generation rebase graph step belongs to multiple plans",
+                        reason=(
+                            GenerationRebaseFailureReason.GRAPH_PLAN_DESCRIPTOR_INVALID
+                        ),
+                        event=admissions[0],
+                        plan=plan,
+                        step_index=step.index,
+                    )
+                step_owners[step.attempt.attempt_id] = (plan, step)
+
+        step_states: dict[tuple[str, int], _GraphStepQuiescence] = {}
+        recovery_failures: list[
+            tuple[
+                GenerationRebaseFailureReason,
+                JournalEvent,
+                GraphExecutionPlan,
+                int | None,
             ]
-            if len(terminals) > 1:
-                raise GenerationRebaseUnavailable(
-                    "generation rebase attempt has duplicate terminal events"
+        ] = []
+        for attempt_id, attempt_events in ordered_attempts.items():
+            graph_events = tuple(
+                event
+                for event in attempt_events
+                if event.event_type.startswith("graph.")
+            )
+            if attempt_id in orchestration_groups:
+                allowed = {
+                    "graph.execution.admitted",
+                    "graph.execution.completed",
+                }
+                if any(event.event_type not in allowed for event in graph_events):
+                    raise _journal_incompatible(
+                        "generation rebase graph orchestration kind is ambiguous",
+                        reason=(
+                            GenerationRebaseFailureReason.GRAPH_ATTEMPT_KIND_AMBIGUOUS
+                        ),
+                        event=graph_events[-1],
+                        plan=orchestration_groups[attempt_id],
+                    )
+                continue
+
+            owner = step_owners.get(attempt_id)
+            starts = tuple(
+                event
+                for event in graph_events
+                if event.event_type == "graph.step.started"
+            )
+            if owner is not None and not starts:
+                plan, step = owner
+                raise _journal_incompatible(
+                    "generation rebase graph step attempt has no durable start",
+                    reason=(
+                        GenerationRebaseFailureReason.GRAPH_ATTEMPT_KIND_AMBIGUOUS
+                    ),
+                    event=attempt_events[0],
+                    plan=plan,
+                    step_index=step.index,
                 )
-            if not terminals:
-                raise GenerationRebasePreflightBlocked(
-                    "generation rebase found an unfinished durable attempt"
+            if starts:
+                if owner is None:
+                    start = starts[0]
+                    identity = (
+                        start.payload.get("graph_plan_id"),
+                        start.payload.get("graph_scope_id"),
+                    )
+                    plan = plans_by_identity.get(identity)
+                    if plan is not None:
+                        matching = tuple(
+                            step
+                            for step in plan.steps
+                            if step.attempt == start.attempt
+                        )
+                        if len(matching) == 1:
+                            owner = (plan, matching[0])
+                if owner is None:
+                    raise _journal_incompatible(
+                        "generation rebase graph step has no exact admitted plan",
+                        reason=(
+                            GenerationRebaseFailureReason.GRAPH_PLAN_DESCRIPTOR_INVALID
+                        ),
+                        event=starts[0],
+                    )
+                plan, step = owner
+                state = _classify_graph_step_attempt(
+                    attempt_events,
+                    journal_events=runtime_events,
+                    plan=plan,
+                    expected_step=step,
+                    artifact_repository=artifact_repository,
                 )
-            if terminals[0].store_seq != attempt_events[-1].store_seq:
-                raise GenerationRebaseUnavailable(
-                    "generation rebase attempt continued after its terminal event"
+                key = (plan.plan_id, step.index)
+                if key in step_states:
+                    raise _journal_incompatible(
+                        "generation rebase graph step state is ambiguous",
+                        reason=(
+                            GenerationRebaseFailureReason.GRAPH_STEP_SEQUENCE_INVALID
+                        ),
+                        event=starts[0],
+                        plan=plan,
+                        step_index=step.index,
+                    )
+                step_states[key] = state
+                if state.status == "recovery_required":
+                    if state.terminal is None:
+                        raise TypeError("graph recovery state requires a terminal")
+                    recovery_failures.append(
+                        (
+                            GenerationRebaseFailureReason.GRAPH_STEP_SEAL_MISSING,
+                            state.terminal,
+                            plan,
+                            step.index,
+                        )
+                    )
+                elif state.status == "blocked":
+                    blocked_failures.append(
+                        (
+                            "generation rebase found an unfinished durable attempt",
+                            GenerationRebaseFailureReason.ATTEMPT_OPEN,
+                            _failure_subject_for_event(
+                                starts[0],
+                                plan=plan,
+                                step_index=step.index,
+                            ),
+                        )
+                    )
+                continue
+
+            if graph_events:
+                raise _journal_incompatible(
+                    "generation rebase graph attempt kind is ambiguous",
+                    reason=(
+                        GenerationRebaseFailureReason.GRAPH_ATTEMPT_KIND_AMBIGUOUS
+                    ),
+                    event=graph_events[0],
                 )
+
+            selection = select_attempt_terminal(attempt_events)
+            if selection.ambiguous:
+                raise _journal_incompatible(
+                    "generation rebase attempt has duplicate terminal events",
+                    reason=(
+                        GenerationRebaseFailureReason.ATTEMPT_DUPLICATE_TERMINAL
+                    ),
+                    event=attempt_events[-1],
+                )
+            terminal = selection.event
+            if terminal is None:
+                canonical = tuple(
+                    event
+                    for event in attempt_events
+                    if event.event_type in CANONICAL_ATTEMPT_TERMINALS
+                )
+                if canonical:
+                    raise _journal_incompatible(
+                        "generation rebase attempt continued after its terminal event",
+                        reason=(
+                            GenerationRebaseFailureReason.ATTEMPT_CONTINUED_AFTER_TERMINAL
+                        ),
+                        event=canonical[-1],
+                    )
+                blocked_failures.append(
+                    (
+                        "generation rebase found an unfinished durable attempt",
+                        GenerationRebaseFailureReason.ATTEMPT_OPEN,
+                        _failure_subject_for_event(attempt_events[-1]),
+                    )
+                )
+
+        for orchestration_attempt_id, plan in orchestration_groups.items():
+            attempt_events = ordered_attempts[orchestration_attempt_id]
+            admission = next(
+                event
+                for event in attempt_events
+                if event.event_type == "graph.execution.admitted"
+            )
+            execution_seals = tuple(
+                event
+                for event in attempt_events
+                if event.event_type == "graph.execution.completed"
+            )
+            if len(execution_seals) > 1:
+                raise _journal_incompatible(
+                    "generation rebase graph execution seal is duplicated",
+                    reason=(
+                        GenerationRebaseFailureReason.GRAPH_EXECUTION_SEAL_DUPLICATED
+                    ),
+                    event=execution_seals[-1],
+                    plan=plan,
+                )
+            canonical_terminals = tuple(
+                event
+                for event in attempt_events
+                if event.event_type in CANONICAL_ATTEMPT_TERMINALS
+            )
+            resource_bearing_terminals = tuple(
+                event
+                for event in attempt_events
+                if event.event_type in ATTEMPT_TERMINAL_EQUIVALENTS
+                and event.resource_refs
+            )
+            if resource_bearing_terminals:
+                raise _journal_incompatible(
+                    "generation rebase root graph terminal carries resources",
+                    reason=(
+                        GenerationRebaseFailureReason.GRAPH_EXECUTION_SEAL_MISMATCHED
+                    ),
+                    event=resource_bearing_terminals[0],
+                    plan=plan,
+                )
+            if len(canonical_terminals) > 1:
+                raise _journal_incompatible(
+                    "generation rebase orchestration has duplicate terminals",
+                    reason=(
+                        GenerationRebaseFailureReason.ATTEMPT_DUPLICATE_TERMINAL
+                    ),
+                    event=canonical_terminals[-1],
+                    plan=plan,
+                )
+            terminal = canonical_terminals[0] if canonical_terminals else None
+            if terminal is not None and terminal != attempt_events[-1]:
+                raise _journal_incompatible(
+                    "generation rebase orchestration continued after its terminal",
+                    reason=(
+                        GenerationRebaseFailureReason.ATTEMPT_CONTINUED_AFTER_TERMINAL
+                    ),
+                    event=terminal,
+                    plan=plan,
+                )
+
+            states = tuple(
+                step_states.get((plan.plan_id, step.index))
+                for step in plan.steps
+            )
+            completed = all(
+                state is not None and state.status == "completed"
+                for state in states
+            )
+            dead_indexes = tuple(
+                index
+                for index, state in enumerate(states)
+                if state is not None and state.status in {"failed", "cancelled"}
+            )
+            active_indexes = tuple(
+                index for index, state in enumerate(states) if state is not None
+            )
+            for index in active_indexes:
+                if any(
+                    states[predecessor] is None
+                    or states[predecessor].status != "completed"
+                    for predecessor in range(index)
+                ):
+                    state = states[index]
+                    if state is None:
+                        raise TypeError("active graph step state is unavailable")
+                    raise _journal_incompatible(
+                        "generation rebase graph step sequence is not a prefix",
+                        reason=(
+                            GenerationRebaseFailureReason.GRAPH_STEP_SEQUENCE_INVALID
+                        ),
+                        event=state.seal or state.terminal or admission,
+                        plan=plan,
+                        step_index=index,
+                    )
+            if execution_seals:
+                _validate_graph_execution_seal(
+                    execution_seals[0],
+                    plan=plan,
+                    final_step=states[-1],
+                    artifact_repository=artifact_repository,
+                )
+
+            if terminal is not None:
+                if (
+                    not completed
+                    or len(execution_seals) != 1
+                    or execution_seals[0].store_seq >= terminal.store_seq
+                ):
+                    raise _journal_incompatible(
+                        "generation rebase root graph terminal is not fully sealed",
+                        reason=(
+                            GenerationRebaseFailureReason.GRAPH_EXECUTION_SEAL_MISMATCHED
+                        ),
+                        event=terminal,
+                        plan=plan,
+                    )
+                continue
+
+            if execution_seals:
+                if execution_seals[0] != attempt_events[-1] or not completed:
+                    raise _journal_incompatible(
+                        "generation rebase graph execution seal is not terminal",
+                        reason=(
+                            GenerationRebaseFailureReason.GRAPH_EXECUTION_SEAL_MISMATCHED
+                        ),
+                        event=execution_seals[0],
+                        plan=plan,
+                    )
+                continue
+
+            if dead_indexes:
+                dead_index = dead_indexes[0]
+                if (
+                    len(dead_indexes) != 1
+                    or any(
+                        states[index] is None
+                        or states[index].status != "completed"
+                        for index in range(dead_index)
+                    )
+                    or any(
+                        plan.steps[index].attempt.attempt_id in ordered_attempts
+                        for index in range(dead_index + 1, len(plan.steps))
+                    )
+                    or admission != attempt_events[-1]
+                ):
+                    raise _journal_incompatible(
+                        "generation rebase graph dead prefix is invalid",
+                        reason=(
+                            GenerationRebaseFailureReason.GRAPH_STEP_SEQUENCE_INVALID
+                        ),
+                        event=states[dead_index].seal or admission,
+                        plan=plan,
+                        step_index=dead_index,
+                    )
+                continue
+
+            if completed:
+                if admission == attempt_events[-1]:
+                    recovery_failures.append(
+                        (
+                            GenerationRebaseFailureReason.GRAPH_EXECUTION_SEAL_MISSING,
+                            admission,
+                            plan,
+                            None,
+                        )
+                    )
+                else:
+                    blocked_failures.append(
+                        (
+                            "generation rebase found an unfinished durable attempt",
+                            GenerationRebaseFailureReason.ATTEMPT_OPEN,
+                            _failure_subject_for_event(
+                                attempt_events[-1],
+                                plan=plan,
+                            ),
+                        )
+                    )
+                continue
+            blocked_failures.append(
+                (
+                    "generation rebase found an unfinished durable attempt",
+                    GenerationRebaseFailureReason.ATTEMPT_OPEN,
+                    _failure_subject_for_event(admission, plan=plan),
+                )
+            )
+
+        if recovery_failures:
+            reason, event, plan, step_index = recovery_failures[0]
+            raise GenerationRebaseRecoveryRequired(
+                "generation rebase graph checkpoint recovery is required",
+                reason=reason,
+                subject=_failure_subject_for_event(
+                    event,
+                    plan=plan,
+                    step_index=step_index,
+                ),
+            )
+        if blocked_failures:
+            message, reason, subject = blocked_failures[0]
+            raise GenerationRebasePreflightBlocked(
+                message,
+                reason=reason,
+                subject=subject,
+            )
 
     @staticmethod
     def _ensure_initial_execution(
@@ -1493,14 +3743,22 @@ class SQLiteGenerationRebaseV2Service:
             operation is not None
         ):
             raise GenerationRebaseConflict(
-                "generation create cannot claim a non-empty execution"
+                "generation create cannot claim a non-empty execution",
+                reason=GenerationRebaseFailureReason.CHAT_BINDING_CONFLICT,
             )
 
     @staticmethod
     def _validate_preflight(intent: GenerationRebaseIntent) -> None:
         if not intent.preflight.permits_rebase:
-            raise GenerationRebasePreflightBlocked(
-                "generation rebase preflight found an unsanitized host snapshot"
+            raise GenerationRebaseJournalIncompatible(
+                "generation rebase preflight found an unsanitized host snapshot",
+                reason=GenerationRebaseFailureReason.HOST_SNAPSHOT_UNSANITIZED,
+                subject={
+                    "execution_id": intent.execution_id,
+                    "generation_id": intent.previous_generation_id
+                    or intent.generation_id,
+                    "attempt_id": intent.attempt_id,
+                },
             )
 
     def rebase(
@@ -1518,7 +3776,10 @@ class SQLiteGenerationRebaseV2Service:
         )
         if expected_operation != request.operation:
             raise GenerationRebaseConflict(
-                "generation rebase operation payload hash changed"
+                "generation rebase operation payload hash changed",
+                reason=(
+                    GenerationRebaseFailureReason.OPERATION_IDENTITY_CONFLICT
+                ),
             )
         self._validate_preflight(intent)
         target_key = self._target_key(intent)
@@ -1560,7 +3821,10 @@ class SQLiteGenerationRebaseV2Service:
                         or existing_primary["target_key"] != target_key
                     ):
                         raise GenerationRebaseConflict(
-                            "generation rebase operation ID was reused"
+                            "generation rebase operation ID was reused",
+                            reason=(
+                                GenerationRebaseFailureReason.OPERATION_IDENTITY_CONFLICT
+                            ),
                         )
                     receipt = self._receipt_for_generation(
                         connection,
@@ -1570,7 +3834,7 @@ class SQLiteGenerationRebaseV2Service:
                         generation_id=intent.generation_id,
                     )
                     if receipt is None or receipt.operation != request.operation:
-                        raise GenerationRebaseUnavailable(
+                        raise GenerationRebaseJournalIncompatible(
                             "generation rebase operation receipt is incomplete"
                         )
                     return replace(receipt, duplicate=True)
@@ -1584,7 +3848,10 @@ class SQLiteGenerationRebaseV2Service:
                 if intent.kind is GenerationRebaseKind.CREATE:
                     if host_head is not None:
                         raise GenerationRebaseConflict(
-                            "generation create requires an empty chat head"
+                            "generation create requires an empty chat head",
+                            reason=(
+                                GenerationRebaseFailureReason.CHAT_BINDING_CONFLICT
+                            ),
                         )
                     orphaned_owner_state = any(
                         connection.execute(query, (intent.owner_chat_id,)).fetchone()
@@ -1599,7 +3866,7 @@ class SQLiteGenerationRebaseV2Service:
                         )
                     )
                     if orphaned_owner_state:
-                        raise GenerationRebaseUnavailable(
+                        raise GenerationRebaseJournalIncompatible(
                             "generation create found owner state without a current head"
                         )
                     foreign_binding = connection.execute(
@@ -1611,7 +3878,10 @@ class SQLiteGenerationRebaseV2Service:
                     ).fetchone()
                     if foreign_binding is not None:
                         raise GenerationRebaseConflict(
-                            "generation execution is already bound to a chat"
+                            "generation execution is already bound to a chat",
+                            reason=(
+                                GenerationRebaseFailureReason.CHAT_BINDING_CONFLICT
+                            ),
                         )
                     self._ensure_initial_execution(connection, intent)
                     connection.execute(
@@ -1629,25 +3899,37 @@ class SQLiteGenerationRebaseV2Service:
                 else:
                     if host_head is None or bootstrap_head is None:
                         raise GenerationRebaseConflict(
-                            "generation rebase has no current generation"
+                            "generation rebase has no current generation",
+                            reason=(
+                                GenerationRebaseFailureReason.SOURCE_GENERATION_CONFLICT
+                            ),
                         )
                     if (
                         host_head["execution_id"] != intent.execution_id
                         or host_head["session_id"] != intent.session_id
                     ):
                         raise GenerationRebaseConflict(
-                            "generation rebase binding is outside the durable chat"
+                            "generation rebase binding is outside the durable chat",
+                            reason=(
+                                GenerationRebaseFailureReason.CHAT_BINDING_CONFLICT
+                            ),
                         )
                     if (
                         host_head["current_generation_id"]
                         != intent.previous_generation_id
                     ):
                         raise GenerationRebaseConflict(
-                            "generation rebase previous generation is not current"
+                            "generation rebase previous generation is not current",
+                            reason=(
+                                GenerationRebaseFailureReason.SOURCE_GENERATION_CONFLICT
+                            ),
                         )
                     if int(host_head["revision"]) != intent.expected_head_revision:
                         raise GenerationRebaseConflict(
-                            "generation rebase head revision is not current"
+                            "generation rebase head revision is not current",
+                            reason=(
+                                GenerationRebaseFailureReason.HEAD_REVISION_CONFLICT
+                            ),
                         )
                     current_receipt = self._receipt_for_generation(
                         connection,
@@ -1663,7 +3945,7 @@ class SQLiteGenerationRebaseV2Service:
                         or current_receipt.source_revision
                         != bootstrap_head["current_source_revision"]
                     ):
-                        raise GenerationRebaseUnavailable(
+                        raise GenerationRebaseJournalIncompatible(
                             "generation rebase current receipt is incomplete"
                         )
 
@@ -1681,7 +3963,10 @@ class SQLiteGenerationRebaseV2Service:
                     (intent.owner_chat_id, intent.generation_id),
                 ).fetchone() is not None:
                     raise GenerationRebaseConflict(
-                        "generation ID already belongs to a lifecycle record"
+                        "generation ID already belongs to a lifecycle record",
+                        reason=(
+                            GenerationRebaseFailureReason.SOURCE_GENERATION_CONFLICT
+                        ),
                     )
                 if connection.execute(
                     """
@@ -1691,7 +3976,10 @@ class SQLiteGenerationRebaseV2Service:
                     (intent.owner_chat_id, intent.source_revision),
                 ).fetchone() is not None:
                     raise GenerationRebaseConflict(
-                        "generation source revision is already imported"
+                        "generation source revision is already imported",
+                        reason=(
+                            GenerationRebaseFailureReason.SOURCE_GENERATION_CONFLICT
+                        ),
                     )
                 if connection.execute(
                     """
@@ -1701,7 +3989,10 @@ class SQLiteGenerationRebaseV2Service:
                     (intent.execution_id, intent.attempt_id),
                 ).fetchone() is not None:
                     raise GenerationRebaseConflict(
-                        "generation attempt ID is already bound"
+                        "generation attempt ID is already bound",
+                        reason=(
+                            GenerationRebaseFailureReason.SOURCE_GENERATION_CONFLICT
+                        ),
                     )
 
                 if not self._claim_operation(
@@ -1711,7 +4002,7 @@ class SQLiteGenerationRebaseV2Service:
                     target_kind="legacy_bootstrap_manifest",
                     target_key=target_key,
                 ):
-                    raise GenerationRebaseUnavailable(
+                    raise GenerationRebaseJournalIncompatible(
                         "generation rebase operation replay lost its receipt"
                     )
                 execution = connection.execute(
@@ -1719,7 +4010,7 @@ class SQLiteGenerationRebaseV2Service:
                     (intent.execution_id,),
                 ).fetchone()
                 if execution is None:
-                    raise GenerationRebaseUnavailable(
+                    raise GenerationRebaseJournalIncompatible(
                         "generation rebase journal head is unavailable"
                     )
                 next_store_seq = int(execution["next_store_seq"])
@@ -1754,7 +4045,10 @@ class SQLiteGenerationRebaseV2Service:
                         target_key=event.event_id,
                     ):
                         raise GenerationRebaseConflict(
-                            "generation rebase event operation already exists"
+                            "generation rebase event operation already exists",
+                            reason=(
+                                GenerationRebaseFailureReason.OPERATION_IDENTITY_CONFLICT
+                            ),
                         )
                     event_json = _canonical_bytes(event.to_dict())
                     event_sha256 = hashlib.sha256(event_json).hexdigest()
@@ -1807,7 +4101,10 @@ class SQLiteGenerationRebaseV2Service:
                 )
                 if advanced.rowcount != 1:
                     raise GenerationRebaseConflict(
-                        "generation rebase journal head changed"
+                        "generation rebase journal head changed",
+                        reason=(
+                            GenerationRebaseFailureReason.HEAD_REVISION_CONFLICT
+                        ),
                     )
 
                 manifest = {
@@ -2010,7 +4307,10 @@ class SQLiteGenerationRebaseV2Service:
                         bootstrap_updated.rowcount != 1
                     ):
                         raise GenerationRebaseConflict(
-                            "generation rebase head changed during compare-and-swap"
+                            "generation rebase head changed during compare-and-swap",
+                            reason=(
+                                GenerationRebaseFailureReason.HEAD_REVISION_CONFLICT
+                            ),
                         )
 
                 receipt = self._receipt_for_generation(
@@ -2021,7 +4321,7 @@ class SQLiteGenerationRebaseV2Service:
                     generation_id=intent.generation_id,
                 )
                 if receipt is None or receipt.operation != request.operation:
-                    raise GenerationRebaseUnavailable(
+                    raise GenerationRebaseJournalIncompatible(
                         "generation rebase receipt was not durably completed"
                     )
                 return receipt
@@ -2029,28 +4329,32 @@ class SQLiteGenerationRebaseV2Service:
             raise
         except sqlite3.IntegrityError as error:
             raise GenerationRebaseConflict(
-                "generation rebase conflicted with durable state"
+                "generation rebase conflicted with durable state",
+                reason=GenerationRebaseFailureReason.CHAT_BINDING_CONFLICT,
             ) from error
         except sqlite3.Error as error:
             raise GenerationRebaseUnavailable(
-                "generation rebase SQLite transaction failed"
+                "generation rebase SQLite transaction failed",
+                reason=(
+                    GenerationRebaseFailureReason.INFRASTRUCTURE_UNAVAILABLE
+                ),
             ) from error
 
     @staticmethod
     def _decode_manifest(row: sqlite3.Row) -> Mapping[str, Any]:
         raw = bytes(row["manifest_json"])
         if hashlib.sha256(raw).hexdigest() != row["manifest_sha256"]:
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation rebase manifest digest changed"
             )
         try:
             decoded = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation rebase manifest is unreadable"
             ) from error
         if type(decoded) is not dict or _canonical_bytes(decoded) != raw:
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation rebase manifest is not canonical"
             )
         expected = {
@@ -2072,7 +4376,7 @@ class SQLiteGenerationRebaseV2Service:
         if set(decoded) != expected or decoded["schema"] != (
             "unchain.legacy_bootstrap_manifest.v1"
         ):
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation rebase manifest shape changed"
             )
         for field_name in (
@@ -2085,7 +4389,7 @@ class SQLiteGenerationRebaseV2Service:
             "payload_sha256",
         ):
             if decoded[field_name] != row[field_name]:
-                raise GenerationRebaseUnavailable(
+                raise GenerationRebaseJournalIncompatible(
                     "generation rebase manifest index changed"
                 )
         if (
@@ -2095,7 +4399,7 @@ class SQLiteGenerationRebaseV2Service:
             or set(decoded["rebase"])
             != {"kind", "previous_generation_id"}
         ):
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation rebase manifest authority changed"
             )
         events = decoded["events"]
@@ -2106,7 +4410,7 @@ class SQLiteGenerationRebaseV2Service:
             or events[0].get("store_seq") != row["first_store_seq"]
             or events[-1].get("store_seq") != row["last_store_seq"]
         ):
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation rebase manifest event range changed"
             )
         event_kinds = tuple(
@@ -2131,7 +4435,7 @@ class SQLiteGenerationRebaseV2Service:
         if event_kinds != ("generation_marker",) and (
             not event_kinds or any(kind != "message" for kind in event_kinds)
         ):
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation rebase manifest message accounting changed"
             )
         return MappingProxyType(decoded)
@@ -2162,17 +4466,17 @@ class SQLiteGenerationRebaseV2Service:
         )
         expected = manifest["events"]
         if len(persisted) != row["event_count"] or len(persisted) != len(expected):
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation rebase journal range is incomplete"
             )
         for event_row, descriptor in zip(persisted, expected, strict=True):
             if type(descriptor) is not dict:
-                raise GenerationRebaseUnavailable(
+                raise GenerationRebaseJournalIncompatible(
                     "generation rebase event descriptor is invalid"
                 )
             raw = bytes(event_row["event_json"])
             if hashlib.sha256(raw).hexdigest() != event_row["event_sha256"]:
-                raise GenerationRebaseUnavailable(
+                raise GenerationRebaseJournalIncompatible(
                     "generation rebase event digest changed"
                 )
             try:
@@ -2183,7 +4487,7 @@ class SQLiteGenerationRebaseV2Service:
                 TypeError,
                 ValueError,
             ) as error:
-                raise GenerationRebaseUnavailable(
+                raise GenerationRebaseJournalIncompatible(
                     "generation rebase event is unreadable"
                 ) from error
             operation = cls._operation_row(
@@ -2274,7 +4578,7 @@ class SQLiteGenerationRebaseV2Service:
             else:
                 kind_invalid = True
             if common_invalid or kind_invalid:
-                raise GenerationRebaseUnavailable(
+                raise GenerationRebaseJournalIncompatible(
                     "generation rebase event binding changed"
                 )
 
@@ -2317,7 +4621,7 @@ class SQLiteGenerationRebaseV2Service:
             ),
         ).fetchone()
         if lifecycle is None or attempt is None:
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation rebase lifecycle receipt is incomplete"
             )
         manifest = self._decode_manifest(manifest_row)
@@ -2381,7 +4685,7 @@ class SQLiteGenerationRebaseV2Service:
             or attempt_receipt["result_generation_id"] != generation_id
             or attempt_receipt["result_attempt_id"] != attempt["attempt_id"]
         ):
-            raise GenerationRebaseUnavailable(
+            raise GenerationRebaseJournalIncompatible(
                 "generation rebase durable authorities diverged"
             )
         self._verify_events(
@@ -2448,7 +4752,10 @@ class SQLiteGenerationRebaseV2Service:
                     return None
                 if host["execution_id"] != execution or host["session_id"] != session:
                     raise GenerationRebaseConflict(
-                        "generation head read is outside the durable chat binding"
+                        "generation head read is outside the durable chat binding",
+                        reason=(
+                            GenerationRebaseFailureReason.CHAT_BINDING_CONFLICT
+                        ),
                     )
                 receipt = self._receipt_for_generation(
                     connection,
@@ -2463,7 +4770,7 @@ class SQLiteGenerationRebaseV2Service:
                     or receipt.source_revision
                     != bootstrap["current_source_revision"]
                 ):
-                    raise GenerationRebaseUnavailable(
+                    raise GenerationRebaseJournalIncompatible(
                         "generation head has no complete durable receipt"
                     )
                 return GenerationRebaseHead(
@@ -2479,7 +4786,10 @@ class SQLiteGenerationRebaseV2Service:
             raise
         except sqlite3.Error as error:
             raise GenerationRebaseUnavailable(
-                "generation rebase current-head read failed"
+                "generation rebase current-head read failed",
+                reason=(
+                    GenerationRebaseFailureReason.INFRASTRUCTURE_UNAVAILABLE
+                ),
             ) from error
 
     def receipt_for_generation(
@@ -2513,18 +4823,651 @@ class SQLiteGenerationRebaseV2Service:
             raise
         except sqlite3.Error as error:
             raise GenerationRebaseUnavailable(
-                "generation rebase receipt read failed"
+                "generation rebase receipt read failed",
+                reason=(
+                    GenerationRebaseFailureReason.INFRASTRUCTURE_UNAVAILABLE
+                ),
             ) from error
+
+
+def _recovery_authority_snapshot(
+    service: SQLiteGenerationRebaseV2Service,
+    execution_id: str,
+) -> dict[str, dict[object, tuple[Any, ...]]]:
+    connection = service._connect()
+    try:
+        execution_rows = tuple(
+            tuple(row)
+            for row in connection.execute(
+                """
+                SELECT execution_id, next_store_seq
+                FROM executions WHERE execution_id = ?
+                """,
+                (execution_id,),
+            )
+        )
+        event_rows = tuple(
+            tuple(row)
+            for row in connection.execute(
+                """
+                SELECT store_seq, event_id, generation_id, attempt_id,
+                       event_type, operation_id, event_json, event_sha256
+                FROM events WHERE execution_id = ? ORDER BY store_seq
+                """,
+                (execution_id,),
+            )
+        )
+        operation_rows = tuple(
+            tuple(row)
+            for row in connection.execute(
+                """
+                SELECT operation_id, payload_sha256, target_kind, target_key
+                FROM operations WHERE execution_id = ? ORDER BY operation_id
+                """,
+                (execution_id,),
+            )
+        )
+        receipt_rows = tuple(
+            tuple(row)
+            for row in connection.execute(
+                """
+                SELECT store_seq, receipt_kind, generation_id, attempt_id,
+                       call_id, iteration
+                FROM event_receipts
+                WHERE execution_id = ? ORDER BY store_seq, receipt_kind
+                """,
+                (execution_id,),
+            )
+        )
+        artifact_rows = tuple(
+            tuple(row)
+            for row in connection.execute(
+                """
+                SELECT artifact_id, revision, logical_kind, logical_key,
+                       object_sha256, media_type, byte_length, preview,
+                       operation_id, artifact_json, artifact_record_sha256
+                FROM artifacts WHERE execution_id = ?
+                ORDER BY artifact_id, revision
+                """,
+                (execution_id,),
+            )
+        )
+        object_rows = tuple(
+            tuple(row)
+            for row in connection.execute(
+                """
+                SELECT DISTINCT objects.sha256, objects.byte_length
+                FROM objects
+                JOIN artifacts ON artifacts.object_sha256 = objects.sha256
+                WHERE artifacts.execution_id = ? ORDER BY objects.sha256
+                """,
+                (execution_id,),
+            )
+        )
+    finally:
+        connection.close()
+    return {
+        "execution": {row[0]: row for row in execution_rows},
+        "events": {row[1]: row for row in event_rows},
+        "operations": {row[0]: row for row in operation_rows},
+        "event_receipts": {
+            (row[0], row[1]): row for row in receipt_rows
+        },
+        "artifacts": {(row[0], row[1]): row for row in artifact_rows},
+        "objects": {row[0]: row for row in object_rows},
+    }
+
+
+def _recovery_authority_additions(
+    before: Mapping[object, tuple[Any, ...]],
+    after: Mapping[object, tuple[Any, ...]],
+    *,
+    authority: str,
+) -> dict[object, tuple[Any, ...]]:
+    if any(after.get(key) != value for key, value in before.items()):
+        raise GraphCheckpointError(
+            f"generation rebase recovery mutated existing {authority} authority"
+        )
+    return {key: value for key, value in after.items() if key not in before}
+
+
+def _verify_recovery_authority_delta(
+    *,
+    before: Mapping[str, Mapping[object, tuple[Any, ...]]],
+    after: Mapping[str, Mapping[object, tuple[Any, ...]]],
+    target: JournalEvent,
+) -> tuple[int, int]:
+    additions = {
+        authority: _recovery_authority_additions(
+            before[authority],
+            after[authority],
+            authority=authority,
+        )
+        for authority in (
+            "events",
+            "operations",
+            "event_receipts",
+            "artifacts",
+            "objects",
+        )
+    }
+    if additions["event_receipts"]:
+        raise GraphCheckpointError(
+            "generation rebase recovery appended an unexpected event receipt"
+        )
+    added_events = additions["events"]
+    if set(added_events) - {target.event_id} or len(added_events) > 1:
+        raise GraphCheckpointError(
+            "generation rebase recovery appended a foreign journal event"
+        )
+    if added_events:
+        added_event_row = added_events[target.event_id]
+        if (
+            added_event_row[0] != target.store_seq
+            or added_event_row[2] != target.attempt.generation.generation_id
+            or added_event_row[3] != target.attempt.attempt_id
+            or added_event_row[4] != target.event_type
+            or added_event_row[5] != target.operation.operation_id
+            or bytes(added_event_row[6]) != _canonical_bytes(target.to_dict())
+            or added_event_row[7]
+            != hashlib.sha256(bytes(added_event_row[6])).hexdigest()
+        ):
+            raise GraphCheckpointError(
+                "generation rebase recovery appended a changed journal event"
+            )
+
+    referenced_artifacts = {
+        (ref.resource_id, ref.revision)
+        for ref in target.resource_refs
+        if ref.kind == "artifact" and not ref.fragment
+    }
+    added_artifacts = additions["artifacts"]
+    if set(added_artifacts) - referenced_artifacts or len(added_artifacts) > 1:
+        raise GraphCheckpointError(
+            "generation rebase recovery appended a foreign artifact"
+        )
+    allowed_operations = {
+        row[8] for row in added_artifacts.values()
+    } | ({target.operation.operation_id} if added_events else set())
+    if set(additions["operations"]) - allowed_operations:
+        raise GraphCheckpointError(
+            "generation rebase recovery appended a foreign operation"
+        )
+    allowed_objects = {row[4] for row in added_artifacts.values()}
+    if set(additions["objects"]) - allowed_objects:
+        raise GraphCheckpointError(
+            "generation rebase recovery appended a foreign object"
+        )
+
+    before_execution = before["execution"]
+    after_execution = after["execution"]
+    if set(before_execution) != set(after_execution) or len(after_execution) != 1:
+        raise GraphCheckpointError(
+            "generation rebase recovery changed execution authority"
+        )
+    execution_id = next(iter(after_execution))
+    if after_execution[execution_id][1] != (
+        before_execution[execution_id][1] + len(added_events)
+    ):
+        raise GraphCheckpointError(
+            "generation rebase recovery changed the journal head unexpectedly"
+        )
+    return len(added_events), len(added_artifacts)
+
+
+def recover_generation_rebase_attempt(
+    *,
+    service: SQLiteGenerationRebaseV2Service,
+    request: GenerationRebaseRequest,
+    failure: GenerationRebaseRecoveryRequired,
+    artifact_sanitizer: Callable[[bytes, str], bytes],
+) -> GenerationRebaseRecoveryResult:
+    """Perform one exact graph recovery action for one classified failure.
+
+    This is the narrow host seam for a sidecar.  It never admits a plan and
+    never calls ``rebase``; the caller may replay its frozen request once only
+    after this function returns.
+    """
+
+    if type(service) is not SQLiteGenerationRebaseV2Service:
+        raise TypeError("service must be SQLiteGenerationRebaseV2Service")
+    if not isinstance(request, GenerationRebaseRequest):
+        raise TypeError("request must be GenerationRebaseRequest")
+    if not isinstance(failure, GenerationRebaseRecoveryRequired):
+        raise TypeError("failure must be GenerationRebaseRecoveryRequired")
+    if not callable(artifact_sanitizer):
+        raise TypeError("artifact_sanitizer must be callable")
+
+    detail = generation_rebase_failure_detail(failure)
+    if detail is None:
+        raise GraphCheckpointError(
+            "generation rebase recovery detail is unavailable"
+        )
+    try:
+        reason = GenerationRebaseFailureReason(detail["reason"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise GraphCheckpointError(
+            "generation rebase recovery reason is invalid"
+        ) from error
+    if reason not in {
+        GenerationRebaseFailureReason.GRAPH_STEP_SEAL_MISSING,
+        GenerationRebaseFailureReason.GRAPH_EXECUTION_SEAL_MISSING,
+    } or failure.reason != reason.value:
+        raise GraphCheckpointError(
+            "generation rebase failure is not recoverable"
+        )
+    subject = detail["subject"]
+    if not isinstance(subject, Mapping):
+        raise GraphCheckpointError(
+            "generation rebase recovery subject is unavailable"
+        )
+    common_keys = {
+        "execution_id",
+        "generation_id",
+        "attempt_id",
+        "orchestration_attempt_id",
+        "event_type",
+        "store_seq",
+        "event_id",
+        "graph_plan_id",
+        "graph_scope_id",
+    }
+    expected_keys = (
+        common_keys | {"step_index"}
+        if reason is GenerationRebaseFailureReason.GRAPH_STEP_SEAL_MISSING
+        else common_keys
+    )
+    if set(subject) != expected_keys:
+        raise GraphCheckpointError(
+            "generation rebase recovery subject is not closed"
+        )
+
+    intent = request.intent
+    if request.operation != build_generation_rebase_operation(
+        operation_id=request.operation.operation_id,
+        intent=intent,
+    ):
+        raise GraphCheckpointError(
+            "generation rebase recovery request operation changed identity"
+        )
+    if (
+        intent.kind is GenerationRebaseKind.CREATE
+        or subject["execution_id"] != intent.execution_id
+        or subject["generation_id"] != intent.previous_generation_id
+    ):
+        raise GraphCheckpointError(
+            "generation rebase recovery request changed identity"
+        )
+    journal = service._store.bind_execution(intent.execution_id)
+    plan = locate_graph_execution_plan(
+        journal,
+        generation_id=intent.previous_generation_id,
+        orchestration_attempt_id=str(subject["orchestration_attempt_id"]),
+    )
+    if (
+        plan.plan_id != subject["graph_plan_id"]
+        or plan.scope_id != subject["graph_scope_id"]
+        or plan.orchestration_attempt.attempt_id
+        != subject["orchestration_attempt_id"]
+    ):
+        raise GraphCheckpointError(
+            "generation rebase recovery plan changed identity"
+        )
+
+    snapshot = journal.capture_snapshot()
+    evidence = tuple(
+        event
+        for event in snapshot.events
+        if event.store_seq == subject["store_seq"]
+        and event.event_id == subject["event_id"]
+    )
+    if len(evidence) != 1:
+        raise GraphCheckpointError(
+            "generation rebase recovery evidence is unavailable"
+        )
+    evidence_event = evidence[0]
+    if (
+        evidence_event.event_type != subject["event_type"]
+        or evidence_event.attempt.attempt_id != subject["attempt_id"]
+        or evidence_event.attempt.generation.execution_id
+        != subject["execution_id"]
+        or evidence_event.attempt.generation.generation_id
+        != subject["generation_id"]
+    ):
+        raise GraphCheckpointError(
+            "generation rebase recovery evidence changed identity"
+        )
+
+    step: GraphStepBinding | None = None
+    if reason is GenerationRebaseFailureReason.GRAPH_STEP_SEAL_MISSING:
+        step_index = subject["step_index"]
+        if (
+            isinstance(step_index, bool)
+            or not isinstance(step_index, int)
+            or not 0 <= step_index < len(plan.steps)
+        ):
+            raise GraphCheckpointError(
+                "generation rebase recovery step index is invalid"
+            )
+        step = plan.steps[step_index]
+        if (
+            step.attempt != evidence_event.attempt
+            or evidence_event.event_type not in ATTEMPT_TERMINAL_EQUIVALENTS
+        ):
+            raise GraphCheckpointError(
+                "generation rebase recovery step evidence is invalid"
+            )
+    elif (
+        evidence_event.event_type != "graph.execution.admitted"
+        or evidence_event.attempt != plan.orchestration_attempt
+    ):
+        raise GraphCheckpointError(
+            "generation rebase recovery execution evidence is invalid"
+        )
+
+    def target_events(events: tuple[JournalEvent, ...]) -> tuple[JournalEvent, ...]:
+        if step is not None:
+            return tuple(
+                event
+                for event in events
+                if event.attempt == step.attempt
+                and event.event_type in GRAPH_STEP_SEALS
+                and event.payload.get("graph_plan_id") == plan.plan_id
+                and event.payload.get("graph_scope_id") == plan.scope_id
+            )
+        return tuple(
+            event
+            for event in events
+            if event.attempt == plan.orchestration_attempt
+            and event.event_type == "graph.execution.completed"
+            and event.payload.get("graph_plan_id") == plan.plan_id
+            and event.payload.get("graph_scope_id") == plan.scope_id
+        )
+
+    generation_events = tuple(
+        event
+        for event in snapshot.events
+        if event.attempt.generation.execution_id == intent.execution_id
+        and event.attempt.generation.generation_id
+        == intent.previous_generation_id
+    )
+    admissions = tuple(
+        event
+        for event in generation_events
+        if event.event_type == "graph.execution.admitted"
+        and event.attempt == plan.orchestration_attempt
+    )
+    if len(admissions) != 1 or _parse_graph_plan_admission(admissions[0]) != plan:
+        raise GraphCheckpointError(
+            "generation rebase recovery plan admission changed identity"
+        )
+    try:
+        initial_input = _event_at_graph_cursor(
+            generation_events,
+            plan.initial_input_cursor,
+        )
+    except ValueError as error:
+        raise GraphCheckpointError(
+            "generation rebase recovery initial input is unavailable"
+        ) from error
+    if (
+        initial_input.attempt != plan.orchestration_attempt
+        or initial_input.event_type not in {"message.user", "interaction.resolved"}
+        or initial_input.store_seq >= admissions[0].store_seq
+    ):
+        raise GraphCheckpointError(
+            "generation rebase recovery initial input changed provenance"
+        )
+    _verified_graph_input_event_artifacts(
+        initial_input,
+        artifact_repository=journal,
+        plan=plan,
+        step_index=None,
+        reason=GenerationRebaseFailureReason.GRAPH_PLAN_DESCRIPTOR_INVALID,
+    )
+
+    step_states: dict[int, _GraphStepQuiescence] = {}
+    for candidate_step in plan.steps:
+        candidate_events = tuple(
+            event
+            for event in generation_events
+            if event.attempt == candidate_step.attempt
+        )
+        if not candidate_events:
+            continue
+        step_states[candidate_step.index] = _classify_graph_step_attempt(
+            candidate_events,
+            journal_events=generation_events,
+            plan=plan,
+            expected_step=candidate_step,
+            artifact_repository=journal,
+        )
+
+    before_targets = target_events(snapshot.events)
+    if len(before_targets) > 1:
+        raise GraphCheckpointError(
+            "generation rebase recovery target is ambiguous"
+        )
+
+    if step is not None:
+        state = step_states.get(step.index)
+        if state is None or state.terminal != evidence_event:
+            raise GraphCheckpointError(
+                "generation rebase recovery step evidence is no longer current"
+            )
+        if state.seal is not None:
+            if before_targets != (state.seal,):
+                raise GraphCheckpointError(
+                    "generation rebase recovery step seal changed identity"
+                )
+            unchanged_before = _recovery_authority_snapshot(
+                service,
+                intent.execution_id,
+            )
+            unchanged_after = _recovery_authority_snapshot(
+                service,
+                intent.execution_id,
+            )
+            if unchanged_after != unchanged_before:
+                raise GraphCheckpointError(
+                    "generation rebase stale recovery observed a concurrent write"
+                )
+            return GenerationRebaseRecoveryResult(
+                action="unchanged",
+                reason=reason.value,
+                execution_id=intent.execution_id,
+                generation_id=intent.previous_generation_id,
+                appended_event_count=0,
+                artifact_count=0,
+            )
+        if state.status != "recovery_required" or before_targets:
+            raise GraphCheckpointError(
+                "generation rebase recovery step is not missing one exact seal"
+            )
+    else:
+        if set(step_states) != set(range(len(plan.steps))) or any(
+            state.status != "completed" or state.seal is None
+            for state in step_states.values()
+        ):
+            raise GraphCheckpointError(
+                "generation rebase execution recovery has an incomplete step"
+            )
+        if before_targets:
+            execution_seal = before_targets[0]
+            _validate_graph_execution_seal(
+                execution_seal,
+                plan=plan,
+                final_step=step_states[len(plan.steps) - 1],
+                artifact_repository=journal,
+            )
+            unchanged_before = _recovery_authority_snapshot(
+                service,
+                intent.execution_id,
+            )
+            unchanged_after = _recovery_authority_snapshot(
+                service,
+                intent.execution_id,
+            )
+            if unchanged_after != unchanged_before:
+                raise GraphCheckpointError(
+                    "generation rebase stale recovery observed a concurrent write"
+                )
+            return GenerationRebaseRecoveryResult(
+                action="unchanged",
+                reason=reason.value,
+                execution_id=intent.execution_id,
+                generation_id=intent.previous_generation_id,
+                appended_event_count=0,
+                artifact_count=0,
+            )
+
+    before_authority = _recovery_authority_snapshot(
+        service,
+        intent.execution_id,
+    )
+    checkpoints = GraphCheckpointService(
+        repository=JournalGraphCheckpointRepository(journal),
+        artifacts=ArtifactService(
+            journal,
+            sanitizer=artifact_sanitizer,
+        ),
+        derived_ingress_resolver=lambda _consumer, _source: (
+            _raise_recovery_ingress_unavailable()
+        ),
+    )
+    if reason is GenerationRebaseFailureReason.GRAPH_STEP_SEAL_MISSING:
+        if step is None:
+            raise TypeError("graph step recovery requires one step")
+        scan = checkpoints.repository.scan(plan)
+        terminal = checkpoints._terminal_after_start(scan, step.index)
+        if terminal != evidence_event:
+            raise GraphCheckpointError(
+                "generation rebase recovery terminal changed before sealing"
+            )
+        terminal_cursor = EventCursor(terminal.store_seq, terminal.event_id)
+        if terminal.event_type in GRAPH_STEP_SEAL_TERMINALS[GRAPH_STEP_COMPLETED]:
+            output = checkpoints._completed_output(scan, step, terminal)
+            checkpoints._seal_completed_terminal(
+                plan,
+                step,
+                terminal,
+                scan.snapshot_events,
+                output,
+            )
+        elif terminal.event_type in GRAPH_STEP_SEAL_TERMINALS["graph.step.failed"]:
+            checkpoints.repository.terminal(
+                plan,
+                step,
+                status=GraphTerminalStatus.FAILED,
+                terminal_cursor=terminal_cursor,
+            )
+        elif terminal.event_type in GRAPH_STEP_SEAL_TERMINALS[
+            "graph.step.cancelled"
+        ]:
+            checkpoints.repository.terminal(
+                plan,
+                step,
+                status=GraphTerminalStatus.CANCELLED,
+                terminal_cursor=terminal_cursor,
+            )
+        else:
+            raise GraphCheckpointError(
+                "generation rebase recovery terminal family changed"
+            )
+        requested_action = "step_recovered"
+    else:
+        scan = checkpoints.repository.scan(plan)
+        if (
+            scan.recovery.terminal_status is not None
+            or len(scan.recovery.completed_steps) != len(plan.steps)
+        ):
+            raise GraphCheckpointError(
+                "generation rebase execution recovery is not exactly finalizable"
+            )
+        checkpoints.repository.finalize(
+            plan,
+            scan.recovery.completed_steps[-1],
+        )
+        requested_action = "execution_finalized"
+
+    after_snapshot = journal.capture_snapshot()
+    after_targets = target_events(after_snapshot.events)
+    if len(after_targets) != 1:
+        raise GraphCheckpointError(
+            "generation rebase recovery did not converge to one seal"
+        )
+    after_generation_events = tuple(
+        event
+        for event in after_snapshot.events
+        if event.attempt.generation.execution_id == intent.execution_id
+        and event.attempt.generation.generation_id
+        == intent.previous_generation_id
+    )
+    if step is not None:
+        after_step_events = tuple(
+            event
+            for event in after_generation_events
+            if event.attempt == step.attempt
+        )
+        after_state = _classify_graph_step_attempt(
+            after_step_events,
+            journal_events=after_generation_events,
+            plan=plan,
+            expected_step=step,
+            artifact_repository=journal,
+        )
+        if after_state.terminal != evidence_event or after_state.seal != after_targets[0]:
+            raise GraphCheckpointError(
+                "generation rebase recovery sealed a changed step"
+            )
+    else:
+        _validate_graph_execution_seal(
+            after_targets[0],
+            plan=plan,
+            final_step=step_states[len(plan.steps) - 1],
+            artifact_repository=journal,
+        )
+    after_authority = _recovery_authority_snapshot(
+        service,
+        intent.execution_id,
+    )
+    appended_event_count, artifact_count = _verify_recovery_authority_delta(
+        before=before_authority,
+        after=after_authority,
+        target=after_targets[0],
+    )
+    if appended_event_count != 1:
+        raise GraphCheckpointError(
+            "generation rebase recovery did not append exactly one target seal"
+        )
+    return GenerationRebaseRecoveryResult(
+        action=requested_action,
+        reason=reason.value,
+        execution_id=intent.execution_id,
+        generation_id=intent.previous_generation_id,
+        appended_event_count=appended_event_count,
+        artifact_count=artifact_count,
+    )
+
+
+def _raise_recovery_ingress_unavailable() -> None:
+    raise GraphCheckpointError(
+        "generation rebase recovery cannot create derived ingress"
+    )
 
 
 __all__ = [
     "GenerationRebaseConflict",
     "GenerationRebaseError",
+    "GenerationRebaseFailureReason",
     "GenerationRebaseHead",
     "GenerationRebaseIntent",
+    "GenerationRebaseJournalIncompatible",
     "GenerationRebaseKind",
     "GenerationRebasePreflight",
     "GenerationRebasePreflightBlocked",
+    "GenerationRebaseRecoveryRequired",
+    "GenerationRebaseRecoveryResult",
     "GenerationRebaseReceipt",
     "GenerationRebaseRequest",
     "GenerationRebaseUnavailable",
@@ -2532,4 +5475,6 @@ __all__ = [
     "GenerationTaskStateDescriptor",
     "SQLiteGenerationRebaseV2Service",
     "build_generation_rebase_operation",
+    "generation_rebase_failure_detail",
+    "recover_generation_rebase_attempt",
 ]
