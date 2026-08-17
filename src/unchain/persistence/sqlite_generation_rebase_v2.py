@@ -66,6 +66,12 @@ from unchain.journal.graph_attempt_quiescence import (
     MAX_ITERATIONS_TERMINALS,
     select_attempt_terminal,
 )
+from unchain.journal.interaction_cycles import (
+    DURABLE_INTERACTION_REQUESTS,
+    DURABLE_INTERACTION_RESOLUTIONS,
+    INTERACTION_REQUESTS,
+    INTERACTION_RESOLUTIONS,
+)
 from unchain.persistence.sqlite_v2 import (
     SQLiteContextV2Store,
     SQLiteContextV2StoreIntegrityError,
@@ -76,30 +82,10 @@ from unchain.persistence.sqlite_v2 import (
 _MAX_MESSAGES = 10_000
 _MAX_SNAPSHOT_BYTES = 32 * 1024 * 1024
 _LEGACY_CAPTURE_STATUS = "legacy_partial"
-_INTERACTION_REQUEST_EVENT_TYPES = frozenset(
-    {"interaction.requested", "interaction_requested"}
-)
-_INTERACTION_RESOLUTION_EVENT_TYPES = frozenset(
-    {"interaction.resolved", "interaction_resolved"}
-)
-_GRAPH_INTERACTION_REQUEST_EVENT_TYPES = frozenset(
-    {
-        "interaction_requested",
-        "interaction.requested",
-        "human_input_requested",
-        "tool_confirmation_requested",
-        "continuation_request",
-        "input_requested",
-    }
-)
-_GRAPH_INTERACTION_RESOLUTION_EVENT_TYPES = frozenset(
-    {
-        "interaction_resolved",
-        "interaction.resolved",
-        "tool_confirmed",
-        "tool_denied",
-    }
-)
+_INTERACTION_REQUEST_EVENT_TYPES = DURABLE_INTERACTION_REQUESTS
+_INTERACTION_RESOLUTION_EVENT_TYPES = DURABLE_INTERACTION_RESOLUTIONS
+_GRAPH_INTERACTION_REQUEST_EVENT_TYPES = INTERACTION_REQUESTS
+_GRAPH_INTERACTION_RESOLUTION_EVENT_TYPES = INTERACTION_RESOLUTIONS
 _ATTEMPT_TERMINAL_EVENT_TYPES = CANONICAL_ATTEMPT_TERMINALS
 _TOOL_INTENT_EVENT_TYPES = frozenset({"tool_call"})
 _TOOL_STARTED_EVENT_TYPES = frozenset({"tool.started"})

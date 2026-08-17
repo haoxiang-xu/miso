@@ -37,6 +37,11 @@ from unchain.journal.graph_attempt_quiescence import (
     MAX_ITERATIONS_TERMINALS,
     select_attempt_terminal,
 )
+from unchain.journal.interaction_cycles import (
+    INTERACTION_REQUESTS,
+    INTERACTION_RESOLUTIONS,
+    LIVE_INTERACTION_OUTCOMES,
+)
 
 from .artifacts import ArtifactService, MAX_ARTIFACT_BYTES
 from .derived_handoff import (
@@ -50,18 +55,20 @@ from .models import HandoffStatus
 _COMPLETED_TERMINALS = COMPLETED_ATTEMPT_TERMINALS
 _FAILED_TERMINALS = FAILED_ATTEMPT_TERMINALS | MAX_ITERATIONS_TERMINALS
 _CANCELLED_TERMINALS = CANCELLED_ATTEMPT_TERMINALS
-_INTERACTION_REQUESTS = frozenset(
+_INTERACTION_REQUESTS = INTERACTION_REQUESTS
+_INTERACTION_RESOLUTIONS = INTERACTION_RESOLUTIONS
+# Events a host may append to a step attempt while the run is genuinely
+# suspended.  Anything outside this set is run-execution activity: seeing it
+# after an unresolved request proves the attempt never exited, i.e. the
+# prompt was answered through the in-run callback and its receipt lives in
+# the session-state interaction journal rather than this events journal.
+_LIVENESS_EXEMPT_EVENT_TYPES = INTERACTION_RESOLUTIONS | frozenset(
     {
-        "interaction_requested",
-        "interaction.requested",
-        "human_input_requested",
-        "tool_confirmation_requested",
-        "continuation_request",
-        "input_requested",
+        "graph.step.resume.admitted",
+        "artifact_created",
+        "artifact_updated",
+        "handoff.recorded",
     }
-)
-_INTERACTION_RESOLUTIONS = frozenset(
-    {"interaction_resolved", "interaction.resolved", "tool_confirmed", "tool_denied"}
 )
 
 
@@ -929,6 +936,11 @@ class JournalGraphCheckpointRepository:
             step = plan.steps[index]
             active: _GraphInteractionCycle | None = None
             seen_interactions: set[str] = set()
+            step_admitted_interaction_ids = frozenset(
+                str(resume_event.payload.get("interaction_id"))
+                for resume_step_binding, resume_event in resume_events
+                if resume_step_binding.index == index
+            )
             step_events = tuple(
                 event
                 for event in events
@@ -938,13 +950,30 @@ class JournalGraphCheckpointRepository:
             for event in step_events:
                 if event.store_seq in suppressed_interaction_resolutions:
                     continue
+                if (
+                    active is not None
+                    and active.resume_receipt is None
+                    and active.interaction_id
+                    not in step_admitted_interaction_ids
+                    and event.event_type not in _LIVENESS_EXEMPT_EVENT_TYPES
+                ):
+                    # Run-execution activity while the cycle has neither a
+                    # receipt nor any recorded admission proves the attempt
+                    # never exited: the prompt was answered through the
+                    # in-run callback (the active host boundary may journal
+                    # a canonical resolution for it), so the cycle closes
+                    # here and never takes a resume admission.  A genuine
+                    # durable resume always appends its admission before the
+                    # resumed run executes, so its cycle is pre-indexed and
+                    # kept.
+                    active = None
                 if event.event_type in _INTERACTION_REQUESTS:
-                    interaction_id = _interaction_id(event)
                     if active is not None and active.resume_receipt is None:
                         raise GraphCheckpointError(
                             "graph step requested a new interaction before the "
                             "previous interaction resumed"
                         )
+                    interaction_id = _interaction_id(event)
                     if interaction_id in seen_interactions:
                         raise GraphCheckpointError(
                             "graph interaction request is ambiguous"
@@ -958,10 +987,9 @@ class JournalGraphCheckpointRepository:
                     continue
                 if event.event_type in _INTERACTION_RESOLUTIONS:
                     interaction_id = _interaction_id(event)
-                    is_compatibility_outcome = event.event_type in {
-                        "tool_confirmed",
-                        "tool_denied",
-                    }
+                    is_compatibility_outcome = (
+                        event.event_type in LIVE_INTERACTION_OUTCOMES
+                    )
                     if active is None:
                         if is_compatibility_outcome:
                             continue
@@ -989,6 +1017,21 @@ class JournalGraphCheckpointRepository:
                         raise GraphCheckpointError(
                             "graph interaction resolution is ambiguous"
                         )
+                    if (
+                        is_compatibility_outcome
+                        and active.interaction_id
+                        not in step_admitted_interaction_ids
+                    ):
+                        # A live outcome closes the cycle in place: durable
+                        # resolutions arrive as ``interaction.resolved``, so
+                        # an outcome without any admission means the answer
+                        # came through the in-run callback and the attempt
+                        # kept running.  A historical admission for this id
+                        # keeps the durable reading instead, so legacy
+                        # journals that admitted an outcome-resolved pause
+                        # stay valid.
+                        active = None
+                        continue
                     active = _GraphInteractionCycle(
                         interaction_id=active.interaction_id,
                         request_cursor=active.request_cursor,
