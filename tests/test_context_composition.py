@@ -244,9 +244,26 @@ def test_route_totals_include_structured_uninstrumented_messages_and_tools() -> 
     request = build_model_turn_request(state, toolkit=toolkit)
     [route] = request.internal_context_composition_v1["routes"]
 
+    # Total items are conserved: attributing the two messages moves them from
+    # the uninstrumented count into represented contributions, it does not
+    # invent or drop route items.
     assert route["manifest_items"] == 4
     assert route["wire_surfaces"] == 2
-    assert route["contributions"] == (PRIVATE_HINT,)
+
+    # system -> instructions, the trailing user turn -> current_input, and the
+    # host-supplied skill tuple still rides alongside them in canonical order.
+    assert [
+        (item["category"], item["subtype"], item["source_count"])
+        for item in route["contributions"]
+    ] == [
+        ("instructions", "core_system", 1),
+        ("skills", "expanded_invocation", 1),
+        ("conversation", "current_input", 1),
+    ]
+    assert PRIVATE_HINT in [dict(item) for item in route["contributions"]]
+    # Only the tool schema is left unattributed on this route.
+    represented = sum(item["source_count"] for item in route["contributions"])
+    assert route["manifest_items"] - represented == 1
 
 
 def test_identical_private_tuples_merge_with_checked_arithmetic() -> None:
@@ -270,15 +287,27 @@ def test_identical_private_tuples_merge_with_checked_arithmetic() -> None:
 
     assert route["manifest_items"] == 3
     assert route["wire_surfaces"] == 1
-    assert route["contributions"] == (
+    # The two identical host tuples still merge into one entry with summed
+    # bytes; the measured user turn is attributed separately beside it.
+    skills = [
+        dict(item) for item in route["contributions"] if item["category"] == "skills"
+    ]
+    assert skills == [
         {
             "category": "skills",
             "subtype": "expanded_invocation",
             "surface": "messages",
             "utf8_bytes": 64,
             "source_count": 2,
-        },
-    )
+        }
+    ]
+    assert [
+        (item["category"], item["subtype"])
+        for item in route["contributions"]
+    ] == [
+        ("skills", "expanded_invocation"),
+        ("conversation", "current_input"),
+    ]
 
     state.metadata["context_composition_source_v1"]["contributions"] = [
         {**PRIVATE_HINT, "utf8_bytes": (1 << 53) - 1},
@@ -286,3 +315,120 @@ def test_identical_private_tuples_merge_with_checked_arithmetic() -> None:
     ]
     with pytest.raises(ContextCompositionContractError, match="JSON safe integer"):
         build_internal_context_composition(state, assembly)
+
+
+def _assembly(messages: list[dict], **overrides) -> SimpleNamespace:
+    return SimpleNamespace(
+        mode=overrides.get("mode", "semantic"),
+        previous_response_id=overrides.get("previous_response_id"),
+        fallback_messages=overrides.get("fallback_messages"),
+        messages=messages,
+    )
+
+
+def test_wire_messages_are_attributed_without_any_host_facts() -> None:
+    """Attribution must not depend on the host supplying contribution facts.
+
+    Before this, a turn with no skill hint produced no manifest at all, so an
+    ordinary conversation reported nothing about what filled its window.
+    """
+
+    state = RunState()
+    state.provider_state.provider = "openai"
+    manifest = build_internal_context_composition(
+        state,
+        _assembly(
+            [
+                {"role": "system", "content": "rules"},
+                {"role": "user", "content": "first question"},
+                {"role": "assistant", "content": "an answer"},
+                {"role": "user", "content": "follow up"},
+            ]
+        ),
+    )
+
+    assert manifest is not None
+    [route] = manifest["routes"]
+    assert [
+        (item["category"], item["subtype"], item["source_count"])
+        for item in route["contributions"]
+    ] == [
+        ("instructions", "core_system", 1),
+        ("conversation", "current_input", 1),
+        ("conversation", "user_history", 1),
+        ("conversation", "assistant_history", 1),
+    ]
+    # Every message is accounted for, so nothing is left uninstrumented.
+    assert route["manifest_items"] == 4
+    assert sum(item["source_count"] for item in route["contributions"]) == 4
+
+
+def test_only_the_trailing_user_turn_is_the_current_input() -> None:
+    state = RunState()
+    manifest = build_internal_context_composition(
+        state,
+        _assembly(
+            [
+                {"role": "user", "content": "one"},
+                {"role": "user", "content": "two"},
+                {"role": "user", "content": "three"},
+            ]
+        ),
+    )
+
+    [route] = manifest["routes"]
+    counts = {
+        item["subtype"]: item["source_count"] for item in route["contributions"]
+    }
+    assert counts == {"current_input": 1, "user_history": 2}
+
+
+def test_tool_call_frames_are_attributed_to_tool_activity() -> None:
+    state = RunState()
+    manifest = build_internal_context_composition(
+        state,
+        _assembly(
+            [
+                {"type": "function_call", "call_id": "c1", "name": "lookup",
+                 "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c1",
+                 "output": "result"},
+                {"role": "tool", "content": "another result"},
+            ]
+        ),
+    )
+
+    [route] = manifest["routes"]
+    assert [
+        (item["category"], item["subtype"], item["source_count"])
+        for item in route["contributions"]
+    ] == [
+        ("tool_activity", "arguments", 1),
+        ("tool_activity", "results", 2),
+    ]
+
+
+def test_unrecognised_messages_stay_uninstrumented_rather_than_guessed() -> None:
+    """An unknown shape must fall into the residual, never a wrong slot."""
+
+    state = RunState()
+    manifest = build_internal_context_composition(
+        state,
+        _assembly(
+            [
+                {"role": "user", "content": "known"},
+                {"mystery": "no role, no type"},
+            ]
+        ),
+    )
+
+    [route] = manifest["routes"]
+    represented = sum(item["source_count"] for item in route["contributions"])
+    assert represented == 1
+    # The unclassified message is still counted as a route item.
+    assert route["manifest_items"] == 2
+
+
+def test_no_messages_and_no_host_facts_still_yields_no_manifest() -> None:
+    state = RunState()
+    assert build_internal_context_composition(state, _assembly([])) is None

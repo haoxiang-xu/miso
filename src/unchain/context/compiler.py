@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import unicodedata
+from bisect import bisect_right
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
@@ -13,6 +14,10 @@ from typing import Any, ClassVar
 from urllib.parse import unquote, urlsplit
 
 from unchain.journal import EventCursor, EventRange, ResourceRef
+from unchain.journal.interaction_cycles import (
+    DURABLE_INTERACTION_REQUESTS,
+    DURABLE_INTERACTION_RESOLUTIONS,
+)
 from unchain.journal.interaction_resolution_compat import (
     InteractionResolutionCompatibilityError,
     interaction_resolution_compatibility_record,
@@ -1522,11 +1527,121 @@ class _JournalMessageProjection:
     projection_dependencies: tuple[CheckpointProjectionDependency, ...] = ()
 
 
+_DERIVED_HANDOFF_INPUT_SCHEMA = "unchain.derived_handoff_input.v1"
+_INTERACTION_QUESTION_TEXT_LIMIT = 4000
+_INTERACTION_ANSWER_TEXT_LIMIT = 2000
+
+
+def _is_derived_handoff_plumbing(message: Mapping[str, Any]) -> bool:
+    """A graph step's durable input record is machine linkage, not speech."""
+
+    content = message.get("content")
+    if not isinstance(content, str):
+        return False
+    if (
+        not content.lstrip().startswith("{")
+        or _DERIVED_HANDOFF_INPUT_SCHEMA not in content
+    ):
+        return False
+    try:
+        decoded = json.loads(content)
+    except (TypeError, ValueError):
+        return False
+    return (
+        isinstance(decoded, Mapping)
+        and decoded.get("schema") == _DERIVED_HANDOFF_INPUT_SCHEMA
+    )
+
+
+def _projected_interaction_question(
+    event: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Render a durable human-input request as the assistant question the
+    user actually saw. Approval/budget interactions are tool policy, not
+    dialogue, and stay out of the transcript."""
+
+    request = event.get("interaction_request")
+    if not isinstance(request, Mapping) or request.get("kind") != "human_input":
+        return None
+    body = request.get("payload")
+    body = body if isinstance(body, Mapping) else {}
+    lines: list[str] = []
+    for key in ("question", "title", "prompt", "header"):
+        value = body.get(key)
+        if isinstance(value, str) and value.strip():
+            lines.append(value.strip())
+            break
+    options = body.get("options")
+    if isinstance(options, Sequence) and not isinstance(
+        options, (str, bytes, bytearray)
+    ):
+        for option in options:
+            if not isinstance(option, Mapping):
+                continue
+            label = str(option.get("label") or option.get("value") or "").strip()
+            if not label:
+                continue
+            description = str(option.get("description") or "").strip()
+            lines.append(f"- {label}: {description}" if description else f"- {label}")
+    if not lines:
+        return None
+    return _canonical_chat_message(
+        {
+            "role": "assistant",
+            "content": "\n".join(lines)[:_INTERACTION_QUESTION_TEXT_LIMIT],
+        },
+        expected_role="assistant",
+    )
+
+
+def _projected_interaction_answer(
+    event: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Render a durable human-input resolution as the user's reply."""
+
+    preview = event.get("preview")
+    if not isinstance(preview, str) or not preview.strip():
+        return None
+    content = preview.strip()
+    try:
+        decoded = json.loads(preview)
+    except (TypeError, ValueError):
+        decoded = None
+    if isinstance(decoded, Mapping):
+        response = decoded.get("response")
+        if isinstance(response, Mapping):
+            parts: list[str] = []
+            selected = response.get("selected_values")
+            if isinstance(selected, Sequence) and not isinstance(
+                selected, (str, bytes, bytearray)
+            ):
+                parts.extend(
+                    str(value).strip()
+                    for value in selected
+                    if str(value).strip()
+                )
+            for key in ("other_text", "text", "answer", "value"):
+                value = response.get(key)
+                if isinstance(value, str) and value.strip():
+                    parts.append(value.strip())
+            if parts:
+                content = ", ".join(dict.fromkeys(parts))
+    if not content:
+        return None
+    return _canonical_chat_message(
+        {"role": "user", "content": content[:_INTERACTION_ANSWER_TEXT_LIMIT]},
+        expected_role="user",
+    )
+
+
 def _canonical_journal_message_projection(
     request: ContextCompileRequest,
 ) -> _JournalMessageProjection:
     normalized_events = _validated_projection_events(request)
     canonical_candidates: list[tuple[tuple[str, int], dict[str, Any], str, str]] = []
+    bound_source_cursors = frozenset(_source_cursor_map(request).values())
+    interaction_candidates: list[tuple[tuple[str, int], dict[str, Any], str]] = []
+    human_input_interaction_ids: set[str] = set()
     failed_attempts: set[str] = set()
     unbound_terminal_attempts: set[str] = set()
     terminals_by_attempt: dict[
@@ -1595,6 +1710,16 @@ def _canonical_journal_message_projection(
                 _validate_canonical_message_attachments(event, projected)
             if event_type == "message.user" and _declares_workflow_scope(event):
                 raise JournalMessageProjectionError("message_scope_invalid")
+            if (
+                event_type == "message.user"
+                and cursor not in bound_source_cursors
+                and _is_derived_handoff_plumbing(projected)
+            ):
+                # A graph step's derived-handoff input record: durable
+                # linkage for replay, never part of the visible transcript.
+                # The bound current-turn input stays untouched so source
+                # cursor binding keeps its byte-equality contract.
+                continue
             if event_type == "message.assistant":
                 workflow_identity = _workflow_identity(event)
                 if (
@@ -1605,6 +1730,28 @@ def _canonical_journal_message_projection(
                 ) or _event_has_failed_state(event):
                     continue
             canonical_candidates.append((cursor, projected, event_type, attempt_id))
+            continue
+
+        if event_type in DURABLE_INTERACTION_REQUESTS:
+            question = _projected_interaction_question(event)
+            if question is not None:
+                cursor = _required_semantic_event_cursor(raw, event)
+                interaction_id = str(event.get("interaction_id") or "").strip()
+                if interaction_id:
+                    human_input_interaction_ids.add(interaction_id)
+                interaction_candidates.append(
+                    (cursor, question, "interaction.question")
+                )
+            continue
+        if event_type in DURABLE_INTERACTION_RESOLUTIONS:
+            interaction_id = str(event.get("interaction_id") or "").strip()
+            if interaction_id and interaction_id in human_input_interaction_ids:
+                answer = _projected_interaction_answer(event)
+                if answer is not None:
+                    cursor = _required_semantic_event_cursor(raw, event)
+                    interaction_candidates.append(
+                        (cursor, answer, "interaction.answer")
+                    )
             continue
 
         if (
@@ -1699,6 +1846,7 @@ def _canonical_journal_message_projection(
         candidates.append((cursor, message, event_type))
         if event_type == "message.assistant":
             canonical_assistant_attempts.add(attempt_id)
+    candidates.extend(interaction_candidates)
 
     latest_derived_by_attempt: dict[
         str,
@@ -1720,6 +1868,17 @@ def _canonical_journal_message_projection(
 
     dependency_event_indexes: set[int] = set()
     projection_dependencies: list[CheckpointProjectionDependency] = []
+    qualified_finals: list[
+        tuple[
+            tuple[str, int],
+            dict[str, Any],
+            str,
+            tuple[str, int],
+            dict[str, Any],
+            int,
+            _WorkflowIdentity | None,
+        ]
+    ] = []
     for (
         cursor,
         message,
@@ -1742,6 +1901,45 @@ def _canonical_journal_message_projection(
             continue
         if _workflow_identity(terminal) != workflow_identity:
             raise JournalMessageProjectionError("terminal_scope_conflict")
+        qualified_finals.append(
+            (
+                cursor,
+                message,
+                attempt_id,
+                terminal_cursor,
+                terminal,
+                terminal_event_index,
+                workflow_identity,
+            )
+        )
+
+    # One externally visible final per turn segment: a graph turn writes the
+    # step's final and then the coordinator's canonical copy of it, and both
+    # attempts classify as root, so the transcript would repeat every answer.
+    # Segments are delimited by projected user messages; within a segment only
+    # the last qualified final (the coordinator copy when one exists, the sole
+    # step final on delegated/shadow paths) survives.
+    user_message_seqs = sorted(
+        cursor[1]
+        for cursor, _message, candidate_type in candidates
+        if candidate_type == "message.user"
+    )
+    finals_by_segment: dict[int, tuple] = {}
+    for entry in qualified_finals:
+        segment = bisect_right(user_message_seqs, entry[0][1])
+        existing = finals_by_segment.get(segment)
+        if existing is None or existing[0][1] < entry[0][1]:
+            finals_by_segment[segment] = entry
+    for entry in finals_by_segment.values():
+        (
+            cursor,
+            message,
+            attempt_id,
+            terminal_cursor,
+            terminal,
+            terminal_event_index,
+            workflow_identity,
+        ) = entry
         candidates.append((cursor, message, "final_message"))
         dependency_event_indexes.add(terminal_event_index)
         identity = workflow_identity or _WorkflowIdentity(None, None, None, None)

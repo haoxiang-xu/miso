@@ -51,6 +51,7 @@ def _run_tool_turn(
     callback_events: list[dict] | None = None,
     on_tool_confirm=None,
     max_iterations: int = 2,
+    tool_runtime_plugins: list | None = None,
 ):
     assistant_messages = [
         {
@@ -93,6 +94,7 @@ def _run_tool_turn(
         on_tool_confirm=on_tool_confirm,
         run_id="run-1",
         max_iterations=max_iterations,
+        tool_runtime_plugins=tool_runtime_plugins,
     )
 
     return result, state, events, model_io
@@ -245,6 +247,55 @@ def test_core_write_emits_append_only_file_diff_artifact(tmp_path: Path):
     assert "+print('hi')" in artifact["snapshot"]["files"][0]["unified_diff"]
     assert artifact in state.artifacts
     assert any(item["kind"] == "workspace_change_set" for item in state.artifacts)
+
+
+def test_plugin_executed_write_still_emits_file_diff_artifact(tmp_path: Path):
+    """The sidecar executes workspace tools through a tool runtime plugin;
+    the approved code_diff confirmation policy must still derive the
+    file_diff artifact on that path, exactly as on native execution."""
+
+    from unchain.tools.runtime import ToolRuntimeOutcome
+
+    toolkit = CoreToolkit(workspace_root=tmp_path)
+    target = tmp_path / "app.py"
+
+    class _PassthroughWritePlugin:
+        def can_handle(self, *, tool_call, context):
+            return tool_call.name == "write"
+
+        def execute(self, *, tool_call, context):
+            path = Path(tool_call.arguments["path"])
+            path.write_text(tool_call.arguments["content"], encoding="utf-8")
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result={"ok": True, "path": str(path)},
+            )
+
+    _, _state, raw_events, _ = _run_tool_turn(
+        tool_calls=[
+            KernelToolCall(
+                call_id="call-1",
+                name="write",
+                arguments={
+                    "path": str(target),
+                    "content": "print('hi')\n",
+                },
+            )
+        ],
+        toolkit=toolkit,
+        tmp_path=tmp_path,
+        tool_runtime_plugins=[_PassthroughWritePlugin()],
+    )
+
+    artifact_event = next(
+        (event for event in raw_events if event["type"] == "artifact_created"),
+        None,
+    )
+    assert artifact_event is not None
+    artifact = artifact_event["artifact"]
+    assert artifact["kind"] == "file_diff"
+    assert artifact["snapshot"]["files"][0]["path"] == str(target)
+    assert "+print('hi')" in artifact["snapshot"]["files"][0]["unified_diff"]
 
 
 def test_core_write_and_edit_emit_one_run_level_workspace_change_set(tmp_path: Path):

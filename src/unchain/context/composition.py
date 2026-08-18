@@ -354,6 +354,88 @@ class ContextCompositionBootstrapHarness(BaseRuntimeHarness):
         )
 
 
+_MESSAGE_TYPE_SLOTS = {
+    "function_call": ("tool_activity", "arguments"),
+    "tool_use": ("tool_activity", "arguments"),
+    "function_call_output": ("tool_activity", "results"),
+    "tool_result": ("tool_activity", "results"),
+}
+
+_MESSAGE_ROLE_SLOTS = {
+    "system": ("instructions", "core_system"),
+    "developer": ("instructions", "core_system"),
+    "assistant": ("conversation", "assistant_history"),
+    "tool": ("tool_activity", "results"),
+}
+
+
+def _classify_message(
+    message: Mapping[str, Any],
+    *,
+    current_input: bool,
+) -> tuple[str, str] | None:
+    """Map one wire message onto its taxonomy slot, or None when unknown.
+
+    Classification is deliberately shallow — top-level ``type``/``role`` only.
+    Provider payloads nest tool blocks inside message content in provider-
+    specific ways, and guessing at those would attribute bytes to the wrong
+    slot. Anything unrecognised stays uninstrumented and lands in the residual,
+    which is honest about what is not yet attributed.
+    """
+
+    message_type = message.get("type")
+    if isinstance(message_type, str) and message_type in _MESSAGE_TYPE_SLOTS:
+        return _MESSAGE_TYPE_SLOTS[message_type]
+    role = message.get("role")
+    if not isinstance(role, str):
+        return None
+    if role == "user":
+        return (
+            "conversation",
+            "current_input" if current_input else "user_history",
+        )
+    return _MESSAGE_ROLE_SLOTS.get(role)
+
+
+def _measured_message_contributions(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attribute the wire messages this route actually carries.
+
+    A route's contribution identities must be unique, so messages sharing a slot
+    merge into one entry holding their combined bytes and count. Bytes are the
+    canonical JSON of the message — the same shape that goes on the wire — so
+    the estimate tracks what the provider is really billed for.
+    """
+
+    last_user_index = -1
+    for index, message in enumerate(messages):
+        if isinstance(message, Mapping) and message.get("role") == "user":
+            last_user_index = index
+
+    merged: dict[tuple[str, str], dict[str, int]] = {}
+    for index, message in enumerate(messages):
+        if not isinstance(message, Mapping):
+            continue
+        slot = _classify_message(message, current_input=index == last_user_index)
+        if slot is None:
+            continue
+        bucket = merged.setdefault(slot, {"utf8_bytes": 0, "source_count": 0})
+        bucket["utf8_bytes"] += len(_canonical_bytes(message))
+        bucket["source_count"] += 1
+
+    return [
+        {
+            "category": category,
+            "subtype": subtype,
+            "surface": "messages",
+            "utf8_bytes": values["utf8_bytes"],
+            "source_count": values["source_count"],
+        }
+        for (category, subtype), values in merged.items()
+    ]
+
+
 def _source_contributions(state: object) -> list[dict[str, Any]]:
     metadata = getattr(state, "metadata", None)
     raw = metadata.get(_SOURCE_STATE_KEY) if isinstance(metadata, dict) else None
@@ -409,7 +491,9 @@ def build_internal_context_composition(
     """Project official source facts into exact primary/fallback route manifests."""
 
     contributions = _source_contributions(state)
-    if not contributions:
+    # Messages alone are enough to build a manifest: attribution no longer
+    # depends on the host having supplied contribution facts.
+    if not contributions and not _assembly_messages(assembly, "messages"):
         return None
     mode = getattr(assembly, "mode", None)
     if mode not in _CONTEXT_MODES:
@@ -429,9 +513,13 @@ def build_internal_context_composition(
         and previous_response_id
     )
 
-    def route_contributions(*, retained: bool) -> list[dict[str, Any]]:
+    def route_contributions(
+        *,
+        retained: bool,
+        measured: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         output: list[dict[str, Any]] = []
-        for item in contributions:
+        for item in (*contributions, *measured):
             projected = dict(item)
             if retained:
                 projected["surface"] = "provider_state"
@@ -444,14 +532,19 @@ def build_internal_context_composition(
         retained: bool,
         messages: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        projected = route_contributions(retained=retained)
+        measured = _measured_message_contributions(messages)
+        projected = route_contributions(retained=retained, measured=measured)
         represented_items = _checked_sum(
             [item["source_count"] for item in projected],
             "represented route items",
         )
+        attributed_messages = _checked_sum(
+            [item["source_count"] for item in measured],
+            "attributed route messages",
+        )
         known_uninstrumented_items = _checked_sum(
             [
-                len(messages),
+                max(0, len(messages) - attributed_messages),
                 tool_schema_count,
                 1 if response_schema_surface is not None else 0,
                 1 if retained else 0,

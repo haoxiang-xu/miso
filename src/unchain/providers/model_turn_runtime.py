@@ -271,13 +271,21 @@ def build_model_turn_request(
                 if provider in {"anthropic", "hyperspace"}
                 else "response_schema"
             )
-        internal_context_composition = freeze_internal_context_composition(
-            build_internal_context_composition(
-                state,
-                assembly,
-                tool_schema_count=len(resolved_toolkit.tools),
-                response_schema_surface=response_schema_surface,
-            )
+        # "Nothing to attribute" is a normal outcome, not a failure: the builder
+        # returns None and freeze() rejects None. Routing that through the
+        # except block below meant every ordinary turn raised and swallowed a
+        # contract error, which also made a genuine bug here indistinguishable
+        # from having no contributions.
+        built_context_composition = build_internal_context_composition(
+            state,
+            assembly,
+            tool_schema_count=len(resolved_toolkit.tools),
+            response_schema_surface=response_schema_surface,
+        )
+        internal_context_composition = (
+            None
+            if built_context_composition is None
+            else freeze_internal_context_composition(built_context_composition)
         )
     except Exception:
         # Context composition is optional and the provider assembly above is

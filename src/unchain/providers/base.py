@@ -48,6 +48,31 @@ class ModelTurnRequest:
             ),
         )
 
+    def __deepcopy__(self, memo: dict[int, Any]) -> "ModelTurnRequest":
+        """Copy the mutable fields; share the frozen composition manifest.
+
+        The manifest is a deeply immutable MappingProxyType, which cannot be
+        deepcopied at all — and does not need to be, since nothing can mutate
+        it. Copying the request used to work only because the manifest was
+        usually absent; now that every turn carries one, the request has to say
+        how it is copied rather than fail on the field.
+        """
+
+        from dataclasses import fields as dataclass_fields
+
+        copied = self.__class__.__new__(self.__class__)
+        memo[id(self)] = copied
+        for entry in dataclass_fields(self):
+            value = getattr(self, entry.name)
+            object.__setattr__(
+                copied,
+                entry.name,
+                value
+                if entry.name == "internal_context_composition_v1"
+                else copy.deepcopy(value, memo),
+            )
+        return copied
+
     def copied_messages(self) -> list[dict[str, Any]]:
         return _deepcopy_messages(self.messages)
 

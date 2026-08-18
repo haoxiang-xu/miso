@@ -515,6 +515,7 @@ class ToolExecutionHarness(BaseToolHarness):
                     )
                 )
 
+        nested_confirmation_policy = None
         if (
             not stored_request_bound
             and context.session_id
@@ -537,6 +538,11 @@ class ToolExecutionHarness(BaseToolHarness):
                 if not isinstance(nested, dict):
                     break
                 nested_preparation = nested.get("preparation")
+                nested_confirmation_policy = getattr(
+                    nested_preparation,
+                    "confirmation_policy",
+                    None,
+                )
                 nested_request = getattr(nested_preparation, "request", None)
                 if not bool(
                     getattr(
@@ -659,11 +665,21 @@ class ToolExecutionHarness(BaseToolHarness):
                 )
             emitted_artifacts: list[dict] = []
             if isinstance(visible_tool_result, dict):
+                # Plugin execution still runs under the confirmation the
+                # user approved: the nested preparation's policy when the
+                # plugin routed one, else the outer preparation's. Dropping
+                # it here silently lost every code_diff-derived file_diff
+                # artifact on the plugin path.
                 emitted_artifacts = _canonical_artifacts_for_tool_result(
                     context,
                     tool_call,
                     visible_tool_result,
                     authored_artifacts,
+                    confirmation_policy=(
+                        nested_confirmation_policy
+                        if nested_confirmation_policy is not None
+                        else confirmation_preparation.confirmation_policy
+                    ),
                 )
                 emit_loop_event(
                     context.loop,
