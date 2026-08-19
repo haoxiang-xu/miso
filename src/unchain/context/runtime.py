@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import re
 import threading
 from collections.abc import Callable, Mapping
@@ -15,7 +16,7 @@ from ..durability import (
 )
 from ..kernel.harness import HarnessContext
 from ..journal import AttemptRef, ContextBuildStatus
-from ..run_bundle import canonical_sha256, opaque_metric_evidence_ref
+from ..run_bundle import opaque_metric_evidence_ref
 from .compiler import ContextCompileResult, ContextCompiler
 from .coordinator import ContextCompileCoordinator
 from .factory import (
@@ -44,6 +45,20 @@ _ACTIVE_DURABLE_EVENTS: ContextVar[tuple[tuple[str, int], ...]] = ContextVar(
 )
 _TEST_CONTEXT_RUNTIME_AUTHORITY = object()
 _CONTEXT_EXECUTION_BINDING_AUTHORITY = object()
+
+
+def _canonical_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _canonical_sha256(value: object) -> str:
+    return hashlib.sha256(_canonical_bytes(value)).hexdigest()
 
 
 class ContextRequestFactory(Protocol):
@@ -697,10 +712,11 @@ class ContextRuntime:
         state = getattr(context, "state", None)
         ledger = getattr(state, "run_ledger", None)
         capture_metrics = getattr(ledger, "identity", None) is not None
-        request_digest = canonical_sha256(request.to_dict())
-        subject_id = f"context-request:{request_digest}"
+        subject_id = "context-request:unavailable"
         result = None
         try:
+            request_digest = _canonical_sha256(request.to_dict())
+            subject_id = f"context-request:{request_digest}"
             result = compiler.compile(request)
             if not isinstance(result, ContextCompileResult):
                 raise TypeError(

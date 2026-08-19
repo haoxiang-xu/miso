@@ -48,6 +48,7 @@
     "supports_response_format": true,
     "supports_previous_response_id": true,
     "supports_reasoning": true,
+    "reasoning_efforts": ["minimal", "low", "medium", "high"],
     "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
       "image": ["url", "base64"],
@@ -70,6 +71,7 @@
     "supports_response_format": true,
     "supports_previous_response_id": true,
     "supports_reasoning": true,
+    "reasoning_efforts": ["minimal", "low", "medium", "high"],
     "input_modalities": ["text", "image"],
     "input_source_types": {
       "image": ["url", "base64"]
@@ -91,6 +93,7 @@
     "supports_response_format": true,
     "supports_previous_response_id": true,
     "supports_reasoning": true,
+    "reasoning_efforts": ["minimal", "low", "medium", "high"],
     "input_modalities": ["text", "image"],
     "input_source_types": {
       "image": ["url", "base64"]
@@ -112,6 +115,7 @@
     "supports_response_format": true,
     "supports_previous_response_id": true,
     "supports_reasoning": true,
+    "reasoning_efforts": ["minimal", "low", "medium", "high"],
     "input_modalities": ["text", "image"],
     "input_source_types": {
       "image": ["url", "base64"]
@@ -133,6 +137,7 @@
     "supports_response_format": true,
     "supports_previous_response_id": true,
     "supports_reasoning": true,
+    "reasoning_efforts": ["minimal", "low", "medium", "high"],
     "input_modalities": ["text", "image"],
     "input_source_types": {
       "image": ["url", "base64"]
@@ -154,6 +159,7 @@
     "supports_response_format": true,
     "supports_previous_response_id": true,
     "supports_reasoning": true,
+    "reasoning_efforts": ["minimal", "low", "medium", "high"],
     "input_modalities": ["text", "image"],
     "input_source_types": {
       "image": ["url", "base64"]
@@ -248,6 +254,7 @@
     "supports_response_format": false,
     "supports_previous_response_id": false,
     "supports_reasoning": true,
+    "reasoning_efforts": ["low", "medium", "high"],
     "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
       "image": ["url", "base64"],
@@ -268,6 +275,7 @@
     "supports_response_format": false,
     "supports_previous_response_id": false,
     "supports_reasoning": true,
+    "reasoning_efforts": ["low", "medium", "high"],
     "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
       "image": ["url", "base64"],
@@ -364,6 +372,7 @@
     "supports_response_format": true,
     "supports_previous_response_id": true,
     "supports_reasoning": true,
+    "reasoning_efforts": ["minimal", "low", "medium", "high"],
     "input_modalities": ["text", "image"],
     "input_source_types": {
       "image": ["url", "base64"]
@@ -399,6 +408,7 @@
     "supports_response_format": true,
     "supports_previous_response_id": false,
     "supports_reasoning": true,
+    "reasoning_efforts": ["low", "medium", "high"],
     "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
       "image": ["url", "base64"],
@@ -418,6 +428,7 @@
     "supports_response_format": true,
     "supports_previous_response_id": false,
     "supports_reasoning": true,
+    "reasoning_efforts": ["low", "medium", "high"],
     "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
       "image": ["url", "base64"],

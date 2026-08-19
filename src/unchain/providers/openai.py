@@ -18,7 +18,8 @@ from ..kernel.provider_replay import (
     tool_schema_manifest,
 )
 from ..kernel.types import ModelTurnResult, TokenUsage, ToolCall
-from ..run_bundle import ProviderCallUsage, canonical_sha256
+from ..run_bundle import ProviderCallUsage
+from .canonical_hash import canonical_json_sha256
 
 
 class OpenAIModelIO(_NativeModelIOBase):
@@ -345,7 +346,7 @@ class OpenAIModelIO(_NativeModelIOBase):
             provider_replay_frame=provider_replay_frame,
             provider_call_usage=provider_call_usage,
             provider_raw_usage_sha256=(
-                canonical_sha256(raw_usage) if raw_usage else None
+                canonical_json_sha256(raw_usage) if raw_usage else None
             ),
         )
 

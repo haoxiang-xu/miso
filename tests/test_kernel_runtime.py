@@ -30,6 +30,29 @@ def _contains_tools_block(messages):
     )
 
 
+def test_kernel_run_with_large_user_input_is_not_blocked_by_request_digest():
+    model_io = _QueueModelIO(
+        [
+            ModelTurnResult(
+                assistant_messages=[{"role": "assistant", "content": "done"}],
+                tool_calls=[],
+                final_text="done",
+                response_id="resp_large",
+            )
+        ]
+    )
+
+    result = build_runtime_loop(model_io=model_io).run(
+        [{"role": "user", "content": "x" * 2_500_000}],
+        provider="openai",
+        model="gpt-4.1",
+        max_iterations=1,
+    )
+
+    assert result.status == "completed"
+    assert model_io.requests[0].messages[0]["content"].count("x") == 2_500_000
+
+
 def test_kernel_run_executes_openai_tool_and_continues_with_previous_response_chain():
     model_io = _QueueModelIO([
         ModelTurnResult(

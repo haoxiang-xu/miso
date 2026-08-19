@@ -13,6 +13,7 @@ from unchain.kernel.types import ModelTurnResult
 from unchain.providers.anthropic import AnthropicModelIO
 from unchain.providers.ollama import OllamaModelIO
 from unchain.providers.openai import OpenAIModelIO
+from unchain.providers.canonical_hash import canonical_json_sha256
 from unchain.providers.request_lease import ProviderRequestSubject
 from unchain.run_bundle import (
     LegacyAttribution,
@@ -1011,3 +1012,111 @@ def test_ollama_fetch_turn_attaches_canonical_provider_usage() -> None:
     assert result.provider_call_usage.total_tokens == 15
     assert result.provider_call_usage.output_visible_tokens == 5
     assert result.provider_call_usage.output_reasoning_tokens == 0
+
+
+def test_openai_fetch_turn_handles_large_provider_usage_without_run_bundle_limit() -> None:
+    raw_usage = {
+        "input_tokens": 120,
+        "output_tokens": 45,
+        "total_tokens": 165,
+        "input_tokens_details": {"cached_tokens": 20, "cache_write_tokens": 10},
+        "output_tokens_details": {"reasoning_tokens": 15},
+        "large_blob": "x" * 2_200_000,
+    }
+
+    class _LargeOpenAIStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    id="response-large",
+                    output=[
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "ok"}],
+                        }
+                    ],
+                    usage=raw_usage,
+                ),
+            )
+
+    class Responses:
+        def create(self, **kwargs):
+            return _LargeOpenAIStream()
+
+    class Client:
+        responses = Responses()
+
+    io = OpenAIModelIO(
+        model="gpt-test",
+        api_key="test-key",
+        client_factory=lambda **kwargs: Client(),
+        default_payloads={},
+        model_capabilities={},
+    )
+    result = io.fetch_turn(
+        ModelTurnRequest(messages=[{"role": "user", "content": "hi"}])
+    )
+    assert result.provider_call_usage is not None
+    assert result.provider_raw_usage_sha256 == canonical_json_sha256(raw_usage)
+
+
+def test_anthropic_fetch_turn_handles_large_provider_usage_without_run_bundle_limit() -> None:
+    raw_usage = {
+        "input_tokens": 90,
+        "output_tokens": 40,
+        "cache_read_input_tokens": 10,
+        "cache_creation_input_tokens": 30,
+        "cache_creation": {
+            "ephemeral_5m_input_tokens": 10,
+            "ephemeral_1h_input_tokens": 20,
+        },
+        "large_blob": "x" * 2_200_000,
+    }
+
+    class _LargeAnthropicStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            yield SimpleNamespace(
+                type="message_start",
+                message=SimpleNamespace(
+                    usage=raw_usage,
+                ),
+            )
+            yield SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="text_delta", text="done"),
+            )
+            yield SimpleNamespace(type="message_delta", usage={"output_tokens": 40})
+
+    class Messages:
+        def stream(self, **kwargs):
+            return _LargeAnthropicStream()
+
+    class Client:
+        messages = Messages()
+
+    io = AnthropicModelIO(
+        model="claude-test",
+        api_key="test-key",
+        client_factory=lambda **kwargs: Client(),
+        default_payloads={},
+        model_capabilities={},
+    )
+    result = io.fetch_turn(
+        ModelTurnRequest(messages=[{"role": "user", "content": "hi"}])
+    )
+    assert result.provider_call_usage is not None
+    assert result.provider_raw_usage_sha256 == canonical_json_sha256(raw_usage)

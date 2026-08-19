@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -34,7 +35,6 @@ from ..run_bundle import (
     canonical_sha256,
     deterministic_provider_call_id,
 )
-
 if TYPE_CHECKING:
     from ..providers.turn_ownership import (
         ProviderTurnOwnership,
@@ -69,6 +69,25 @@ def _provider_id_sha256(value: Any) -> str | None:
     if not isinstance(value, str) or not value:
         return None
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (RecursionError, TypeError, ValueError, UnicodeError) as exc:
+        raise RunBundleProtocolError(
+            "provider request digest source must be strict canonical JSON"
+        ) from exc
+
+
+def _canonical_sha256(value: Any) -> str:
+    return hashlib.sha256(_canonical_json_bytes(value)).hexdigest()
 
 
 def _stable_json_value(value: Any, *, depth: int = 0) -> Any:
@@ -116,7 +135,7 @@ def request_sha256(
         schema_digest = tool_schema_digest(toolkit, provider)
     except Exception:
         tools = getattr(toolkit, "tools", {})
-        schema_digest = canonical_sha256(
+        schema_digest = _canonical_sha256(
             sorted(str(name) for name in tools) if isinstance(tools, Mapping) else []
         )
     request_messages = messages
@@ -140,7 +159,7 @@ def request_sha256(
         ),
         "tool_schema_sha256": schema_digest,
     }
-    return canonical_sha256(material)
+    return _canonical_sha256(material)
 
 
 def _identity_from_runtime_context(

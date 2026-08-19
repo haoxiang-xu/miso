@@ -16,7 +16,8 @@ from ..kernel.provider_replay import (
     tool_schema_manifest,
 )
 from ..kernel.types import ModelTurnResult, ToolCall
-from ..run_bundle import ProviderCallUsage, canonical_sha256
+from ..run_bundle import ProviderCallUsage
+from .canonical_hash import canonical_json_sha256
 
 
 class OllamaModelIO(_NativeModelIOBase):
@@ -217,7 +218,7 @@ class OllamaModelIO(_NativeModelIOBase):
                             reasoning_present=bool(reasoning_chunks),
                         ),
                         provider_raw_usage_sha256=(
-                            canonical_sha256(observed_usage)
+                            canonical_json_sha256(observed_usage)
                             if observed_usage
                             else None
                         ),
@@ -245,7 +246,7 @@ class OllamaModelIO(_NativeModelIOBase):
                             reasoning_present=bool(reasoning_chunks),
                         ),
                         provider_raw_usage_sha256=(
-                            canonical_sha256(observed_usage)
+                            canonical_json_sha256(observed_usage)
                             if observed_usage
                             else None
                         ),
