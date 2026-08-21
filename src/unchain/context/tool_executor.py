@@ -509,6 +509,14 @@ def _canonical_result_receipt(
                 value.cursor,
                 field_name="durable result receipt cursor",
             ),
+            model_projection=(
+                None
+                if value.model_projection is None
+                else _canonical_json_snapshot(
+                    value.model_projection,
+                    field_name="durable result receipt model projection",
+                )
+            ),
             completion_artifact=(
                 None
                 if value.completion_artifact is None
@@ -531,6 +539,7 @@ class DurableToolExecutionRequest:
     call_id: str
     iteration: int
     subject: DurableToolExecutionSubject
+    tool_result_policy: str = "default"
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -549,6 +558,12 @@ class DurableToolExecutionRequest:
             "subject",
             _coerce_execution_subject(self.subject),
         )
+        policy = self.tool_result_policy
+        if not isinstance(policy, str) or not policy.strip():
+            raise DurableToolExecutorContractError(
+                "tool result policy must be a non-empty string"
+            )
+        object.__setattr__(self, "tool_result_policy", policy.strip().lower())
 
 
 @dataclass(frozen=True)
@@ -785,6 +800,7 @@ class DurableToolCompletionReceipt:
     journal_cursor: EventCursor
     transition: Any = None
     reused: bool = False
+    model_projection: Any = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.attempt, AttemptRef):
@@ -835,6 +851,27 @@ class DurableToolCompletionReceipt:
                 self,
                 "journal_cursor",
                 EventCursor.from_dict(self.journal_cursor),
+            )
+        if self.model_projection is not None:
+            if not isinstance(self.model_projection, Mapping) or set(
+                self.model_projection
+            ) != {"result", "metadata"}:
+                raise DurableToolExecutorContractError(
+                    "tool completion receipt model projection schema is invalid"
+                )
+            if not isinstance(self.model_projection["result"], Mapping) or not isinstance(
+                self.model_projection["metadata"], Mapping
+            ):
+                raise DurableToolExecutorContractError(
+                    "tool completion receipt model projection payload is invalid"
+                )
+            object.__setattr__(
+                self,
+                "model_projection",
+                _freeze_json(
+                    self.model_projection,
+                    path="receipt.model_projection",
+                ),
             )
         if self.transition is not None:
             from .tool_transitions import DurableToolStateTransitionEnvelope
@@ -1157,10 +1194,15 @@ class DurableToolExecutor:
                 transition=persisted_envelope.transition,
             )
             self._assert_live_guard(request)
+        result_kwargs = {
+            "artifactization": result_artifactization,
+            "completion_artifactization": completion_artifactization,
+        }
+        if request.tool_result_policy != "default":
+            result_kwargs["tool_result_policy"] = request.tool_result_policy
         result_receipt = self._boundary.persist_prepared_result(
             authorization,
-            artifactization=result_artifactization,
-            completion_artifactization=completion_artifactization,
+            **result_kwargs,
         )
         result_receipt = self._validate_result_receipt(
             request,
@@ -1187,6 +1229,7 @@ class DurableToolExecutor:
             envelope=persisted_envelope,
             completion_artifact=result_receipt.completion_artifact,
             cursor=result_receipt.cursor,
+            model_projection=result_receipt.model_projection,
             current_fence=current_fence,
             reused=False,
         )
@@ -1536,6 +1579,9 @@ class DurableToolExecutor:
             envelope=envelope,
             completion_artifact=completion_artifact,
             cursor=result_cursor,
+            model_projection=self._model_projection_for_recovered_result(
+                request.call_id
+            ),
             current_fence=current_fence,
             reused=True,
         )
@@ -1597,10 +1643,15 @@ class DurableToolExecutor:
             artifact=completion_artifact,
             completion=envelope.to_dict(),
         )
+        result_kwargs = {
+            "artifactization": result_artifactization,
+            "completion_artifactization": completion_artifactization,
+        }
+        if request.tool_result_policy != "default":
+            result_kwargs["tool_result_policy"] = request.tool_result_policy
         result_receipt = self._boundary.persist_prepared_result(
             authorization,
-            artifactization=result_artifactization,
-            completion_artifactization=completion_artifactization,
+            **result_kwargs,
         )
         result_receipt = self._validate_result_receipt(
             request,
@@ -1614,6 +1665,7 @@ class DurableToolExecutor:
             envelope=envelope,
             completion_artifact=result_receipt.completion_artifact,
             cursor=result_receipt.cursor,
+            model_projection=result_receipt.model_projection,
             current_fence=current_fence,
             reused=True,
         )
@@ -1624,6 +1676,7 @@ class DurableToolExecutor:
         envelope: DurableToolCompletionEnvelope,
         completion_artifact: ArtifactRef,
         cursor: EventCursor,
+        model_projection: Any,
         current_fence: ExecutionFence,
         reused: bool,
     ) -> DurableToolCompletionReceipt:
@@ -1662,8 +1715,22 @@ class DurableToolExecutor:
             result_artifact=trusted_result_artifact,
             completion_artifact=trusted_completion_artifact,
             journal_cursor=trusted_cursor,
+            model_projection=model_projection,
             transition=envelope.transition,
             reused=reused,
+        )
+
+    def _model_projection_for_recovered_result(self, call_id: str) -> Any:
+        recovery = self._boundary.sink.recover_tool_side_effect(call_id)
+        event = recovery.result_event
+        if event is None:
+            return None
+        projection = event.payload.get("model_projection")
+        if projection is None:
+            return None
+        return _canonical_json_snapshot(
+            projection,
+            field_name="recovered tool result model projection",
         )
 
 

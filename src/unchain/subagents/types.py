@@ -168,12 +168,12 @@ class SubagentState:
             state.blocked_clarifications = [copy.deepcopy(item) for item in blocked if isinstance(item, dict)]
         raw_run_bundles = raw.get("run_bundles")
         if isinstance(raw_run_bundles, dict):
-            from ..run_bundle import RunBundle
+            from ..run_bundle_v2 import run_bundle_from_dict
 
             for key, value in raw_run_bundles.items():
                 if not isinstance(key, str) or not isinstance(value, dict):
                     continue
-                bundle = RunBundle.from_dict(value)
+                bundle = run_bundle_from_dict(value)
                 if key != bundle.bundle_id:
                     raise ValueError("subagent run bundle key does not match bundle_id")
                 state.run_bundles[key] = bundle.to_dict()
@@ -238,13 +238,14 @@ class SubagentState:
         if update.blocked_clarifications:
             current.blocked_clarifications.extend(copy.deepcopy(update.blocked_clarifications))
         if update.run_bundles:
-            from ..run_bundle import RunBundle, RunBundleProtocolError
+            from ..run_bundle import RunBundleProtocolError
+            from ..run_bundle_v2 import run_bundle_from_dict
 
             for bundle_id, bundle in update.run_bundles.items():
                 prior = current.run_bundles.get(bundle_id)
                 if prior is not None:
-                    prior_bundle = RunBundle.from_dict(prior)
-                    incoming_bundle = RunBundle.from_dict(bundle)
+                    prior_bundle = run_bundle_from_dict(prior)
+                    incoming_bundle = run_bundle_from_dict(bundle)
                     if prior_bundle.identity != incoming_bundle.identity:
                         raise RunBundleProtocolError(
                             "one child bundle_id changed its immutable identity"
@@ -298,12 +299,12 @@ class SubagentResult:
             return
         if not isinstance(self.run_bundle, dict):
             raise TypeError("run_bundle must be a run bundle object or null")
-        from ..run_bundle import RunBundle
+        from ..run_bundle_v2 import run_bundle_from_dict
 
         object.__setattr__(
             self,
             "run_bundle",
-            RunBundle.from_dict(self.run_bundle).to_dict(),
+            run_bundle_from_dict(self.run_bundle).to_dict(),
         )
 
     def to_dict(self) -> dict[str, Any]:

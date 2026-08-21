@@ -389,6 +389,51 @@ def test_registry_cryptographically_binds_config_digest_to_live_tool() -> None:
         )
 
 
+def test_tool_output_policy_changes_the_durable_handler_config_digest() -> None:
+    module = _contract()
+    default = Tool(
+        name="shell",
+        description="Run a command",
+        func=_handler,
+        output_policy="default",
+    )
+    artifact_only = Tool(
+        name="shell",
+        description="Run a command",
+        func=_handler,
+        output_policy="artifact_only",
+    )
+
+    # Default preserves the deployed pre-policy binding shape; a declaration
+    # that changes model-visible output must fence cold recovery.
+    assert module.tool_config_sha256(default) == module.tool_config_sha256(_tool())
+    assert module.tool_config_sha256(default) != module.tool_config_sha256(
+        artifact_only
+    )
+
+
+def test_registry_rejects_output_policy_drift_for_a_recovered_binding() -> None:
+    module = _contract()
+    original = _tool()
+    binding = _binding(
+        config_sha256=module.tool_config_sha256(original),
+        route_resolver_id=None,
+        route_resolver_revision=None,
+    )
+
+    with pytest.raises(module.ToolHandlerRegistryError, match="config_sha256"):
+        module.DurableToolHandlerRegistry().register(
+            binding,
+            tool=Tool(
+                name="shell",
+                description="Run a command",
+                func=_handler,
+                output_policy="artifact_only",
+            ),
+            handler=_handler,
+        )
+
+
 def test_registry_enforces_one_binding_per_exact_tool_object() -> None:
     module = _contract()
     registry = module.DurableToolHandlerRegistry()

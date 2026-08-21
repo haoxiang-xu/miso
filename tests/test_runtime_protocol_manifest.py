@@ -71,6 +71,11 @@ def test_runtime_protocol_manifest_advertises_every_frozen_required_feature() ->
     assert (
         "context_contribution_manifest_v1" in protocols["context_memory"]
     )
+    assert (
+        "generation_rebase_live_interaction_cycles"
+        in protocols["context_memory"]
+    )
+    assert "tool_output_management_v1" in protocols["context_memory"]
     assert "interaction_resolution_compat" in protocols["context_memory"]
     assert "expected_interaction_id_cas" in protocols["durable_interaction"]
     assert {

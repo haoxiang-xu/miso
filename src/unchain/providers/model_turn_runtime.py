@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from dataclasses import replace
 from typing import Any, Callable
 
@@ -19,6 +20,24 @@ from ..retry import RetryConfig, RetryContext, fetch_turn_with_retry
 from ..tools.toolkit import Toolkit
 from .base import ModelIO, ModelTurnRequest
 from .context_assembler import ProviderContextAssembler
+
+
+_logger = logging.getLogger(__name__)
+
+
+def _log_context_composition_projection_failure(exc: Exception) -> None:
+    """Content-free diagnostic for a downgraded (optional) composition build.
+
+    Only the exception's type name is logged — never its message or any
+    argument — because this projection sits directly beside all user and
+    provider content and must stay content-free even when it fails, the same
+    guarantee the composition module itself carries.
+    """
+
+    _logger.warning(
+        "context composition projection failed, downgraded to no attribution: %s",
+        type(exc).__name__,
+    )
 
 
 _REPLAY_FORMATS = {
@@ -263,14 +282,24 @@ def build_model_turn_request(
     )
 
     try:
+        provider = str(state.provider_state.provider or "").strip().lower()
         response_schema_surface = None
         if response_format is not None or openai_text_format is not None:
-            provider = str(state.provider_state.provider or "").strip().lower()
             response_schema_surface = (
                 "messages"
                 if provider in {"anthropic", "hyperspace"}
                 else "response_schema"
             )
+        # The exact wire-shaped tool schema list — providers call this same
+        # to_provider_json(provider) verbatim to build the outgoing request,
+        # so measuring it here tracks precisely what the provider is billed
+        # for, the same guarantee _measured_message_contributions gives for
+        # messages.
+        tool_schemas = (
+            resolved_toolkit.to_provider_json(provider)
+            if resolved_toolkit.tools
+            else None
+        )
         # "Nothing to attribute" is a normal outcome, not a failure: the builder
         # returns None and freeze() rejects None. Routing that through the
         # except block below meant every ordinary turn raised and swallowed a
@@ -279,7 +308,7 @@ def build_model_turn_request(
         built_context_composition = build_internal_context_composition(
             state,
             assembly,
-            tool_schema_count=len(resolved_toolkit.tools),
+            tool_schemas=tool_schemas,
             response_schema_surface=response_schema_surface,
         )
         internal_context_composition = (
@@ -287,10 +316,11 @@ def build_model_turn_request(
             if built_context_composition is None
             else freeze_internal_context_composition(built_context_composition)
         )
-    except Exception:
+    except Exception as exc:
         # Context composition is optional and the provider assembly above is
         # already authoritative. Only failures from this isolated projection
         # are downgraded; provider assembly and send failures still propagate.
+        _log_context_composition_projection_failure(exc)
         internal_context_composition = None
     return ModelTurnRequest(
         messages=assembly.messages,

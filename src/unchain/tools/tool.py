@@ -16,6 +16,7 @@ from .models import (
     _escape_control_chars_inside_json_strings,
     _parse_docstring,
 )
+from .output_management import ToolOutputManagementError, normalize_tool_output_policy
 
 
 class _InvalidToolArgumentsType(TypeError):
@@ -46,6 +47,7 @@ class Tool:
         search_hint: str = "",
         provider_native_specs: dict[str, dict[str, Any]] | None = None,
         required_betas: dict[str, list[str]] | None = None,
+        output_policy: str = "default",
     ):
         if callable(name) and func is None:
             func = name
@@ -73,6 +75,7 @@ class Tool:
         # a tool needs (e.g. {"anthropic": ["computer-use-2025-11-24"]}).
         self.provider_native_specs = self._construct_provider_native_specs(provider_native_specs)
         self.required_betas = self._construct_required_betas(required_betas)
+        self.output_policy = self._construct_output_policy(output_policy)
         self.parameters = self._construct_parameters(parameters)
 
         if self.func is not None and not self.parameters:
@@ -107,6 +110,7 @@ class Tool:
                 search_hint=self.search_hint,
                 provider_native_specs=self.provider_native_specs,
                 required_betas=self.required_betas,
+                output_policy=self.output_policy,
             )
 
         if self.func is not None:
@@ -175,6 +179,7 @@ class Tool:
         search_hint: str = "",
         provider_native_specs: dict[str, dict[str, Any]] | None = None,
         required_betas: dict[str, list[str]] | None = None,
+        output_policy: str = "default",
     ) -> "Tool":
         summary, _ = _parse_docstring(func)
         return cls(
@@ -196,7 +201,17 @@ class Tool:
             search_hint=search_hint,
             provider_native_specs=provider_native_specs,
             required_betas=required_betas,
+            output_policy=output_policy,
         )
+
+    @staticmethod
+    def _construct_output_policy(value: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ToolOutputManagementError("tool output policy must be a non-empty string")
+        normalized = normalize_tool_output_policy(value)
+        if normalized != value.strip().lower():
+            raise ToolOutputManagementError("tool output policy is unsupported")
+        return normalized
 
     @staticmethod
     def _construct_provider_native_specs(

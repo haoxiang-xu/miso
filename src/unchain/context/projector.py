@@ -15,6 +15,7 @@ from unchain.journal import (
     SemanticEventDraft,
 )
 from unchain.journal.models import _required_text, _sha256
+from unchain.tools.output_management import ToolOutputManager
 
 from .artifacts import ArtifactService, ArtifactServiceError, ToolResultArtifactization
 from .attachments import HostResolvedAttachment, normalize_host_resolved_attachments
@@ -452,6 +453,7 @@ class CanonicalSemanticEventProjector:
         self._artifacts = artifacts
         self._payload_sanitizer = payload_sanitizer
         self._observed_tool_adapter = observed_tool_adapter
+        self._tool_output_manager: ToolOutputManager | None = None
 
     @property
     def attempt(self) -> AttemptRef:
@@ -466,6 +468,63 @@ class CanonicalSemanticEventProjector:
         if self._observed_tool_adapter is not None:
             return SemanticEventProjectionMode.SHADOW_OBSERVED
         return SemanticEventProjectionMode.CANONICAL
+
+    def bind_tool_output_manager(self, manager: ToolOutputManager) -> None:
+        """Bind the one attempt-scoped model-visible tool-output owner."""
+
+        if type(manager) is not ToolOutputManager:
+            raise TypeError("tool output manager must be the official ToolOutputManager")
+        current = self._tool_output_manager
+        if current is not None and current is not manager:
+            raise SemanticEventProjectionError(
+                "tool output manager changed the projector attempt binding"
+            )
+        self._tool_output_manager = manager
+
+    @property
+    def bound_tool_output_manager(self) -> ToolOutputManager | None:
+        """Return the manager fixed for this attempt, if bootstrap completed."""
+
+        return self._tool_output_manager
+
+    def _bound_tool_output_manager(self) -> ToolOutputManager:
+        manager = self._tool_output_manager
+        if manager is None:
+            raise SemanticEventProjectionError(
+                "canonical tool-result projection requires an attempt-bound output manager"
+            )
+        if not manager.active:
+            raise SemanticEventProjectionError(
+                "canonical tool-result projection requires an active output manager"
+            )
+        return manager
+
+    def _project_artifactized_tool_result(
+        self,
+        artifactization: ToolResultArtifactization,
+        *,
+        call_id: str,
+        requested_policy: Any = None,
+    ) -> dict[str, Any]:
+        content = self._artifacts.read_full(
+            artifactization.artifact,
+            remaining_budget_bytes=artifactization.result_bytes,
+        )
+        receipt = self._bound_tool_output_manager().project(
+            content,
+            full_output_ref=artifactization.full_output_ref.to_dict(),
+            digest=artifactization.result_sha256,
+            content_bytes=artifactization.result_bytes,
+            requested_policy=requested_policy,
+            call_id=call_id,
+        )
+        return {
+            "result": receipt.payload,
+            "full_output_ref": artifactization.full_output_ref.to_dict(),
+            "result_bytes": artifactization.result_bytes,
+            "result_sha256": artifactization.result_sha256,
+            "result_projection": receipt.metadata,
+        }
 
     def __call__(self, event: Mapping[str, Any]) -> SemanticEventDraft | None:
         if not isinstance(event, Mapping):
@@ -837,6 +896,17 @@ class CanonicalSemanticEventProjector:
             event.get("result"),
             operation_id="artifact.tool-result." + _stable_digest(identity),
         )
+        requested_policy = (
+            event.get("tool_result_policy")
+            or event.get("tool_result_projection_policy")
+        )
+        result_fields = artifactization.event_fields()
+        if requested_policy is not None:
+            result_fields = self._project_artifactized_tool_result(
+                artifactization,
+                call_id=call_id,
+                requested_policy=requested_policy,
+            )
         payload = {
             "run_id": self._attempt.attempt_id,
             "iteration": iteration,
@@ -844,7 +914,7 @@ class CanonicalSemanticEventProjector:
             "call_id": call_id,
             "execution_subject": execution_subject,
             "execution_subject_sha256": execution_subject_sha256,
-            **artifactization.event_fields(),
+            **result_fields,
             "preview": artifactization.artifact.preview,
             "preview_truncated": (
                 artifactization.result_bytes
@@ -863,10 +933,7 @@ class CanonicalSemanticEventProjector:
                     "call_id": call_id,
                     "execution_subject": execution_subject,
                     "execution_subject_sha256": execution_subject_sha256,
-                    "result": artifactization.event_fields()["result"],
-                    "full_output_ref": artifactization.full_output_ref.to_dict(),
-                    "result_bytes": artifactization.result_bytes,
-                    "result_sha256": artifactization.result_sha256,
+                    **result_fields,
                 },
             ),
             resource_refs=(artifactization.full_output_ref,),
@@ -922,7 +989,25 @@ class CanonicalSemanticEventProjector:
             "tool_result",
             {"call_id": call_id},
         )
+        # Durable execution receipts retain the verified artifact view.  Tool
+        # output reduction happens only at the model-visible projection edge;
+        # changing this receipt would invalidate its sealed-result verifier.
         result_fields = artifactization.event_fields()
+        model_projection: dict[str, Any] | None = None
+        manager = self.bound_tool_output_manager
+        if manager is not None and manager.active:
+            projection_fields = self._project_artifactized_tool_result(
+                artifactization,
+                call_id=call_id,
+                requested_policy=(
+                    event.get("tool_result_policy")
+                    or event.get("tool_result_projection_policy")
+                ),
+            )
+            model_projection = {
+                "result": projection_fields["result"],
+                "metadata": projection_fields["result_projection"],
+            }
         completion_fields = {
             "completion_ref": completion_artifact.ref.to_dict(),
             "completion_bytes": completion_artifact.byte_length,
@@ -943,6 +1028,11 @@ class CanonicalSemanticEventProjector:
                 > len(artifactization.artifact.preview.encode("utf-8"))
             ),
             **completion_fields,
+            **(
+                {"model_projection": model_projection}
+                if model_projection is not None
+                else {}
+            ),
         }
         protected = {
             "run_id": self._attempt.attempt_id,
@@ -952,6 +1042,11 @@ class CanonicalSemanticEventProjector:
             "execution_subject_sha256": execution_subject_sha256,
             **result_fields,
             **completion_fields,
+            **(
+                {"model_projection": model_projection}
+                if model_projection is not None
+                else {}
+            ),
         }
         return self._draft(
             event_type="tool_result",

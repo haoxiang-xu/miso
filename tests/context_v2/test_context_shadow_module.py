@@ -17,6 +17,7 @@ from unchain.agent.model_io import ModelIOFactoryRegistry
 from unchain.context import (
     ArtifactService,
     ContextCompileCoordinator,
+    ContextExecutionBindingHarness,
     ContextExecutionBundle,
     ContextRuntime,
     ContextShadowCompilerHarness,
@@ -411,6 +412,24 @@ def test_shadow_module_is_strictly_default_closed(tmp_path: Path) -> None:
         or harness.name == "context_v2_execution_binding"
         for harness in prepared.loop.harnesses
     )
+
+
+def test_shadow_context_keeps_legacy_tool_budget(tmp_path: Path) -> None:
+    runtime, bundles, _ = _shadow_runtime(tmp_path)
+    context = _bootstrap_context(
+        execution_id="shadow-tool-budget",
+        attempt_id="shadow-tool-budget-attempt",
+    )
+
+    ContextExecutionBindingHarness(
+        runtime=runtime,
+        shadow_mode=True,
+    ).build_delta(context)
+
+    bundle = bundles[("shadow-tool-budget", "shadow-tool-budget-attempt")][0]
+    assert context.event["tool_output_manager"] is bundle.tool_output_manager
+    assert bundle.tool_output_manager.active is False
+    assert bundle.tool_output_manager.legacy_budget_enabled is True
 
 
 def test_shadow_compile_preserves_legacy_provider_input_and_is_durable(

@@ -90,9 +90,13 @@ class ContextToolAuthorityHarness(BaseRuntimeHarness):
             )
         receipt = self.runtime.execute_prepared_tool(context, permit)
 
-        from ..journal.models import _thaw_json
+        project_result = getattr(self.runtime, "project_tool_result_for_model", None)
+        if callable(project_result):
+            visible_result = project_result(context, receipt)
+        else:  # pragma: no cover - compatibility for isolated harness fakes
+            from ..journal.models import _thaw_json
 
-        visible_result = _thaw_json(receipt.visible_result)
+            visible_result = _thaw_json(receipt.visible_result)
         if not isinstance(visible_result, dict):
             visible_result = {"result": visible_result}
         builder = get_provider_message_builder(

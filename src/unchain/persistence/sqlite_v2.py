@@ -82,10 +82,13 @@ from unchain.providers.request_lease import (
 from unchain.providers.wire_envelope import ProviderWireEnvelope
 from unchain.run_bundle import (
     ProviderCallReceipt,
+    RunMetricEvent,
+    RunChild,
     RunBundle,
     RunIdentity,
     deterministic_bundle_id,
 )
+from unchain.run_bundle_v2 import CompactRunBundle, CompactRunBundleProtocolError
 from unchain.run_bundle_ledger import (
     RunBundleContinuationError,
     RunBundleLedgerConflictError,
@@ -96,6 +99,7 @@ from unchain.run_bundle_ledger import (
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _MAX_RUN_BUNDLE_LEDGER_ROWS = 10_000
+_MAX_RUN_BUNDLE_PROJECTION_EVENT_ROWS = 50_000
 
 
 class SQLiteContextV2StoreError(RuntimeError):
@@ -634,6 +638,49 @@ class SQLiteContextV2Store:
                         revision
                     );
 
+                CREATE TABLE IF NOT EXISTS run_bundle_projection_details_v1 (
+                    execution_id TEXT NOT NULL,
+                    bundle_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL CHECK(revision >= 1),
+                    projection_hash TEXT NOT NULL,
+                    metric_events_count INTEGER NOT NULL CHECK(metric_events_count >= 0),
+                    metric_events_json BLOB NOT NULL,
+                    metric_events_sha256 TEXT NOT NULL,
+                    PRIMARY KEY (execution_id, bundle_id, revision),
+                    FOREIGN KEY (execution_id)
+                        REFERENCES executions(execution_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_run_bundle_projection_details_v1_hash
+                    ON run_bundle_projection_details_v1(
+                        execution_id,
+                        projection_hash
+                    );
+
+                CREATE TABLE IF NOT EXISTS run_bundle_compact_v2 (
+                    execution_id TEXT NOT NULL,
+                    bundle_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL CHECK(revision >= 1),
+                    attempt_id TEXT NOT NULL,
+                    root_run_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    bundle_json BLOB NOT NULL,
+                    bundle_digest TEXT NOT NULL,
+                    details_json BLOB NOT NULL,
+                    details_sha256 TEXT NOT NULL,
+                    PRIMARY KEY (execution_id, bundle_id, revision),
+                    FOREIGN KEY (execution_id)
+                        REFERENCES executions(execution_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_run_bundle_compact_v2_root
+                    ON run_bundle_compact_v2(
+                        execution_id,
+                        root_run_id,
+                        run_id,
+                        attempt_id,
+                        bundle_id,
+                        revision
+                    );
+
                 CREATE TABLE IF NOT EXISTS run_bundle_continuation_links_v1 (
                     execution_id TEXT NOT NULL,
                     successor_bundle_id TEXT NOT NULL,
@@ -861,6 +908,536 @@ class _SQLiteBoundContextV2Repository(
                 "run bundle durable row is invalid"
             ) from exc
 
+    def _decode_run_bundle_projection_details(
+        self,
+        row: sqlite3.Row,
+        *,
+        metric_events_sha256: str,
+    ) -> tuple[RunMetricEvent, ...]:
+        try:
+            if _SHA256_RE.fullmatch(metric_events_sha256) is None:
+                raise RunBundleLedgerIntegrityError(
+                    "projection details expected digest is invalid"
+                )
+            metric_events_json = bytes(row["metric_events_json"])
+            if (
+                row["metric_events_sha256"] != metric_events_sha256
+                or _sha256(metric_events_json) != metric_events_sha256
+            ):
+                raise RunBundleLedgerIntegrityError(
+                    "projection details durable bytes changed"
+                )
+            raw_events = json.loads(metric_events_json.decode("utf-8"))
+            if not isinstance(raw_events, list):
+                raise RunBundleLedgerIntegrityError(
+                    "projection details durable row is invalid"
+                )
+            details = []
+            for event_json in raw_events:
+                if type(event_json) is not dict:
+                    raise RunBundleLedgerIntegrityError(
+                        "projection details durable row is invalid"
+                    )
+                details.append(RunMetricEvent.from_dict(event_json))
+            details_tuple = tuple(details)
+            if len(details) != row["metric_events_count"]:
+                raise RunBundleLedgerIntegrityError(
+                    "projection details durable row is invalid"
+                )
+            if not all(type(event) is RunMetricEvent for event in details_tuple):
+                raise RunBundleLedgerIntegrityError(
+                    "projection details durable row is invalid"
+                )
+            event_ids = tuple(event.metric_event_id for event in details_tuple)
+            if (
+                len(event_ids) != len(set(event_ids))
+                or event_ids != tuple(sorted(event_ids))
+            ):
+                raise RunBundleLedgerIntegrityError(
+                    "projection details durable row is invalid"
+                )
+            if any(
+                event.execution_id != self.execution_id
+                for event in details_tuple
+            ):
+                raise RunBundleLedgerIntegrityError(
+                    "projection details crossed execution scope"
+                )
+            if (
+                _canonical_json_bytes([event.to_dict() for event in details_tuple])
+                != metric_events_json
+            ):
+                raise RunBundleLedgerIntegrityError(
+                    "projection details durable row is not canonical"
+                )
+            return details_tuple
+        except RunBundleLedgerIntegrityError:
+            raise
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise RunBundleLedgerIntegrityError(
+                "projection details durable row is invalid"
+            ) from exc
+
+    @staticmethod
+    def _encode_run_bundle_projection_metric_events(
+        metric_events: tuple[RunMetricEvent, ...],
+    ) -> tuple[bytes, str]:
+        ordered_metric_events = tuple(
+            sorted(metric_events, key=lambda event: event.metric_event_id)
+        )
+        encoded = _canonical_json_bytes(
+            [
+                event.to_dict()
+                for event in ordered_metric_events
+            ]
+        )
+        return encoded, _sha256(encoded)
+
+    def _append_run_bundle_projection_details_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        bundle_id: str,
+        revision: int,
+        projection_hash: str,
+        metric_events: tuple[RunMetricEvent, ...],
+    ) -> None:
+        """Append one exact compact projection row inside an existing CAS."""
+
+        if type(bundle_id) is not str or not bundle_id:
+            raise RunBundleLedgerScopeError(
+                "bundle_id must be exact text for projection details"
+            )
+        if type(revision) is not int or revision <= 0:
+            raise TypeError("revision must be an exact positive integer")
+        if (
+            type(projection_hash) is not str
+            or _SHA256_RE.fullmatch(projection_hash) is None
+        ):
+            raise TypeError("projection_hash must be exact sha256 text")
+        if any(type(event) is not RunMetricEvent for event in metric_events):
+            raise TypeError(
+                "projection details must contain exact RunMetricEvent values"
+            )
+        if len(metric_events) > _MAX_RUN_BUNDLE_PROJECTION_EVENT_ROWS:
+            raise RunBundleLedgerIntegrityError(
+                "projection detail metric event query exceeds the bounded projection limit"
+            )
+        encoded, digest = self._encode_run_bundle_projection_metric_events(
+            metric_events
+        )
+        existing = connection.execute(
+            """
+            SELECT * FROM run_bundle_projection_details_v1
+            WHERE execution_id = ? AND bundle_id = ? AND revision = ?
+            """,
+            (self.execution_id, bundle_id, revision),
+        ).fetchone()
+        if existing is not None:
+            if (
+                existing["projection_hash"] != projection_hash
+                or existing["metric_events_sha256"] != digest
+                or int(existing["metric_events_count"]) != len(metric_events)
+            ):
+                raise RunBundleLedgerConflictError(
+                    "run bundle projection details changed"
+                )
+            if (
+                _sha256(bytes(existing["metric_events_json"]))
+                != existing["metric_events_sha256"]
+            ):
+                raise RunBundleLedgerIntegrityError(
+                    "run bundle projection details durable index changed"
+                )
+            return
+        connection.execute(
+            """
+            INSERT INTO run_bundle_projection_details_v1(
+                execution_id,
+                bundle_id,
+                revision,
+                projection_hash,
+                metric_events_count,
+                metric_events_json,
+                metric_events_sha256
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                self.execution_id,
+                bundle_id,
+                revision,
+                projection_hash,
+                len(metric_events),
+                encoded,
+                digest,
+            ),
+        )
+
+    def _append_run_bundle_projection_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        bundle: RunBundle,
+        encoded: bytes,
+    ) -> RunBundle:
+        if bundle.identity.execution_id != self.execution_id:
+            raise RunBundleLedgerScopeError(
+                "run bundle belongs to another execution"
+            )
+        identity_row = connection.execute(
+            """
+            SELECT * FROM run_bundle_projections_v1
+            WHERE execution_id = ? AND bundle_id = ?
+            ORDER BY revision DESC LIMIT 1
+            """,
+            (self.execution_id, bundle.bundle_id),
+        ).fetchone()
+        if identity_row is not None:
+            durable_identity = self._decode_run_bundle_projection(identity_row)
+            if durable_identity.identity != bundle.identity:
+                raise RunBundleLedgerConflictError(
+                    "bundle_id changed its immutable run identity"
+                )
+            if bundle.revision < durable_identity.revision:
+                raise RunBundleLedgerConflictError(
+                    "run bundle revision regressed below the durable head"
+                )
+        compact_identity_row = connection.execute(
+            "SELECT * FROM run_bundle_compact_v2 "
+            "WHERE execution_id = ? AND bundle_id = ? "
+            "ORDER BY revision DESC LIMIT 1",
+            (self.execution_id, bundle.bundle_id),
+        ).fetchone()
+        if compact_identity_row is not None:
+            compact_identity = self._decode_compact_bundle_row(
+                compact_identity_row
+            )[0]
+            if compact_identity.identity != bundle.identity:
+                raise RunBundleLedgerConflictError(
+                    "bundle_id changed its immutable run identity"
+                )
+            raise RunBundleLedgerConflictError(
+                "v1 run bundle cannot overwrite the compact durable head"
+            )
+        existing = connection.execute(
+            """
+            SELECT * FROM run_bundle_projections_v1
+            WHERE execution_id = ? AND bundle_id = ? AND revision = ?
+            """,
+            (self.execution_id, bundle.bundle_id, bundle.revision),
+        ).fetchone()
+        if existing is not None:
+            durable = self._decode_run_bundle_projection(existing)
+            if durable != bundle:
+                raise RunBundleLedgerConflictError(
+                    "run bundle revision has conflicting projections"
+                )
+            return durable
+        connection.execute(
+            """
+            INSERT INTO run_bundle_projections_v1(
+                execution_id,
+                bundle_id,
+                revision,
+                attempt_id,
+                root_run_id,
+                run_id,
+                bundle_json,
+                bundle_digest
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                self.execution_id,
+                bundle.bundle_id,
+                bundle.revision,
+                bundle.identity.attempt_id,
+                bundle.identity.root_run_id,
+                bundle.identity.run_id,
+                encoded,
+                bundle.bundle_digest,
+            ),
+        )
+        return bundle
+
+    def persist_projection_details(
+        self,
+        *,
+        bundle_id: str,
+        revision: int,
+        projection_hash: str,
+        metric_events: tuple[RunMetricEvent, ...] = (),
+    ) -> None:
+        if type(metric_events) is not tuple:
+            raise TypeError("metric_events must be exact tuple")
+        try:
+            with self._store._transaction(immediate=True) as connection:
+                self._append_run_bundle_projection_details_in_transaction(
+                    connection,
+                    bundle_id=bundle_id,
+                    revision=revision,
+                    projection_hash=projection_hash,
+                    metric_events=metric_events,
+                )
+        except (RunBundleLedgerConflictError, RunBundleLedgerIntegrityError):
+            raise
+        except sqlite3.IntegrityError as exc:
+            raise RunBundleLedgerConflictError(
+                "projection details exact-once insert conflicted"
+            ) from exc
+        except sqlite3.Error as exc:
+            raise RunBundleLedgerIntegrityError(
+                "projection details persistence failed"
+            ) from exc
+
+    def load_projection_details(
+        self,
+        *,
+        bundle_id: str,
+        revision: int,
+        projection_hash: str,
+        metric_events_sha256: str,
+    ) -> tuple[RunMetricEvent, ...]:
+        normalized_bundle_id = self._ledger_filter(bundle_id, "bundle_id")
+        if normalized_bundle_id is None:
+            raise ValueError("bundle_id must be non-empty exact text")
+        if type(revision) is not int or revision <= 0:
+            raise ValueError("revision must be a positive exact integer")
+        if (
+            type(projection_hash) is not str
+            or _SHA256_RE.fullmatch(projection_hash) is None
+        ):
+            raise ValueError("projection_hash must be exact sha256 text")
+        if (
+            type(metric_events_sha256) is not str
+            or _SHA256_RE.fullmatch(metric_events_sha256) is None
+        ):
+            raise ValueError("metric_events_sha256 must be exact sha256 text")
+        statement = (
+            "SELECT * FROM run_bundle_projection_details_v1 "
+            "WHERE execution_id = ? AND bundle_id = ? AND revision = ? AND projection_hash = ?"
+        )
+        try:
+            with self._store._transaction(immediate=False) as connection:
+                row = connection.execute(
+                    statement,
+                    (
+                        self.execution_id,
+                        normalized_bundle_id,
+                        revision,
+                        projection_hash,
+                    ),
+                ).fetchone()
+                return (
+                    self._decode_run_bundle_projection_details(
+                        row,
+                        metric_events_sha256=metric_events_sha256,
+                    )
+                    if row is not None
+                    else ()
+                )
+        except RunBundleLedgerIntegrityError:
+            raise
+        except sqlite3.Error as exc:
+            raise RunBundleLedgerIntegrityError(
+                "projection details load failed"
+            ) from exc
+
+    @staticmethod
+    def _encode_compact_details(
+        details: dict[str, list[dict[str, object]]],
+    ) -> tuple[bytes, str]:
+        if type(details) is not dict or set(details) != {"provider_calls", "metric_events", "children"}:
+            raise RunBundleLedgerIntegrityError("compact details shape is invalid")
+        if any(type(items) is not list for items in details.values()):
+            raise RunBundleLedgerIntegrityError("compact details partitions are invalid")
+        encoded = _canonical_json_bytes(details)
+        if len(encoded) > 64 * 1024 * 1024:
+            raise RunBundleLedgerIntegrityError("compact details exceed the durable limit")
+        return encoded, _sha256(encoded)
+
+    def _decode_compact_bundle_row(
+        self,
+        row: sqlite3.Row,
+    ) -> tuple[CompactRunBundle, tuple[ProviderCallReceipt, ...], tuple[RunMetricEvent, ...], tuple[RunChild, ...]]:
+        try:
+            raw_bundle = bytes(row["bundle_json"])
+            raw_details = bytes(row["details_json"])
+            if _sha256(raw_details) != row["details_sha256"]:
+                raise RunBundleLedgerIntegrityError("compact details durable bytes changed")
+            bundle = CompactRunBundle.from_dict(json.loads(raw_bundle.decode("utf-8")))
+            details = json.loads(raw_details.decode("utf-8"))
+            if (
+                _canonical_json_bytes(bundle.to_dict()) != raw_bundle
+                or bundle.identity.execution_id != self.execution_id
+                or bundle.bundle_id != row["bundle_id"]
+                or bundle.revision != row["revision"]
+                or bundle.bundle_digest != row["bundle_digest"]
+            ):
+                raise RunBundleLedgerIntegrityError("compact durable index changed")
+            verified_details = bundle.verify_details(details)
+            receipts = tuple(
+                ProviderCallReceipt.from_dict(item)
+                for item in verified_details["provider_calls"]
+            )
+            events = tuple(
+                RunMetricEvent.from_dict(item)
+                for item in verified_details["metric_events"]
+            )
+            children = tuple(
+                RunChild.from_dict(item)
+                for item in verified_details["children"]
+            )
+            return bundle, receipts, events, children
+        except RunBundleLedgerIntegrityError:
+            raise
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise RunBundleLedgerIntegrityError("compact durable row is invalid") from exc
+
+    def persist_compact_bundle_with_details(
+        self,
+        *,
+        bundle: CompactRunBundle,
+        details: dict[str, list[dict[str, object]]],
+    ) -> CompactRunBundle:
+        if type(bundle) is not CompactRunBundle:
+            raise TypeError("bundle must be an exact CompactRunBundle")
+        if bundle.identity.execution_id != self.execution_id:
+            raise RunBundleLedgerScopeError("compact bundle belongs to another execution")
+        verified_details = bundle.verify_details(details)
+        encoded_bundle = _canonical_json_bytes(bundle.to_dict())
+        encoded_details, details_digest = self._encode_compact_details(
+            verified_details
+        )
+        try:
+            with self._store._transaction(immediate=True) as connection:
+                existing = connection.execute(
+                    "SELECT * FROM run_bundle_compact_v2 WHERE execution_id = ? AND bundle_id = ? AND revision = ?",
+                    (self.execution_id, bundle.bundle_id, bundle.revision),
+                ).fetchone()
+                if existing is not None:
+                    durable, _receipts, _events, _children = self._decode_compact_bundle_row(existing)
+                    if durable != bundle or bytes(existing["details_json"]) != encoded_details:
+                        raise RunBundleLedgerConflictError("compact bundle revision has conflicting details")
+                    return durable
+                head = connection.execute(
+                    "SELECT revision FROM run_bundle_compact_v2 WHERE execution_id = ? AND bundle_id = ? ORDER BY revision DESC LIMIT 1",
+                    (self.execution_id, bundle.bundle_id),
+                ).fetchone()
+                if head is not None and bundle.revision < int(head["revision"]):
+                    raise RunBundleLedgerConflictError("compact bundle revision regressed below durable head")
+                v1_head = connection.execute(
+                    "SELECT * FROM run_bundle_projections_v1 "
+                    "WHERE execution_id = ? AND bundle_id = ? "
+                    "ORDER BY revision DESC LIMIT 1",
+                    (self.execution_id, bundle.bundle_id),
+                ).fetchone()
+                if v1_head is not None:
+                    durable_v1 = self._decode_run_bundle_projection(v1_head)
+                    if durable_v1.identity != bundle.identity:
+                        raise RunBundleLedgerConflictError(
+                            "bundle_id changed its immutable run identity"
+                        )
+                    if bundle.revision <= durable_v1.revision:
+                        raise RunBundleLedgerConflictError(
+                            "compact bundle must advance the v1 durable head"
+                        )
+                connection.execute(
+                    """
+                    INSERT INTO run_bundle_compact_v2(
+                        execution_id,bundle_id,revision,attempt_id,root_run_id,run_id,
+                        bundle_json,bundle_digest,details_json,details_sha256
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        self.execution_id,
+                        bundle.bundle_id,
+                        bundle.revision,
+                        bundle.identity.attempt_id,
+                        bundle.identity.root_run_id,
+                        bundle.identity.run_id,
+                        encoded_bundle,
+                        bundle.bundle_digest,
+                        encoded_details,
+                        details_digest,
+                    ),
+                )
+            return bundle
+        except (RunBundleLedgerConflictError, RunBundleLedgerIntegrityError):
+            raise
+        except sqlite3.IntegrityError as exc:
+            raise RunBundleLedgerConflictError("compact bundle exact revision insert conflicted") from exc
+        except sqlite3.Error as exc:
+            raise RunBundleLedgerIntegrityError("compact bundle persistence failed") from exc
+
+    def load_compact_bundle_details(
+        self,
+        *,
+        bundle: CompactRunBundle,
+    ) -> tuple[tuple[ProviderCallReceipt, ...], tuple[RunMetricEvent, ...], tuple[RunChild, ...]]:
+        if type(bundle) is not CompactRunBundle:
+            raise TypeError("bundle must be an exact CompactRunBundle")
+        with self._store._transaction(immediate=False) as connection:
+            row = connection.execute(
+                "SELECT * FROM run_bundle_compact_v2 WHERE execution_id = ? AND bundle_id = ? AND revision = ?",
+                (self.execution_id, bundle.bundle_id, bundle.revision),
+            ).fetchone()
+        if row is None:
+            raise RunBundleLedgerIntegrityError("compact bundle details are missing")
+        durable, receipts, events, children = self._decode_compact_bundle_row(row)
+        if durable != bundle:
+            raise RunBundleLedgerConflictError("compact bundle durable projection changed")
+        return receipts, events, children
+
+    def list_compact_bundles(
+        self,
+        *,
+        root_run_id: str | None = None,
+        run_id: str | None = None,
+        attempt_id: str | None = None,
+    ) -> tuple[CompactRunBundle, ...]:
+        filters = {
+            "root_run_id": self._ledger_filter(root_run_id, "root_run_id"),
+            "run_id": self._ledger_filter(run_id, "run_id"),
+            "attempt_id": self._ledger_filter(attempt_id, "attempt_id"),
+        }
+        clauses = ["execution_id = ?"]
+        parameters: list[Any] = [self.execution_id]
+        for field_name, value in filters.items():
+            if value is not None:
+                clauses.append(f"{field_name} = ?")
+                parameters.append(value)
+        parameters.append(_MAX_RUN_BUNDLE_LEDGER_ROWS + 1)
+        statement = (
+            "SELECT * FROM ("
+            "SELECT p.*, ROW_NUMBER() OVER ("
+            "PARTITION BY bundle_id ORDER BY revision DESC"
+            ") AS ledger_rank FROM run_bundle_compact_v2 AS p WHERE "
+            + " AND ".join(clauses)
+            + ") WHERE ledger_rank = 1 "
+            "ORDER BY run_id, attempt_id, bundle_id LIMIT ?"
+        )
+        try:
+            with self._store._transaction(immediate=False) as connection:
+                rows = list(connection.execute(statement, parameters))
+                if len(rows) > _MAX_RUN_BUNDLE_LEDGER_ROWS:
+                    raise RunBundleLedgerIntegrityError(
+                        "compact run bundle query exceeds the bounded ledger limit"
+                    )
+                return tuple(
+                    self._decode_compact_bundle_row(row)[0] for row in rows
+                )
+        except RunBundleLedgerIntegrityError:
+            raise
+        except sqlite3.Error as exc:
+            raise RunBundleLedgerIntegrityError(
+                "compact run bundle list failed"
+            ) from exc
+
     def _append_run_bundle_receipt_in_transaction(
         self,
         connection: sqlite3.Connection,
@@ -991,63 +1568,11 @@ class _SQLiteBoundContextV2Repository(
         encoded = _canonical_json_bytes(bundle.to_dict())
         try:
             with self._store._transaction(immediate=True) as connection:
-                identity_row = connection.execute(
-                    """
-                    SELECT * FROM run_bundle_projections_v1
-                    WHERE execution_id = ? AND bundle_id = ?
-                    ORDER BY revision DESC LIMIT 1
-                    """,
-                    (self.execution_id, bundle.bundle_id),
-                ).fetchone()
-                if identity_row is not None:
-                    durable_identity = self._decode_run_bundle_projection(identity_row)
-                    if durable_identity.identity != bundle.identity:
-                        raise RunBundleLedgerConflictError(
-                            "bundle_id changed its immutable run identity"
-                        )
-                    if bundle.revision < durable_identity.revision:
-                        raise RunBundleLedgerConflictError(
-                            "run bundle revision regressed below the durable head"
-                        )
-                existing = connection.execute(
-                    """
-                    SELECT * FROM run_bundle_projections_v1
-                    WHERE execution_id = ? AND bundle_id = ? AND revision = ?
-                    """,
-                    (self.execution_id, bundle.bundle_id, bundle.revision),
-                ).fetchone()
-                if existing is not None:
-                    durable = self._decode_run_bundle_projection(existing)
-                    if durable != bundle:
-                        raise RunBundleLedgerConflictError(
-                            "run bundle revision has conflicting projections"
-                        )
-                    return durable
-                connection.execute(
-                    """
-                    INSERT INTO run_bundle_projections_v1(
-                        execution_id,
-                        bundle_id,
-                        revision,
-                        attempt_id,
-                        root_run_id,
-                        run_id,
-                        bundle_json,
-                        bundle_digest
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        self.execution_id,
-                        bundle.bundle_id,
-                        bundle.revision,
-                        bundle.identity.attempt_id,
-                        bundle.identity.root_run_id,
-                        bundle.identity.run_id,
-                        encoded,
-                        bundle.bundle_digest,
-                    ),
+                return self._append_run_bundle_projection_in_transaction(
+                    connection,
+                    bundle=bundle,
+                    encoded=encoded,
                 )
-                return bundle
         except (RunBundleLedgerConflictError, RunBundleLedgerIntegrityError):
             raise
         except sqlite3.IntegrityError as exc:
@@ -1057,6 +1582,50 @@ class _SQLiteBoundContextV2Repository(
         except sqlite3.Error as exc:
             raise RunBundleLedgerIntegrityError(
                 "run bundle persistence failed"
+            ) from exc
+
+    def persist_bundle_with_projection_details(
+        self,
+        *,
+        bundle: RunBundle,
+        projection_hash: str,
+        projection_metric_events: tuple[RunMetricEvent, ...] = (),
+    ) -> RunBundle:
+        if type(bundle) is not RunBundle:
+            raise TypeError("bundle must be an exact RunBundle")
+        if (
+            type(projection_hash) is not str
+            or _SHA256_RE.fullmatch(projection_hash) is None
+        ):
+            raise TypeError("projection_hash must be exact sha256 text")
+        if type(projection_metric_events) is not tuple:
+            raise TypeError("projection_metric_events must be exact tuple")
+        encoded = _canonical_json_bytes(bundle.to_dict())
+        try:
+            with self._store._transaction(immediate=True) as connection:
+                durable = self._append_run_bundle_projection_in_transaction(
+                    connection,
+                    bundle=bundle,
+                    encoded=encoded,
+                )
+                if len(projection_metric_events) > 0:
+                    self._append_run_bundle_projection_details_in_transaction(
+                        connection,
+                        bundle_id=bundle.bundle_id,
+                        revision=bundle.revision,
+                        projection_hash=projection_hash,
+                        metric_events=projection_metric_events,
+                    )
+                return durable
+        except (RunBundleLedgerConflictError, RunBundleLedgerIntegrityError):
+            raise
+        except sqlite3.IntegrityError as exc:
+            raise RunBundleLedgerConflictError(
+                "run bundle with projection details exact revision insert conflicted"
+            ) from exc
+        except sqlite3.Error as exc:
+            raise RunBundleLedgerIntegrityError(
+                "run bundle with projection details persistence failed"
             ) from exc
 
     def load_bundle(
@@ -1143,7 +1712,7 @@ class _SQLiteBoundContextV2Repository(
 
     @staticmethod
     def _continuation_lineage_matches(
-        predecessor: RunBundle,
+        predecessor: RunBundle | CompactRunBundle,
         successor: RunIdentity,
     ) -> bool:
         prior = predecessor.identity
@@ -1162,7 +1731,9 @@ class _SQLiteBoundContextV2Repository(
         )
 
     @staticmethod
-    def _continuation_order(bundle: RunBundle) -> tuple[int, int, str]:
+    def _continuation_order(
+        bundle: RunBundle | CompactRunBundle,
+    ) -> tuple[int, int, str]:
         timestamp = bundle.lifecycle.completed_at
         if timestamp is None:
             instant = -1
@@ -1179,12 +1750,47 @@ class _SQLiteBoundContextV2Repository(
             )
         return (instant, bundle.revision, bundle.bundle_id)
 
+    def _continuation_bundle_head(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        bundle_id: str,
+    ) -> RunBundle | CompactRunBundle | None:
+        candidates: list[RunBundle | CompactRunBundle] = []
+        v1_row = connection.execute(
+            "SELECT * FROM run_bundle_projections_v1 "
+            "WHERE execution_id = ? AND bundle_id = ? "
+            "ORDER BY revision DESC LIMIT 1",
+            (self.execution_id, bundle_id),
+        ).fetchone()
+        if v1_row is not None:
+            candidates.append(self._decode_run_bundle_projection(v1_row))
+        v2_row = connection.execute(
+            "SELECT * FROM run_bundle_compact_v2 "
+            "WHERE execution_id = ? AND bundle_id = ? "
+            "ORDER BY revision DESC LIMIT 1",
+            (self.execution_id, bundle_id),
+        ).fetchone()
+        if v2_row is not None:
+            candidates.append(self._decode_compact_bundle_row(v2_row)[0])
+        if not candidates:
+            return None
+        head_revision = max(item.revision for item in candidates)
+        heads = tuple(
+            item for item in candidates if item.revision == head_revision
+        )
+        if len(heads) != 1:
+            raise RunBundleLedgerIntegrityError(
+                "continuation predecessor has conflicting durable schemas"
+            )
+        return heads[0]
+
     def claim_continuation(
         self,
         *,
         successor: RunIdentity,
         requested_run_id: str | None = None,
-    ) -> RunBundle | None:
+    ) -> RunBundle | CompactRunBundle | None:
         """Atomically consume one durable terminal predecessor for a fresh run."""
 
         if type(successor) is not RunIdentity:
@@ -1212,24 +1818,14 @@ class _SQLiteBoundContextV2Repository(
                         raise RunBundleContinuationError(
                             "continued_from_successor_conflict"
                         )
-                    predecessor_row = connection.execute(
-                        """
-                        SELECT * FROM run_bundle_projections_v1
-                        WHERE execution_id = ? AND bundle_id = ?
-                        ORDER BY revision DESC LIMIT 1
-                        """,
-                        (
-                            self.execution_id,
-                            existing_link["predecessor_bundle_id"],
-                        ),
-                    ).fetchone()
-                    if predecessor_row is None:
+                    predecessor = self._continuation_bundle_head(
+                        connection,
+                        bundle_id=str(existing_link["predecessor_bundle_id"]),
+                    )
+                    if predecessor is None:
                         raise RunBundleLedgerIntegrityError(
                             "continuation predecessor projection is missing"
                         )
-                    predecessor = self._decode_run_bundle_projection(
-                        predecessor_row
-                    )
                     if not self._continuation_lineage_matches(
                         predecessor,
                         successor,
@@ -1242,7 +1838,7 @@ class _SQLiteBoundContextV2Repository(
                 if requested is None:
                     return None
 
-                rows = list(
+                v1_rows = list(
                     connection.execute(
                         """
                         SELECT * FROM (
@@ -1260,7 +1856,28 @@ class _SQLiteBoundContextV2Repository(
                         (self.execution_id, _MAX_RUN_BUNDLE_LEDGER_ROWS + 1),
                     )
                 )
-                if len(rows) > _MAX_RUN_BUNDLE_LEDGER_ROWS:
+                v2_rows = list(
+                    connection.execute(
+                        """
+                        SELECT * FROM (
+                            SELECT p.*, ROW_NUMBER() OVER (
+                                PARTITION BY p.bundle_id
+                                ORDER BY p.revision DESC
+                            ) AS ledger_rank
+                            FROM run_bundle_compact_v2 AS p
+                            WHERE p.execution_id = ?
+                        ) AS latest
+                        WHERE latest.ledger_rank = 1
+                        ORDER BY latest.bundle_id
+                        LIMIT ?
+                        """,
+                        (self.execution_id, _MAX_RUN_BUNDLE_LEDGER_ROWS + 1),
+                    )
+                )
+                if (
+                    len(v1_rows) > _MAX_RUN_BUNDLE_LEDGER_ROWS
+                    or len(v2_rows) > _MAX_RUN_BUNDLE_LEDGER_ROWS
+                ):
                     raise RunBundleLedgerIntegrityError(
                         "continuation candidate query exceeds the ledger limit"
                     )
@@ -1275,9 +1892,23 @@ class _SQLiteBoundContextV2Repository(
                         (self.execution_id,),
                     )
                 }
-                candidates = []
-                for row in rows:
-                    candidate = self._decode_run_bundle_projection(row)
+                candidate_ids = {
+                    str(row["bundle_id"]) for row in (*v1_rows, *v2_rows)
+                }
+                if len(candidate_ids) > _MAX_RUN_BUNDLE_LEDGER_ROWS:
+                    raise RunBundleLedgerIntegrityError(
+                        "continuation candidate query exceeds the ledger limit"
+                    )
+                candidates: list[RunBundle | CompactRunBundle] = []
+                for bundle_id in sorted(candidate_ids):
+                    candidate = self._continuation_bundle_head(
+                        connection,
+                        bundle_id=bundle_id,
+                    )
+                    if candidate is None:
+                        raise RunBundleLedgerIntegrityError(
+                            "continuation candidate projection is missing"
+                        )
                     if candidate.bundle_id in consumed:
                         continue
                     if requested is not None and candidate.identity.run_id != requested:

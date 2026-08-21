@@ -1,10 +1,13 @@
 import json
 
+import pytest
+
 from unchain.agent.agent import Agent
 from unchain.agent.builder import AgentBuilder, AgentCallContext
 from unchain.agent.model_io import ModelIOFactoryRegistry
 from unchain.toolkits import PlanToolkit
 from unchain.tools import Tool, Toolkit, ToolPromptSpec, render_tool_prompt_block
+from unchain.tools.output_management import ToolOutputManagementError
 
 
 def test_tool_parameter_inference_and_execute():
@@ -141,6 +144,42 @@ def test_toolkit_register_many_and_tool_decorator():
     assert toolkit_obj.execute("add", {"a": 4, "b": 1}) == {"result": 5}
     assert toolkit_obj.execute("sub", {"a": 4, "b": 1}) == {"result": 3}
     assert toolkit_obj.execute("ping", {"message": "pong"}) == {"message": "pong"}
+
+
+def test_tool_output_policy_is_declared_through_every_public_tool_api():
+    direct = Tool(name="direct", output_policy="artifact_only")
+    callable_tool = Tool.from_callable(
+        lambda: {"ok": True},
+        name="callable",
+        output_policy="head_tail",
+    )
+    toolkit_obj = Toolkit()
+    registered = toolkit_obj.register(
+        lambda: {"ok": True},
+        name="registered",
+        output_policy="artifact_only",
+    )
+
+    @toolkit_obj.tool(name="decorated", output_policy="head_tail")
+    def decorated():
+        return {"ok": True}
+
+    assert direct.output_policy == "artifact_only"
+    assert callable_tool.output_policy == "head_tail"
+    assert registered.output_policy == "artifact_only"
+    assert decorated.output_policy == "head_tail"
+
+
+def test_tool_output_policy_rejects_unknown_declarations_at_registration():
+    with pytest.raises(ToolOutputManagementError, match="unsupported"):
+        Tool(name="invalid", output_policy="future_policy")
+
+    with pytest.raises(ToolOutputManagementError, match="unsupported"):
+        Toolkit().register(
+            lambda: {"ok": True},
+            name="invalid",
+            output_policy="future_policy",
+        )
 
 
 def test_tool_execute_repairs_unescaped_newlines_in_json_arguments():

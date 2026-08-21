@@ -125,7 +125,12 @@ class ContextShadowModule(BaseAgentModule):
             for harness in builder.harnesses
         ):
             raise ValueError("context shadow is already configured")
-        builder.add_harness(ContextExecutionBindingHarness(runtime=self.runtime))
+        builder.add_harness(
+            ContextExecutionBindingHarness(
+                runtime=self.runtime,
+                shadow_mode=True,
+            )
+        )
         builder.add_harness(ContextShadowCompilerHarness(runtime=self.runtime))
 
 

@@ -1140,21 +1140,23 @@ class ToolExecutionHarness(BaseToolHarness):
             if isinstance(tool_runtime_config, dict)
             else None
         )
-        budget_config = ToolResultBudgetConfig.from_raw(raw_budget_config)
-        budget_outcome = ToolResultBudgetController(budget_config).budget_messages(
-            provider=context.provider,
-            toolkit=context.toolkit,
-            tool_calls=list(context.event.get("tool_calls") or []),
-            result_messages=result_messages,
-            session_id=context.session_id,
-            latest_messages=context.state.transcript,
-        )
-        result_messages = budget_outcome.messages
+        output_manager = context.output_manager
+        if output_manager.legacy_budget_enabled:
+            budget_config = ToolResultBudgetConfig.from_raw(raw_budget_config)
+            budget_outcome = ToolResultBudgetController(budget_config).budget_messages(
+                provider=context.provider,
+                toolkit=context.toolkit,
+                tool_calls=list(context.event.get("tool_calls") or []),
+                result_messages=result_messages,
+                session_id=context.session_id,
+                latest_messages=context.state.transcript,
+            )
+            result_messages = budget_outcome.messages
+            budget_stats = budget_outcome.stats.to_dict()
         result_messages = coalesce_provider_tool_result_messages(
             context.provider,
             result_messages,
         )
-        budget_stats = budget_outcome.stats.to_dict()
 
         if not result_messages:
             return HarnessDelta(
@@ -1203,6 +1205,7 @@ class ToolExecutionHarness(BaseToolHarness):
             trace={
                 "result_message_count": len(result_messages),
                 "observed": bool(batch_state.should_observe),
+                "tool_output_projection": output_manager.active,
                 **({"tool_result_budget": budget_stats} if budget_stats is not None else {}),
             },
         )

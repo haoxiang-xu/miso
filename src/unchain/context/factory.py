@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from unchain.journal import (
@@ -13,6 +13,7 @@ from unchain.journal import (
 )
 from unchain.kernel.harness import HarnessContext
 from unchain.run_bundle_ledger import RunBundleLedger
+from unchain.tools.output_management import ToolOutputManager
 
 from .artifacts import ArtifactService
 from .coordinator import ContextCompileCoordinator
@@ -76,6 +77,9 @@ class ContextExecutionBundle:
     partial_attempt_sink: Callable[[dict[str, Any], Exception], None]
     provider_turn_service: ContextProviderTurnExecutionService | None = None
     run_bundle_ledger: RunBundleLedger | None = None
+    tool_output_manager: ToolOutputManager = field(
+        default_factory=ToolOutputManager.active_default,
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.attempt, AttemptRef):
@@ -136,6 +140,8 @@ class ContextExecutionBundle:
                 "run_bundle_ledger must implement the RunBundleLedger protocol "
                 "or be null"
             )
+        if type(self.tool_output_manager) is not ToolOutputManager:
+            raise TypeError("tool_output_manager must be the official ToolOutputManager")
         execution_id = self.attempt.generation.execution_id
         if any(
             scope != execution_id

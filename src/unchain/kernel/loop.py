@@ -1824,9 +1824,9 @@ class KernelLoop:
                     error_code=error_code,
                 )
                 state.run_status = "failed"
-                from ..run_bundle import RunBundle
+                from ..run_bundle_v2 import run_bundle_from_dict
 
-                failed_bundle = RunBundle.from_dict(
+                failed_bundle = run_bundle_from_dict(
                     materialize_state_bundle(state, status="failed")
                 )
                 attach_kernel_run_failure(

@@ -111,11 +111,13 @@ class TaskStateContextRuntime(ContextRuntime):
         execution_factory: DurableContextRuntimeFactory,
         task_state_reader_resolver: TaskStateReaderResolver,
         provider_turns_enabled: bool = False,
+        tool_output_management_active: bool = False,
     ) -> TaskStateContextRuntime:
         return cls(
             owner_id=owner_id,
             execution_factory=execution_factory,
             provider_turns_enabled=provider_turns_enabled,
+            tool_output_management_active=tool_output_management_active,
             task_state_reader_resolver=task_state_reader_resolver,
         )
 
@@ -177,10 +179,12 @@ class TaskStateContextRuntime(ContextRuntime):
         context: HarnessContext,
         *,
         _binding_authority: object | None = None,
+        _shadow_mode: bool = False,
     ) -> None:
         super().bind_context(
             context,
             _binding_authority=_binding_authority,
+            _shadow_mode=_shadow_mode,
         )
         factory = self.execution_factory
         if factory is None:  # pragma: no cover - guarded by construction

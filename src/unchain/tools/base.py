@@ -73,6 +73,22 @@ class ToolContext:
         return guard if isinstance(guard, ExecutionGuard) else None
 
     @property
+    def output_manager(self):
+        """Resolve the manager bound by ContextExecutionBundle, if present."""
+
+        from .output_management import ToolOutputManager
+
+        manager = self.raw_event.get("tool_output_manager")
+        if type(manager) is ToolOutputManager:
+            return manager
+        manager = ToolOutputManager.from_runtime_config(
+            self.event.get("tool_runtime_config"),
+            attempt_id=self.run_id,
+        )
+        self.raw_event["tool_output_manager"] = manager
+        return manager
+
+    @property
     def tool_runtime_plugins(self) -> list[ToolRuntimePlugin]:
         plugins = self.raw_event.get("tool_runtime_plugins")
         if not isinstance(plugins, list):

@@ -38,6 +38,7 @@ from unchain.journal.graph_attempt_quiescence import (
     select_attempt_terminal,
 )
 from unchain.journal.interaction_cycles import (
+    INTERACTION_LIVENESS_EXEMPT_EVENT_TYPES,
     INTERACTION_REQUESTS,
     INTERACTION_RESOLUTIONS,
     LIVE_INTERACTION_OUTCOMES,
@@ -62,14 +63,7 @@ _INTERACTION_RESOLUTIONS = INTERACTION_RESOLUTIONS
 # after an unresolved request proves the attempt never exited, i.e. the
 # prompt was answered through the in-run callback and its receipt lives in
 # the session-state interaction journal rather than this events journal.
-_LIVENESS_EXEMPT_EVENT_TYPES = INTERACTION_RESOLUTIONS | frozenset(
-    {
-        "graph.step.resume.admitted",
-        "artifact_created",
-        "artifact_updated",
-        "handoff.recorded",
-    }
-)
+_LIVENESS_EXEMPT_EVENT_TYPES = INTERACTION_LIVENESS_EXEMPT_EVENT_TYPES
 
 
 class GraphCheckpointError(RuntimeError):

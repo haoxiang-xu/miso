@@ -337,6 +337,12 @@ def _tool_config_payload(tool: Tool) -> dict[str, Any]:
         "server": str(getattr(tool, "server", "") or ""),
         "category": str(getattr(tool, "category", "") or ""),
     }
+    # Keep the pre-Tool-Output default shape stable for durable bindings
+    # created before output policies existed.  A non-default declaration is
+    # execution-visible, however: it must change the stable handler binding so
+    # a cold resume cannot silently project later results with a new policy.
+    if tool.output_policy != "default":
+        payload["output_policy"] = tool.output_policy
     _strict_projection_preflight(
         payload,
         boundary="tool config projection",

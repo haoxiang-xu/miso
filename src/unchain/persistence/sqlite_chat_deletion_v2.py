@@ -235,6 +235,8 @@ _OPTIONAL_TABLE_GROUPS = {
         {
             "run_bundle_receipts_v1",
             "run_bundle_projections_v1",
+            "run_bundle_projection_details_v1",
+            "run_bundle_compact_v2",
             "run_bundle_continuation_links_v1",
         }
     ),
@@ -296,6 +298,8 @@ _OPTIONAL_DELETION_ORDERS = {
     ),
     "run_bundle": (
         "run_bundle_continuation_links_v1",
+        "run_bundle_compact_v2",
+        "run_bundle_projection_details_v1",
         "run_bundle_receipts_v1",
         "run_bundle_projections_v1",
     ),
@@ -1390,6 +1394,18 @@ class SQLiteChatDeletionV2Service:
         if _OPTIONAL_TABLE_GROUPS["run_bundle"].issubset(tables):
             statements.extend(
                 (
+                    (
+                        "run_bundle_compact_v2",
+                        "DELETE FROM run_bundle_compact_v2 "
+                        f"WHERE execution_id IN ({execution_scope})",
+                        (owner_chat_id,),
+                    ),
+                    (
+                        "run_bundle_projection_details_v1",
+                        "DELETE FROM run_bundle_projection_details_v1 "
+                        f"WHERE execution_id IN ({execution_scope})",
+                        (owner_chat_id,),
+                    ),
                     (
                         "run_bundle_continuation_links_v1",
                         "DELETE FROM run_bundle_continuation_links_v1 "

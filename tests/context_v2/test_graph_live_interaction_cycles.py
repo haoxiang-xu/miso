@@ -38,6 +38,7 @@ from unchain.journal import (
 from unchain.journal.interaction_cycles import (
     DURABLE_INTERACTION_REQUESTS,
     DURABLE_INTERACTION_RESOLUTIONS,
+    INTERACTION_LIVENESS_EXEMPT_EVENT_TYPES,
     INTERACTION_REQUESTS,
     INTERACTION_RESOLUTIONS,
     InteractionRequestFamily,
@@ -434,3 +435,11 @@ def test_rebase_and_scan_share_one_interaction_vocabulary():
     )
     assert checkpoint._INTERACTION_REQUESTS == INTERACTION_REQUESTS
     assert checkpoint._INTERACTION_RESOLUTIONS == INTERACTION_RESOLUTIONS
+    assert (
+        checkpoint._LIVENESS_EXEMPT_EVENT_TYPES
+        == INTERACTION_LIVENESS_EXEMPT_EVENT_TYPES
+    )
+    assert (
+        rebase.INTERACTION_LIVENESS_EXEMPT_EVENT_TYPES
+        == INTERACTION_LIVENESS_EXEMPT_EVENT_TYPES
+    )

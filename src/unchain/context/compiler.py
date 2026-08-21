@@ -28,6 +28,7 @@ from unchain.tools.messages import (
     coalesce_provider_tool_result_messages,
     get_provider_message_builder,
 )
+from unchain.tools.output_management import ToolOutputManager
 
 from .budget import (
     ContextTokenEstimate,
@@ -724,40 +725,10 @@ def _validate_source_provider_tool_wire(message: Mapping[str, Any]) -> None:
 
 def _compact_tool_result(message: Mapping[str, Any]) -> dict[str, Any]:
     updated = _plain(message)
-    call_ids = _tool_result_ids(updated)
-    if not call_ids:
-        return updated
-    marker = json.dumps(
-        {
-            "memory_v2_compacted": True,
-            "call_ids": sorted(call_ids),
-            "note": "Full tool output is available in the durable context journal.",
-        },
-        ensure_ascii=False,
+    return ToolOutputManager.compact_historical_message(
+        updated,
+        call_ids=_tool_result_ids(updated),
     )
-    if updated.get("role") == "tool":
-        updated["content"] = marker
-    elif updated.get("type") in {
-        "function_call_output",
-        "computer_call_output",
-        "tool_result",
-    }:
-        updated["output"] = marker
-    content = updated.get("content")
-    if isinstance(content, list):
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "tool_result":
-                block["content"] = marker
-    parts = updated.get("parts")
-    if isinstance(parts, list):
-        for part in parts:
-            response = part.get("function_response") if isinstance(part, dict) else None
-            if isinstance(response, dict):
-                response["response"] = {
-                    "memory_v2_compacted": True,
-                    "call_ids": sorted(call_ids),
-                }
-    return updated
 
 
 def _stable_interaction_id(event: Mapping[str, Any]) -> str:
@@ -2236,6 +2207,12 @@ def _tool_event_attempt_id(
 
 
 def _native_tool_result_payload(event: Mapping[str, Any]) -> dict[str, Any]:
+    managed_projection = event.get("model_projection")
+    if isinstance(managed_projection, Mapping):
+        payload = managed_projection.get("result")
+        if not isinstance(payload, Mapping):
+            raise ContextCompilerError("tool output model projection is invalid")
+        return _plain(payload)
     result = _plain(event.get("result"))
     result_bytes = event.get("result_bytes")
     if (

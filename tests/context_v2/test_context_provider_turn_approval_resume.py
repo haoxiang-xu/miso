@@ -12,6 +12,7 @@ from unchain.interaction import (
 )
 from unchain.interaction.durable import validate_interaction_journal
 from unchain.memory import InMemorySessionStore, KernelMemoryRuntime
+from unchain.execution import ExecutionRuntime
 from unchain.providers import OpenAIModelIO
 from unchain.runtime import build_runtime_loop
 from unchain.tools import Toolkit
@@ -262,6 +263,81 @@ def test_official_context_boundary_cold_approval_resume_reuses_original_attempt(
     assert resumed.messages[-1]["content"] == "approval complete"
     assert invocations == ["durable"]
     assert len(send_calls) == 2
+
+
+def test_cold_resume_projects_artifact_only_before_second_provider_turn(tmp_path):
+    first_runtime, _first_bundles = _runtime(
+        tmp_path,
+        enabled=True,
+        with_provider_service=True,
+        tool_output_management_active=True,
+    )
+    send_calls: list[dict] = []
+    invocations: list[str] = []
+    session_store = InMemorySessionStore()
+    raw_result_marker = "RESUME_RAW_TOOL_RESULT_MUST_NOT_REACH_SECOND_PROVIDER_TURN"
+
+    def toolkit() -> Toolkit:
+        tools = Toolkit()
+
+        def approved_write(value: str) -> dict[str, str]:
+            invocations.append(value)
+            return {"written": value, "status": raw_result_marker}
+
+        tools.register(
+            approved_write,
+            name="approved_write",
+            requires_confirmation=True,
+            output_policy="artifact_only",
+        )
+        return tools
+
+    first_loop = build_runtime_loop(
+        harnesses=list(first_runtime.build_harnesses()),
+        model_io=_approval_model_io(send_calls),
+        memory_runtime=KernelMemoryRuntime.from_config(store=session_store),
+        execution_runtime=ExecutionRuntime(session_store),
+        semantic_context_owner=first_runtime.owner_id,
+    )
+    suspended = first_loop.run(
+        messages=[{"role": "user", "content": "write after cold approval"}],
+        callback=first_runtime.compose_event_callback(None),
+        session_id="execution-output-cold-resume",
+        provider="openai",
+        model="gpt-boundary",
+        toolkit=toolkit(),
+        run_id="attempt-output-cold-resume",
+        max_iterations=2,
+    )
+
+    assert suspended.status == "awaiting_interaction"
+    assert len(send_calls) == 1
+    resumed_runtime, _resumed_bundles = _runtime(
+        tmp_path,
+        enabled=True,
+        with_provider_service=True,
+        tool_output_management_active=True,
+    )
+    resumed_loop = build_runtime_loop(
+        harnesses=list(resumed_runtime.build_harnesses()),
+        model_io=_approval_model_io(send_calls),
+        memory_runtime=KernelMemoryRuntime.from_config(store=session_store),
+        execution_runtime=ExecutionRuntime(session_store),
+        semantic_context_owner=resumed_runtime.owner_id,
+    )
+
+    resumed = resumed_loop.resume_interaction(
+        session_id="execution-output-cold-resume",
+        response={"approved": True},
+        callback=resumed_runtime.compose_event_callback(None),
+        toolkit=toolkit(),
+    )
+
+    assert resumed.status == "completed"
+    assert invocations == ["durable"]
+    assert len(send_calls) == 2
+    assert raw_result_marker not in repr(send_calls[1])
+    assert "artifact_only" in repr(send_calls[1])
 
 
 def test_official_context_boundary_starts_a_new_approval_after_resume(tmp_path):

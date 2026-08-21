@@ -491,6 +491,34 @@ def test_current_pending_tool_result_is_injected_as_a_native_provider_pair(
     assert "preview_truncated" not in pending
 
 
+def test_current_native_tool_result_prefers_manager_projection() -> None:
+    request = _pending_native_tool_request(provider="openai")
+    events = [dict(event) for event in request.semantic_events or ()]
+    result = next(event for event in events if event.get("type") == "tool_result")
+    result["model_projection"] = {
+        "result": {
+            "projection": "artifact_only",
+            "full_output_ref": result["full_output_ref"],
+            "content_bytes": result["result_bytes"],
+            "content_sha256": result["result_sha256"],
+        },
+        "metadata": {"projection_policy": "artifact_only"},
+    }
+
+    compiled = ContextCompiler().compile(
+        replace(request, semantic_events=tuple(events))
+    )
+
+    native_result = next(
+        message
+        for message in compiled.to_dict()["messages"]
+        if message.get("type") == "function_call_output"
+    )
+    assert '"projection": "artifact_only"' in native_result["output"]
+    assert '"written"' not in native_result["output"]
+    assert '"metadata"' not in native_result["output"]
+
+
 def test_cross_provider_pending_tool_result_remains_neutral() -> None:
     result = ContextCompiler().compile(
         _pending_native_tool_request(

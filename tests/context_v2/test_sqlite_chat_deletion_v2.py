@@ -1339,6 +1339,7 @@ def test_known_deletion_table_rejects_new_reverse_foreign_key(tmp_path) -> None:
     (
         "host_generation_heads",
         "run_bundle_receipts_v1",
+        "run_bundle_projection_details_v1",
         "vector_projection_points",
     ),
 )

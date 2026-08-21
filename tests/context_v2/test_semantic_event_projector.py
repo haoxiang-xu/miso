@@ -12,6 +12,7 @@ from unchain.context import (
     DurableToolRouteKind,
 )
 from unchain.execution import ExecutionFence
+from unchain.tools.output_management import ToolOutputManager
 from unchain.context.projector import (
     CanonicalSemanticEventProjector,
     SemanticEventProjectionError,
@@ -196,6 +197,88 @@ def test_tool_result_is_sanitized_and_artifactized_before_journal_append() -> No
     assert event.payload["result_bytes"] > 0
     assert len(event.payload["result_sha256"]) == 64
     assert "secret-value" not in str(event.to_dict())
+
+
+def test_explicit_tool_result_policy_uses_bound_output_manager() -> None:
+    """An explicit route policy is projected by the attempt-bound manager."""
+
+    order = []
+    projector = _projector(order)
+    manager = ToolOutputManager.active_default(attempt_id="run-1")
+    projector.bind_tool_output_manager(manager)
+    journal = _Journal(order)
+    sink = DurableEventSink(journal, _attempt(), projector)
+    subject = _tool_subject()
+
+    result = sink(
+        {
+            "type": "tool_result",
+            "run_id": "run-1",
+            "iteration": 0,
+            "tool_name": "lookup",
+            "call_id": "call-explicit-policy",
+            "tool_result_policy": "artifact_only",
+            "execution_subject": subject.to_dict(),
+            "execution_subject_sha256": subject.sha256,
+            "result": {"large": "payload"},
+        }
+    )
+
+    assert result is not None
+    payload = result.event.payload
+    assert payload["result"]["projection"] == "artifact_only"
+    assert payload["result_projection"]["projection_policy"] == "artifact_only"
+    assert payload["full_output_ref"] == result.event.resource_refs[0].to_dict()
+
+
+def test_explicit_tool_result_policy_requires_attempt_bound_manager() -> None:
+    projector = _projector([])
+
+    with pytest.raises(
+        SemanticEventProjectionError,
+        match="attempt-bound output manager",
+    ):
+        projector._bound_tool_output_manager()
+
+
+def test_prepared_tool_result_keeps_sealed_result_and_records_model_projection() -> None:
+    order = []
+    projector = _projector(order)
+    projector.bind_tool_output_manager(
+        ToolOutputManager.active_default(
+            attempt_id="run-1",
+            preview_chars=4,
+            inline_chars=1,
+        )
+    )
+    artifactization = projector.artifacts.artifactize_tool_result(
+        {"value": "durable tool result"},
+        operation_id="prepared-tool-result",
+    )
+    completion = projector.artifacts.persist_exact_json(
+        {"completion": "sealed"},
+        operation_id="prepared-tool-completion",
+    )
+    subject = _tool_subject()
+
+    draft = projector.project_prepared_tool_result(
+        {
+            "type": "tool_result",
+            "run_id": "run-1",
+            "iteration": 0,
+            "tool_name": "lookup",
+            "call_id": "call-prepared-projection",
+            "tool_result_policy": "artifact_only",
+            "execution_subject": subject.to_dict(),
+            "execution_subject_sha256": subject.sha256,
+        },
+        artifactization=artifactization,
+        completion_artifact=completion,
+    )
+
+    assert draft.payload["result"] == artifactization.event_fields()["result"]
+    assert draft.payload["model_projection"]["result"]["projection"] == "artifact_only"
+
 
 
 def test_user_message_artifact_sanitizer_preserves_only_its_provenance_lane() -> None:

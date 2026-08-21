@@ -45,6 +45,8 @@ _ACTIVE_DURABLE_EVENTS: ContextVar[tuple[tuple[str, int], ...]] = ContextVar(
 )
 _TEST_CONTEXT_RUNTIME_AUTHORITY = object()
 _CONTEXT_EXECUTION_BINDING_AUTHORITY = object()
+_TOOL_OUTPUT_SNAPSHOT_EVENT_TYPE = "context.tool_output_snapshot"
+_TOOL_OUTPUT_SNAPSHOT_SCHEMA = "unchain.context_tool_output_snapshot.v1"
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -291,6 +293,7 @@ class ContextRuntime:
         repr=False,
     )
     provider_turns_enabled: bool = False
+    tool_output_management_active: bool = False
     _test_authority: object | None = field(
         default=None,
         repr=False,
@@ -321,6 +324,12 @@ class ContextRuntime:
         compare=False,
     )
     _run_bindings: dict[str, tuple[str, str]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _attempt_tool_output_configs: dict[tuple[str, str], dict[str, Any]] = field(
         default_factory=dict,
         init=False,
         repr=False,
@@ -414,6 +423,8 @@ class ContextRuntime:
         object.__setattr__(self, "owner_id", owner_id)
         if type(self.provider_turns_enabled) is not bool:
             raise TypeError("provider_turns_enabled must be an exact boolean")
+        if type(self.tool_output_management_active) is not bool:
+            raise TypeError("tool_output_management_active must be an exact boolean")
         if self.provider_turns_enabled and self.execution_factory is None:
             raise TypeError("durable provider turns require a factory ContextRuntime")
         if self.execution_factory is not None:
@@ -472,11 +483,13 @@ class ContextRuntime:
         owner_id: str,
         execution_factory: DurableContextRuntimeFactory,
         provider_turns_enabled: bool = False,
+        tool_output_management_active: bool = False,
     ) -> ContextRuntime:
         return cls(
             owner_id=owner_id,
             execution_factory=execution_factory,
             provider_turns_enabled=provider_turns_enabled,
+            tool_output_management_active=tool_output_management_active,
         )
 
     def bind_context(
@@ -484,10 +497,110 @@ class ContextRuntime:
         context: HarnessContext,
         *,
         _binding_authority: object | None = None,
+        _shadow_mode: bool = False,
     ) -> None:
         if self.execution_factory is None:
             return
         bundle = self.execution_factory.bind(context)
+        if type(_shadow_mode) is not bool:
+            raise TypeError("context shadow mode must be an exact boolean")
+        from ..tools.output_management import ToolOutputManager
+
+        runtime_config = context.event.get("tool_runtime_config")
+        attempt_key = (
+            bundle.attempt.generation.execution_id,
+            bundle.attempt.attempt_id,
+        )
+        with self._bundle_lock:
+            frozen_output_config = copy.deepcopy(
+                self._attempt_tool_output_configs.get(attempt_key)
+            )
+        deferred_active_output_binding = (
+            self.tool_output_management_active
+            and not _shadow_mode
+            and frozen_output_config is None
+            and (
+                not isinstance(runtime_config, Mapping)
+                or "tool_output_management" not in runtime_config
+            )
+        )
+        # A final model boundary may replace the bootstrap toolkit with a
+        # sealed execution toolkit. Active output ownership must wait until
+        # the shared tool-authority path prepares the first invocation.
+        if frozen_output_config is not None:
+            supplied_output_config = (
+                {
+                    key: copy.deepcopy(runtime_config[key])
+                    for key in (
+                        "tool_output_management",
+                        "tool_output_policy_map",
+                    )
+                    if key in runtime_config
+                }
+                if isinstance(runtime_config, Mapping)
+                else {}
+            )
+            if supplied_output_config and supplied_output_config != frozen_output_config:
+                raise ContextExecutionBundleError(
+                    "tool output snapshot changed after the attempt was bound"
+                )
+            merged_runtime_config = (
+                dict(runtime_config) if isinstance(runtime_config, Mapping) else {}
+            )
+            merged_runtime_config.update(frozen_output_config)
+            runtime_config = merged_runtime_config
+            context.event["tool_runtime_config"] = runtime_config
+        configured_manager = (
+            ToolOutputManager.disabled_default(attempt_id=bundle.attempt.attempt_id)
+            if deferred_active_output_binding
+            else ToolOutputManager.from_runtime_config(
+                runtime_config,
+                attempt_id=bundle.attempt.attempt_id,
+            )
+        )
+        if _shadow_mode and configured_manager.active:
+            configured_manager = ToolOutputManager(
+                active=False,
+                default_policy=configured_manager.default_policy,
+                policies=configured_manager.policies,
+                attempt_id=bundle.attempt.attempt_id,
+            )
+        if (
+            bundle.tool_output_manager.runtime_snapshot()
+            != configured_manager.runtime_snapshot()
+        ):
+            if bundle.projector.bound_tool_output_manager is not None:
+                raise ContextExecutionBundleError(
+                    "tool output snapshot changed after the attempt was bound"
+                )
+            object.__setattr__(
+                bundle,
+                "tool_output_manager",
+                configured_manager,
+            )
+        if not deferred_active_output_binding:
+            bundle.projector.bind_tool_output_manager(bundle.tool_output_manager)
+            if bundle.tool_output_manager.active:
+                with self._bundle_lock:
+                    self._attempt_tool_output_configs.setdefault(
+                        attempt_key,
+                        {
+                            key: copy.deepcopy(runtime_config[key])
+                            for key in (
+                                "tool_output_management",
+                                "tool_output_policy_map",
+                            )
+                            if key in runtime_config
+                        },
+                    )
+        supplied_output_manager = context.event.get("tool_output_manager")
+        if supplied_output_manager is not None and (
+            supplied_output_manager is not bundle.tool_output_manager
+        ):
+            raise ContextExecutionBundleError(
+                "tool output manager changed the attempt-scoped bundle binding"
+            )
+        context.event["tool_output_manager"] = bundle.tool_output_manager
         if self.provider_turns_enabled != (bundle.provider_turn_service is not None):
             raise ContextExecutionBundleError(
                 "provider turn service does not match the runtime gate"
@@ -518,10 +631,7 @@ class ContextRuntime:
                 context.state,
                 bundle.run_bundle_ledger,
             )
-        binding_key = (
-            bundle.attempt.generation.execution_id,
-            bundle.attempt.attempt_id,
-        )
+        binding_key = attempt_key
         raw_guard = context.event.get("execution_guard")
         guard_binding = None
         if raw_guard is not None:
@@ -636,6 +746,198 @@ class ContextRuntime:
                         None,
                     )
             raise
+
+    def bind_execution_toolkit(self, context: HarnessContext) -> None:
+        """Freeze active output policy from the sealed execution toolkit."""
+
+        if not isinstance(context, HarnessContext):
+            raise TypeError("execution toolkit binding requires a HarnessContext")
+        if not self.tool_output_management_active:
+            return
+        bundle = self._bundle_for_context(context)
+        from ..tools import Toolkit
+        from ..tools.output_management import ToolOutputManager
+
+        toolkit = context.event.get("toolkit")
+        if not isinstance(toolkit, Toolkit):
+            raise ContextExecutionBundleError(
+                "active tool output requires an execution Toolkit"
+            )
+        existing_config = context.event.get("tool_runtime_config")
+        merged_config = (
+            dict(existing_config) if isinstance(existing_config, Mapping) else {}
+        )
+        merged_config.pop("tool_output_management", None)
+        merged_config.pop("tool_output_policy_map", None)
+        merged_config.update(
+            ToolOutputManager.active_runtime_config_for_toolkit(
+                toolkit,
+                attempt_id=bundle.attempt.attempt_id,
+            )
+        )
+        configured_manager = ToolOutputManager.from_runtime_config(
+            merged_config,
+            attempt_id=bundle.attempt.attempt_id,
+        )
+        attempt_key = (
+            bundle.attempt.generation.execution_id,
+            bundle.attempt.attempt_id,
+        )
+        with self._bundle_lock:
+            frozen_output_config = copy.deepcopy(
+                self._attempt_tool_output_configs.get(attempt_key)
+            )
+        candidate_output_config = {
+            key: copy.deepcopy(merged_config[key])
+            for key in ("tool_output_management", "tool_output_policy_map")
+            if key in merged_config
+        }
+        bound_manager = bundle.projector.bound_tool_output_manager
+        if (
+            bound_manager is not None
+            and bound_manager.runtime_snapshot() != configured_manager.runtime_snapshot()
+        ):
+            raise ContextExecutionBundleError(
+                "execution toolkit changed the frozen tool output policy map"
+            )
+        if (
+            frozen_output_config is not None
+            and frozen_output_config != candidate_output_config
+        ):
+            raise ContextExecutionBundleError(
+                "execution toolkit changed the frozen tool output policy map"
+            )
+        durable_output_config = self._load_or_persist_tool_output_snapshot(
+            bundle,
+            candidate_output_config,
+        )
+        if durable_output_config != candidate_output_config:
+            raise ContextExecutionBundleError(
+                "execution toolkit changed the durable tool output policy map"
+            )
+        if (
+            frozen_output_config is not None
+            and frozen_output_config != durable_output_config
+        ):
+            raise ContextExecutionBundleError(
+                "in-memory and durable tool output snapshots disagree"
+            )
+        if bound_manager is not None:
+            if (
+                bound_manager.runtime_snapshot()
+                != configured_manager.runtime_snapshot()
+                or durable_output_config != candidate_output_config
+            ):
+                raise ContextExecutionBundleError(
+                    "execution toolkit changed the frozen tool output policy map"
+                )
+            restored_config = (
+                dict(existing_config) if isinstance(existing_config, Mapping) else {}
+            )
+            restored_config.update(frozen_output_config or candidate_output_config)
+            context.event["tool_runtime_config"] = restored_config
+            context.event["tool_output_manager"] = bound_manager
+            return
+        object.__setattr__(bundle, "tool_output_manager", configured_manager)
+        bundle.projector.bind_tool_output_manager(configured_manager)
+        with self._bundle_lock:
+            self._attempt_tool_output_configs[attempt_key] = durable_output_config
+        context.event["tool_runtime_config"] = merged_config
+        context.event["tool_output_manager"] = configured_manager
+
+    @staticmethod
+    def _tool_output_snapshot_draft(
+        bundle: ContextExecutionBundle,
+        runtime_config: Mapping[str, Any],
+    ):
+        """Build the one idempotent durable policy receipt for an attempt."""
+
+        from ..journal.runtime import SemanticEventDraft
+
+        config = copy.deepcopy(dict(runtime_config))
+        identity = {
+            "execution_id": bundle.attempt.generation.execution_id,
+            "generation_id": bundle.attempt.generation.generation_id,
+            "attempt_id": bundle.attempt.attempt_id,
+        }
+        identity_digest = _canonical_sha256(identity)
+        config_digest = _canonical_sha256(config)
+        return SemanticEventDraft(
+            event_id=f"tool-output-snapshot-{identity_digest}",
+            event_type=_TOOL_OUTPUT_SNAPSHOT_EVENT_TYPE,
+            attempt=bundle.attempt,
+            operation_id=f"context-tool-output-snapshot-{identity_digest}",
+            payload={
+                "schema": _TOOL_OUTPUT_SNAPSHOT_SCHEMA,
+                "runtime_config": config,
+                "runtime_config_sha256": config_digest,
+            },
+        )
+
+    @staticmethod
+    def _recover_tool_output_snapshot(
+        bundle: ContextExecutionBundle,
+    ) -> dict[str, Any] | None:
+        """Recover and strictly validate the attempt's durable policy receipt."""
+
+        matches = tuple(
+            event
+            for event in bundle.journal.capture_snapshot().events
+            if event.attempt == bundle.attempt
+            and event.event_type == _TOOL_OUTPUT_SNAPSHOT_EVENT_TYPE
+        )
+        if not matches:
+            return None
+        if len(matches) != 1:
+            raise ContextExecutionBundleError(
+                "attempt has conflicting durable tool output snapshots"
+            )
+        payload = matches[0].payload
+        if set(payload) != {
+            "schema",
+            "runtime_config",
+            "runtime_config_sha256",
+        } or payload.get("schema") != _TOOL_OUTPUT_SNAPSHOT_SCHEMA:
+            raise ContextExecutionBundleError("durable tool output snapshot is invalid")
+        from ..journal.models import _thaw_json
+
+        config = _thaw_json(payload.get("runtime_config"))
+        digest = payload.get("runtime_config_sha256")
+        if (
+            not isinstance(config, Mapping)
+            or not isinstance(digest, str)
+            or digest != _canonical_sha256(config)
+        ):
+            raise ContextExecutionBundleError("durable tool output snapshot is corrupt")
+        recovered = copy.deepcopy(dict(config))
+        expected_keys = {"tool_output_management", "tool_output_policy_map"}
+        if not set(recovered).issubset(expected_keys) or (
+            "tool_output_management" not in recovered
+        ):
+            raise ContextExecutionBundleError("durable tool output snapshot is malformed")
+        from ..tools.output_management import ToolOutputManager
+
+        manager = ToolOutputManager.from_runtime_config(
+            recovered,
+            attempt_id=bundle.attempt.attempt_id,
+        )
+        if not manager.active:
+            raise ContextExecutionBundleError("durable tool output snapshot is inactive")
+        return recovered
+
+    def _load_or_persist_tool_output_snapshot(
+        self,
+        bundle: ContextExecutionBundle,
+        candidate: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist before first execution, or return the exact cold receipt."""
+
+        recovered = self._recover_tool_output_snapshot(bundle)
+        if recovered is not None:
+            return recovered
+        draft = self._tool_output_snapshot_draft(bundle, candidate)
+        bundle.durable_event_sink.append_projected(draft)
+        return copy.deepcopy(dict(candidate))
 
     def prebind_run_bundle_ledger(
         self,
@@ -1261,6 +1563,7 @@ class ContextRuntime:
         from .tool_routes import ContextToolRouteResolver
 
         bundle = self._bundle_for_context(context)
+        self.bind_execution_toolkit(context)
         attempt_key = (
             bundle.attempt.generation.execution_id,
             bundle.attempt.attempt_id,
@@ -1374,6 +1677,12 @@ class ContextRuntime:
                 call_id=call_id,
                 iteration=iteration,
                 subject=recovery_subject,
+                tool_result_policy=(
+                    bundle.tool_output_manager.resolve_policy_for_tool(
+                        context.event.get("tool_runtime_config"),
+                        tool_name=tool_name,
+                    ).name
+                ),
             )
             executor = DurableToolExecutor(
                 boundary=bundle.tool_boundary,
@@ -1649,6 +1958,12 @@ class ContextRuntime:
             call_id=call_id,
             iteration=iteration,
             subject=subject,
+            tool_result_policy=(
+                bundle.tool_output_manager.resolve_policy_for_tool(
+                    context.event.get("tool_runtime_config"),
+                    tool_name=tool_name,
+                ).name
+            ),
         )
         executor = DurableToolExecutor(
             boundary=bundle.tool_boundary,
@@ -1749,6 +2064,40 @@ class ContextRuntime:
             except Exception:
                 pass
             raise
+
+    def project_tool_result_for_model(self, context: HarnessContext, receipt):
+        """Return the attempt manager's fresh view without altering the receipt."""
+
+        from .tool_boundary import DurableToolResultReceipt
+        from .tool_executor import DurableToolCompletionReceipt
+        from ..journal.models import _thaw_json
+
+        if not isinstance(context, HarnessContext):
+            raise TypeError("tool result projection requires a HarnessContext")
+        if type(receipt) not in {
+            DurableToolResultReceipt,
+            DurableToolCompletionReceipt,
+        }:
+            raise TypeError("tool result projection requires a durable receipt")
+        bundle = self._bundle_for_context(context)
+        if receipt.attempt != bundle.attempt:
+            raise ContextExecutionBundleError(
+                "tool result receipt does not match the bound attempt"
+            )
+        manager = bundle.tool_output_manager
+        if not manager.active:
+            return _thaw_json(receipt.visible_result)
+        projection = receipt.model_projection
+        if (
+            not isinstance(projection, Mapping)
+            or set(projection) != {"result", "metadata"}
+            or not isinstance(projection["result"], Mapping)
+            or not isinstance(projection["metadata"], Mapping)
+        ):
+            raise ContextExecutionBundleError(
+                "durable tool model projection is missing or invalid"
+            )
+        return _thaw_json(projection["result"])
 
     def materialize_tool_transition(self, context: HarnessContext, receipt):
         """Resolve a receipt transition through this attempt's capabilities."""

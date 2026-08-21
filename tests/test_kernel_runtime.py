@@ -154,6 +154,64 @@ def test_kernel_run_budgets_large_tool_result_before_next_openai_turn():
     assert model_io.requests[1].messages == [tool_message]
 
 
+def test_kernel_run_active_projection_skips_legacy_tool_result_budget():
+    from unchain.tools.output_management import ToolOutputManager
+
+    model_io = _QueueModelIO([
+        ModelTurnResult(
+            assistant_messages=[
+                {
+                    "type": "function_call",
+                    "call_id": "call_projection",
+                    "name": "large_tool",
+                    "arguments": "{}",
+                }
+            ],
+            tool_calls=[
+                KernelToolCall(
+                    call_id="call_projection", name="large_tool", arguments={}
+                )
+            ],
+            response_id="resp_1",
+        ),
+        ModelTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "done"}],
+            tool_calls=[],
+            final_text="done",
+            response_id="resp_2",
+        ),
+    ])
+    toolkit = Toolkit()
+    toolkit.register(lambda: {"blob": "X" * 1000}, name="large_tool")
+    loop = build_runtime_loop(model_io=model_io)
+
+    result = loop.run(
+        [{"role": "user", "content": "start"}],
+        provider="openai",
+        model="gpt-4.1",
+        toolkit=toolkit,
+        max_iterations=3,
+        tool_runtime_config={
+            "tool_result_budget": {
+                "max_result_chars": 180,
+                "max_batch_chars": 1000,
+                "preview_chars": 24,
+                "min_chars_to_budget": 40,
+            },
+            "tool_output_management": ToolOutputManager.active_default().runtime_snapshot(),
+        },
+    )
+
+    assert result.status == "completed"
+    tool_message = next(
+        message
+        for message in result.messages
+        if message.get("type") == "function_call_output"
+    )
+    assert json.loads(tool_message["output"]) == {"blob": "X" * 1000}
+    assert model_io.requests[1].messages == [tool_message]
+
+
 def test_kernel_run_leaves_small_tool_result_unchanged_by_default_budget():
     model_io = _QueueModelIO([
         ModelTurnResult(

@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 
 from ..run_bundle import RunBundle
+from ..run_bundle_v2 import CompactRunBundle
 
 
 _CODE_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
@@ -18,15 +19,15 @@ class KernelRunFailureRecord:
 
     error_category: str
     error_code: str
-    run_bundle: RunBundle
+    run_bundle: RunBundle | CompactRunBundle
 
     def __post_init__(self) -> None:
         if _CODE_RE.fullmatch(self.error_category) is None:
             raise ValueError("error_category must be a stable lowercase code")
         if _CODE_RE.fullmatch(self.error_code) is None:
             raise ValueError("error_code must be a stable lowercase code")
-        if type(self.run_bundle) is not RunBundle:
-            raise TypeError("run_bundle must be an exact RunBundle")
+        if type(self.run_bundle) not in {RunBundle, CompactRunBundle}:
+            raise TypeError("run_bundle must be an exact v1 or v2 RunBundle")
         if self.run_bundle.lifecycle.status != "failed":
             raise ValueError("kernel failure record requires a failed RunBundle")
 
@@ -36,7 +37,7 @@ def attach_kernel_run_failure(
     *,
     error_category: str,
     error_code: str,
-    run_bundle: RunBundle,
+    run_bundle: RunBundle | CompactRunBundle,
 ) -> KernelRunFailureRecord:
     """Attach canonical safe evidence without changing the exception type."""
 

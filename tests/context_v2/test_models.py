@@ -603,6 +603,9 @@ def test_nested_plaintext_secret_fields_are_rejected(field: str) -> None:
         store_seq=2,
         payload={
             "token_budget": 12_000,
+            "attributed_tokens": 25,
+            "residual_tokens": None,
+            "categories": [{"tokens": 25}],
             "input_tokens": 100,
             "cache_read_tokens": None,
             "cache_write_tokens": None,
@@ -624,6 +627,9 @@ def test_nested_plaintext_secret_fields_are_rejected(field: str) -> None:
         },
     )
     assert safe.payload["token_budget"] == 12_000
+    assert safe.payload["attributed_tokens"] == 25
+    assert safe.payload["residual_tokens"] is None
+    assert safe.payload["categories"][0]["tokens"] == 25
     assert safe.payload["cache_read_tokens"] is None
 
     with pytest.raises(ValueError, match="opaque credential"):
@@ -644,6 +650,9 @@ def test_nested_plaintext_secret_fields_are_rejected(field: str) -> None:
         ("cache_read_tokens", True),
         ("cache_read_tokens", "unknown"),
         ("request_tokens", None),
+        ("attributed_tokens", "secret"),
+        ("residual_tokens", True),
+        ("tokens", "secret"),
         ("access_token", None),
     ],
 )

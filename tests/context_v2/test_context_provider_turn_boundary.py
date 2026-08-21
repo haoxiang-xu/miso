@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from unchain.agent import Agent, AgentCallContext
+from unchain.agent import Agent, AgentCallContext, ToolsModule
 from unchain.agent.modules import ContextModule
 from unchain.context.artifacts import ArtifactService
 from unchain.context.coordinator import ContextCompileCoordinator
@@ -29,7 +29,9 @@ from unchain.memory import InMemorySessionStore
 from unchain.persistence import SQLiteContextV2Store
 from unchain.providers import OpenAIModelIO
 from unchain.providers.durable_turn_runtime import DurableProviderTurnMode
-from unchain.tools import Toolkit
+from unchain.subagents import SubagentExecutor, SubagentPolicy, SubagentTemplate
+from unchain.subagents.plugin import SubagentToolPlugin
+from unchain.tools import Tool, Toolkit
 
 
 TARGET_SHA256 = "c" * 64
@@ -163,7 +165,13 @@ def _bundle_builder(tmp_path, *, with_provider_service: bool):
     return build, bundles
 
 
-def _runtime(tmp_path, *, enabled: bool, with_provider_service: bool):
+def _runtime(
+    tmp_path,
+    *,
+    enabled: bool,
+    with_provider_service: bool,
+    tool_output_management_active: bool = False,
+):
     build, bundles = _bundle_builder(
         tmp_path,
         with_provider_service=with_provider_service,
@@ -178,6 +186,7 @@ def _runtime(tmp_path, *, enabled: bool, with_provider_service: bool):
             current_input_resolver=_current_input,
         ),
         provider_turns_enabled=enabled,
+        tool_output_management_active=tool_output_management_active,
     )
     return runtime, bundles
 
@@ -216,6 +225,75 @@ def _model_io(send_calls: list[dict]):
         def create(self, **kwargs):
             send_calls.append(copy.deepcopy(kwargs))
             return _Stream()
+
+    class _Client:
+        responses = _Responses()
+
+    model_io = OpenAIModelIO(
+        model="gpt-boundary",
+        api_key="test-key",
+        client_factory=lambda **_kwargs: _Client(),
+        default_payloads={},
+        model_capabilities={},
+    )
+    model_io.fetch_turn = lambda request: (_ for _ in ()).throw(
+        AssertionError("legacy provider path was called")
+    )
+    return model_io
+
+
+def _tool_then_text_model_io(
+    send_calls: list[dict],
+    *,
+    tool_name: str,
+    call_id: str,
+):
+    class _Stream:
+        def __init__(self, send_number: int) -> None:
+            self._send_number = send_number
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            output = (
+                [
+                    {
+                        "type": "function_call",
+                        "call_id": call_id,
+                        "name": tool_name,
+                        "arguments": '{"query":"durable"}',
+                    }
+                ]
+                if self._send_number == 1
+                else [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "tool complete"}],
+                    }
+                ]
+            )
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    id=f"response-tool-boundary-{self._send_number}",
+                    output=output,
+                    usage={
+                        "input_tokens": 3,
+                        "output_tokens": 2,
+                        "total_tokens": 5,
+                    },
+                ),
+            )
+
+    class _Responses:
+        def create(self, **kwargs):
+            send_calls.append(copy.deepcopy(kwargs))
+            return _Stream(len(send_calls))
 
     class _Client:
         responses = _Responses()
@@ -352,6 +430,65 @@ def test_graph_agent_mode_uses_the_same_durable_provider_boundary(tmp_path):
     assert "attempt-boundary-graph" in bundles
 
 
+def test_graph_tool_turn_projects_artifact_only_before_second_provider_turn(tmp_path):
+    runtime, bundles = _runtime(
+        tmp_path,
+        enabled=True,
+        with_provider_service=True,
+        tool_output_management_active=True,
+    )
+    send_calls: list[dict] = []
+    raw_result_marker = "GRAPH_RAW_TOOL_RESULT_MUST_NOT_REACH_SECOND_PROVIDER_TURN"
+
+    def graph_probe(query: str = "") -> dict[str, str]:
+        return {"query": query, "status": raw_result_marker}
+
+    agent = Agent(
+        name="graph-output-agent",
+        provider="openai",
+        model="gpt-boundary",
+        modules=(
+            ContextModule(runtime=runtime),
+            ToolsModule(
+                tools=(
+                    Tool.from_callable(
+                        graph_probe,
+                        name="graph_probe",
+                        output_policy="artifact_only",
+                    ),
+                )
+            ),
+        ),
+        model_io_factory=lambda _spec, _context: _tool_then_text_model_io(
+            send_calls,
+            tool_name="graph_probe",
+            call_id="call-graph-output",
+        ),
+    )
+
+    execution_runtime = ExecutionRuntime(InMemorySessionStore())
+    with execution_runtime.scope("execution-output-graph") as guard:
+        result = agent._prepare(
+            AgentCallContext(
+                mode="graph",
+                input_messages=[{"role": "user", "content": "graph tool output"}],
+                session_id="execution-output-graph",
+                run_id="attempt-output-graph",
+                max_iterations=2,
+                execution_guard=guard,
+            )
+        ).run()
+
+    assert result.status == "completed"
+    assert len(send_calls) == 2
+    assert raw_result_marker not in repr(send_calls[1])
+    assert "artifact_only" in repr(send_calls[1])
+    assert "context.tool_output_snapshot" in [
+        event.event_type
+        for event in bundles["attempt-output-graph"].journal.capture_snapshot().events
+    ]
+
+
 def test_subagent_fork_uses_a_distinct_durable_attempt_boundary(tmp_path):
     runtime, bundles = _runtime(
         tmp_path,
@@ -389,6 +526,107 @@ def test_subagent_fork_uses_a_distinct_durable_attempt_boundary(tmp_path):
     assert "attempt-boundary-child" in bundles
 
 
+def test_subagent_tool_turn_projects_artifact_only_before_second_provider_turn(
+    tmp_path,
+):
+    runtime, bundles = _runtime(
+        tmp_path,
+        enabled=True,
+        with_provider_service=True,
+        tool_output_management_active=True,
+    )
+    send_calls: list[dict] = []
+    raw_result_marker = "SUBAGENT_RAW_TOOL_RESULT_MUST_NOT_REACH_SECOND_PROVIDER_TURN"
+
+    def child_probe(query: str = "") -> dict[str, str]:
+        return {"query": query, "status": raw_result_marker}
+
+    parent = Agent(
+        name="parent-output-agent",
+        provider="openai",
+        model="gpt-boundary",
+        modules=(
+            ContextModule(runtime=runtime),
+            ToolsModule(
+                tools=(
+                    Tool.from_callable(
+                        child_probe,
+                        name="child_probe",
+                        output_policy="head_tail",
+                    ),
+                )
+            ),
+        ),
+    )
+    template_agent = Agent(
+        name="specialist-output-agent",
+        provider="openai",
+        model="gpt-boundary",
+        modules=(
+            ToolsModule(
+                tools=(
+                    Tool.from_callable(
+                        child_probe,
+                        name="child_probe",
+                        output_policy="artifact_only",
+                    ),
+                )
+            ),
+        ),
+        model_io_factory=lambda _spec, _context: _tool_then_text_model_io(
+            send_calls,
+            tool_name="child_probe",
+            call_id="call-child-output",
+        ),
+    )
+    template = SubagentTemplate(
+        name="specialist",
+        description="Template-owned tool output policy",
+        agent=template_agent,
+    )
+    plugin = SubagentToolPlugin(
+        parent_agent=parent,
+        templates=(template,),
+        policy=SubagentPolicy(),
+        executor=SubagentExecutor(),
+    )
+    child, _, _ = plugin._build_subagent(
+        template=template,
+        child_id="parent-output-agent.specialist.1",
+        mode="delegate",
+        target="specialist",
+        lineage=["parent-output-agent", "parent-output-agent.specialist.1"],
+        task="inspect output",
+        instructions="",
+        expected_output="short answer",
+    )
+
+    execution_runtime = ExecutionRuntime(InMemorySessionStore())
+    with execution_runtime.scope("execution-output-child") as guard:
+        result = child.run(
+            "inspect",
+            session_id="execution-output-child",
+            run_id="attempt-output-child",
+            max_iterations=2,
+            _execution_guard=guard,
+        )
+
+    assert result.status == "completed"
+    assert len(send_calls) == 2
+    assert raw_result_marker not in repr(send_calls[1])
+    assert "artifact_only" in repr(send_calls[1])
+    snapshots = [
+        event
+        for event in bundles["attempt-output-child"].journal.capture_snapshot().events
+        if event.event_type == "context.tool_output_snapshot"
+    ]
+    assert len(snapshots) == 1
+    assert snapshots[0].payload["runtime_config"]["tool_output_policy_map"] == {
+        "schema": "unchain.tool_output_policy_map.v1",
+        "policies": {"child_probe": "artifact_only"},
+    }
+
+
 def test_tool_bearing_turn_persists_result_and_continues_through_same_boundary(
     tmp_path,
 ):
@@ -396,6 +634,7 @@ def test_tool_bearing_turn_persists_result_and_continues_through_same_boundary(
         tmp_path,
         enabled=True,
         with_provider_service=True,
+        tool_output_management_active=True,
     )
     send_calls: list[dict] = []
     tool_calls: list[str] = []
@@ -462,11 +701,13 @@ def test_tool_bearing_turn_persists_result_and_continues_through_same_boundary(
     )
     toolkit = Toolkit()
 
+    raw_result_marker = "RAW_TOOL_RESULT_MUST_NOT_REACH_SECOND_PROVIDER_TURN"
+
     def probe(query: str = "") -> dict[str, str]:
         tool_calls.append(query)
-        return {"query": query, "status": "ok"}
+        return {"query": query, "status": raw_result_marker}
 
-    toolkit.register(probe, name="probe")
+    toolkit.register(probe, name="probe", output_policy="artifact_only")
     loop = KernelLoop(
         model_io=model_io,
         harnesses=list(runtime.build_harnesses()),
@@ -495,3 +736,5 @@ def test_tool_bearing_turn_persists_result_and_continues_through_same_boundary(
     assert event_types.count("provider.turn_result") == 2
     assert event_types.count("tool_call") == 1
     assert event_types.count("tool_result") == 1
+    assert raw_result_marker not in repr(send_calls[1])
+    assert "artifact_only" in repr(send_calls[1])

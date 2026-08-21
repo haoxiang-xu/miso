@@ -22,6 +22,7 @@ from unchain.providers.durable_turn_runtime import (
     ExactProviderRouteFailureKind,
     ExactProviderRouteTransport,
 )
+from unchain.providers.model_turn_runtime import build_model_turn_request
 from unchain.retry import RetryConfig, RetriesExhaustedError
 from unchain.run_bundle import ProviderCallUsage, RunIdentity
 from unchain.providers.turn_ownership import ProviderTurnOwnership
@@ -128,7 +129,7 @@ def _composition_manifest(*, fallback: bool = False):
         )
     return {
         "schema": "unchain.context/internal_context_composition_v1",
-        "method": "utf8_heuristic_v1",
+        "method": "utf8_heuristic_v2",
         "context_window_tokens": 272_000,
         "routes": routes,
     }
@@ -893,12 +894,18 @@ def test_exact_route_composition_enriches_the_valid_base_receipt(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("case", "expected_quality", "expected_tokens", "expected_total"),
+    ("case", "expected_quality", "expected_tokens", "expected_residual", "expected_total"),
     (
-        ("reconciled", "reconciled_estimate", 1, 2),
-        ("provider_total_unavailable", "estimated", 1, None),
-        ("heuristic_overestimate", "estimated", 3, 2),
-        ("known_instrumentation_loss", "partial", 1, 2),
+        ("reconciled", "reconciled_estimate", 1, 1, 2),
+        ("provider_total_unavailable", "estimated", 1, None, None),
+        # v2: the heuristic's raw estimate (3 tokens from 12 bytes at the
+        # 4.5 divisor) overshoots the 2-token provider total, but coverage
+        # is complete and a total is known, so this now scales onto that
+        # total (see _scale_categories_to_target) instead of giving up as
+        # "estimated" the way v1 did — attributed_tokens becomes exactly
+        # the provider total, residual becomes exactly 0.
+        ("heuristic_overestimate", "reconciled_estimate", 2, 0, 2),
+        ("known_instrumentation_loss", "partial", 1, None, 2),
     ),
 )
 def test_composition_quality_table_preserves_authoritative_usage_semantics(
@@ -907,6 +914,7 @@ def test_composition_quality_table_preserves_authoritative_usage_semantics(
     case,
     expected_quality,
     expected_tokens,
+    expected_residual,
     expected_total,
 ):
     manifest = _composition_manifest()
@@ -952,14 +960,388 @@ def test_composition_quality_table_preserves_authoritative_usage_semantics(
 
     assert extension["quality"] == expected_quality
     assert extension["attributed_tokens"] == expected_tokens
-    assert extension["residual_tokens"] == (
-        1 if case == "reconciled" else None
-    )
+    assert extension["residual_tokens"] == expected_residual
     assert extension["coverage"]["status"] == (
         "partial" if case == "known_instrumentation_loss" else "complete"
     )
     assert receipt.usage.input_total_tokens == expected_total
     assert "input_total_tokens" not in extension
+
+
+def test_heuristic_token_estimate_uses_the_calibrated_bytes_per_token(
+    tmp_path,
+    monkeypatch,
+):
+    """Locks the bytes-per-token divisor at 4.5 (see _HEURISTIC_BYTES_PER_TOKEN
+    in composition.py — calibrated 2026-08-21 against real o200k_base
+    tokenization of real content: builtin tool schemas, source text, README
+    markdown, an assistant reply). 17 bytes is deliberately chosen because
+    the old bytes/4 divisor and the new 4.5 divisor round to DIFFERENT token
+    counts (5 vs 4) — a byte count where they agreed could not catch a
+    regression back to the old, more biased value. A generous provider
+    total keeps this below the reconcile-scaling threshold (tested
+    separately) — this test is only about the raw divisor."""
+    manifest = _composition_manifest()
+    manifest["routes"][0]["contributions"][0]["utf8_bytes"] = 17
+
+    turn = replace(
+        _turn_result(),
+        provider_call_usage=ProviderCallUsage.from_openai_usage(
+            {"input_tokens": 1000, "output_tokens": 2, "total_tokens": 1002}
+        ),
+    )
+    transport = _SequenceTransport([turn])
+    monkeypatch.setattr(
+        "unchain.context.provider_execution._exact_transport",
+        lambda **_kwargs: transport,
+    )
+
+    result = _service(tmp_path, DurableProviderTurnMode.ENFORCE_TEST).fetch_prepared(
+        model_io=_model_io([]),
+        request=replace(_request(), internal_context_composition_v1=manifest),
+        retry_config=RetryConfig(max_retries=0),
+        run_receipt_factory=_run_receipt_factory(),
+    )
+    extension = result.provider_call_receipt.extensions[
+        CONTEXT_COMPOSITION_EXTENSION_KEY
+    ]
+
+    assert extension["attributed_tokens"] == 4
+
+
+def _multi_leaf_manifest():
+    """3 categories x 2 subtypes = 6 leaves, deliberately uneven byte sizes
+    (100/50/30/20/15/5) so scaling has to do real apportionment work rather
+    than a trivial even split. Hand-verified against a standalone script
+    before being hardcoded here (see the plan this test implements) — this
+    is not a "run the code, paste what it prints" assertion."""
+    contributions = [
+        {"category": "instructions", "subtype": "core_system", "surface": "messages", "utf8_bytes": 100, "source_count": 1},
+        {"category": "instructions", "subtype": "agent_instructions", "surface": "messages", "utf8_bytes": 50, "source_count": 1},
+        {"category": "skills", "subtype": "catalog_metadata", "surface": "messages", "utf8_bytes": 30, "source_count": 1},
+        {"category": "skills", "subtype": "loaded_body", "surface": "messages", "utf8_bytes": 20, "source_count": 1},
+        {"category": "tool_definitions", "subtype": "provider_schema", "surface": "messages", "utf8_bytes": 15, "source_count": 1},
+        {"category": "tool_definitions", "subtype": "prompt_guidance", "surface": "messages", "utf8_bytes": 5, "source_count": 1},
+    ]
+    return {
+        "schema": "unchain.context/internal_context_composition_v1",
+        "method": "utf8_heuristic_v2",
+        "context_window_tokens": 272_000,
+        "routes": [
+            {
+                "route_name": "primary",
+                "context_mode": "semantic",
+                "provider_retained": False,
+                "manifest_items": 6,
+                "wire_surfaces": 1,
+                "contributions": contributions,
+            }
+        ],
+    }
+
+
+def test_scaling_apportions_the_billed_total_across_categories_by_share(
+    tmp_path,
+    monkeypatch,
+):
+    """The core of the scaled-reconcile feature: at the raw 4.5 divisor
+    these 6 leaves sum to 53 attributed tokens (bytes -> tokens: 100->23,
+    50->12, 30->7, 20->5, 15->4, 5->2), overshooting a 30-token provider
+    total. Post-scale every leaf must still hold >=1 token (the smallest,
+    5 bytes, would floor to 0 without the +1 baseline — this fixture
+    exists specifically to exercise that floor), and the total must land
+    on exactly 30, not "close to" 30."""
+    manifest = _multi_leaf_manifest()
+    turn = replace(
+        _turn_result(),
+        provider_call_usage=ProviderCallUsage.from_openai_usage(
+            {"input_tokens": 30, "output_tokens": 2, "total_tokens": 32}
+        ),
+    )
+    transport = _SequenceTransport([turn])
+    monkeypatch.setattr(
+        "unchain.context.provider_execution._exact_transport",
+        lambda **_kwargs: transport,
+    )
+
+    result = _service(tmp_path, DurableProviderTurnMode.ENFORCE_TEST).fetch_prepared(
+        model_io=_model_io([]),
+        request=replace(_request(), internal_context_composition_v1=manifest),
+        retry_config=RetryConfig(max_retries=0),
+        run_receipt_factory=_run_receipt_factory(),
+    )
+    extension = result.provider_call_receipt.extensions[
+        CONTEXT_COMPOSITION_EXTENSION_KEY
+    ]
+
+    assert extension["quality"] == "reconciled_estimate"
+    assert extension["attributed_tokens"] == 30
+    assert extension["residual_tokens"] == 0
+
+    by_category = {c["id"]: c for c in extension["categories"]}
+    assert by_category["instructions"]["tokens"] == 18
+    assert by_category["skills"]["tokens"] == 7
+    assert by_category["tool_definitions"]["tokens"] == 5
+    assert sum(c["tokens"] for c in extension["categories"]) == 30
+
+    subtypes_by_id = {
+        (c["id"], s["id"]): s["tokens"]
+        for c in extension["categories"]
+        for s in c["subtypes"]
+    }
+    assert subtypes_by_id[("instructions", "core_system")] == 11
+    assert subtypes_by_id[("instructions", "agent_instructions")] == 7
+    assert subtypes_by_id[("skills", "catalog_metadata")] == 4
+    assert subtypes_by_id[("skills", "loaded_body")] == 3
+    assert subtypes_by_id[("tool_definitions", "provider_schema")] == 3
+    # The smallest contributor (5 raw bytes) floors to 0 share of the pool —
+    # the +1 baseline is the only thing keeping it >=1.
+    assert subtypes_by_id[("tool_definitions", "prompt_guidance")] == 2
+    assert all(tokens >= 1 for tokens in subtypes_by_id.values())
+
+
+def test_scaling_guard_declines_when_provider_total_is_below_leaf_count(
+    tmp_path,
+    monkeypatch,
+):
+    """Every leaf must keep >=1 token — scaling below the leaf count would
+    have to invent tokens nobody measured, so the guard must decline and
+    quality must fall back to "estimated" rather than fabricate a total."""
+    manifest = _multi_leaf_manifest()
+    turn = replace(
+        _turn_result(),
+        provider_call_usage=ProviderCallUsage.from_openai_usage(
+            {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
+        ),
+    )
+    transport = _SequenceTransport([turn])
+    monkeypatch.setattr(
+        "unchain.context.provider_execution._exact_transport",
+        lambda **_kwargs: transport,
+    )
+
+    result = _service(tmp_path, DurableProviderTurnMode.ENFORCE_TEST).fetch_prepared(
+        model_io=_model_io([]),
+        request=replace(_request(), internal_context_composition_v1=manifest),
+        retry_config=RetryConfig(max_retries=0),
+        run_receipt_factory=_run_receipt_factory(),
+    )
+    extension = result.provider_call_receipt.extensions[
+        CONTEXT_COMPOSITION_EXTENSION_KEY
+    ]
+
+    assert extension["quality"] == "estimated"
+    assert extension["residual_tokens"] is None
+    assert extension["attributed_tokens"] == 53
+
+
+def test_incomplete_coverage_never_scales_even_when_attributed_exceeds_input(
+    tmp_path,
+    monkeypatch,
+):
+    """Scaling onto an incomplete manifest would be false precision — some
+    of what the provider billed was never attributed to any category at
+    all, so there is nothing honest to anchor a proportion to. This must
+    stay "partial" with a null residual even though attributed (53) is
+    well above the provider total (30), the exact condition that triggers
+    scaling when coverage IS complete."""
+    manifest = _multi_leaf_manifest()
+    manifest["routes"][0]["manifest_items"] = 7  # one more than matched -> incomplete
+    turn = replace(
+        _turn_result(),
+        provider_call_usage=ProviderCallUsage.from_openai_usage(
+            {"input_tokens": 30, "output_tokens": 2, "total_tokens": 32}
+        ),
+    )
+    transport = _SequenceTransport([turn])
+    monkeypatch.setattr(
+        "unchain.context.provider_execution._exact_transport",
+        lambda **_kwargs: transport,
+    )
+
+    result = _service(tmp_path, DurableProviderTurnMode.ENFORCE_TEST).fetch_prepared(
+        model_io=_model_io([]),
+        request=replace(_request(), internal_context_composition_v1=manifest),
+        retry_config=RetryConfig(max_retries=0),
+        run_receipt_factory=_run_receipt_factory(),
+    )
+    extension = result.provider_call_receipt.extensions[
+        CONTEXT_COMPOSITION_EXTENSION_KEY
+    ]
+
+    assert extension["quality"] == "partial"
+    assert extension["residual_tokens"] is None
+    assert extension["attributed_tokens"] == 53
+    assert extension["coverage"]["status"] == "partial"
+
+
+def test_composition_method_is_pinned_to_v2(tmp_path, monkeypatch):
+    """Regression lock: method must read utf8_heuristic_v2, not the old v1 —
+    an archaeologist reading old vs new receipts depends on this being
+    accurate, and it is trivial to silently drift back to v1 by reverting
+    only CONTEXT_COMPOSITION_METHOD without anyone noticing (every fixture
+    in this file hardcodes its OWN method string, so a revert would not
+    even fail manifest validation)."""
+    turn = replace(
+        _turn_result(),
+        provider_call_usage=ProviderCallUsage.from_openai_usage(
+            {"input_tokens": 1000, "output_tokens": 2, "total_tokens": 1002}
+        ),
+    )
+    transport = _SequenceTransport([turn])
+    monkeypatch.setattr(
+        "unchain.context.provider_execution._exact_transport",
+        lambda **_kwargs: transport,
+    )
+
+    result = _service(tmp_path, DurableProviderTurnMode.ENFORCE_TEST).fetch_prepared(
+        model_io=_model_io([]),
+        request=replace(_request(), internal_context_composition_v1=_composition_manifest()),
+        retry_config=RetryConfig(max_retries=0),
+        run_receipt_factory=_run_receipt_factory(),
+    )
+    extension = result.provider_call_receipt.extensions[
+        CONTEXT_COMPOSITION_EXTENSION_KEY
+    ]
+
+    assert extension["method"] == "utf8_heuristic_v2"
+
+
+def test_toolkit_tool_schema_is_measured_end_to_end_to_reconciled_estimate(
+    tmp_path,
+    monkeypatch,
+):
+    """P1 regression: every other test in this module hand-builds its
+    manifest via _composition_manifest(), bypassing
+    build_internal_context_composition entirely. This is the one place a
+    REAL toolkit goes through the real builder and the real wire-match, the
+    only path that actually proves a tool-bearing call reaches
+    reconciled_estimate instead of the "partial forever" quality tools used
+    to be stuck at."""
+    state = RunState()
+    state.seed_messages([{"role": "user", "content": "look something up"}])
+    state.provider_state.provider = "openai"
+    state.iteration = 2
+    toolkit = Toolkit()
+
+    @toolkit.tool
+    def lookup(query: str) -> str:
+        return query
+
+    request = build_model_turn_request(
+        state,
+        toolkit=toolkit,
+        run_id=ATTEMPT.attempt_id,
+        emit_stream=True,
+    )
+    [primary_route] = [
+        route
+        for route in request.internal_context_composition_v1["routes"]
+        if route["route_name"] == "primary"
+    ]
+    assert any(
+        item["category"] == "tool_definitions"
+        for item in primary_route["contributions"]
+    )
+
+    turn = replace(
+        _turn_result(),
+        provider_call_usage=ProviderCallUsage.from_openai_usage(
+            {"input_tokens": 1000, "output_tokens": 2, "total_tokens": 1002}
+        ),
+    )
+    transport = _SequenceTransport([turn])
+    monkeypatch.setattr(
+        "unchain.context.provider_execution._exact_transport",
+        lambda **_kwargs: transport,
+    )
+
+    result = _service(tmp_path, DurableProviderTurnMode.ENFORCE_TEST).fetch_prepared(
+        model_io=_model_io([]),
+        request=request,
+        retry_config=RetryConfig(max_retries=0),
+        run_receipt_factory=_run_receipt_factory(),
+    )
+    extension = result.provider_call_receipt.extensions[
+        CONTEXT_COMPOSITION_EXTENSION_KEY
+    ]
+
+    assert extension["quality"] == "reconciled_estimate"
+    assert extension["coverage"]["status"] == "complete"
+    assert extension["residual_tokens"] is not None
+    assert extension["residual_tokens"] >= 0
+    assert (
+        extension["attributed_tokens"] + extension["residual_tokens"] == 1000
+    )
+    categories = {category["id"] for category in extension["categories"]}
+    assert "tool_definitions" in categories
+
+
+def test_declared_tool_schema_absent_from_the_actual_wire_stays_partial(
+    tmp_path,
+    monkeypatch,
+):
+    """Negative twin of the test above: the manifest declares a tool_schema
+    contribution (a real toolkit was attached) but the model_io actually
+    used to physically send strips tools off the wire (capability gate). The
+    matcher must not credit a surface that never made it onto the request —
+    coverage stays partial rather than quietly rounding up to complete."""
+    state = RunState()
+    state.seed_messages([{"role": "user", "content": "look something up"}])
+    state.provider_state.provider = "openai"
+    state.iteration = 2
+    toolkit = Toolkit()
+
+    @toolkit.tool
+    def lookup(query: str) -> str:
+        return query
+
+    request = build_model_turn_request(
+        state,
+        toolkit=toolkit,
+        run_id=ATTEMPT.attempt_id,
+        emit_stream=True,
+    )
+
+    turn = replace(
+        _turn_result(),
+        provider_call_usage=ProviderCallUsage.from_openai_usage(
+            {"input_tokens": 1000, "output_tokens": 2, "total_tokens": 1002}
+        ),
+    )
+    transport = _SequenceTransport([turn])
+    monkeypatch.setattr(
+        "unchain.context.provider_execution._exact_transport",
+        lambda **_kwargs: transport,
+    )
+    # supports_tools=False forces openai.py to omit "tools" from the wire
+    # kwargs even though the toolkit and the manifest both carry one. Keyed
+    # by model name — _model_capability resolves it via _resolve_model_key,
+    # a flat dict here would silently no-op and defeat the whole test.
+    model_io = OpenAIModelIO(
+        model="gpt-test",
+        api_key="test-key",
+        client_factory=lambda **_kwargs: SimpleNamespace(
+            responses=SimpleNamespace(create=lambda **_kw: _OpenAIStream())
+        ),
+        default_payloads={},
+        model_capabilities={"gpt-test": {"supports_tools": False}},
+    )
+
+    result = _service(tmp_path, DurableProviderTurnMode.ENFORCE_TEST).fetch_prepared(
+        model_io=model_io,
+        request=request,
+        retry_config=RetryConfig(max_retries=0),
+        run_receipt_factory=_run_receipt_factory(),
+    )
+    extension = result.provider_call_receipt.extensions[
+        CONTEXT_COMPOSITION_EXTENSION_KEY
+    ]
+
+    assert extension["quality"] == "partial"
+    assert extension["residual_tokens"] is None
+    assert extension["coverage"]["status"] == "partial"
+    assert extension["coverage"]["matched_surfaces"] < extension["coverage"]["wire_surfaces"]
 
 
 def test_fallback_receipts_use_distinct_physical_ordinals_and_exact_routes(
@@ -1320,10 +1702,18 @@ def test_reserved_composition_extension_is_owned_only_by_official_enrichment(
 def test_composition_failure_preserves_the_valid_base_receipt(
     tmp_path,
     monkeypatch,
+    caplog,
     failure_type,
 ):
+    """P3 regression: enrich_provider_call_receipt's except block used to
+    swallow this failure with zero trace. It must now log exactly once, and
+    that one line must carry only the exception's type name — never the raw
+    exception message, which can (as constructed here) hold receipt-adjacent
+    content that must not reach logs."""
+    secret_marker = "composition-only-failure-CONTENT-MUST-NOT-LOG"
+
     def fail_composition(**_kwargs):
-        raise failure_type("composition-only failure")
+        raise failure_type(secret_marker)
 
     monkeypatch.setattr(
         "unchain.context.composition.build_context_composition_extension",
@@ -1334,21 +1724,30 @@ def test_composition_failure_preserves_the_valid_base_receipt(
         internal_context_composition_v1=_composition_manifest(),
     )
 
-    result = _service(
-        tmp_path,
-        DurableProviderTurnMode.ENFORCE_TEST,
-    ).fetch_prepared(
-        model_io=_model_io([]),
-        request=request,
-        retry_config=RetryConfig(max_retries=0),
-        run_receipt_factory=_run_receipt_factory(),
-    )
+    with caplog.at_level("WARNING", logger="unchain.context.composition"):
+        result = _service(
+            tmp_path,
+            DurableProviderTurnMode.ENFORCE_TEST,
+        ).fetch_prepared(
+            model_io=_model_io([]),
+            request=request,
+            retry_config=RetryConfig(max_retries=0),
+            run_receipt_factory=_run_receipt_factory(),
+        )
 
     assert result.final_text == "durable result"
     assert (
         CONTEXT_COMPOSITION_EXTENSION_KEY
         not in result.provider_call_receipt.extensions
     )
+
+    composition_records = [
+        r for r in caplog.records if r.name == "unchain.context.composition"
+    ]
+    assert len(composition_records) == 1
+    logged_message = composition_records[0].getMessage()
+    assert failure_type.__name__ in logged_message
+    assert secret_marker not in logged_message
 
 
 def test_malformed_composition_builder_output_never_reaches_the_receipt(

@@ -2443,6 +2443,206 @@ def test_two_canonical_graph_resume_cycles_allow_rebase(tmp_path: Path) -> None:
     assert service.rebase(edit_request).head_revision == 2
 
 
+def test_boundary_resolved_live_graph_cycles_allow_rebase(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    graph_service, plan, sinks = _graph_checkpoint_runtime(store, initial)
+    graph_service.start_step(plan, 0)
+    step = plan.steps[0]
+    repository = JournalGraphCheckpointRepository(
+        store.bind_execution(EXECUTION)
+    )
+    interaction_ingress = ContextInputIngress(
+        attempt=step.attempt,
+        projector=sinks[step.attempt].projector,
+        sink=sinks[step.attempt],
+    )
+
+    def live_cycle(ordinal: int) -> None:
+        interaction_id = f"live-cycle-{ordinal}"
+        _append_event(
+            store,
+            initial,
+            event_id=f"live-cycle-{ordinal}-request",
+            event_type="interaction.requested",
+            interaction_id=interaction_id,
+            attempt_id=step.attempt.attempt_id,
+        )
+        interaction_ingress.persist(
+            HostResolvedInteractionInput(
+                attempt=step.attempt,
+                interaction_id=interaction_id,
+                response={"answer": f"response-{ordinal}"},
+            )
+        )
+
+    live_cycle(1)
+    _append_graph_runtime_event(
+        sinks[step.attempt],
+        step.attempt,
+        "iteration_started",
+        17,
+        iteration=2,
+    )
+    live_cycle(2)
+    terminal = _append_graph_runtime_event(
+        sinks[step.attempt],
+        step.attempt,
+        "run_failed",
+        99,
+        status="failed",
+    )
+    repository.terminal(
+        plan,
+        step,
+        status=GraphTerminalStatus.FAILED,
+        terminal_cursor=terminal.cursor,
+    )
+
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+
+    assert service.rebase(edit_request).head_revision == 2
+
+
+def test_live_tool_outcomes_without_admission_allow_rebase(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    graph_service, plan, sinks = _graph_checkpoint_runtime(store, initial)
+    graph_service.start_step(plan, 0)
+    step = plan.steps[0]
+    repository = JournalGraphCheckpointRepository(
+        store.bind_execution(EXECUTION)
+    )
+    for ordinal, outcome in ((1, "tool_confirmed"), (2, "tool_denied")):
+        interaction_id = f"live-tool-{ordinal}"
+        _append_event(
+            store,
+            initial,
+            event_id=f"live-tool-{ordinal}-request",
+            event_type="tool_confirmation_requested",
+            interaction_id=interaction_id,
+            attempt_id=step.attempt.attempt_id,
+        )
+        _append_event(
+            store,
+            initial,
+            event_id=f"live-tool-{ordinal}-outcome",
+            event_type=outcome,
+            interaction_id=interaction_id,
+            attempt_id=step.attempt.attempt_id,
+        )
+    terminal = _append_graph_runtime_event(
+        sinks[step.attempt],
+        step.attempt,
+        "run_failed",
+        99,
+        status="failed",
+    )
+    repository.terminal(
+        plan,
+        step,
+        status=GraphTerminalStatus.FAILED,
+        terminal_cursor=terminal.cursor,
+    )
+
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+
+    assert service.rebase(edit_request).head_revision == 2
+
+
+def test_late_admission_keeps_durable_cycle_strict(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    service = SQLiteGenerationRebaseV2Service(store)
+    initial = service.rebase(
+        _request(_intent(), operation_id="rebase-operation-1")
+    )
+    graph_service, plan, sinks = _graph_checkpoint_runtime(store, initial)
+    graph_service.start_step(plan, 0)
+    step = plan.steps[0]
+    repository = JournalGraphCheckpointRepository(
+        store.bind_execution(EXECUTION)
+    )
+    interaction_ingress = ContextInputIngress(
+        attempt=step.attempt,
+        projector=sinks[step.attempt].projector,
+        sink=sinks[step.attempt],
+    )
+    first_request = _append_event(
+        store,
+        initial,
+        event_id="late-admission-first-request",
+        event_type="interaction.requested",
+        interaction_id="late-admission-first",
+        attempt_id=step.attempt.attempt_id,
+    )
+    first_resolution = interaction_ingress.persist(
+        HostResolvedInteractionInput(
+            attempt=step.attempt,
+            interaction_id="late-admission-first",
+            response={"answer": "first"},
+        )
+    )
+    _append_graph_runtime_event(
+        sinks[step.attempt],
+        step.attempt,
+        "iteration_started",
+        17,
+        iteration=2,
+    )
+    _append_event(
+        store,
+        initial,
+        event_id="late-admission-second-request",
+        event_type="interaction.requested",
+        interaction_id="late-admission-second",
+        attempt_id=step.attempt.attempt_id,
+    )
+    interaction_ingress.persist(
+        HostResolvedInteractionInput(
+            attempt=step.attempt,
+            interaction_id="late-admission-second",
+            response={"answer": "second"},
+        )
+    )
+    repository.resume(
+        plan,
+        step,
+        interaction_id="late-admission-first",
+        request_cursor=EventCursor(
+            first_request.store_seq,
+            first_request.event_id,
+        ),
+        resolution_cursor=first_resolution.cursor,
+    )
+    _edit_intent, edit_request = _next(
+        initial,
+        kind=GenerationRebaseKind.EDIT,
+        ordinal=2,
+    )
+    before = _durable_authority_image(store)
+
+    with pytest.raises(GenerationRebaseJournalIncompatible) as incompatible:
+        service.rebase(edit_request)
+
+    assert incompatible.value.reason == "graph_step_seal_foreign"
+    assert incompatible.value.retryable is False
+    assert _durable_authority_image(store) == before
+
+
 def test_multistep_graph_verification_does_not_retain_output_bytes(
     tmp_path: Path,
 ) -> None:

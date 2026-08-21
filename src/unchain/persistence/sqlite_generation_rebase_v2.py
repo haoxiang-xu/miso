@@ -69,8 +69,10 @@ from unchain.journal.graph_attempt_quiescence import (
 from unchain.journal.interaction_cycles import (
     DURABLE_INTERACTION_REQUESTS,
     DURABLE_INTERACTION_RESOLUTIONS,
+    INTERACTION_LIVENESS_EXEMPT_EVENT_TYPES,
     INTERACTION_REQUESTS,
     INTERACTION_RESOLUTIONS,
+    LIVE_INTERACTION_OUTCOMES,
 )
 from unchain.persistence.sqlite_v2 import (
     SQLiteContextV2Store,
@@ -499,6 +501,9 @@ def _validate_graph_step_interaction_cycles(
         if event.event_type == "graph.step.resume.admitted"
     )
     anchor = resumes[0] if resumes else start
+    step_admitted_interaction_ids = frozenset(
+        str(resume.payload.get("interaction_id")) for resume in resumes
+    )
 
     def incompatible(message: str, event: JournalEvent) -> None:
         raise _journal_incompatible(
@@ -564,11 +569,34 @@ def _validate_graph_step_interaction_cycles(
     admitted_resolution_cursors: set[tuple[int, str]] = set()
     admitted_cycles: set[tuple[str, tuple[int, str], tuple[int, str]]] = set()
 
+    def clear_active_interaction() -> None:
+        nonlocal active_interaction_id
+        nonlocal active_request_cursor
+        nonlocal active_aliases
+        nonlocal active_resolution_cursor
+        nonlocal active_resume_cursor
+        active_interaction_id = None
+        active_request_cursor = None
+        active_aliases = frozenset()
+        active_resolution_cursor = None
+        active_resume_cursor = None
+
     for event in events:
         if event.store_seq < start.store_seq:
             continue
         if event.store_seq in suppressed_resolution_store_seqs:
             continue
+        if (
+            active_interaction_id is not None
+            and active_resume_cursor is None
+            and active_interaction_id not in step_admitted_interaction_ids
+            and event.event_type not in INTERACTION_LIVENESS_EXEMPT_EVENT_TYPES
+        ):
+            # Match graph checkpoint recovery: runtime activity proves that a
+            # cycle without a durable resume admission was answered in-run.
+            # A future admission keeps the cycle strict, so malformed durable
+            # pauses cannot be reclassified as live.
+            clear_active_interaction()
         if event.event_type in _GRAPH_INTERACTION_REQUEST_EVENT_TYPES:
             if event.resource_refs:
                 incompatible(
@@ -636,10 +664,7 @@ def _validate_graph_step_interaction_cycles(
                     plan=plan,
                     step_index=expected_step.index,
                 ) from error
-            compatible_resolution = event.event_type in {
-                "tool_confirmed",
-                "tool_denied",
-            }
+            compatible_resolution = event.event_type in LIVE_INTERACTION_OUTCOMES
             if active_interaction_id is None:
                 if compatible_resolution:
                     continue
@@ -667,6 +692,15 @@ def _validate_graph_step_interaction_cycles(
                     "generation rebase graph resolution is ambiguous",
                     event,
                 )
+            if (
+                compatible_resolution
+                and active_interaction_id not in step_admitted_interaction_ids
+            ):
+                # A live tool outcome closes the cycle in place. Durable
+                # resolutions use interaction.resolved and still require the
+                # exact admission path below.
+                clear_active_interaction()
+                continue
             resolution_key = (event.store_seq, event.event_id)
             if (
                 resolution_key in seen_resolution_cursors

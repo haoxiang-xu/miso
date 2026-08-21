@@ -24,6 +24,7 @@ from unchain.context import (
     DurableToolCompletionEnvelope,
     DurableToolApprovalState,
     DurableToolBoundaryCorruptError,
+    DurableToolCompletionReceipt,
     DurableToolExecutionRequest,
     DurableToolExecutionSubject,
     DurableToolAuthorization,
@@ -31,6 +32,7 @@ from unchain.context import (
     DurableToolExecutor,
     DurableToolExecutorContractError,
     DurableToolInvocationFailedError,
+    DurableToolResultReceipt,
     ContextRuntime,
     DurableContextRuntimeFactory,
     ToolCompletionArtifactization,
@@ -47,6 +49,7 @@ from unchain.execution import (
     _borrow_execution_guard,
 )
 from unchain.context.tool_executor import _assert_official_execution_guard_active
+from unchain.context.artifacts import MAX_INLINE_TOOL_RESULT_BYTES
 from unchain.context.tool_harness import ContextToolAuthorityHarness
 from unchain.context.tool_transitions import (
     DurableToolStateTransitionEnvelope,
@@ -57,10 +60,12 @@ from unchain.subagents.plugin import _BatchExecutionGuard
 from unchain.subagents.types import SubagentState
 from unchain.memory import InMemorySessionStore
 from unchain.kernel.harness import HarnessContext
+from unchain.kernel.state import RunState
 from unchain.kernel.types import ToolCall
 from unchain.journal import AttemptRef, EventCursor, GenerationRef
 from unchain.journal import ArtifactRef, ResourceRef
 from unchain.tools import Toolkit
+from unchain.tools.output_management import ToolOutputManager
 from unchain.tools.runtime import ToolRuntimeOutcome
 
 
@@ -151,6 +156,173 @@ def test_executor_orders_side_effect_artifacts_and_terminal_journal() -> None:
             receipt.result_artifact.ref,
             receipt.completion_artifact.ref,
         }
+    finally:
+        guard.release()
+
+
+def test_executor_carries_the_request_policy_into_the_durable_projection(
+    monkeypatch,
+) -> None:
+    executor, request, guard, journal, _order, _intent, _arguments = (
+        _execution_fixture()
+    )
+    executor._boundary.projector.bind_tool_output_manager(
+        ToolOutputManager.active_default(attempt_id="run-1")
+    )
+    request = replace(request, tool_result_policy="artifact_only")
+    try:
+        receipt = executor.execute(
+            request=request,
+            guard=guard,
+            invocation=_invocation(
+                executor,
+                request,
+                lambda _effective_arguments: DurableToolCompletionDraft(
+                    result={"large": "x" * (MAX_INLINE_TOOL_RESULT_BYTES + 1)},
+                ),
+            ),
+        )
+
+        projection = journal.events[-1].payload["model_projection"]
+        assert projection["result"]["projection"] == "artifact_only"
+        assert projection["metadata"]["projection_policy"] == "artifact_only"
+        assert receipt.model_projection == projection
+
+        cold_executor = DurableToolExecutor(
+            boundary=executor.boundary,
+            artifacts=executor.artifacts,
+            execution_guard=guard,
+        )
+        original_read = executor.artifacts.read_full
+
+        def read_without_result_artifact(artifact, **kwargs):
+            if artifact.ref == receipt.result_artifact.ref:
+                raise AssertionError(
+                    "cold recovery must not reread the large result artifact"
+                )
+            return original_read(artifact, **kwargs)
+
+        monkeypatch.setattr(
+            executor.artifacts,
+            "read_full",
+            read_without_result_artifact,
+        )
+        recovered = cold_executor.execute(
+            request=request,
+            guard=guard,
+            invocation=None,
+        )
+        assert recovered.reused is True
+        assert recovered.model_projection == projection
+    finally:
+        guard.release()
+
+
+def test_projection_receipts_preserve_prior_positional_arguments() -> None:
+    executor, request, guard, _journal, _order, _intent, _arguments = (
+        _execution_fixture()
+    )
+    try:
+        completion = executor.execute(
+            request=request,
+            guard=guard,
+            invocation=_invocation(
+                executor,
+                request,
+                lambda _effective_arguments: DurableToolCompletionDraft(
+                    result={"ok": True},
+                ),
+            ),
+        )
+        result = DurableToolResultReceipt(
+            completion.attempt,
+            completion.tool_name,
+            completion.call_id,
+            completion.iteration,
+            completion.execution_subject,
+            completion.execution_subject.sha256,
+            completion.visible_result,
+            completion.result_artifact,
+            completion.journal_cursor,
+            completion.completion_artifact,
+            False,
+        )
+        rebuilt_completion = DurableToolCompletionReceipt(
+            completion.attempt,
+            completion.tool_name,
+            completion.call_id,
+            completion.iteration,
+            completion.execution_subject,
+            completion.current_execution_fence,
+            completion.visible_result,
+            completion.should_observe,
+            completion.result_artifact,
+            completion.completion_artifact,
+            completion.journal_cursor,
+            None,
+            False,
+        )
+
+        assert result.completion_artifact == completion.completion_artifact
+        assert result.model_projection is None
+        assert rebuilt_completion.transition is None
+        assert rebuilt_completion.reused is False
+        assert rebuilt_completion.model_projection is None
+    finally:
+        guard.release()
+
+
+def test_runtime_uses_durable_projection_without_rereading_tool_artifact(
+    monkeypatch,
+) -> None:
+    executor, request, guard, _journal, _order, _intent, _arguments = (
+        _execution_fixture()
+    )
+    executor._boundary.projector.bind_tool_output_manager(
+        ToolOutputManager.active_default(attempt_id="attempt-1")
+    )
+    request = replace(request, tool_result_policy="artifact_only")
+    try:
+        receipt = executor.execute(
+            request=request,
+            guard=guard,
+            invocation=_invocation(
+                executor,
+                request,
+                lambda _effective_arguments: DurableToolCompletionDraft(
+                    result={"large": "result"},
+                ),
+            ),
+        )
+        bundle = _bundle(receipt.attempt)
+        manager = ToolOutputManager.active_default(
+            attempt_id=receipt.attempt.attempt_id
+        )
+        object.__setattr__(bundle, "tool_output_manager", manager)
+        bundle.projector.bind_tool_output_manager(manager)
+        runtime = ContextRuntime._for_test(
+            owner_id="context-test",
+            request_factory=lambda _context: None,
+            durable_event_sink=lambda _event: None,
+            partial_attempt_sink=lambda _event, _error: None,
+        )
+        runtime._attempt_bundles[("execution-1", "attempt-1")] = bundle
+        state = RunState()
+        state.session_state.session_id = "execution-1"
+        context = HarnessContext(
+            state=state,
+            phase="tool",
+            event={"run_id": "attempt-1"},
+        )
+
+        def unexpected_read(*_args, **_kwargs):
+            raise AssertionError("runtime must reuse the durable projection")
+
+        monkeypatch.setattr(bundle.artifacts, "read_full", unexpected_read)
+
+        assert runtime.project_tool_result_for_model(context, receipt) == (
+            receipt.model_projection["result"]
+        )
     finally:
         guard.release()
 

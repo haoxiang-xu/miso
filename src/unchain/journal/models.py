@@ -60,6 +60,7 @@ _CREDENTIAL_METADATA_SUFFIXES = {
 }
 _SAFE_TOKEN_METRIC_FIELDS = frozenset(
     {
+        "attributed_tokens",
         "available_input_tokens",
         "cache_read_tokens",
         "cache_write_1h_tokens",
@@ -78,6 +79,8 @@ _SAFE_TOKEN_METRIC_FIELDS = frozenset(
         "pressure_threshold_tokens",
         "prompt_tokens",
         "reasoning_tokens",
+        "residual_tokens",
+        "tokens",
         "total_tokens",
         "transport_margin_tokens",
         "uncached_tokens",

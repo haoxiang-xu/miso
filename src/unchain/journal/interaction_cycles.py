@@ -43,6 +43,14 @@ LIVE_INTERACTION_OUTCOMES = frozenset({"tool_confirmed", "tool_denied"})
 INTERACTION_RESOLUTIONS = (
     DURABLE_INTERACTION_RESOLUTIONS | LIVE_INTERACTION_OUTCOMES
 )
+INTERACTION_LIVENESS_EXEMPT_EVENT_TYPES = INTERACTION_RESOLUTIONS | frozenset(
+    {
+        "graph.step.resume.admitted",
+        "artifact_created",
+        "artifact_updated",
+        "handoff.recorded",
+    }
+)
 
 
 class InteractionRequestFamily(Enum):
@@ -80,6 +88,7 @@ __all__ = [
     "DURABLE_INTERACTION_RESOLUTIONS",
     "INTERACTION_REQUESTS",
     "INTERACTION_RESOLUTIONS",
+    "INTERACTION_LIVENESS_EXEMPT_EVENT_TYPES",
     "InteractionRequestFamily",
     "LIVE_INTERACTION_OUTCOMES",
     "LIVE_INTERACTION_REQUESTS",

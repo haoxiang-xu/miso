@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
@@ -14,12 +16,38 @@ from ..providers.physical_send import ProviderPhysicalSendContext
 from ..run_bundle import ProviderCallReceipt
 
 
+_logger = logging.getLogger(__name__)
+
+
 INTERNAL_CONTEXT_COMPOSITION_SCHEMA = (
     "unchain.context/internal_context_composition_v1"
 )
 CONTEXT_COMPOSITION_EXTENSION_KEY = "unchain.context/context_composition_v1"
 CONTEXT_COMPOSITION_EXTENSION_SCHEMA = "unchain.context/context_composition_v1"
-CONTEXT_COMPOSITION_METHOD = "utf8_heuristic_v1"
+# v2 (2026-08-21) bundles two changes as one method bump: the calibrated
+# divisor below, and rescaling onto the provider's own billed total when the
+# heuristic overshoots it (see _scale_categories_to_target). Both change the
+# numbers a receipt carries, so both must be visible in `method` for anyone
+# doing archaeology across old (v1) and new (v2) receipts.
+CONTEXT_COMPOSITION_METHOD = "utf8_heuristic_v2"
+# Calibrated against real o200k_base tokenization (2026-08-21) across four
+# distinct real-content samples — this repo's own builtin tool schemas (17
+# tools, provider-shaped JSON), source file text (code + docstrings), README
+# markdown, and a representative assistant reply — NOT a single content type.
+# The old bytes/4 (~4.0 chars/token) assumption measured ~4.66 chars/token in
+# aggregate against real tokenization, an ~17% systematic overestimate across
+# every category, not a tool-schema-specific defect as first suspected: real
+# tool schemas measured the LEAST biased of the four (4.86 chars/token),
+# prose and markdown measured similarly (4.35-4.57). 4.5 lands close to that
+# real aggregate while staying on the safe (overestimating, never
+# underestimating) side by design — this indicator must never tell a user
+# their context has more room than it actually does. On its own this still
+# leaves most real calls landing on "estimated" (three real-traffic shapes —
+# short English, long English, long CJK — all measured attributed tokens
+# exceeding the provider's real total under this divisor alone); rescaling
+# onto the billed total is what actually resolves that, see
+# _scale_categories_to_target below.
+_HEURISTIC_BYTES_PER_TOKEN = 4.5
 _SOURCE_SCHEMA = "unchain.context/context_composition_source_v1"
 _SOURCE_STATE_KEY = "context_composition_source_v1"
 _MAX_SAFE_INTEGER = (1 << 53) - 1
@@ -436,6 +464,32 @@ def _measured_message_contributions(
     ]
 
 
+def _measured_tool_schema_contribution(
+    tool_schemas: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """Attribute the wire tool schema list this route actually carries.
+
+    Every schema shares one taxonomy slot — bytes are the canonical JSON of
+    each provider-shaped tool schema, the same shape that goes on the wire
+    (providers call ``toolkit.to_provider_json(provider)`` verbatim to build
+    the request), mirroring how ``_measured_message_contributions`` treats
+    messages. A route with no tools attached has nothing to attribute.
+    """
+
+    if not tool_schemas:
+        return None
+    return {
+        "category": "tool_definitions",
+        "subtype": "provider_schema",
+        "surface": "tool_schema",
+        "utf8_bytes": _checked_sum(
+            [len(_canonical_bytes(schema)) for schema in tool_schemas],
+            "tool schema utf8_bytes",
+        ),
+        "source_count": len(tool_schemas),
+    }
+
+
 def _source_contributions(state: object) -> list[dict[str, Any]]:
     metadata = getattr(state, "metadata", None)
     raw = metadata.get(_SOURCE_STATE_KEY) if isinstance(metadata, dict) else None
@@ -485,7 +539,7 @@ def build_internal_context_composition(
     state: object,
     assembly: object,
     *,
-    tool_schema_count: int = 0,
+    tool_schemas: list[dict[str, Any]] | None = None,
     response_schema_surface: str | None = None,
 ) -> Mapping[str, Any] | None:
     """Project official source facts into exact primary/fallback route manifests."""
@@ -498,7 +552,9 @@ def build_internal_context_composition(
     mode = getattr(assembly, "mode", None)
     if mode not in _CONTEXT_MODES:
         raise ContextCompositionContractError("provider context mode is unsupported")
-    tool_schema_count = _safe_int(tool_schema_count, "tool_schema_count")
+    if tool_schemas is not None and type(tool_schemas) is not list:
+        raise TypeError("tool_schemas must be an exact list")
+    tool_schema_contribution = _measured_tool_schema_contribution(tool_schemas)
     if (
         response_schema_surface is not None
         and response_schema_surface not in {"messages", "response_schema"}
@@ -534,6 +590,14 @@ def build_internal_context_composition(
     ) -> dict[str, Any]:
         measured = _measured_message_contributions(messages)
         projected = route_contributions(retained=retained, measured=measured)
+        # Tool schemas are always sent on the wire as their own surface,
+        # independent of whether the route retains prior turns server-side —
+        # unlike measured messages, they must NOT go through the retained ->
+        # provider_state surface override above.
+        if tool_schema_contribution is not None:
+            projected = sorted(
+                [*projected, tool_schema_contribution], key=_contribution_order
+            )
         represented_items = _checked_sum(
             [item["source_count"] for item in projected],
             "represented route items",
@@ -545,7 +609,6 @@ def build_internal_context_composition(
         known_uninstrumented_items = _checked_sum(
             [
                 max(0, len(messages) - attributed_messages),
-                tool_schema_count,
                 1 if response_schema_surface is not None else 0,
                 1 if retained else 0,
             ],
@@ -554,8 +617,6 @@ def build_internal_context_composition(
         surfaces = {item["surface"] for item in projected}
         if messages:
             surfaces.add("messages")
-        if tool_schema_count:
-            surfaces.add("tool_schema")
         if response_schema_surface is not None:
             surfaces.add(response_schema_surface)
         if retained:
@@ -625,6 +686,88 @@ def _surface_present(route_request: Mapping[str, Any], surface: str) -> bool:
     if surface == "provider_state":
         return route_request.get("previous_response_id") not in (None, "")
     return False
+
+
+def _scale_categories_to_target(
+    categories: list[dict[str, Any]],
+    attributed_tokens: int,
+    target: int,
+) -> list[dict[str, Any]] | None:
+    """Rescale every subtype's heuristic token estimate onto the provider's
+    own billed total, preserving each subtype's relative share of the whole.
+
+    The heuristic's absolute error is the same error shared across every
+    category — this panel sells composition *proportions*, and proportions
+    are what the heuristic gets closest to right, so anchoring the sum to the
+    one number that is exactly true (the provider's own usage receipt) turns
+    a self-contradictory total (parts summing to more than the whole the
+    headline shows) into a self-consistent one, without pretending any single
+    category's number is more precise than it is.
+
+    Returns None — caller must not scale, quality stays "estimated" — when
+    there are more leaf subtypes than target tokens to hand out. Every
+    subtype must keep at least 1 token (the wire-attribution invariant this
+    module and its PuPu consumer both enforce), so scaling below that count
+    would have to invent tokens nobody measured.
+
+    Uses largest-remainder apportionment: each subtype is guaranteed floor
+    of its proportional share, plus 1 baseline token, then whatever is left
+    over from integer rounding goes to the subtypes with the largest
+    fractional remainder — ties broken by canonical taxonomy order — so the
+    total lands on `target` exactly. This must be fully deterministic:
+    enrich_provider_call_receipt independently re-derives this same value to
+    verify against the one a provider call actually produced, and any
+    non-deterministic tie-break would make that comparison flap.
+    """
+
+    leaves = [
+        (category, subtype)
+        for category in categories
+        for subtype in category["subtypes"]
+    ]
+    leaf_count = len(leaves)
+    if leaf_count == 0 or target < leaf_count:
+        return None
+
+    pool = target - leaf_count
+    allocations: list[int] = []
+    fractions: list[float] = []
+    for _category, subtype in leaves:
+        share = subtype["tokens"] / attributed_tokens * pool
+        floor_share = math.floor(share)
+        allocations.append(1 + floor_share)
+        fractions.append(share - floor_share)
+
+    remaining = target - sum(allocations)
+    order = sorted(range(leaf_count), key=lambda i: (-fractions[i], i))
+    for i in order[:remaining]:
+        allocations[i] += 1
+
+    scaled: list[dict[str, Any]] = []
+    cursor = 0
+    for category in categories:
+        scaled_subtypes: list[dict[str, Any]] = []
+        category_tokens = 0
+        for subtype in category["subtypes"]:
+            alloc = allocations[cursor]
+            cursor += 1
+            category_tokens += alloc
+            scaled_subtypes.append(
+                {
+                    "id": subtype["id"],
+                    "tokens": alloc,
+                    "source_count": subtype["source_count"],
+                }
+            )
+        scaled.append(
+            {
+                "id": category["id"],
+                "tokens": category_tokens,
+                "source_count": category["source_count"],
+                "subtypes": scaled_subtypes,
+            }
+        )
+    return scaled
 
 
 def _derive_context_composition_extension(
@@ -704,7 +847,10 @@ def _derive_context_composition_extension(
             if not subtype_items:
                 continue
             subtype_tokens = _checked_sum(
-                [max(1, (item["utf8_bytes"] + 3) // 4) for item in subtype_items],
+                [
+                    max(1, math.ceil(item["utf8_bytes"] / _HEURISTIC_BYTES_PER_TOKEN))
+                    for item in subtype_items
+                ],
                 "subtype tokens",
             )
             subtype_sources = _checked_sum(
@@ -742,15 +888,26 @@ def _derive_context_composition_extension(
     provider_input_total = receipt.usage.input_total_tokens
     residual_tokens: int | None = None
     if not coverage_complete:
+        # Scaling onto an incomplete manifest would be false precision —
+        # some of what the provider billed was never even attributed to a
+        # category, so there is nothing honest to anchor a proportion to.
         quality = "partial"
-    elif (
-        provider_input_total is not None
-        and attributed_tokens <= provider_input_total
-    ):
+    elif provider_input_total is None:
+        quality = "estimated"
+    elif attributed_tokens <= provider_input_total:
         quality = "reconciled_estimate"
         residual_tokens = provider_input_total - attributed_tokens
     else:
-        quality = "estimated"
+        scaled_categories = _scale_categories_to_target(
+            categories, attributed_tokens, provider_input_total
+        )
+        if scaled_categories is None:
+            quality = "estimated"
+        else:
+            categories = scaled_categories
+            attributed_tokens = provider_input_total
+            residual_tokens = 0
+            quality = "reconciled_estimate"
     return {
         "schema": CONTEXT_COMPOSITION_EXTENSION_SCHEMA,
         "method": CONTEXT_COMPOSITION_METHOD,
@@ -838,10 +995,18 @@ def enrich_provider_call_receipt(
                 CONTEXT_COMPOSITION_EXTENSION_KEY: extension,
             },
         )
-    except Exception:
+    except Exception as exc:
         # Composition is availability-only. This try block contains only the
         # optional projection and receipt-copy step; base factory, ledger,
         # lease and CAS failures remain outside it and must still propagate.
+        # Only the exception's type name is logged, never its message or any
+        # argument — this receipt carries real provider content and the log
+        # must stay content-free even when the projection fails.
+        _logger.warning(
+            "context composition receipt enrichment failed, receipt left "
+            "unenriched: %s",
+            type(exc).__name__,
+        )
         return sanitized_receipt
 
 

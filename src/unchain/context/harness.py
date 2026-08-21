@@ -15,11 +15,13 @@ class ContextExecutionBindingHarness(BaseRuntimeHarness):
     phases: tuple[RuntimePhase, ...] = ("bootstrap",)
     order: int = -1_000
     runtime: ContextRuntime = field(repr=False, kw_only=True)
+    shadow_mode: bool = field(default=False, kw_only=True)
 
     def build_delta(self, context: HarnessContext) -> None:
         self.runtime.bind_context(
             context,
             _binding_authority=_CONTEXT_EXECUTION_BINDING_AUTHORITY,
+            _shadow_mode=self.shadow_mode,
         )
         return None
 

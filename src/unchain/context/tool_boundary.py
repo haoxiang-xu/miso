@@ -418,6 +418,7 @@ class DurableToolResultReceipt:
     completion_artifact: ArtifactRef | None = None
     duplicate: bool = False
     _authority: object = field(default=None, repr=False, compare=False)
+    model_projection: Any = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.attempt, AttemptRef):
@@ -472,6 +473,24 @@ class DurableToolResultReceipt:
             )
         if not isinstance(self.cursor, EventCursor):
             object.__setattr__(self, "cursor", EventCursor.from_dict(self.cursor))
+        if self.model_projection is not None:
+            if not isinstance(self.model_projection, Mapping) or set(
+                self.model_projection
+            ) != {"result", "metadata"}:
+                raise DurableToolBoundaryCorruptError(
+                    "tool result model projection schema is invalid"
+                )
+            if not isinstance(self.model_projection["result"], Mapping) or not isinstance(
+                self.model_projection["metadata"], Mapping
+            ):
+                raise DurableToolBoundaryCorruptError(
+                    "tool result model projection payload is invalid"
+                )
+            object.__setattr__(
+                self,
+                "model_projection",
+                _freeze_json(self.model_projection, path="model_projection"),
+            )
         if self.completion_artifact is not None and not isinstance(
             self.completion_artifact,
             ArtifactRef,
@@ -658,6 +677,9 @@ class DurableToolBoundary:
                 visible_result=_thaw_json(recovered.visible_result),
                 artifact=recovered.result_artifact,
                 cursor=self._result_cursor(recovery.result_event),
+                model_projection=self._model_projection_from_event(
+                    recovery.result_event
+                ),
                 completion_artifact=recovered.completion_artifact,
                 duplicate=True,
                 _authority=self._authority,
@@ -712,6 +734,7 @@ class DurableToolBoundary:
         *,
         artifactization: ToolResultArtifactization,
         completion_artifactization: ToolCompletionArtifactization,
+        tool_result_policy: str = "default",
     ) -> DurableToolResultReceipt:
         """Atomically journal references to two already-persisted artifacts."""
 
@@ -734,6 +757,11 @@ class DurableToolBoundary:
             raise TypeError(
                 "prepared tool result requires ToolCompletionArtifactization"
             )
+        if not isinstance(tool_result_policy, str) or not tool_result_policy.strip():
+            raise DurableToolBoundaryCorruptError(
+                "prepared tool result policy is invalid"
+            )
+        tool_result_policy = tool_result_policy.strip().lower()
         try:
             artifactization = ArtifactService.verify_tool_result_artifactization(
                 self._projector.artifacts,
@@ -795,6 +823,9 @@ class DurableToolBoundary:
                 visible_result=_thaw_json(recovered.visible_result),
                 artifact=recovered.result_artifact,
                 cursor=self._result_cursor(recovery.result_event),
+                model_projection=self._model_projection_from_event(
+                    recovery.result_event
+                ),
                 completion_artifact=recovered.completion_artifact,
                 duplicate=True,
                 _authority=self._authority,
@@ -838,6 +869,7 @@ class DurableToolBoundary:
                 "iteration": authorization.iteration,
                 "tool_name": authorization.tool_name,
                 "call_id": authorization.call_id,
+                "tool_result_policy": tool_result_policy,
                 "execution_subject": authorization.execution_subject.to_dict(),
                 "execution_subject_sha256": (
                     authorization.execution_subject.sha256
@@ -1200,15 +1232,17 @@ class DurableToolBoundary:
             raise DurableToolBoundaryCorruptError(
                 "durable recovery artifact descriptor changed"
             )
-        try:
-            verified_content = self._projector.artifacts.read_full(
-                result_artifact,
-                remaining_budget_bytes=result_artifact.byte_length,
-            )
-        except ArtifactServiceError as exc:
-            raise DurableToolBoundaryCorruptError(
-                "durable recovery artifact failed verification"
-            ) from exc
+        verified_content = None
+        if result_artifact.byte_length <= MAX_INLINE_TOOL_RESULT_BYTES:
+            try:
+                verified_content = self._projector.artifacts.read_full(
+                    result_artifact,
+                    remaining_budget_bytes=result_artifact.byte_length,
+                )
+            except ArtifactServiceError as exc:
+                raise DurableToolBoundaryCorruptError(
+                    "durable recovery artifact failed verification"
+                ) from exc
         visible_result = self._verified_visible_result(
             result_event,
             result_artifact,
@@ -1278,24 +1312,28 @@ class DurableToolBoundary:
     def _verified_visible_result(
         event: JournalEvent,
         artifact: ArtifactRef,
-        content: bytes,
+        content: bytes | None,
     ) -> Any:
-        try:
-            decoded = json.loads(content.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise DurableToolBoundaryCorruptError(
-                "durable tool result artifact is not valid JSON"
-            ) from exc
-        expected_preview = _bounded_utf8_preview(content)
-        if artifact.preview != expected_preview:
-            raise DurableToolBoundaryCorruptError(
-                "durable tool result artifact preview changed"
-            )
         if artifact.byte_length <= MAX_INLINE_TOOL_RESULT_BYTES:
+            if not isinstance(content, bytes):
+                raise DurableToolBoundaryCorruptError(
+                    "inline durable tool result requires verified content"
+                )
+            try:
+                decoded = json.loads(content.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise DurableToolBoundaryCorruptError(
+                    "durable tool result artifact is not valid JSON"
+                ) from exc
+            expected_preview = _bounded_utf8_preview(content)
+            if artifact.preview != expected_preview:
+                raise DurableToolBoundaryCorruptError(
+                    "durable tool result artifact preview changed"
+                )
             expected_visible = decoded
         else:
             expected_visible = {
-                "preview": expected_preview,
+                "preview": artifact.preview,
                 "full_output_ref": artifact.ref.to_dict(),
                 "content_bytes": artifact.byte_length,
                 "content_sha256": artifact.sha256,
@@ -1596,10 +1634,24 @@ class DurableToolBoundary:
             visible_result=visible_result,
             artifact=artifact,
             cursor=appended.cursor,
+            model_projection=self._model_projection_from_event(event),
             completion_artifact=completion_artifact,
             duplicate=appended.duplicate,
             _authority=self._authority,
         )
+
+    @staticmethod
+    def _model_projection_from_event(event: JournalEvent | None) -> Any:
+        if event is None:
+            return None
+        projection = event.payload.get("model_projection")
+        if projection is None:
+            return None
+        if not isinstance(projection, Mapping):
+            raise DurableToolBoundaryCorruptError(
+                "persisted tool result model projection is invalid"
+            )
+        return _thaw_json(_freeze_json(projection, path="model_projection"))
 
     @staticmethod
     def _artifact_from_event(event: JournalEvent) -> ArtifactRef:

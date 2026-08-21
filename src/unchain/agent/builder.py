@@ -54,6 +54,7 @@ from ..run_bundle import (
     RunIdentity,
     canonical_sha256,
 )
+from ..run_bundle_v2 import CompactRunBundle, run_bundle_from_dict
 from ..tools import Tool, Toolkit
 from ..tools.exposure import ToolExposureRuntime, ToolOptimizerConfig
 from .model_io import ModelIOFactoryRegistry
@@ -762,7 +763,7 @@ class PreparedAgent:
         root_bundle_value: dict[str, Any] | None = None,
     ) -> CompletionPolicyRunner:
         root_bundle = (
-            RunBundle.from_dict(root_bundle_value)
+            run_bundle_from_dict(root_bundle_value)
             if isinstance(root_bundle_value, dict)
             else None
         )
@@ -847,17 +848,35 @@ class PreparedAgent:
                 payload=payload,
                 max_iterations=self._resolved_max_iterations(),
             )
-            merged_bundle = merge_run_bundle_values(run_bundles)
+            merged_bundle = merge_run_bundle_values(
+                run_bundles,
+                compact_details_ledger=self._root_run_bundle_ledger,
+            )
             if (
                 merged_bundle is not None
                 and self._root_run_bundle_ledger is not None
             ):
-                durable_merged = self._root_run_bundle_ledger.persist_bundle(
-                    RunBundle.from_dict(merged_bundle)
-                )
-                if durable_merged.to_dict() != merged_bundle:
-                    raise RuntimeError(
-                        "durable completion aggregate changed run bundle"
+                parsed_merged = run_bundle_from_dict(merged_bundle)
+                if type(parsed_merged) is RunBundle:
+                    durable_merged = self._root_run_bundle_ledger.persist_bundle(
+                        parsed_merged
+                    )
+                    if durable_merged.to_dict() != merged_bundle:
+                        raise RuntimeError(
+                            "durable completion aggregate changed run bundle"
+                        )
+                elif type(parsed_merged) is CompactRunBundle:
+                    from ..run_bundle_ledger import RunBundleCompactDetailsLedger
+
+                    if not isinstance(
+                        self._root_run_bundle_ledger,
+                        RunBundleCompactDetailsLedger,
+                    ):
+                        raise RuntimeError(
+                            "compact completion aggregate lacks durable details"
+                        )
+                    self._root_run_bundle_ledger.load_compact_bundle_details(
+                        bundle=parsed_merged,
                     )
             if merged_bundle is not None and merged_bundle != result.run_bundle:
                 result = replace(result, run_bundle=merged_bundle)

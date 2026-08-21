@@ -7,9 +7,10 @@ provider result may be useful to resume inference, but only immutable
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Mapping, Protocol, runtime_checkable
 
-from .run_bundle import ProviderCallReceipt, RunBundle, RunIdentity
+from .run_bundle import ProviderCallReceipt, RunBundle, RunIdentity, RunMetricEvent, RunChild
+from .run_bundle_v2 import CompactRunBundle
 
 
 class RunBundleLedgerError(RuntimeError):
@@ -86,6 +87,71 @@ class RunBundleLedger(Protocol):
 
 
 @runtime_checkable
+class RunBundleProjectionDetailsLedger(Protocol):
+    """Optional v1 extension for exact compact projection details.
+
+    Compact projections may omit verbose metric events from the public v1
+    bundle, but only when the omitted facts are atomically persisted under the
+    same bundle revision and projection hash.
+    """
+
+    @property
+    def execution_id(self) -> str:
+        ...
+
+    def persist_bundle_with_projection_details(
+        self,
+        *,
+        bundle: RunBundle,
+        projection_hash: str,
+        projection_metric_events: tuple[RunMetricEvent, ...] = (),
+    ) -> RunBundle:
+        ...
+
+    def load_projection_details(
+        self,
+        *,
+        bundle_id: str,
+        revision: int,
+        projection_hash: str,
+        metric_events_sha256: str,
+    ) -> tuple[RunMetricEvent, ...]:
+        ...
+
+
+@runtime_checkable
+class RunBundleCompactDetailsLedger(Protocol):
+    """Durable facts capability for the compact ``run_bundle.v2`` envelope."""
+
+    @property
+    def execution_id(self) -> str:
+        ...
+
+    def persist_compact_bundle_with_details(
+        self,
+        *,
+        bundle: CompactRunBundle,
+        details: Mapping[str, list[dict[str, object]]],
+    ) -> CompactRunBundle:
+        ...
+
+    def load_compact_bundle_details(
+        self,
+        *,
+        bundle: CompactRunBundle,
+    ) -> tuple[tuple[ProviderCallReceipt, ...], tuple[RunMetricEvent, ...], tuple[RunChild, ...]]:
+        ...
+
+    def list_compact_bundles(
+        self,
+        *,
+        root_run_id: str | None = None,
+        run_id: str | None = None,
+        attempt_id: str | None = None,
+    ) -> tuple[CompactRunBundle, ...]:
+        ...
+
+@runtime_checkable
 class RunBundleContinuationLedger(Protocol):
     """Optional v1 extension for atomic fresh-run predecessor consumption."""
 
@@ -98,7 +164,7 @@ class RunBundleContinuationLedger(Protocol):
         *,
         successor: RunIdentity,
         requested_run_id: str | None = None,
-    ) -> RunBundle | None:
+    ) -> RunBundle | CompactRunBundle | None:
         """Atomically bind one unconsumed suspended/cancelled predecessor.
 
         Repeating the same successor identity is idempotent and returns the
@@ -116,5 +182,7 @@ __all__ = [
     "RunBundleLedgerConflictError",
     "RunBundleLedgerError",
     "RunBundleLedgerIntegrityError",
+    "RunBundleProjectionDetailsLedger",
+    "RunBundleCompactDetailsLedger",
     "RunBundleLedgerScopeError",
 ]

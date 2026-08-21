@@ -42,6 +42,12 @@ from unchain.persistence import SQLiteContextV2Store
 from unchain.providers.durable_turn_runtime import DurableProviderTurnMode
 from unchain.providers.turn_ownership import ProviderTurnOwnership
 from unchain.run_bundle import RunIdentity
+from unchain.tools.output_management import (
+    ToolOutputManager,
+    ToolOutputPolicyVersionError,
+)
+from unchain.tools.tool import Tool
+from unchain.tools.toolkit import Toolkit
 
 
 class _Journal(BoundToolReceiptIndex):
@@ -362,6 +368,255 @@ def test_factory_runtime_routes_two_executions_to_distinct_durable_bundles() -> 
     assert runtime.build_harnesses()[0].name == "context_v2_execution_binding"
     assert runtime.build_harnesses()[1].name == "context_v2_tool_authority"
     assert runtime.build_harnesses()[2].name == "context_v2_compiler"
+
+
+def test_factory_binds_one_attempt_scoped_tool_output_manager_to_event() -> None:
+    factory = DurableContextRuntimeFactory(
+        bundle_builder=_bundle,
+        generation_resolver=lambda context, execution_id: "generation-1",
+        current_input_resolver=_current_input,
+    )
+    runtime = ContextRuntime.from_factory(
+        owner_id="context-v2",
+        execution_factory=factory,
+    )
+    context = _context(session_id="session-output", run_id="run-output")
+    context.event["tool_runtime_config"] = {
+        "tool_output_management": ToolOutputManager.active_default(
+            attempt_id="run-output"
+        ).runtime_snapshot()
+    }
+
+    runtime.bind_context(context)
+    manager = context.event["tool_output_manager"]
+
+    assert manager is factory.bind(context).tool_output_manager
+    assert manager.active is True
+    assert manager.legacy_budget_enabled is False
+
+
+def test_factory_binds_the_exact_closed_tool_output_snapshot() -> None:
+    factory = DurableContextRuntimeFactory(
+        bundle_builder=_bundle,
+        generation_resolver=lambda context, execution_id: "generation-1",
+        current_input_resolver=_current_input,
+    )
+    runtime = ContextRuntime.from_factory(
+        owner_id="context-v2",
+        execution_factory=factory,
+    )
+    context = _context(session_id="session-snapshot", run_id="run-snapshot")
+    configured = ToolOutputManager.active_default(attempt_id="run-snapshot")
+    snapshot = configured.runtime_snapshot()
+    snapshot["policies"] = [
+        policy for policy in snapshot["policies"] if policy["name"] == "default"
+    ]
+    context.event["tool_runtime_config"] = {
+        "tool_output_management": snapshot,
+    }
+
+    runtime.bind_context(context)
+    manager = context.event["tool_output_manager"]
+
+    assert manager.runtime_snapshot() == snapshot
+    with pytest.raises(ToolOutputPolicyVersionError):
+        manager.resolve_policy("head_tail")
+
+
+def test_factory_closes_tool_output_when_no_snapshot_is_supplied() -> None:
+    factory = DurableContextRuntimeFactory(
+        bundle_builder=_bundle,
+        generation_resolver=lambda context, execution_id: "generation-1",
+        current_input_resolver=_current_input,
+    )
+    runtime = ContextRuntime.from_factory(
+        owner_id="context-v2",
+        execution_factory=factory,
+    )
+    context = _context(session_id="session-no-snapshot", run_id="run-no-snapshot")
+
+    runtime.bind_context(context)
+
+    manager = context.event["tool_output_manager"]
+    assert manager.active is False
+    assert manager.legacy_budget_enabled is True
+
+
+def test_active_factory_derives_tool_output_snapshot_from_exposed_toolkit() -> None:
+    factory = DurableContextRuntimeFactory(
+        bundle_builder=_bundle,
+        generation_resolver=lambda context, execution_id: "generation-1",
+        current_input_resolver=_current_input,
+    )
+    runtime = ContextRuntime.from_factory(
+        owner_id="context-v2",
+        execution_factory=factory,
+        tool_output_management_active=True,
+    )
+    tool = Tool(
+        name="large_search",
+        description="search",
+        output_policy="artifact_only",
+    )
+    context = _context(session_id="session-active", run_id="run-active")
+    context.event["toolkit"] = Toolkit({"large_search": tool})
+
+    runtime.bind_context(context)
+    assert context.event["tool_output_manager"].active is False
+
+    runtime.bind_execution_toolkit(context)
+
+    assert context.event["tool_output_manager"].active is True
+    assert context.event["tool_runtime_config"]["tool_output_policy_map"] == {
+        "schema": "unchain.tool_output_policy_map.v1",
+        "policies": {"large_search": "artifact_only"},
+    }
+
+    context.event["toolkit"] = Toolkit(
+        {
+            "large_search": Tool(
+                name="large_search",
+                description="search",
+                output_policy="default",
+            )
+        }
+    )
+    with pytest.raises(
+        ContextExecutionBundleError,
+        match="frozen tool output policy map",
+    ):
+        runtime.bind_execution_toolkit(context)
+
+
+def test_active_factory_reuses_frozen_snapshot_on_repeated_bootstrap() -> None:
+    factory = DurableContextRuntimeFactory(
+        bundle_builder=_bundle,
+        generation_resolver=lambda context, execution_id: "generation-1",
+        current_input_resolver=_current_input,
+    )
+    runtime = ContextRuntime.from_factory(
+        owner_id="context-v2",
+        execution_factory=factory,
+        tool_output_management_active=True,
+    )
+
+    def context_for_same_attempt():
+        context = _context(session_id="session-repeat", run_id="run-repeat")
+        context.event["tool_runtime_config"] = {"memory_v2_context": {"mode": "active"}}
+        context.event["toolkit"] = Toolkit(
+            {
+                "search": Tool(
+                    name="search",
+                    description="search",
+                    output_policy="artifact_only",
+                )
+            }
+        )
+        return context
+
+    first = context_for_same_attempt()
+    runtime.bind_context(first)
+    runtime.bind_execution_toolkit(first)
+    second = context_for_same_attempt()
+
+    runtime.bind_context(second)
+
+    assert second.event["tool_output_manager"].active is True
+    assert second.event["tool_runtime_config"]["tool_output_policy_map"] == {
+        "schema": "unchain.tool_output_policy_map.v1",
+        "policies": {"search": "artifact_only"},
+    }
+
+
+def test_active_factory_cold_restart_rejects_changed_attempt_policy_snapshot() -> None:
+    journals = {}
+
+    def factory_for_cold_runtime():
+        return DurableContextRuntimeFactory(
+            bundle_builder=lambda attempt: _bundle(
+                attempt,
+                journal=journals.setdefault(
+                    attempt.generation.execution_id,
+                    _Journal(attempt.generation.execution_id),
+                ),
+            ),
+            generation_resolver=lambda _context, execution_id: f"generation-{execution_id}",
+            current_input_resolver=_current_input,
+        )
+
+    first_runtime = ContextRuntime.from_factory(
+        owner_id="context-v2-first",
+        execution_factory=factory_for_cold_runtime(),
+        tool_output_management_active=True,
+    )
+    first = _context(session_id="session-cold-policy", run_id="run-cold-policy")
+    first.event["toolkit"] = Toolkit(
+        {
+            "search": Tool(
+                name="search",
+                description="search",
+                output_policy="artifact_only",
+            )
+        }
+    )
+    first_runtime.bind_context(first)
+    first_runtime.bind_execution_toolkit(first)
+
+    cold_runtime = ContextRuntime.from_factory(
+        owner_id="context-v2-cold",
+        execution_factory=factory_for_cold_runtime(),
+        tool_output_management_active=True,
+    )
+    resumed = _context(session_id="session-cold-policy", run_id="run-cold-policy")
+    resumed.event["toolkit"] = Toolkit(
+        {
+            "search": Tool(
+                name="search",
+                description="search",
+                output_policy="head_tail",
+            )
+        }
+    )
+    cold_runtime.bind_context(resumed)
+
+    with pytest.raises(
+        ContextExecutionBundleError,
+        match="durable tool output policy map",
+    ):
+        cold_runtime.bind_execution_toolkit(resumed)
+
+
+def test_factory_rejects_a_changed_tool_output_snapshot_after_binding() -> None:
+    factory = DurableContextRuntimeFactory(
+        bundle_builder=_bundle,
+        generation_resolver=lambda context, execution_id: "generation-1",
+        current_input_resolver=_current_input,
+    )
+    runtime = ContextRuntime.from_factory(
+        owner_id="context-v2",
+        execution_factory=factory,
+    )
+    first = _context(session_id="session-fixed", run_id="run-fixed")
+    configured = ToolOutputManager.active_default(attempt_id="run-fixed")
+    fixed_snapshot = configured.runtime_snapshot()
+    fixed_snapshot["policies"] = [
+        policy for policy in fixed_snapshot["policies"] if policy["name"] == "default"
+    ]
+    first.event["tool_runtime_config"] = {
+        "tool_output_management": fixed_snapshot,
+    }
+    runtime.bind_context(first)
+
+    changed = _context(session_id="session-fixed", run_id="run-fixed")
+    changed.event["tool_runtime_config"] = {
+        "tool_output_management": ToolOutputManager.active_default(
+            attempt_id="run-fixed"
+        ).runtime_snapshot(),
+    }
+
+    with pytest.raises(ContextExecutionBundleError, match="snapshot changed"):
+        runtime.bind_context(changed)
+    assert factory.bind(first).tool_output_manager.runtime_snapshot() == fixed_snapshot
 
 
 def test_bundle_rejects_sink_and_coordinator_with_different_journals() -> None:
