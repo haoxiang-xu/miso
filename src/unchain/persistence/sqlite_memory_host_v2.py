@@ -121,6 +121,88 @@ class SQLiteMemoryHostV2IntegrityError(SQLiteMemoryHostV2Error):
     """Durable state no longer matches the frozen consolidation effect."""
 
 
+def initialize_sqlite_memory_host_v2_schema(
+    *,
+    database_path: str | Path,
+) -> None:
+    """Install the host-owned review schema in an already-owned SQLite plane.
+
+    The schema is deliberately independent of a bound consolidation factory so
+    empty-plane bootstrap can establish the same canonical closure without
+    inventing a synthetic agent, workspace, or review proposal.
+    """
+
+    connection = sqlite3.connect(
+        Path(database_path),
+        timeout=30.0,
+        isolation_level=None,
+    )
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA synchronous = FULL")
+    connection.execute("PRAGMA busy_timeout = 30000")
+    try:
+        mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+        if str(mode).casefold() != "wal":
+            raise SQLiteMemoryHostV2IntegrityError("sqlite_wal_unavailable")
+        connection.executescript(
+            """
+            BEGIN IMMEDIATE;
+            CREATE TABLE IF NOT EXISTS memory_host_v2_schema (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT OR IGNORE INTO memory_host_v2_schema(version) VALUES (1);
+
+            CREATE TABLE IF NOT EXISTS memory_review_proposals (
+                review_id TEXT PRIMARY KEY,
+                binding_id TEXT NOT NULL,
+                job_id TEXT NOT NULL,
+                candidate_id TEXT NOT NULL,
+                candidate_revision INTEGER NOT NULL
+                    CHECK(candidate_revision >= 1),
+                binding_revision INTEGER NOT NULL
+                    CHECK(binding_revision >= 1),
+                target_space_id TEXT NOT NULL,
+                target_entry_id TEXT NOT NULL,
+                target_revision INTEGER NOT NULL
+                    CHECK(target_revision >= 1),
+                mode TEXT NOT NULL,
+                semantic_json BLOB NOT NULL,
+                semantic_sha256 TEXT NOT NULL,
+                review_json BLOB NOT NULL,
+                review_sha256 TEXT NOT NULL,
+                first_operation_id TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                UNIQUE (
+                    binding_id,
+                    job_id,
+                    candidate_id,
+                    candidate_revision,
+                    target_space_id,
+                    target_entry_id,
+                    target_revision,
+                    mode
+                )
+            );
+            COMMIT;
+            """
+        )
+        versions = {
+            int(row[0])
+            for row in connection.execute(
+                "SELECT version FROM memory_host_v2_schema"
+            )
+        }
+        if versions != {_SCHEMA_VERSION}:
+            raise SQLiteMemoryHostV2IntegrityError("memory_host_schema_unsupported")
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 class MemoryCompletionFactoryResolver(Protocol):
     """Host policy deciding whether one attached run gets a terminal projector."""
 
@@ -413,67 +495,7 @@ class SQLiteConsolidationCapabilityFactory:
         return connection
 
     def _initialize(self) -> None:
-        connection = self._connect()
-        try:
-            mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
-            if str(mode).casefold() != "wal":
-                raise SQLiteMemoryHostV2IntegrityError("sqlite_wal_unavailable")
-            connection.executescript(
-                """
-                BEGIN IMMEDIATE;
-                CREATE TABLE IF NOT EXISTS memory_host_v2_schema (
-                    version INTEGER PRIMARY KEY,
-                    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                INSERT OR IGNORE INTO memory_host_v2_schema(version) VALUES (1);
-
-                CREATE TABLE IF NOT EXISTS memory_review_proposals (
-                    review_id TEXT PRIMARY KEY,
-                    binding_id TEXT NOT NULL,
-                    job_id TEXT NOT NULL,
-                    candidate_id TEXT NOT NULL,
-                    candidate_revision INTEGER NOT NULL
-                        CHECK(candidate_revision >= 1),
-                    binding_revision INTEGER NOT NULL
-                        CHECK(binding_revision >= 1),
-                    target_space_id TEXT NOT NULL,
-                    target_entry_id TEXT NOT NULL,
-                    target_revision INTEGER NOT NULL
-                        CHECK(target_revision >= 1),
-                    mode TEXT NOT NULL,
-                    semantic_json BLOB NOT NULL,
-                    semantic_sha256 TEXT NOT NULL,
-                    review_json BLOB NOT NULL,
-                    review_sha256 TEXT NOT NULL,
-                    first_operation_id TEXT NOT NULL,
-                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
-                    UNIQUE (
-                        binding_id,
-                        job_id,
-                        candidate_id,
-                        candidate_revision,
-                        target_space_id,
-                        target_entry_id,
-                        target_revision,
-                        mode
-                    )
-                );
-                COMMIT;
-                """
-            )
-            versions = {
-                int(row[0])
-                for row in connection.execute(
-                    "SELECT version FROM memory_host_v2_schema"
-                )
-            }
-            if versions != {_SCHEMA_VERSION}:
-                raise SQLiteMemoryHostV2IntegrityError("memory_host_schema_unsupported")
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+        initialize_sqlite_memory_host_v2_schema(database_path=self.database_path)
 
     def build(
         self,
@@ -1208,4 +1230,5 @@ __all__ = [
     "SQLiteMemoryAttachmentFactory",
     "SQLiteMemoryHostV2Error",
     "SQLiteMemoryHostV2IntegrityError",
+    "initialize_sqlite_memory_host_v2_schema",
 ]
