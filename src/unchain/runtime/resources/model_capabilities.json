@@ -49,6 +49,7 @@
     "supports_previous_response_id": true,
     "supports_reasoning": true,
     "reasoning_efforts": ["minimal", "low", "medium", "high"],
+    "default_reasoning_effort": "medium",
     "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
       "image": ["url", "base64"],
@@ -72,6 +73,7 @@
     "supports_previous_response_id": true,
     "supports_reasoning": true,
     "reasoning_efforts": ["minimal", "low", "medium", "high"],
+    "default_reasoning_effort": "medium",
     "input_modalities": ["text", "image"],
     "input_source_types": {
       "image": ["url", "base64"]
@@ -94,6 +96,7 @@
     "supports_previous_response_id": true,
     "supports_reasoning": true,
     "reasoning_efforts": ["minimal", "low", "medium", "high"],
+    "default_reasoning_effort": "medium",
     "input_modalities": ["text", "image"],
     "input_source_types": {
       "image": ["url", "base64"]
@@ -115,7 +118,8 @@
     "supports_response_format": true,
     "supports_previous_response_id": true,
     "supports_reasoning": true,
-    "reasoning_efforts": ["minimal", "low", "medium", "high"],
+    "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+    "default_reasoning_effort": "medium",
     "input_modalities": ["text", "image"],
     "input_source_types": {
       "image": ["url", "base64"]
@@ -137,7 +141,8 @@
     "supports_response_format": true,
     "supports_previous_response_id": true,
     "supports_reasoning": true,
-    "reasoning_efforts": ["minimal", "low", "medium", "high"],
+    "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+    "default_reasoning_effort": "medium",
     "input_modalities": ["text", "image"],
     "input_source_types": {
       "image": ["url", "base64"]
@@ -159,7 +164,8 @@
     "supports_response_format": true,
     "supports_previous_response_id": true,
     "supports_reasoning": true,
-    "reasoning_efforts": ["minimal", "low", "medium", "high"],
+    "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+    "default_reasoning_effort": "medium",
     "input_modalities": ["text", "image"],
     "input_source_types": {
       "image": ["url", "base64"]
@@ -208,13 +214,15 @@
     "supports_tools": true,
     "supports_response_format": false,
     "supports_previous_response_id": false,
-    "supports_reasoning": false,
+    "supports_reasoning": true,
+    "reasoning_efforts": ["low", "medium", "high", "max"],
+    "default_reasoning_effort": "high",
     "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
       "image": ["url", "base64"],
       "pdf": ["url", "base64"]
     },
-    "allowed_payload_keys": ["max_tokens", "top_k"]
+    "allowed_payload_keys": ["max_tokens", "top_k", "output_config"]
   },
   "claude-opus-4-6": {
     "provider": "anthropic",
@@ -223,13 +231,15 @@
     "supports_tools": true,
     "supports_response_format": false,
     "supports_previous_response_id": false,
-    "supports_reasoning": false,
+    "supports_reasoning": true,
+    "reasoning_efforts": ["low", "medium", "high", "max"],
+    "default_reasoning_effort": "high",
     "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
       "image": ["url", "base64"],
       "pdf": ["url", "base64"]
     },
-    "allowed_payload_keys": ["max_tokens", "top_k"]
+    "allowed_payload_keys": ["max_tokens", "top_k", "output_config"]
   },
   "claude-opus-4-7": {
     "provider": "anthropic",
@@ -238,13 +248,15 @@
     "supports_tools": true,
     "supports_response_format": false,
     "supports_previous_response_id": false,
-    "supports_reasoning": false,
+    "supports_reasoning": true,
+    "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+    "default_reasoning_effort": "high",
     "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
       "image": ["url", "base64"],
       "pdf": ["url", "base64"]
     },
-    "allowed_payload_keys": ["max_tokens", "top_k"]
+    "allowed_payload_keys": ["max_tokens", "top_k", "output_config"]
   },
   "claude-opus-4-8": {
     "provider": "anthropic",
@@ -254,7 +266,8 @@
     "supports_response_format": false,
     "supports_previous_response_id": false,
     "supports_reasoning": true,
-    "reasoning_efforts": ["low", "medium", "high"],
+    "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+    "default_reasoning_effort": "high",
     "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
       "image": ["url", "base64"],
@@ -275,7 +288,8 @@
     "supports_response_format": false,
     "supports_previous_response_id": false,
     "supports_reasoning": true,
-    "reasoning_efforts": ["low", "medium", "high"],
+    "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+    "default_reasoning_effort": "high",
     "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
       "image": ["url", "base64"],
@@ -373,6 +387,7 @@
     "supports_previous_response_id": true,
     "supports_reasoning": true,
     "reasoning_efforts": ["minimal", "low", "medium", "high"],
+    "default_reasoning_effort": "medium",
     "input_modalities": ["text", "image"],
     "input_source_types": {
       "image": ["url", "base64"]
