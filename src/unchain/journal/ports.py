@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from collections.abc import Callable
+
 from .models import (
     AttemptRef,
     EventCursor,
     JournalAppendRequest,
     JournalAppendResult,
     JournalPage,
+    PendingArtifact,
     ToolExecutionReceiptLookup,
     _required_text,
 )
@@ -56,6 +59,28 @@ class BoundExecutionJournal(ABC):
         max_bytes: int = 32 * 1024 * 1024,
     ) -> JournalSnapshot:
         """Atomically capture a bounded execution high-water snapshot."""
+
+    def append_with_artifacts(
+        self,
+        *,
+        request: JournalAppendRequest,
+        artifacts: tuple[PendingArtifact, ...],
+        precondition: Callable[[JournalSnapshot], None] | None = None,
+    ) -> JournalAppendResult:
+        """Atomically claim artifacts and append one event in a single write.
+
+        Order inside the write transaction: exact operation replay check
+        (a duplicate returns the original result without re-running
+        ``precondition`` or re-claiming the artifacts), a current-state
+        snapshot handed to ``precondition`` (raise to reject the write with
+        nothing persisted), the artifact rows, then the event row. A journal
+        that cannot provide this atomicity refuses it rather than silently
+        falling back to a non-atomic sequence.
+        """
+
+        raise JournalRepositoryError(
+            "journal cannot claim artifacts and append an event atomically"
+        )
 
 
 class BoundToolReceiptIndex(BoundExecutionJournal):

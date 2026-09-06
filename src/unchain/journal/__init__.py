@@ -11,6 +11,7 @@ from .models import (
     JournalPage,
     ModelValidationError,
     OperationRef,
+    PendingArtifact,
     ResourceRef,
     ToolExecutionReceiptLookup,
 )
@@ -67,6 +68,7 @@ __all__ = [
     "JsonResourceLimits",
     "ModelValidationError",
     "OperationRef",
+    "PendingArtifact",
     "ResourceRef",
     "SemanticEventDraft",
     "SemanticEventProjector",
