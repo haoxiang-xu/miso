@@ -73,6 +73,16 @@
       "effort": "medium"
     }
   },
+  "gpt-6-astra": {
+    "instructions": "",
+    "max_output_tokens": 128000,
+    "truncation": "auto",
+    "store": false,
+    "include": [],
+    "reasoning": {
+      "effort": "medium"
+    }
+  },
   "deepseek-r1:14b": {
     "num_predict": -1,
     "temperature": 0.7,
@@ -98,6 +108,9 @@
     "max_tokens": 128000
   },
   "claude-fable-5": {
+    "max_tokens": 128000
+  },
+  "claude-fable-5-1": {
     "max_tokens": 128000
   },
   "claude-haiku-4.5": {
