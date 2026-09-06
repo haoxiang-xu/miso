@@ -20,7 +20,7 @@ import ctypes
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from unchain.context.ports import (
     BoundArtifactRepository,
@@ -185,6 +185,71 @@ def serialized_context_v2_database_access(
 
 
 _serialized_context_v2_database_access = serialized_context_v2_database_access
+
+
+def _context_v2_wal_exists(database_path: Path) -> bool:
+    return database_path.with_name(f"{database_path.name}-wal").exists()
+
+
+def _context_v2_shm_exists(database_path: Path) -> bool:
+    return database_path.with_name(f"{database_path.name}-shm").exists()
+
+
+@contextmanager
+def existing_context_v2_readonly_connection(
+    database_path: str | os.PathLike[str],
+    *,
+    probe: Callable[[], bool] | None = None,
+) -> Iterator[sqlite3.Connection]:
+    """Open one existing Context V2 database for a side-effect-free snapshot.
+
+    The WAL probe, the connection mode decision, the read, and the close all
+    happen inside the database mutex, so no other lifecycle participant can
+    create or delete WAL/SHM files in between.  Without a WAL the database
+    file is complete and ``immutable=1`` reads it without creating files.
+    With a WAL and its SHM, ``mode=ro`` starts a normal point-in-time read
+    that also sees committed WAL pages.  A WAL without SHM is a crash
+    leftover: opening it read-only would create the SHM, so it is refused and
+    left to the writer's protected recovery.
+    """
+
+    resolved = Path(database_path).expanduser().resolve()
+    if not resolved.is_file():
+        raise SQLiteContextV2StoreError(
+            "SQLite Context V2 database is unavailable"
+        )
+    with serialized_context_v2_database_access(resolved):
+        has_wal = bool((probe or (lambda: _context_v2_wal_exists(resolved)))())
+        if has_wal and not _context_v2_shm_exists(resolved):
+            raise SQLiteContextV2StoreError(
+                "SQLite Context V2 journal needs recovery"
+            )
+        try:
+            connection = sqlite3.connect(
+                (
+                    f"{resolved.as_uri()}?mode=ro"
+                    if has_wal
+                    else f"{resolved.as_uri()}?mode=ro&immutable=1"
+                ),
+                uri=True,
+                timeout=30.0,
+                isolation_level=None,
+            )
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA query_only = ON")
+            if has_wal:
+                connection.execute("BEGIN")
+        except sqlite3.Error as exc:
+            raise SQLiteContextV2StoreError(
+                "SQLite Context V2 read-only connection is unavailable"
+            ) from exc
+        try:
+            yield connection
+        finally:
+            if has_wal:
+                connection.rollback()
+            connection.close()
 
 
 def _exact_non_negative_int(value: object, field_name: str) -> int:
@@ -3564,43 +3629,14 @@ class SQLiteContextV2ReadOnlyJournal(BoundExecutionJournal):
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
-        with _serialized_context_v2_database_access(self._database_path):
-            try:
-                has_wal = self._wal_exists()
-                connection = sqlite3.connect(
-                    (
-                        f"{self._database_path.as_uri()}?mode=ro"
-                        if has_wal
-                        else f"{self._database_path.as_uri()}?mode=ro&immutable=1"
-                    ),
-                    uri=True,
-                    timeout=30.0,
-                    isolation_level=None,
-                )
-                connection.row_factory = sqlite3.Row
-                connection.execute("PRAGMA foreign_keys = ON")
-                connection.execute("PRAGMA query_only = ON")
-                if has_wal:
-                    # Existing WAL/SHM files let SQLite create a normal,
-                    # point-in-time read transaction without new files. This
-                    # is also the only supported way to include committed WAL
-                    # pages; immutable mode deliberately ignores them.
-                    connection.execute("BEGIN")
-            except sqlite3.Error as exc:
-                raise SQLiteContextV2StoreError(
-                    "SQLite Context V2 read-only connection is unavailable"
-                ) from exc
-            try:
-                yield connection
-            finally:
-                if has_wal:
-                    connection.rollback()
-                connection.close()
+        with existing_context_v2_readonly_connection(
+            self._database_path,
+            probe=self._wal_exists,
+        ) as connection:
+            yield connection
 
     def _wal_exists(self) -> bool:
-        return self._database_path.with_name(
-            f"{self._database_path.name}-wal"
-        ).exists()
+        return _context_v2_wal_exists(self._database_path)
 
     def _event_from_row(
         self,
@@ -3760,6 +3796,7 @@ __all__ = [
     "SQLiteContextV2Store",
     "SQLiteContextV2StoreError",
     "SQLiteContextV2StoreIntegrityError",
+    "existing_context_v2_readonly_connection",
     "open_existing_execution_journal_readonly",
     "serialized_context_v2_database_access",
 ]
