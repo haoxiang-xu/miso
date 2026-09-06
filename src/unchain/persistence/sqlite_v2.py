@@ -39,6 +39,7 @@ from unchain.journal.models import (
     JournalEvent,
     JournalPage,
     OperationRef,
+    PendingArtifact,
     ResourceRef,
     ToolExecutionReceiptLookup,
     _required_text,
@@ -2229,6 +2230,152 @@ class _SQLiteBoundContextV2Repository(
             return "provider_wire", None, iteration
         return None
 
+    def _replayed_append(
+        self,
+        connection: sqlite3.Connection,
+        request: JournalAppendRequest,
+    ) -> JournalAppendResult | None:
+        previous = self._operation_row(
+            connection,
+            request.operation.operation_id,
+        )
+        if previous is None:
+            return None
+        if (
+            previous["payload_sha256"] != request.operation.payload_sha256
+            or previous["target_kind"] != "journal_event"
+            or previous["target_key"] != request.event_id
+        ):
+            raise JournalConflictError(
+                "operation payload or event target changed"
+            )
+        row = connection.execute(
+            """
+            SELECT * FROM events
+            WHERE execution_id = ? AND operation_id = ?
+            """,
+            (self.execution_id, request.operation.operation_id),
+        ).fetchone()
+        if row is None:
+            raise SQLiteContextV2StoreIntegrityError(
+                "journal operation has no event"
+            )
+        event = self._event_from_row(connection, row)
+        if not self._request_matches_event(request, event):
+            raise JournalConflictError(
+                "operation replay changed the event payload"
+            )
+        cursor = EventCursor(event.store_seq, event.event_id)
+        return JournalAppendResult(event, cursor, duplicate=True)
+
+    def _append_with_connection(
+        self,
+        connection: sqlite3.Connection,
+        request: JournalAppendRequest,
+    ) -> JournalAppendResult:
+        if (
+            connection.execute(
+                """
+            SELECT 1 FROM events
+            WHERE execution_id = ? AND event_id = ?
+            """,
+                (self.execution_id, request.event_id),
+            ).fetchone()
+            is not None
+        ):
+            raise JournalConflictError("event id belongs to another operation")
+        head = connection.execute(
+            """
+            SELECT next_store_seq FROM executions
+            WHERE execution_id = ?
+            """,
+            (self.execution_id,),
+        ).fetchone()
+        if head is None:
+            raise SQLiteContextV2StoreIntegrityError(
+                "execution journal head is missing"
+            )
+        store_seq = int(head["next_store_seq"])
+        event = JournalEvent(
+            event_id=request.event_id,
+            event_type=request.event_type,
+            attempt=request.attempt,
+            operation=request.operation,
+            store_seq=store_seq,
+            payload=request.payload,
+            resource_refs=request.resource_refs,
+        )
+        receipt = self._receipt_subject(event)
+        self._claim_operation(
+            connection,
+            operation=request.operation,
+            target_kind="journal_event",
+            target_key=request.event_id,
+            conflict_type=JournalConflictError,
+        )
+        event_json = _canonical_json_bytes(event.to_dict())
+        connection.execute(
+            """
+            INSERT INTO events(
+                execution_id,
+                store_seq,
+                event_id,
+                generation_id,
+                attempt_id,
+                event_type,
+                operation_id,
+                event_json,
+                event_sha256
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                self.execution_id,
+                store_seq,
+                event.event_id,
+                event.attempt.generation.generation_id,
+                event.attempt.attempt_id,
+                event.event_type,
+                event.operation.operation_id,
+                event_json,
+                _sha256(event_json),
+            ),
+        )
+        if receipt is not None:
+            kind, call_id, iteration = receipt
+            connection.execute(
+                """
+                INSERT INTO event_receipts(
+                    execution_id,
+                    store_seq,
+                    receipt_kind,
+                    generation_id,
+                    attempt_id,
+                    call_id,
+                    iteration
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self.execution_id,
+                    store_seq,
+                    kind,
+                    event.attempt.generation.generation_id,
+                    event.attempt.attempt_id,
+                    call_id,
+                    iteration,
+                ),
+            )
+        updated = connection.execute(
+            """
+            UPDATE executions SET next_store_seq = ?
+            WHERE execution_id = ? AND next_store_seq = ?
+            """,
+            (store_seq + 1, self.execution_id, store_seq),
+        )
+        if updated.rowcount != 1:
+            raise JournalConflictError("journal sequence allocation conflicted")
+        cursor = EventCursor(store_seq, event.event_id)
+        return JournalAppendResult(event, cursor, duplicate=False)
+
     def append(self, *, request: JournalAppendRequest) -> JournalAppendResult:
         if not isinstance(request, JournalAppendRequest):
             raise TypeError("request must be a JournalAppendRequest")
@@ -2236,140 +2383,74 @@ class _SQLiteBoundContextV2Repository(
         try:
             with self._store._transaction(immediate=True) as connection:
                 self._store._ensure_execution(connection, self.execution_id)
-                previous = self._operation_row(
-                    connection,
-                    request.operation.operation_id,
-                )
-                if previous is not None:
-                    if (
-                        previous["payload_sha256"] != request.operation.payload_sha256
-                        or previous["target_kind"] != "journal_event"
-                        or previous["target_key"] != request.event_id
-                    ):
-                        raise JournalConflictError(
-                            "operation payload or event target changed"
-                        )
-                    row = connection.execute(
-                        """
-                        SELECT * FROM events
-                        WHERE execution_id = ? AND operation_id = ?
-                        """,
-                        (self.execution_id, request.operation.operation_id),
-                    ).fetchone()
-                    if row is None:
-                        raise SQLiteContextV2StoreIntegrityError(
-                            "journal operation has no event"
-                        )
-                    event = self._event_from_row(connection, row)
-                    if not self._request_matches_event(request, event):
-                        raise JournalConflictError(
-                            "operation replay changed the event payload"
-                        )
-                    cursor = EventCursor(event.store_seq, event.event_id)
-                    return JournalAppendResult(event, cursor, duplicate=True)
+                replayed = self._replayed_append(connection, request)
+                if replayed is not None:
+                    return replayed
+                return self._append_with_connection(connection, request)
+        except sqlite3.IntegrityError as exc:
+            raise JournalConflictError("journal operation or event conflicted") from exc
+        except sqlite3.Error as exc:
+            raise JournalRepositoryError("SQLite journal append failed") from exc
 
-                if (
-                    connection.execute(
-                        """
-                    SELECT 1 FROM events
-                    WHERE execution_id = ? AND event_id = ?
-                    """,
-                        (self.execution_id, request.event_id),
-                    ).fetchone()
-                    is not None
-                ):
-                    raise JournalConflictError("event id belongs to another operation")
-                head = connection.execute(
-                    """
-                    SELECT next_store_seq FROM executions
-                    WHERE execution_id = ?
-                    """,
-                    (self.execution_id,),
-                ).fetchone()
-                if head is None:
-                    raise SQLiteContextV2StoreIntegrityError(
-                        "execution journal head is missing"
+    def _verify_pending_artifact_replay(
+        self,
+        connection: sqlite3.Connection,
+        artifact: PendingArtifact,
+    ) -> None:
+        previous = self._operation_row(connection, artifact.operation.operation_id)
+        if (
+            previous is None
+            or previous["payload_sha256"] != artifact.operation.payload_sha256
+        ):
+            raise SQLiteContextV2StoreIntegrityError(
+                "replayed event is missing its atomically claimed artifact"
+            )
+
+    def artifact_id_for(self, *, logical_kind: str, logical_key: str) -> str:
+        return self._artifact_id(
+            execution_id=self.execution_id,
+            logical_kind=_required_text(logical_kind, "logical_kind"),
+            logical_key=_required_text(logical_key, "logical_key"),
+        )
+
+    def append_with_artifacts(
+        self,
+        *,
+        request: JournalAppendRequest,
+        artifacts: tuple[PendingArtifact, ...],
+        precondition: Callable[[JournalSnapshot], None] | None = None,
+    ) -> JournalAppendResult:
+        if not isinstance(request, JournalAppendRequest):
+            raise TypeError("request must be a JournalAppendRequest")
+        artifacts = tuple(artifacts)
+        if any(not isinstance(item, PendingArtifact) for item in artifacts):
+            raise TypeError("artifacts must be PendingArtifact records")
+        if precondition is not None and not callable(precondition):
+            raise TypeError("precondition must be callable")
+        self._scope_attempt(request.attempt, error_type=JournalScopeError)
+        try:
+            with self._store._transaction(immediate=True) as connection:
+                self._store._ensure_execution(connection, self.execution_id)
+                replayed = self._replayed_append(connection, request)
+                if replayed is not None:
+                    for artifact in artifacts:
+                        self._verify_pending_artifact_replay(connection, artifact)
+                    return replayed
+                if precondition is not None:
+                    precondition(self._snapshot_with_connection(connection))
+                for artifact in artifacts:
+                    self._put_artifact_with_connection(
+                        connection,
+                        content=artifact.content,
+                        media_type=artifact.media_type,
+                        operation=artifact.operation,
+                        preview=artifact.preview,
+                        logical_kind="artifact",
+                        logical_key=artifact.operation.operation_id,
+                        expected_revision=0,
+                        conflict_type=ContextConflictError,
                     )
-                store_seq = int(head["next_store_seq"])
-                event = JournalEvent(
-                    event_id=request.event_id,
-                    event_type=request.event_type,
-                    attempt=request.attempt,
-                    operation=request.operation,
-                    store_seq=store_seq,
-                    payload=request.payload,
-                    resource_refs=request.resource_refs,
-                )
-                receipt = self._receipt_subject(event)
-                self._claim_operation(
-                    connection,
-                    operation=request.operation,
-                    target_kind="journal_event",
-                    target_key=request.event_id,
-                    conflict_type=JournalConflictError,
-                )
-                event_json = _canonical_json_bytes(event.to_dict())
-                connection.execute(
-                    """
-                    INSERT INTO events(
-                        execution_id,
-                        store_seq,
-                        event_id,
-                        generation_id,
-                        attempt_id,
-                        event_type,
-                        operation_id,
-                        event_json,
-                        event_sha256
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        self.execution_id,
-                        store_seq,
-                        event.event_id,
-                        event.attempt.generation.generation_id,
-                        event.attempt.attempt_id,
-                        event.event_type,
-                        event.operation.operation_id,
-                        event_json,
-                        _sha256(event_json),
-                    ),
-                )
-                if receipt is not None:
-                    kind, call_id, iteration = receipt
-                    connection.execute(
-                        """
-                        INSERT INTO event_receipts(
-                            execution_id,
-                            store_seq,
-                            receipt_kind,
-                            generation_id,
-                            attempt_id,
-                            call_id,
-                            iteration
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            self.execution_id,
-                            store_seq,
-                            kind,
-                            event.attempt.generation.generation_id,
-                            event.attempt.attempt_id,
-                            call_id,
-                            iteration,
-                        ),
-                    )
-                updated = connection.execute(
-                    """
-                    UPDATE executions SET next_store_seq = ?
-                    WHERE execution_id = ? AND next_store_seq = ?
-                    """,
-                    (store_seq + 1, self.execution_id, store_seq),
-                )
-                if updated.rowcount != 1:
-                    raise JournalConflictError("journal sequence allocation conflicted")
-                cursor = EventCursor(store_seq, event.event_id)
-                return JournalAppendResult(event, cursor, duplicate=False)
+                return self._append_with_connection(connection, request)
         except sqlite3.IntegrityError as exc:
             raise JournalConflictError("journal operation or event conflicted") from exc
         except sqlite3.Error as exc:
@@ -2437,38 +2518,51 @@ class _SQLiteBoundContextV2Repository(
         except sqlite3.Error as exc:
             raise JournalRepositoryError("SQLite journal read failed") from exc
 
-    def capture_snapshot(
+    def _snapshot_with_connection(
         self,
+        connection: sqlite3.Connection,
         *,
         max_events: int = 10_000,
         max_bytes: int = 32 * 1024 * 1024,
     ) -> JournalSnapshot:
         max_events = _exact_non_negative_int(max_events, "max_events")
         max_bytes = _exact_non_negative_int(max_bytes, "max_bytes")
+        rows = list(
+            connection.execute(
+                """
+                SELECT * FROM events
+                WHERE execution_id = ?
+                ORDER BY store_seq
+                LIMIT ?
+                """,
+                (self.execution_id, max_events + 1),
+            )
+        )
+        if len(rows) > max_events:
+            raise JournalRepositoryError(
+                "journal snapshot event limit exceeded"
+            )
+        events = tuple(self._event_from_row(connection, row) for row in rows)
+        encoded = _canonical_json_bytes([event.to_dict() for event in events])
+        if len(encoded) > max_bytes:
+            raise JournalRepositoryError("journal snapshot byte limit exceeded")
+        return capture_journal_snapshot(
+            execution_id=self.execution_id,
+            events=events,
+        )
+
+    def capture_snapshot(
+        self,
+        *,
+        max_events: int = 10_000,
+        max_bytes: int = 32 * 1024 * 1024,
+    ) -> JournalSnapshot:
         try:
             with self._store._transaction(immediate=False) as connection:
-                rows = list(
-                    connection.execute(
-                        """
-                        SELECT * FROM events
-                        WHERE execution_id = ?
-                        ORDER BY store_seq
-                        LIMIT ?
-                        """,
-                        (self.execution_id, max_events + 1),
-                    )
-                )
-                if len(rows) > max_events:
-                    raise JournalRepositoryError(
-                        "journal snapshot event limit exceeded"
-                    )
-                events = tuple(self._event_from_row(connection, row) for row in rows)
-                encoded = _canonical_json_bytes([event.to_dict() for event in events])
-                if len(encoded) > max_bytes:
-                    raise JournalRepositoryError("journal snapshot byte limit exceeded")
-                return capture_journal_snapshot(
-                    execution_id=self.execution_id,
-                    events=events,
+                return self._snapshot_with_connection(
+                    connection,
+                    max_events=max_events,
+                    max_bytes=max_bytes,
                 )
         except sqlite3.Error as exc:
             raise JournalRepositoryError("SQLite journal snapshot failed") from exc
@@ -2650,8 +2744,9 @@ class _SQLiteBoundContextV2Repository(
             )
         return self._artifact_from_row(row)
 
-    def _put_artifact(
+    def _put_artifact_with_connection(
         self,
+        connection: sqlite3.Connection,
         *,
         content: bytes,
         media_type: str,
@@ -2688,109 +2783,133 @@ class _SQLiteBoundContextV2Repository(
         )
         revision = 1
         target_key = f"{artifact_id}@{revision}"
+        self._store._ensure_execution(connection, self.execution_id)
+        previous = self._operation_row(
+            connection,
+            operation.operation_id,
+        )
+        if previous is not None:
+            if (
+                previous["payload_sha256"] != operation.payload_sha256
+                or previous["target_kind"] != logical_kind
+                or previous["target_key"] != target_key
+            ):
+                raise conflict_type(
+                    "artifact operation payload or target changed"
+                )
+            artifact = self._artifact_by_operation(
+                connection,
+                operation.operation_id,
+            )
+            if (
+                artifact.media_type != media_type
+                or artifact.byte_length != byte_length
+                or artifact.sha256 != digest
+                or artifact.preview != preview
+            ):
+                raise conflict_type("artifact operation replay changed content")
+            return artifact
+        if expected_revision != 0:
+            raise conflict_type("artifact CAS expected revision does not exist")
+        existing = connection.execute(
+            """
+            SELECT * FROM artifacts
+            WHERE execution_id = ?
+              AND logical_kind = ?
+              AND logical_key = ?
+              AND revision = 1
+            """,
+            (self.execution_id, logical_kind, logical_key),
+        ).fetchone()
+        if existing is not None:
+            raise conflict_type("artifact logical claim already exists")
+        resource = ResourceRef("artifact", artifact_id, revision)
+        artifact = ArtifactRef(
+            ref=resource,
+            media_type=media_type,
+            byte_length=byte_length,
+            sha256=digest,
+            preview=preview,
+        )
+        self._claim_operation(
+            connection,
+            operation=operation,
+            target_kind=logical_kind,
+            target_key=target_key,
+            conflict_type=conflict_type,
+        )
+        object_row = connection.execute(
+            "SELECT byte_length FROM objects WHERE sha256 = ?",
+            (digest,),
+        ).fetchone()
+        if object_row is not None and object_row["byte_length"] != byte_length:
+            raise SQLiteContextV2StoreIntegrityError(
+                "object metadata byte length changed"
+            )
+        connection.execute(
+            "INSERT OR IGNORE INTO objects(sha256, byte_length) VALUES (?, ?)",
+            (digest, byte_length),
+        )
+        artifact_json = _canonical_json_bytes(artifact.to_dict())
+        connection.execute(
+            """
+            INSERT INTO artifacts(
+                execution_id,
+                artifact_id,
+                revision,
+                logical_kind,
+                logical_key,
+                object_sha256,
+                media_type,
+                byte_length,
+                preview,
+                operation_id,
+                artifact_json,
+                artifact_record_sha256
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                self.execution_id,
+                artifact_id,
+                revision,
+                logical_kind,
+                logical_key,
+                digest,
+                media_type,
+                byte_length,
+                preview,
+                operation.operation_id,
+                artifact_json,
+                _sha256(artifact_json),
+            ),
+        )
+        return artifact
+
+    def _put_artifact(
+        self,
+        *,
+        content: bytes,
+        media_type: str,
+        operation: OperationRef,
+        preview: str,
+        logical_kind: str,
+        logical_key: str,
+        expected_revision: int,
+        conflict_type: type[Exception],
+    ) -> ArtifactRef:
         try:
             with self._store._transaction(immediate=True) as connection:
-                self._store._ensure_execution(connection, self.execution_id)
-                previous = self._operation_row(
+                return self._put_artifact_with_connection(
                     connection,
-                    operation.operation_id,
-                )
-                if previous is not None:
-                    if (
-                        previous["payload_sha256"] != operation.payload_sha256
-                        or previous["target_kind"] != logical_kind
-                        or previous["target_key"] != target_key
-                    ):
-                        raise conflict_type(
-                            "artifact operation payload or target changed"
-                        )
-                    artifact = self._artifact_by_operation(
-                        connection,
-                        operation.operation_id,
-                    )
-                    if (
-                        artifact.media_type != media_type
-                        or artifact.byte_length != byte_length
-                        or artifact.sha256 != digest
-                        or artifact.preview != preview
-                    ):
-                        raise conflict_type("artifact operation replay changed content")
-                    return artifact
-                if expected_revision != 0:
-                    raise conflict_type("artifact CAS expected revision does not exist")
-                existing = connection.execute(
-                    """
-                    SELECT * FROM artifacts
-                    WHERE execution_id = ?
-                      AND logical_kind = ?
-                      AND logical_key = ?
-                      AND revision = 1
-                    """,
-                    (self.execution_id, logical_kind, logical_key),
-                ).fetchone()
-                if existing is not None:
-                    raise conflict_type("artifact logical claim already exists")
-                resource = ResourceRef("artifact", artifact_id, revision)
-                artifact = ArtifactRef(
-                    ref=resource,
+                    content=content,
                     media_type=media_type,
-                    byte_length=byte_length,
-                    sha256=digest,
-                    preview=preview,
-                )
-                self._claim_operation(
-                    connection,
                     operation=operation,
-                    target_kind=logical_kind,
-                    target_key=target_key,
+                    preview=preview,
+                    logical_kind=logical_kind,
+                    logical_key=logical_key,
+                    expected_revision=expected_revision,
                     conflict_type=conflict_type,
                 )
-                object_row = connection.execute(
-                    "SELECT byte_length FROM objects WHERE sha256 = ?",
-                    (digest,),
-                ).fetchone()
-                if object_row is not None and object_row["byte_length"] != byte_length:
-                    raise SQLiteContextV2StoreIntegrityError(
-                        "object metadata byte length changed"
-                    )
-                connection.execute(
-                    "INSERT OR IGNORE INTO objects(sha256, byte_length) VALUES (?, ?)",
-                    (digest, byte_length),
-                )
-                artifact_json = _canonical_json_bytes(artifact.to_dict())
-                connection.execute(
-                    """
-                    INSERT INTO artifacts(
-                        execution_id,
-                        artifact_id,
-                        revision,
-                        logical_kind,
-                        logical_key,
-                        object_sha256,
-                        media_type,
-                        byte_length,
-                        preview,
-                        operation_id,
-                        artifact_json,
-                        artifact_record_sha256
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        self.execution_id,
-                        artifact_id,
-                        revision,
-                        logical_kind,
-                        logical_key,
-                        digest,
-                        media_type,
-                        byte_length,
-                        preview,
-                        operation.operation_id,
-                        artifact_json,
-                        _sha256(artifact_json),
-                    ),
-                )
-                return artifact
         except sqlite3.IntegrityError as exc:
             raise conflict_type("artifact operation or claim conflicted") from exc
         except sqlite3.Error as exc:
