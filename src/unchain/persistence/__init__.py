@@ -16,6 +16,7 @@ from .sqlite_v2 import (
     SQLiteContextV2StoreError,
     SQLiteContextV2StoreIntegrityError,
     open_existing_execution_journal_readonly,
+    serialized_context_v2_database_access,
 )
 
 __all__ = [
@@ -32,4 +33,5 @@ __all__ = [
     "SQLiteContextV2StoreIntegrityError",
     "open_existing_execution_journal_readonly",
     "read_sqlite_context_v2_store_status",
+    "serialized_context_v2_database_access",
 ]

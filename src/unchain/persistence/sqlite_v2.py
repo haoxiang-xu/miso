@@ -17,7 +17,7 @@ import sqlite3
 import tempfile
 import threading
 import ctypes
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -140,16 +140,18 @@ def _sha256(content: bytes) -> str:
 
 
 @contextmanager
-def _serialized_context_v2_database_access(
+def serialized_context_v2_database_access(
     database_path: str | os.PathLike[str],
 ) -> Iterator[None]:
-    """Serialize Windows Context V2 writers and existing-only snapshots.
+    """Serialize every Context V2 connection lifecycle on one database.
 
-    A WAL-mode read-only connection can create a ``-shm`` file, while an
-    immutable connection deliberately skips WAL change detection. The active
-    Windows data plane therefore shares this named mutex across canonical
-    writes and immutable existing-only reads. The mutex has no filesystem
-    representation, so a cold preflight does not create data-plane files.
+    WAL/SHM files are created by the first connection and deleted by the last
+    closing read-write connection.  Existing-only snapshots decide their
+    connection mode from those files, so the decision and the connection must
+    not interleave with any other open/close.  Every writer, plain reader,
+    initializer, checkpoint, and existing-only reader therefore holds this
+    mutex from open to close.  Never wait on another thread, the network, or a
+    provider while holding it.
     """
 
     resolved = str(Path(database_path).expanduser().resolve())
@@ -180,6 +182,9 @@ def _serialized_context_v2_database_access(
         if acquired:
             ctypes.windll.kernel32.ReleaseMutex(handle)
         ctypes.windll.kernel32.CloseHandle(handle)
+
+
+_serialized_context_v2_database_access = serialized_context_v2_database_access
 
 
 def _exact_non_negative_int(value: object, field_name: str) -> int:
@@ -445,341 +450,337 @@ class SQLiteContextV2Store:
             )
 
     def _initialize(self) -> None:
-        connection = self._connect()
-        try:
-            existing_versions = self._existing_schema_versions(connection)
-            if existing_versions not in (None, {1}, {1, 2}):
-                raise SQLiteContextV2StoreIntegrityError(
-                    "SQLite Context V2 schema version is unsupported"
-                )
-            mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
-            if str(mode).casefold() != "wal":
-                raise SQLiteContextV2StoreIntegrityError(
-                    "SQLite refused WAL journal mode"
-                )
-            connection.executescript(
-                """
-                BEGIN IMMEDIATE;
-                CREATE TABLE IF NOT EXISTS context_v2_schema (
-                    version INTEGER PRIMARY KEY,
-                    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                INSERT OR IGNORE INTO context_v2_schema(version) VALUES (1);
-                INSERT OR IGNORE INTO context_v2_schema(version) VALUES (2);
-
-                CREATE TABLE IF NOT EXISTS executions (
-                    execution_id TEXT PRIMARY KEY,
-                    next_store_seq INTEGER NOT NULL DEFAULT 1
-                        CHECK(next_store_seq >= 1)
-                );
-
-                CREATE TABLE IF NOT EXISTS operations (
-                    execution_id TEXT NOT NULL,
-                    operation_id TEXT NOT NULL,
-                    payload_sha256 TEXT NOT NULL,
-                    target_kind TEXT NOT NULL,
-                    target_key TEXT NOT NULL,
-                    PRIMARY KEY (execution_id, operation_id),
-                    FOREIGN KEY (execution_id)
-                        REFERENCES executions(execution_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS events (
-                    execution_id TEXT NOT NULL,
-                    store_seq INTEGER NOT NULL CHECK(store_seq >= 1),
-                    event_id TEXT NOT NULL,
-                    generation_id TEXT NOT NULL,
-                    attempt_id TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    operation_id TEXT NOT NULL,
-                    event_json BLOB NOT NULL,
-                    event_sha256 TEXT NOT NULL,
-                    PRIMARY KEY (execution_id, store_seq),
-                    UNIQUE (execution_id, event_id),
-                    UNIQUE (execution_id, operation_id),
-                    FOREIGN KEY (execution_id, operation_id)
-                        REFERENCES operations(execution_id, operation_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS event_receipts (
-                    execution_id TEXT NOT NULL,
-                    store_seq INTEGER NOT NULL,
-                    receipt_kind TEXT NOT NULL,
-                    generation_id TEXT NOT NULL,
-                    attempt_id TEXT NOT NULL,
-                    call_id TEXT,
-                    iteration INTEGER,
-                    PRIMARY KEY (execution_id, store_seq, receipt_kind),
-                    FOREIGN KEY (execution_id, store_seq)
-                        REFERENCES events(execution_id, store_seq)
-                        ON DELETE CASCADE,
-                    CHECK (
-                        (receipt_kind = 'tool_execution'
-                            AND call_id IS NOT NULL AND iteration IS NULL)
-                        OR
-                        (receipt_kind IN ('tool_catalog', 'provider_wire')
-                            AND call_id IS NULL AND iteration IS NOT NULL)
+        with serialized_context_v2_database_access(self.database_path):
+            connection = self._connect()
+            try:
+                existing_versions = self._existing_schema_versions(connection)
+                if existing_versions not in (None, {1}, {1, 2}):
+                    raise SQLiteContextV2StoreIntegrityError(
+                        "SQLite Context V2 schema version is unsupported"
                     )
-                );
-                CREATE INDEX IF NOT EXISTS idx_tool_execution_receipts
-                    ON event_receipts(
-                        execution_id,
-                        generation_id,
-                        attempt_id,
-                        receipt_kind,
-                        call_id,
-                        store_seq
+                mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+                if str(mode).casefold() != "wal":
+                    raise SQLiteContextV2StoreIntegrityError(
+                        "SQLite refused WAL journal mode"
+                    )
+                connection.executescript(
+                    """
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE IF NOT EXISTS context_v2_schema (
+                        version INTEGER PRIMARY KEY,
+                        applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                     );
-                CREATE INDEX IF NOT EXISTS idx_iteration_receipts
-                    ON event_receipts(
-                        execution_id,
-                        generation_id,
-                        attempt_id,
-                        receipt_kind,
-                        iteration,
-                        store_seq
-                    );
+                    INSERT OR IGNORE INTO context_v2_schema(version) VALUES (1);
+                    INSERT OR IGNORE INTO context_v2_schema(version) VALUES (2);
 
-                CREATE TABLE IF NOT EXISTS objects (
-                    sha256 TEXT PRIMARY KEY,
-                    byte_length INTEGER NOT NULL CHECK(byte_length >= 0)
-                );
-
-                CREATE TABLE IF NOT EXISTS artifacts (
-                    execution_id TEXT NOT NULL,
-                    artifact_id TEXT NOT NULL,
-                    revision INTEGER NOT NULL CHECK(revision >= 1),
-                    logical_kind TEXT NOT NULL,
-                    logical_key TEXT NOT NULL,
-                    object_sha256 TEXT NOT NULL,
-                    media_type TEXT NOT NULL,
-                    byte_length INTEGER NOT NULL CHECK(byte_length >= 0),
-                    preview TEXT NOT NULL,
-                    operation_id TEXT NOT NULL,
-                    artifact_json BLOB NOT NULL,
-                    artifact_record_sha256 TEXT NOT NULL,
-                    PRIMARY KEY (execution_id, artifact_id, revision),
-                    UNIQUE (execution_id, logical_kind, logical_key, revision),
-                    UNIQUE (execution_id, operation_id),
-                    FOREIGN KEY (execution_id)
-                        REFERENCES executions(execution_id),
-                    FOREIGN KEY (object_sha256)
-                        REFERENCES objects(sha256),
-                    FOREIGN KEY (execution_id, operation_id)
-                        REFERENCES operations(execution_id, operation_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS provider_request_lease_revisions (
-                    execution_id TEXT NOT NULL,
-                    generation_id TEXT NOT NULL,
-                    attempt_id TEXT NOT NULL,
-                    iteration INTEGER NOT NULL,
-                    envelope_sha256 TEXT NOT NULL,
-                    route TEXT NOT NULL,
-                    retry_ordinal INTEGER NOT NULL,
-                    revision INTEGER NOT NULL CHECK(revision >= 1),
-                    operation_id TEXT NOT NULL,
-                    lease_json BLOB NOT NULL,
-                    lease_sha256 TEXT NOT NULL,
-                    PRIMARY KEY (
-                        execution_id,
-                        generation_id,
-                        attempt_id,
-                        iteration,
-                        envelope_sha256,
-                        route,
-                        retry_ordinal,
-                        revision
-                    ),
-                    UNIQUE (execution_id, operation_id),
-                    FOREIGN KEY (execution_id, operation_id)
-                        REFERENCES operations(execution_id, operation_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS provider_request_lease_heads (
-                    execution_id TEXT NOT NULL,
-                    generation_id TEXT NOT NULL,
-                    attempt_id TEXT NOT NULL,
-                    iteration INTEGER NOT NULL,
-                    envelope_sha256 TEXT NOT NULL,
-                    route TEXT NOT NULL,
-                    retry_ordinal INTEGER NOT NULL,
-                    current_revision INTEGER NOT NULL CHECK(current_revision >= 1),
-                    PRIMARY KEY (
-                        execution_id,
-                        generation_id,
-                        attempt_id,
-                        iteration,
-                        envelope_sha256,
-                        route,
-                        retry_ordinal
-                    ),
-                    FOREIGN KEY (execution_id)
-                        REFERENCES executions(execution_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS provider_turn_result_receipts (
-                    execution_id TEXT NOT NULL,
-                    generation_id TEXT NOT NULL,
-                    attempt_id TEXT NOT NULL,
-                    iteration INTEGER NOT NULL,
-                    envelope_sha256 TEXT NOT NULL,
-                    route TEXT NOT NULL,
-                    retry_ordinal INTEGER NOT NULL,
-                    store_seq INTEGER NOT NULL,
-                    PRIMARY KEY (
-                        execution_id,
-                        generation_id,
-                        attempt_id,
-                        iteration,
-                        envelope_sha256,
-                        route,
-                        retry_ordinal
-                    ),
-                    UNIQUE (execution_id, store_seq),
-                    FOREIGN KEY (execution_id, store_seq)
-                        REFERENCES events(execution_id, store_seq)
-                        ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS run_bundle_receipts_v1 (
-                    execution_id TEXT NOT NULL,
-                    provider_call_id TEXT NOT NULL,
-                    attempt_id TEXT NOT NULL,
-                    root_run_id TEXT NOT NULL,
-                    owner_run_id TEXT NOT NULL,
-                    receipt_json BLOB NOT NULL,
-                    receipt_sha256 TEXT NOT NULL,
-                    PRIMARY KEY (execution_id, provider_call_id),
-                    FOREIGN KEY (execution_id)
-                        REFERENCES executions(execution_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_run_bundle_receipts_v1_root
-                    ON run_bundle_receipts_v1(
-                        execution_id,
-                        root_run_id,
-                        owner_run_id,
-                        attempt_id,
-                        provider_call_id
+                    CREATE TABLE IF NOT EXISTS executions (
+                        execution_id TEXT PRIMARY KEY,
+                        next_store_seq INTEGER NOT NULL DEFAULT 1
+                            CHECK(next_store_seq >= 1)
                     );
 
-                CREATE TABLE IF NOT EXISTS run_bundle_projections_v1 (
-                    execution_id TEXT NOT NULL,
-                    bundle_id TEXT NOT NULL,
-                    revision INTEGER NOT NULL CHECK(revision >= 1),
-                    attempt_id TEXT NOT NULL,
-                    root_run_id TEXT NOT NULL,
-                    run_id TEXT NOT NULL,
-                    bundle_json BLOB NOT NULL,
-                    bundle_digest TEXT NOT NULL,
-                    PRIMARY KEY (execution_id, bundle_id, revision),
-                    FOREIGN KEY (execution_id)
-                        REFERENCES executions(execution_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_run_bundle_projections_v1_root
-                    ON run_bundle_projections_v1(
-                        execution_id,
-                        root_run_id,
-                        run_id,
-                        attempt_id,
-                        bundle_id,
-                        revision
+                    CREATE TABLE IF NOT EXISTS operations (
+                        execution_id TEXT NOT NULL,
+                        operation_id TEXT NOT NULL,
+                        payload_sha256 TEXT NOT NULL,
+                        target_kind TEXT NOT NULL,
+                        target_key TEXT NOT NULL,
+                        PRIMARY KEY (execution_id, operation_id),
+                        FOREIGN KEY (execution_id)
+                            REFERENCES executions(execution_id)
                     );
 
-                CREATE TABLE IF NOT EXISTS run_bundle_projection_details_v1 (
-                    execution_id TEXT NOT NULL,
-                    bundle_id TEXT NOT NULL,
-                    revision INTEGER NOT NULL CHECK(revision >= 1),
-                    projection_hash TEXT NOT NULL,
-                    metric_events_count INTEGER NOT NULL CHECK(metric_events_count >= 0),
-                    metric_events_json BLOB NOT NULL,
-                    metric_events_sha256 TEXT NOT NULL,
-                    PRIMARY KEY (execution_id, bundle_id, revision),
-                    FOREIGN KEY (execution_id)
-                        REFERENCES executions(execution_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_run_bundle_projection_details_v1_hash
-                    ON run_bundle_projection_details_v1(
-                        execution_id,
-                        projection_hash
+                    CREATE TABLE IF NOT EXISTS events (
+                        execution_id TEXT NOT NULL,
+                        store_seq INTEGER NOT NULL CHECK(store_seq >= 1),
+                        event_id TEXT NOT NULL,
+                        generation_id TEXT NOT NULL,
+                        attempt_id TEXT NOT NULL,
+                        event_type TEXT NOT NULL,
+                        operation_id TEXT NOT NULL,
+                        event_json BLOB NOT NULL,
+                        event_sha256 TEXT NOT NULL,
+                        PRIMARY KEY (execution_id, store_seq),
+                        UNIQUE (execution_id, event_id),
+                        UNIQUE (execution_id, operation_id),
+                        FOREIGN KEY (execution_id, operation_id)
+                            REFERENCES operations(execution_id, operation_id)
                     );
 
-                CREATE TABLE IF NOT EXISTS run_bundle_compact_v2 (
-                    execution_id TEXT NOT NULL,
-                    bundle_id TEXT NOT NULL,
-                    revision INTEGER NOT NULL CHECK(revision >= 1),
-                    attempt_id TEXT NOT NULL,
-                    root_run_id TEXT NOT NULL,
-                    run_id TEXT NOT NULL,
-                    bundle_json BLOB NOT NULL,
-                    bundle_digest TEXT NOT NULL,
-                    details_json BLOB NOT NULL,
-                    details_sha256 TEXT NOT NULL,
-                    PRIMARY KEY (execution_id, bundle_id, revision),
-                    FOREIGN KEY (execution_id)
-                        REFERENCES executions(execution_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_run_bundle_compact_v2_root
-                    ON run_bundle_compact_v2(
-                        execution_id,
-                        root_run_id,
-                        run_id,
-                        attempt_id,
-                        bundle_id,
-                        revision
+                    CREATE TABLE IF NOT EXISTS event_receipts (
+                        execution_id TEXT NOT NULL,
+                        store_seq INTEGER NOT NULL,
+                        receipt_kind TEXT NOT NULL,
+                        generation_id TEXT NOT NULL,
+                        attempt_id TEXT NOT NULL,
+                        call_id TEXT,
+                        iteration INTEGER,
+                        PRIMARY KEY (execution_id, store_seq, receipt_kind),
+                        FOREIGN KEY (execution_id, store_seq)
+                            REFERENCES events(execution_id, store_seq)
+                            ON DELETE CASCADE,
+                        CHECK (
+                            (receipt_kind = 'tool_execution'
+                                AND call_id IS NOT NULL AND iteration IS NULL)
+                            OR
+                            (receipt_kind IN ('tool_catalog', 'provider_wire')
+                                AND call_id IS NULL AND iteration IS NOT NULL)
+                        )
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_tool_execution_receipts
+                        ON event_receipts(
+                            execution_id,
+                            generation_id,
+                            attempt_id,
+                            receipt_kind,
+                            call_id,
+                            store_seq
+                        );
+                    CREATE INDEX IF NOT EXISTS idx_iteration_receipts
+                        ON event_receipts(
+                            execution_id,
+                            generation_id,
+                            attempt_id,
+                            receipt_kind,
+                            iteration,
+                            store_seq
+                        );
+
+                    CREATE TABLE IF NOT EXISTS objects (
+                        sha256 TEXT PRIMARY KEY,
+                        byte_length INTEGER NOT NULL CHECK(byte_length >= 0)
                     );
 
-                CREATE TABLE IF NOT EXISTS run_bundle_continuation_links_v1 (
-                    execution_id TEXT NOT NULL,
-                    successor_bundle_id TEXT NOT NULL,
-                    successor_run_id TEXT NOT NULL,
-                    successor_attempt_id TEXT NOT NULL,
-                    predecessor_bundle_id TEXT NOT NULL,
-                    predecessor_run_id TEXT NOT NULL,
-                    PRIMARY KEY (execution_id, successor_bundle_id),
-                    UNIQUE (execution_id, predecessor_bundle_id),
-                    FOREIGN KEY (execution_id)
-                        REFERENCES executions(execution_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_run_bundle_continuation_predecessor_v1
-                    ON run_bundle_continuation_links_v1(
-                        execution_id,
-                        predecessor_run_id,
-                        predecessor_bundle_id
+                    CREATE TABLE IF NOT EXISTS artifacts (
+                        execution_id TEXT NOT NULL,
+                        artifact_id TEXT NOT NULL,
+                        revision INTEGER NOT NULL CHECK(revision >= 1),
+                        logical_kind TEXT NOT NULL,
+                        logical_key TEXT NOT NULL,
+                        object_sha256 TEXT NOT NULL,
+                        media_type TEXT NOT NULL,
+                        byte_length INTEGER NOT NULL CHECK(byte_length >= 0),
+                        preview TEXT NOT NULL,
+                        operation_id TEXT NOT NULL,
+                        artifact_json BLOB NOT NULL,
+                        artifact_record_sha256 TEXT NOT NULL,
+                        PRIMARY KEY (execution_id, artifact_id, revision),
+                        UNIQUE (execution_id, logical_kind, logical_key, revision),
+                        UNIQUE (execution_id, operation_id),
+                        FOREIGN KEY (execution_id)
+                            REFERENCES executions(execution_id),
+                        FOREIGN KEY (object_sha256)
+                            REFERENCES objects(sha256),
+                        FOREIGN KEY (execution_id, operation_id)
+                            REFERENCES operations(execution_id, operation_id)
                     );
-                """
-            )
-            self._upgrade_provider_request_leases(connection)
-            self._validate_provider_request_lease_heads(connection)
-            self._validate_provider_request_evidence(connection)
-            versions = {
-                int(row[0])
-                for row in connection.execute("SELECT version FROM context_v2_schema")
-            }
-            if versions != {1, 2}:
-                raise SQLiteContextV2StoreIntegrityError(
-                    "SQLite Context V2 schema version is unsupported"
+
+                    CREATE TABLE IF NOT EXISTS provider_request_lease_revisions (
+                        execution_id TEXT NOT NULL,
+                        generation_id TEXT NOT NULL,
+                        attempt_id TEXT NOT NULL,
+                        iteration INTEGER NOT NULL,
+                        envelope_sha256 TEXT NOT NULL,
+                        route TEXT NOT NULL,
+                        retry_ordinal INTEGER NOT NULL,
+                        revision INTEGER NOT NULL CHECK(revision >= 1),
+                        operation_id TEXT NOT NULL,
+                        lease_json BLOB NOT NULL,
+                        lease_sha256 TEXT NOT NULL,
+                        PRIMARY KEY (
+                            execution_id,
+                            generation_id,
+                            attempt_id,
+                            iteration,
+                            envelope_sha256,
+                            route,
+                            retry_ordinal,
+                            revision
+                        ),
+                        UNIQUE (execution_id, operation_id),
+                        FOREIGN KEY (execution_id, operation_id)
+                            REFERENCES operations(execution_id, operation_id)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS provider_request_lease_heads (
+                        execution_id TEXT NOT NULL,
+                        generation_id TEXT NOT NULL,
+                        attempt_id TEXT NOT NULL,
+                        iteration INTEGER NOT NULL,
+                        envelope_sha256 TEXT NOT NULL,
+                        route TEXT NOT NULL,
+                        retry_ordinal INTEGER NOT NULL,
+                        current_revision INTEGER NOT NULL CHECK(current_revision >= 1),
+                        PRIMARY KEY (
+                            execution_id,
+                            generation_id,
+                            attempt_id,
+                            iteration,
+                            envelope_sha256,
+                            route,
+                            retry_ordinal
+                        ),
+                        FOREIGN KEY (execution_id)
+                            REFERENCES executions(execution_id)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS provider_turn_result_receipts (
+                        execution_id TEXT NOT NULL,
+                        generation_id TEXT NOT NULL,
+                        attempt_id TEXT NOT NULL,
+                        iteration INTEGER NOT NULL,
+                        envelope_sha256 TEXT NOT NULL,
+                        route TEXT NOT NULL,
+                        retry_ordinal INTEGER NOT NULL,
+                        store_seq INTEGER NOT NULL,
+                        PRIMARY KEY (
+                            execution_id,
+                            generation_id,
+                            attempt_id,
+                            iteration,
+                            envelope_sha256,
+                            route,
+                            retry_ordinal
+                        ),
+                        UNIQUE (execution_id, store_seq),
+                        FOREIGN KEY (execution_id, store_seq)
+                            REFERENCES events(execution_id, store_seq)
+                            ON DELETE CASCADE
+                    );
+
+                    CREATE TABLE IF NOT EXISTS run_bundle_receipts_v1 (
+                        execution_id TEXT NOT NULL,
+                        provider_call_id TEXT NOT NULL,
+                        attempt_id TEXT NOT NULL,
+                        root_run_id TEXT NOT NULL,
+                        owner_run_id TEXT NOT NULL,
+                        receipt_json BLOB NOT NULL,
+                        receipt_sha256 TEXT NOT NULL,
+                        PRIMARY KEY (execution_id, provider_call_id),
+                        FOREIGN KEY (execution_id)
+                            REFERENCES executions(execution_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_run_bundle_receipts_v1_root
+                        ON run_bundle_receipts_v1(
+                            execution_id,
+                            root_run_id,
+                            owner_run_id,
+                            attempt_id,
+                            provider_call_id
+                        );
+
+                    CREATE TABLE IF NOT EXISTS run_bundle_projections_v1 (
+                        execution_id TEXT NOT NULL,
+                        bundle_id TEXT NOT NULL,
+                        revision INTEGER NOT NULL CHECK(revision >= 1),
+                        attempt_id TEXT NOT NULL,
+                        root_run_id TEXT NOT NULL,
+                        run_id TEXT NOT NULL,
+                        bundle_json BLOB NOT NULL,
+                        bundle_digest TEXT NOT NULL,
+                        PRIMARY KEY (execution_id, bundle_id, revision),
+                        FOREIGN KEY (execution_id)
+                            REFERENCES executions(execution_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_run_bundle_projections_v1_root
+                        ON run_bundle_projections_v1(
+                            execution_id,
+                            root_run_id,
+                            run_id,
+                            attempt_id,
+                            bundle_id,
+                            revision
+                        );
+
+                    CREATE TABLE IF NOT EXISTS run_bundle_projection_details_v1 (
+                        execution_id TEXT NOT NULL,
+                        bundle_id TEXT NOT NULL,
+                        revision INTEGER NOT NULL CHECK(revision >= 1),
+                        projection_hash TEXT NOT NULL,
+                        metric_events_count INTEGER NOT NULL CHECK(metric_events_count >= 0),
+                        metric_events_json BLOB NOT NULL,
+                        metric_events_sha256 TEXT NOT NULL,
+                        PRIMARY KEY (execution_id, bundle_id, revision),
+                        FOREIGN KEY (execution_id)
+                            REFERENCES executions(execution_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_run_bundle_projection_details_v1_hash
+                        ON run_bundle_projection_details_v1(
+                            execution_id,
+                            projection_hash
+                        );
+
+                    CREATE TABLE IF NOT EXISTS run_bundle_compact_v2 (
+                        execution_id TEXT NOT NULL,
+                        bundle_id TEXT NOT NULL,
+                        revision INTEGER NOT NULL CHECK(revision >= 1),
+                        attempt_id TEXT NOT NULL,
+                        root_run_id TEXT NOT NULL,
+                        run_id TEXT NOT NULL,
+                        bundle_json BLOB NOT NULL,
+                        bundle_digest TEXT NOT NULL,
+                        details_json BLOB NOT NULL,
+                        details_sha256 TEXT NOT NULL,
+                        PRIMARY KEY (execution_id, bundle_id, revision),
+                        FOREIGN KEY (execution_id)
+                            REFERENCES executions(execution_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_run_bundle_compact_v2_root
+                        ON run_bundle_compact_v2(
+                            execution_id,
+                            root_run_id,
+                            run_id,
+                            attempt_id,
+                            bundle_id,
+                            revision
+                        );
+
+                    CREATE TABLE IF NOT EXISTS run_bundle_continuation_links_v1 (
+                        execution_id TEXT NOT NULL,
+                        successor_bundle_id TEXT NOT NULL,
+                        successor_run_id TEXT NOT NULL,
+                        successor_attempt_id TEXT NOT NULL,
+                        predecessor_bundle_id TEXT NOT NULL,
+                        predecessor_run_id TEXT NOT NULL,
+                        PRIMARY KEY (execution_id, successor_bundle_id),
+                        UNIQUE (execution_id, predecessor_bundle_id),
+                        FOREIGN KEY (execution_id)
+                            REFERENCES executions(execution_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_run_bundle_continuation_predecessor_v1
+                        ON run_bundle_continuation_links_v1(
+                            execution_id,
+                            predecessor_run_id,
+                            predecessor_bundle_id
+                        );
+                    """
                 )
-            check = connection.execute("PRAGMA quick_check").fetchone()[0]
-            if check != "ok":
-                raise SQLiteContextV2StoreIntegrityError(
-                    f"SQLite quick_check failed: {check}"
-                )
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+                self._upgrade_provider_request_leases(connection)
+                self._validate_provider_request_lease_heads(connection)
+                self._validate_provider_request_evidence(connection)
+                versions = {
+                    int(row[0])
+                    for row in connection.execute("SELECT version FROM context_v2_schema")
+                }
+                if versions != {1, 2}:
+                    raise SQLiteContextV2StoreIntegrityError(
+                        "SQLite Context V2 schema version is unsupported"
+                    )
+                check = connection.execute("PRAGMA quick_check").fetchone()[0]
+                if check != "ok":
+                    raise SQLiteContextV2StoreIntegrityError(
+                        f"SQLite quick_check failed: {check}"
+                    )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
 
     @contextmanager
     def _transaction(self, *, immediate: bool) -> Iterator[sqlite3.Connection]:
-        access = (
-            _serialized_context_v2_database_access(self.database_path)
-            if immediate
-            else nullcontext()
-        )
-        with access:
+        with serialized_context_v2_database_access(self.database_path):
             connection = self._connect()
             try:
                 connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
@@ -3760,4 +3761,5 @@ __all__ = [
     "SQLiteContextV2StoreError",
     "SQLiteContextV2StoreIntegrityError",
     "open_existing_execution_journal_readonly",
+    "serialized_context_v2_database_access",
 ]
