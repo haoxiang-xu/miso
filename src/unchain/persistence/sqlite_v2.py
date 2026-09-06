@@ -15,7 +15,9 @@ import os
 import re
 import sqlite3
 import tempfile
-from contextlib import contextmanager
+import threading
+import ctypes
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -100,6 +102,9 @@ from unchain.run_bundle_ledger import (
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _MAX_RUN_BUNDLE_LEDGER_ROWS = 10_000
 _MAX_RUN_BUNDLE_PROJECTION_EVENT_ROWS = 50_000
+_WINDOWS_MUTEX_WAIT_MS = 30_000
+_WINDOWS_MUTEXES: dict[str, threading.RLock] = {}
+_WINDOWS_MUTEXES_GUARD = threading.Lock()
 
 
 class SQLiteContextV2StoreError(RuntimeError):
@@ -132,6 +137,49 @@ def _canonical_json_bytes(value: Any) -> bytes:
 
 def _sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+@contextmanager
+def _serialized_context_v2_database_access(
+    database_path: str | os.PathLike[str],
+) -> Iterator[None]:
+    """Serialize Windows Context V2 writers and existing-only snapshots.
+
+    A WAL-mode read-only connection can create a ``-shm`` file, while an
+    immutable connection deliberately skips WAL change detection. The active
+    Windows data plane therefore shares this named mutex across canonical
+    writes and immutable existing-only reads. The mutex has no filesystem
+    representation, so a cold preflight does not create data-plane files.
+    """
+
+    resolved = str(Path(database_path).expanduser().resolve())
+    if os.name != "nt":
+        with _WINDOWS_MUTEXES_GUARD:
+            mutex = _WINDOWS_MUTEXES.setdefault(resolved, threading.RLock())
+        with mutex:
+            yield
+        return
+
+    mutex_name = "Local\\unchain-context-v2-" + _sha256(
+        resolved.casefold().encode("utf-8")
+    )
+    handle = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
+    if not handle:
+        raise SQLiteContextV2StoreError("Windows Context V2 mutex is unavailable")
+    acquired = False
+    try:
+        status = ctypes.windll.kernel32.WaitForSingleObject(
+            handle,
+            _WINDOWS_MUTEX_WAIT_MS,
+        )
+        if status not in {0, 0x80}:  # WAIT_OBJECT_0 / WAIT_ABANDONED
+            raise SQLiteContextV2StoreError("Windows Context V2 mutex timed out")
+        acquired = True
+        yield
+    finally:
+        if acquired:
+            ctypes.windll.kernel32.ReleaseMutex(handle)
+        ctypes.windll.kernel32.CloseHandle(handle)
 
 
 def _exact_non_negative_int(value: object, field_name: str) -> int:
@@ -726,16 +774,22 @@ class SQLiteContextV2Store:
 
     @contextmanager
     def _transaction(self, *, immediate: bool) -> Iterator[sqlite3.Connection]:
-        connection = self._connect()
-        try:
-            connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
-            yield connection
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+        access = (
+            _serialized_context_v2_database_access(self.database_path)
+            if immediate
+            else nullcontext()
+        )
+        with access:
+            connection = self._connect()
+            try:
+                connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+                yield connection
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
 
     @staticmethod
     def _ensure_execution(
@@ -3471,8 +3525,239 @@ class _SQLiteBoundContextV2Repository(
             ) from exc
 
 
+class SQLiteContextV2ReadOnlyJournal(BoundExecutionJournal):
+    """Integrity-verified, existing-only SQLite journal capability.
+
+    This is deliberately narrower than :class:`SQLiteContextV2Store`: opening
+    it never creates the database, object directory, schema, or an execution
+    row.  It exists for preflight paths that must inspect an already-admitted
+    execution without making that execution appear to exist.
+    """
+
+    def __init__(
+        self,
+        *,
+        database_path: str | os.PathLike[str],
+        execution_id: str,
+    ) -> None:
+        super().__init__(execution_id)
+        self._database_path = Path(database_path).expanduser().resolve()
+        if not self._database_path.is_file():
+            raise SQLiteContextV2StoreError(
+                "SQLite Context V2 database is unavailable"
+            )
+        try:
+            with self._connection() as connection:
+                row = connection.execute(
+                    "SELECT 1 FROM executions WHERE execution_id = ?",
+                    (self.execution_id,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise SQLiteContextV2StoreError(
+                "SQLite Context V2 existing execution is unavailable"
+            ) from exc
+        if row is None:
+            raise SQLiteContextV2StoreError(
+                "SQLite Context V2 execution is unavailable"
+            )
+
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        with _serialized_context_v2_database_access(self._database_path):
+            try:
+                has_wal = self._wal_exists()
+                connection = sqlite3.connect(
+                    (
+                        f"{self._database_path.as_uri()}?mode=ro"
+                        if has_wal
+                        else f"{self._database_path.as_uri()}?mode=ro&immutable=1"
+                    ),
+                    uri=True,
+                    timeout=30.0,
+                    isolation_level=None,
+                )
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA foreign_keys = ON")
+                connection.execute("PRAGMA query_only = ON")
+                if has_wal:
+                    # Existing WAL/SHM files let SQLite create a normal,
+                    # point-in-time read transaction without new files. This
+                    # is also the only supported way to include committed WAL
+                    # pages; immutable mode deliberately ignores them.
+                    connection.execute("BEGIN")
+            except sqlite3.Error as exc:
+                raise SQLiteContextV2StoreError(
+                    "SQLite Context V2 read-only connection is unavailable"
+                ) from exc
+            try:
+                yield connection
+            finally:
+                if has_wal:
+                    connection.rollback()
+                connection.close()
+
+    def _wal_exists(self) -> bool:
+        return self._database_path.with_name(
+            f"{self._database_path.name}-wal"
+        ).exists()
+
+    def _event_from_row(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+    ) -> JournalEvent:
+        raw = bytes(row["event_json"])
+        if _sha256(raw) != row["event_sha256"]:
+            raise SQLiteContextV2StoreIntegrityError(
+                "journal event digest changed on disk"
+            )
+        try:
+            decoded = json.loads(raw.decode("utf-8"))
+            event = JournalEvent.from_dict(decoded)
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise SQLiteContextV2StoreIntegrityError(
+                "journal event record is malformed"
+            ) from exc
+        if _canonical_json_bytes(event.to_dict()) != raw:
+            raise SQLiteContextV2StoreIntegrityError("journal event is not canonical")
+        if (
+            event.attempt.generation.execution_id != self.execution_id
+            or event.store_seq != row["store_seq"]
+            or event.event_id != row["event_id"]
+            or event.attempt.generation.generation_id != row["generation_id"]
+            or event.attempt.attempt_id != row["attempt_id"]
+            or event.event_type != row["event_type"]
+            or event.operation.operation_id != row["operation_id"]
+        ):
+            raise SQLiteContextV2StoreIntegrityError(
+                "journal event indexed fields changed"
+            )
+        operation = connection.execute(
+            """
+            SELECT payload_sha256, target_kind, target_key
+            FROM operations
+            WHERE execution_id = ? AND operation_id = ?
+            """,
+            (self.execution_id, event.operation.operation_id),
+        ).fetchone()
+        if (
+            operation is None
+            or operation["payload_sha256"] != event.operation.payload_sha256
+            or operation["target_kind"] != "journal_event"
+            or operation["target_key"] != event.event_id
+        ):
+            raise SQLiteContextV2StoreIntegrityError(
+                "journal operation payload or target changed"
+            )
+        return event
+
+    def append(self, *, request: JournalAppendRequest) -> JournalAppendResult:
+        raise JournalRepositoryError("read-only journal cannot append")
+
+    def read(
+        self,
+        *,
+        after: EventCursor | None = None,
+        limit: int = 100,
+    ) -> JournalPage:
+        limit = _exact_positive_int(limit, "limit")
+        if after is not None and not isinstance(after, EventCursor):
+            raise TypeError("after must be an EventCursor or None")
+        try:
+            with self._connection() as connection:
+                start = 0
+                if after is not None:
+                    row = connection.execute(
+                        """
+                        SELECT event_id FROM events
+                        WHERE execution_id = ? AND store_seq = ?
+                        """,
+                        (self.execution_id, after.store_seq),
+                    ).fetchone()
+                    if row is None or row["event_id"] != after.event_id:
+                        raise JournalScopeError(
+                            "cursor does not belong to this execution scope"
+                        )
+                    start = after.store_seq
+                rows = tuple(
+                    connection.execute(
+                        """
+                        SELECT * FROM events
+                        WHERE execution_id = ? AND store_seq > ?
+                        ORDER BY store_seq
+                        LIMIT ?
+                        """,
+                        (self.execution_id, start, limit + 1),
+                    )
+                )
+                events = tuple(
+                    self._event_from_row(connection, row) for row in rows[:limit]
+                )
+        except sqlite3.Error as exc:
+            raise JournalRepositoryError("SQLite journal read failed") from exc
+        next_cursor = (
+            EventCursor(events[-1].store_seq, events[-1].event_id)
+            if events
+            else after
+        )
+        return JournalPage(events, next_cursor, len(rows) > limit)
+
+    def capture_snapshot(
+        self,
+        *,
+        max_events: int = 10_000,
+        max_bytes: int = 32 * 1024 * 1024,
+    ) -> JournalSnapshot:
+        max_events = _exact_non_negative_int(max_events, "max_events")
+        max_bytes = _exact_non_negative_int(max_bytes, "max_bytes")
+        try:
+            with self._connection() as connection:
+                rows = tuple(
+                    connection.execute(
+                        """
+                        SELECT * FROM events
+                        WHERE execution_id = ?
+                        ORDER BY store_seq
+                        LIMIT ?
+                        """,
+                        (self.execution_id, max_events + 1),
+                    )
+                )
+                if len(rows) > max_events:
+                    raise JournalRepositoryError(
+                        "journal snapshot event limit exceeded"
+                    )
+                events = tuple(
+                    self._event_from_row(connection, row) for row in rows
+                )
+        except sqlite3.Error as exc:
+            raise JournalRepositoryError("SQLite journal snapshot failed") from exc
+        encoded = _canonical_json_bytes([event.to_dict() for event in events])
+        if len(encoded) > max_bytes:
+            raise JournalRepositoryError("journal snapshot byte limit exceeded")
+        return capture_journal_snapshot(
+            execution_id=self.execution_id,
+            events=events,
+        )
+
+
+def open_existing_execution_journal_readonly(
+    *,
+    database_path: str | os.PathLike[str],
+    execution_id: str,
+) -> SQLiteContextV2ReadOnlyJournal:
+    """Open one existing SQLite execution for strict, side-effect-free reads."""
+
+    return SQLiteContextV2ReadOnlyJournal(
+        database_path=database_path,
+        execution_id=execution_id,
+    )
+
+
 __all__ = [
+    "SQLiteContextV2ReadOnlyJournal",
     "SQLiteContextV2Store",
     "SQLiteContextV2StoreError",
     "SQLiteContextV2StoreIntegrityError",
+    "open_existing_execution_journal_readonly",
 ]

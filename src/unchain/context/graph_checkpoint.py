@@ -624,6 +624,7 @@ def locate_graph_execution_plan(
     *,
     generation_id: str,
     orchestration_attempt_id: str,
+    snapshot: JournalSnapshot | None = None,
 ) -> GraphExecutionPlan:
     """Rebuild one exact admitted plan without appending or persisting data."""
 
@@ -639,7 +640,7 @@ def locate_graph_execution_plan(
         "orchestration_attempt_id",
         identifier=True,
     )
-    snapshot = journal.capture_snapshot()
+    snapshot = snapshot or journal.capture_snapshot()
     if snapshot.execution_id != journal.execution_id:
         raise GraphCheckpointError("graph journal snapshot changed execution")
     _admission, plan = _validated_graph_plan_admission(
@@ -649,6 +650,199 @@ def locate_graph_execution_plan(
         orchestration_attempt_id=orchestration_attempt_id,
     )
     return plan
+
+
+@dataclass(frozen=True)
+class GraphInteractionLineageProof:
+    """Closed, read-only evidence for a currently suspended graph interaction.
+
+    The proof binds an immutable admitted plan, its completed prefix, and one
+    still-unresolved interaction in the same journal snapshot.  Consumers can
+    therefore authorize a transport recovery without consulting transient
+    step-resume files or reconstructing graph topology themselves.
+    """
+
+    execution_id: str
+    generation_id: str
+    coordinator_attempt_id: str
+    graph_plan_id: str
+    graph_scope_id: str
+    topology_sha256: str
+    source_step: GraphStepBinding
+    current_step: GraphStepBinding
+    interaction_id: str
+    request_cursor: EventCursor
+    journal_high_water: EventCursor
+    completed_step_indexes: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "execution_id",
+            "generation_id",
+            "coordinator_attempt_id",
+            "graph_plan_id",
+            "graph_scope_id",
+            "interaction_id",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _required_text(
+                    getattr(self, field_name),
+                    field_name,
+                    identifier=True,
+                ),
+            )
+        object.__setattr__(
+            self,
+            "topology_sha256",
+            _sha256(self.topology_sha256, "topology_sha256"),
+        )
+        for field_name in ("source_step", "current_step"):
+            value = getattr(self, field_name)
+            if not isinstance(value, GraphStepBinding):
+                object.__setattr__(
+                    self,
+                    field_name,
+                    GraphStepBinding.from_dict(value),
+                )
+        for field_name in ("request_cursor", "journal_high_water"):
+            value = getattr(self, field_name)
+            if not isinstance(value, EventCursor):
+                object.__setattr__(
+                    self,
+                    field_name,
+                    EventCursor.from_dict(value),
+                )
+        indexes = tuple(self.completed_step_indexes)
+        if any(type(index) is not int or index < 0 for index in indexes):
+            raise ValueError("completed_step_indexes must contain non-negative integers")
+        if indexes != tuple(range(self.current_step.index)):
+            raise ValueError("completed step indexes must be the current-step prefix")
+        object.__setattr__(self, "completed_step_indexes", indexes)
+        if self.source_step.index > self.current_step.index:
+            raise ValueError("source graph step cannot follow the current step")
+        if (
+            self.source_step.attempt.generation.execution_id != self.execution_id
+            or self.current_step.attempt.generation.execution_id != self.execution_id
+            or self.source_step.attempt.generation.generation_id != self.generation_id
+            or self.current_step.attempt.generation.generation_id != self.generation_id
+        ):
+            raise ValueError("graph interaction proof escaped its execution generation")
+
+
+def prove_graph_interaction_lineage(
+    journal: BoundExecutionJournal,
+    *,
+    generation_id: str,
+    coordinator_attempt_id: str,
+    source_attempt_id: str,
+    current_attempt_id: str,
+    interaction_id: str,
+    allow_resolved: bool = False,
+) -> GraphInteractionLineageProof:
+    """Return canonical evidence for one pending graph interaction.
+
+    This function has no append or recovery side effect.  It rejects a source
+    or current attempt outside the unique admitted plan, a non-contiguous
+    completed prefix, resuming interactions, terminal graphs, and
+    planned-but-not-executing future steps.
+
+    ``allow_resolved`` is reserved for reconciliation after canonical ingress
+    committed but before the host receipt was persisted.  It accepts either
+    still-unresolved state or that exact resolved-and-not-resumed state; the
+    caller must still replay through canonical ingress to reject a competing
+    response before mutating host state.
+    """
+
+    if not isinstance(journal, BoundExecutionJournal):
+        raise TypeError("journal must be a BoundExecutionJournal")
+    generation_id = _required_text(generation_id, "generation_id", identifier=True)
+    coordinator_attempt_id = _required_text(
+        coordinator_attempt_id,
+        "coordinator_attempt_id",
+        identifier=True,
+    )
+    source_attempt_id = _required_text(
+        source_attempt_id,
+        "source_attempt_id",
+        identifier=True,
+    )
+    current_attempt_id = _required_text(
+        current_attempt_id,
+        "current_attempt_id",
+        identifier=True,
+    )
+    interaction_id = _required_text(
+        interaction_id,
+        "interaction_id",
+        identifier=True,
+    )
+    snapshot = journal.capture_snapshot()
+    plan = locate_graph_execution_plan(
+        journal,
+        generation_id=generation_id,
+        orchestration_attempt_id=coordinator_attempt_id,
+        snapshot=snapshot,
+    )
+    source_steps = tuple(
+        step for step in plan.steps if step.attempt.attempt_id == source_attempt_id
+    )
+    current_steps = tuple(
+        step for step in plan.steps if step.attempt.attempt_id == current_attempt_id
+    )
+    if len(source_steps) != 1 or len(current_steps) != 1:
+        raise GraphCheckpointError(
+            "graph interaction lineage does not name one admitted graph step"
+        )
+    source_step = source_steps[0]
+    current_step = current_steps[0]
+    if source_step.index > current_step.index:
+        raise GraphCheckpointError("graph interaction lineage moves backwards")
+
+    scan = JournalGraphCheckpointRepository(journal).scan(plan, snapshot=snapshot)
+    recovery = scan.recovery
+    if recovery.terminal_status is not None:
+        raise GraphCheckpointError("graph interaction lineage is terminal")
+    active = scan.active_interactions.get(current_step.index)
+    if (
+        active is None
+        or active.interaction_id != interaction_id
+        or active.resume_receipt is not None
+        or (not allow_resolved and active.resolution_cursor is not None)
+    ):
+        raise GraphCheckpointError(
+            "graph interaction lineage has no exact unresolved interaction"
+        )
+    expected_step_index = (
+        recovery.resume_ready_step_index
+        if active.resolution_cursor is not None
+        else recovery.suspended_step_index
+    )
+    if expected_step_index != current_step.index:
+        raise GraphCheckpointError(
+            "graph interaction lineage is not the expected pending step"
+        )
+    if len(recovery.completed_steps) != current_step.index:
+        raise GraphCheckpointError(
+            "graph interaction lineage completed prefix is not current"
+        )
+    return GraphInteractionLineageProof(
+        execution_id=plan.execution_id,
+        generation_id=plan.orchestration_attempt.generation.generation_id,
+        coordinator_attempt_id=plan.orchestration_attempt.attempt_id,
+        graph_plan_id=plan.plan_id,
+        graph_scope_id=plan.scope_id,
+        topology_sha256=plan.topology_sha256,
+        source_step=source_step,
+        current_step=current_step,
+        interaction_id=interaction_id,
+        request_cursor=active.request_cursor,
+        journal_high_water=recovery.last_cursor,
+        completed_step_indexes=tuple(
+            completion.step.index for completion in recovery.completed_steps
+        ),
+    )
 
 
 class JournalGraphCheckpointRepository:
@@ -811,8 +1005,13 @@ class JournalGraphCheckpointRepository:
             resource_refs=(completion.output_artifact.ref,),
         )
 
-    def scan(self, plan: GraphExecutionPlan) -> _GraphScan:
-        snapshot = self.journal.capture_snapshot()
+    def scan(
+        self,
+        plan: GraphExecutionPlan,
+        *,
+        snapshot: JournalSnapshot | None = None,
+    ) -> _GraphScan:
+        snapshot = snapshot or self.journal.capture_snapshot()
         if snapshot.execution_id != plan.execution_id or snapshot.high_water is None:
             raise GraphCheckpointError("graph journal snapshot is unavailable")
         events = tuple(snapshot.events)
@@ -1742,6 +1941,7 @@ __all__ = [
     "GraphCheckpointError",
     "GraphCheckpointService",
     "GraphExecutionPlan",
+    "GraphInteractionLineageProof",
     "GraphRecovery",
     "GraphStepBinding",
     "GraphStepCompletion",
@@ -1752,4 +1952,5 @@ __all__ = [
     "GraphTerminalStatus",
     "JournalGraphCheckpointRepository",
     "locate_graph_execution_plan",
+    "prove_graph_interaction_lineage",
 ]

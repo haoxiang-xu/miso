@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import multiprocessing
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
@@ -20,6 +21,7 @@ from unchain.memory import (
     load_session_snapshot,
     save_session_snapshot,
 )
+import unchain.memory.qdrant as qdrant_module
 
 
 class _LegacySessionStore:
@@ -317,3 +319,30 @@ def test_json_atomic_write_preserves_previous_state_on_serialization_failure(tmp
         revision=1,
     )
     assert list(tmp_path.glob(".atomic.json.*.tmp")) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows replacement behavior")
+def test_json_atomic_write_retries_transient_windows_destination_handle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = JsonFileSessionStore(tmp_path)
+    original_replace = qdrant_module.os.replace
+    attempts = 0
+    delays: list[float] = []
+
+    def transient_replace(source, destination):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError(13, "Access is denied", str(destination))
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(qdrant_module.os, "replace", transient_replace)
+    monkeypatch.setattr(qdrant_module.time, "sleep", delays.append)
+
+    store.save("windows-replace", {"saved": True})
+
+    assert attempts == 3
+    assert delays == [0.01, 0.02]
+    assert store.load("windows-replace") == {"saved": True}

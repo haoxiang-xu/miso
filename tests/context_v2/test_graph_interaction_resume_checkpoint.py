@@ -11,8 +11,10 @@ from unchain.context.graph_checkpoint import (
     GraphCheckpointError,
     GraphCheckpointService,
     GraphExecutionPlan,
+    GraphInteractionLineageProof,
     GraphStepBinding,
     JournalGraphCheckpointRepository,
+    prove_graph_interaction_lineage,
 )
 from unchain.context.handoff import DurableHandoffRecorder, HandoffService
 from unchain.context.ingress import (
@@ -234,6 +236,192 @@ def test_resolution_becomes_resume_ready_and_admission_becomes_resuming(tmp_path
     with pytest.raises(GraphCheckpointError, match="already resuming"):
         service.start_step(plan, 0)
 
+
+def test_lineage_proof_is_read_only_and_requires_current_unresolved_interaction(
+    tmp_path,
+):
+    _store, journal, projectors, sinks, service, plan = _bootstrap(tmp_path)
+    request = _request(sinks[STEP], INTERACTION_ID, 1)
+    before = journal.capture_snapshot()
+
+    proof = prove_graph_interaction_lineage(
+        journal,
+        generation_id=GENERATION.generation_id,
+        coordinator_attempt_id=ORCHESTRATION.attempt_id,
+        source_attempt_id=STEP.attempt_id,
+        current_attempt_id=STEP.attempt_id,
+        interaction_id=INTERACTION_ID,
+    )
+
+    assert isinstance(proof, GraphInteractionLineageProof)
+    assert proof.execution_id == GENERATION.execution_id
+    assert proof.generation_id == GENERATION.generation_id
+    assert proof.coordinator_attempt_id == ORCHESTRATION.attempt_id
+    assert proof.graph_plan_id == plan.plan_id
+    assert proof.graph_scope_id == plan.scope_id
+    assert proof.source_step == plan.steps[0]
+    assert proof.current_step == plan.steps[0]
+    assert proof.interaction_id == INTERACTION_ID
+    assert proof.request_cursor == request.cursor
+    assert proof.completed_step_indexes == ()
+    assert journal.capture_snapshot() == before
+
+    with pytest.raises(GraphCheckpointError, match="admitted graph step"):
+        prove_graph_interaction_lineage(
+            journal,
+            generation_id=GENERATION.generation_id,
+            coordinator_attempt_id=ORCHESTRATION.attempt_id,
+            source_attempt_id=ORCHESTRATION.attempt_id,
+            current_attempt_id=STEP.attempt_id,
+            interaction_id=INTERACTION_ID,
+        )
+
+    _resolve(projectors[STEP], sinks[STEP], INTERACTION_ID)
+    with pytest.raises(GraphCheckpointError, match="exact unresolved interaction"):
+        prove_graph_interaction_lineage(
+            journal,
+            generation_id=GENERATION.generation_id,
+            coordinator_attempt_id=ORCHESTRATION.attempt_id,
+            source_attempt_id=STEP.attempt_id,
+            current_attempt_id=STEP.attempt_id,
+            interaction_id=INTERACTION_ID,
+        )
+
+
+def test_lineage_proof_accepts_only_current_step_after_completed_intermediary(
+    tmp_path,
+):
+    store, journal, projectors, sinks, service = _open(tmp_path)
+    middle = AttemptRef(GENERATION, "graph-resume-middle")
+    current = AttemptRef(GENERATION, "graph-resume-current")
+    artifacts = service.artifacts
+    for attempt in (middle, current):
+        projectors[attempt] = CanonicalSemanticEventProjector(
+            attempt=attempt,
+            artifacts=artifacts,
+            payload_sanitizer=lambda _event_type, payload: payload,
+        )
+        sinks[attempt] = DurableEventSink(journal, attempt, projectors[attempt])
+    seed = ContextInputIngress(
+        attempt=ORCHESTRATION,
+        projector=projectors[ORCHESTRATION],
+        sink=sinks[ORCHESTRATION],
+    ).persist(
+        HostResolvedCurrentInput(
+            attempt=ORCHESTRATION,
+            content="run a graph with an ordinary intermediary",
+        )
+    )
+    plan = GraphExecutionPlan(
+        orchestration_attempt=ORCHESTRATION,
+        topology_sha256=_digest("graph-resume-intermediary-topology"),
+        initial_input_cursor=seed.cursor,
+        steps=(
+            GraphStepBinding(
+                index=0,
+                node_id="source",
+                attempt=STEP,
+                source_attempt=ORCHESTRATION,
+                provider="openai",
+                model="source-model",
+                configuration_sha256=_digest("source-config"),
+            ),
+            GraphStepBinding(
+                index=1,
+                node_id="middle",
+                attempt=middle,
+                source_attempt=STEP,
+                provider="openai",
+                model="middle-model",
+                configuration_sha256=_digest("middle-config"),
+            ),
+            GraphStepBinding(
+                index=2,
+                node_id="current",
+                attempt=current,
+                source_attempt=middle,
+                provider="openai",
+                model="current-model",
+                configuration_sha256=_digest("current-config"),
+            ),
+        ),
+    )
+    service.admit(plan)
+    service.start_step(plan, 0)
+    source_request = _request(sinks[STEP], "source-interaction", 1)
+    source_resolution = _resolve(
+        projectors[STEP],
+        sinks[STEP],
+        "source-interaction",
+    )
+    service.resume_step(
+        plan,
+        0,
+        interaction_id="source-interaction",
+        request_cursor=source_request.cursor,
+        resolution_cursor=source_resolution.cursor,
+    )
+
+    def complete(attempt, *, sequence: int) -> None:
+        for event_type, payload in (
+            ("run_started", {"status": "running"}),
+            ("final_message", {"content": f"output-{sequence}"}),
+            ("run_completed", {"status": "completed"}),
+        ):
+            sinks[attempt](
+                {
+                    "type": event_type,
+                    "run_id": attempt.attempt_id,
+                    "iteration": sequence,
+                    **payload,
+                }
+            )
+
+    complete(STEP, sequence=1)
+    assert len(service.recover(plan).completed_steps) == 1
+    service.start_step(plan, 1)
+    complete(middle, sequence=2)
+    assert len(service.recover(plan).completed_steps) == 2
+    service.start_step(plan, 2)
+    current_request = sinks[current](
+        {
+            "type": "interaction_requested",
+            "run_id": current.attempt_id,
+            "iteration": 3,
+            "interaction_id": "current-interaction",
+            "interaction_request": {
+                "interaction_id": "current-interaction",
+                "kind": "human_input",
+                "question": "Continue?",
+            },
+        }
+    )
+    assert current_request is not None
+    before = journal.capture_snapshot()
+
+    proof = prove_graph_interaction_lineage(
+        journal,
+        generation_id=GENERATION.generation_id,
+        coordinator_attempt_id=ORCHESTRATION.attempt_id,
+        source_attempt_id=STEP.attempt_id,
+        current_attempt_id=current.attempt_id,
+        interaction_id="current-interaction",
+    )
+
+    assert proof.source_step == plan.steps[0]
+    assert proof.current_step == plan.steps[2]
+    assert proof.completed_step_indexes == (0, 1)
+    assert proof.request_cursor == current_request.cursor
+    assert journal.capture_snapshot() == before
+    with pytest.raises(GraphCheckpointError):
+        prove_graph_interaction_lineage(
+            journal,
+            generation_id=GENERATION.generation_id,
+            coordinator_attempt_id=ORCHESTRATION.attempt_id,
+            source_attempt_id=STEP.attempt_id,
+            current_attempt_id=middle.attempt_id,
+            interaction_id="current-interaction",
+        )
 
 def test_canonical_resolution_supersedes_unadmitted_malformed_legacy_cursor(
     tmp_path,

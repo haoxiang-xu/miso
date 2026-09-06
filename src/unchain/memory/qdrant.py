@@ -845,7 +845,18 @@ class JsonFileSessionStore:
                 temp_file.write(serialized)
                 temp_file.flush()
                 os.fsync(temp_file.fileno())
-            os.replace(temp_path, path)
+            # Windows refuses a replace while a just-closed reader still owns
+            # the destination. The session and lease locks keep writers
+            # serialized; this bounded retry only waits for that OS handle to
+            # drain and still exposes a persistent access failure.
+            for retry_index in range(5):
+                try:
+                    os.replace(temp_path, path)
+                    break
+                except PermissionError:
+                    if os.name != "nt" or retry_index == 4:
+                        raise
+                    time.sleep(0.01 * (retry_index + 1))
             if os.name != "nt":
                 os.chmod(path, 0o600)
                 directory_fd = os.open(path.parent, os.O_RDONLY)
