@@ -94,3 +94,42 @@ def test_legacy_project_then_append_stays_valid_and_replays(tmp_path):
     replay = _ingress(projectors, sinks).persist(_input("vue"), precondition=_precondition(journal))
     assert replay.duplicate is True
     assert replay.event == legacy.event
+
+
+def test_read_only_journal_reads_back_the_accepted_artifact_without_files(tmp_path):
+    from unchain.persistence.sqlite_v2 import open_existing_execution_journal_readonly
+
+    _, journal, projectors, sinks, _, plan = fixture._bootstrap(tmp_path)
+    fixture._request(sinks[fixture.STEP], fixture.INTERACTION_ID, 1)
+    accepted = _ingress(projectors, sinks).persist(
+        _input("vue"), precondition=_precondition(journal)
+    )
+    database = tmp_path / "memory_v2" / "context_v2.sqlite3"
+    objects = tmp_path / "memory_v2" / "objects"
+    reader = open_existing_execution_journal_readonly(
+        database_path=database,
+        execution_id=fixture.GENERATION.execution_id,
+        object_directory=objects,
+    )
+    from unchain.journal.models import ArtifactRef, ResourceRef
+
+    payload = accepted.event.payload
+    artifact = ArtifactRef(
+        ref=ResourceRef.from_dict(payload["content_ref"]),
+        media_type="application/json",
+        byte_length=int(payload["content_bytes"]),
+        sha256=str(payload["content_sha256"]),
+        preview=str(payload.get("preview") or ""),
+    )
+    before = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
+    content = reader.read_artifact_full_verified(artifact=artifact)
+    after = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
+    assert after == before, f"read created {after - before}"
+    import json
+
+    decoded = json.loads(content.decode("utf-8"))
+    assert decoded == {
+        "interaction_id": fixture.INTERACTION_ID,
+        "response": {"answer": "vue"},
+        "submitted_by": "user",
+    }

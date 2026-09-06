@@ -3724,9 +3724,15 @@ class SQLiteContextV2ReadOnlyJournal(BoundExecutionJournal):
         *,
         database_path: str | os.PathLike[str],
         execution_id: str,
+        object_directory: str | os.PathLike[str] | None = None,
     ) -> None:
         super().__init__(execution_id)
         self._database_path = Path(database_path).expanduser().resolve()
+        self._object_directory = (
+            Path(object_directory).expanduser().resolve()
+            if object_directory is not None
+            else None
+        )
         if not self._database_path.is_file():
             raise SQLiteContextV2StoreError(
                 "SQLite Context V2 database is unavailable"
@@ -3896,17 +3902,98 @@ class SQLiteContextV2ReadOnlyJournal(BoundExecutionJournal):
             events=events,
         )
 
+    def read_artifact_full_verified(self, *, artifact: ArtifactRef) -> bytes:
+        """Verify and return one artifact's bytes without any write.
+
+        Requires ``object_directory`` to have been supplied at construction.
+        Verifies the artifact row against ``artifact`` exactly, then verifies
+        the object bytes against the row's digest and length before
+        returning them.
+        """
+
+        if self._object_directory is None:
+            raise SQLiteContextV2StoreError(
+                "read-only journal has no object directory"
+            )
+        if not isinstance(artifact, ArtifactRef):
+            raise TypeError("artifact must be an ArtifactRef")
+        try:
+            with self._connection() as connection:
+                row = connection.execute(
+                    """
+                    SELECT * FROM artifacts
+                    WHERE execution_id = ? AND artifact_id = ? AND revision = ?
+                    """,
+                    (
+                        self.execution_id,
+                        artifact.ref.resource_id,
+                        artifact.ref.revision,
+                    ),
+                ).fetchone()
+                if row is None:
+                    raise SQLiteContextV2StoreError(
+                        "artifact does not belong to the bound execution"
+                    )
+                raw = bytes(row["artifact_json"])
+                if _sha256(raw) != row["artifact_record_sha256"]:
+                    raise SQLiteContextV2StoreIntegrityError(
+                        "artifact descriptor digest changed"
+                    )
+                try:
+                    decoded = json.loads(raw.decode("utf-8"))
+                    stored = ArtifactRef.from_dict(decoded)
+                except (
+                    UnicodeDecodeError,
+                    json.JSONDecodeError,
+                    TypeError,
+                    ValueError,
+                ) as exc:
+                    raise SQLiteContextV2StoreIntegrityError(
+                        "artifact descriptor is malformed"
+                    ) from exc
+                if _canonical_json_bytes(stored.to_dict()) != raw or stored != artifact:
+                    raise SQLiteContextV2StoreIntegrityError(
+                        "artifact descriptor disagrees with durable metadata"
+                    )
+                object_row = connection.execute(
+                    "SELECT byte_length FROM objects WHERE sha256 = ?",
+                    (stored.sha256,),
+                ).fetchone()
+                if (
+                    object_row is None
+                    or object_row["byte_length"] != stored.byte_length
+                ):
+                    raise SQLiteContextV2StoreIntegrityError(
+                        "artifact object metadata is missing or changed"
+                    )
+        except sqlite3.Error as exc:
+            raise ContextRepositoryError("SQLite artifact read failed") from exc
+        object_path = self._object_directory / stored.sha256
+        try:
+            content = object_path.read_bytes()
+        except OSError as exc:
+            raise SQLiteContextV2StoreIntegrityError(
+                "artifact object is missing or unreadable"
+            ) from exc
+        if len(content) != stored.byte_length or _sha256(content) != stored.sha256:
+            raise SQLiteContextV2StoreIntegrityError(
+                "artifact object length or digest changed"
+            )
+        return content
+
 
 def open_existing_execution_journal_readonly(
     *,
     database_path: str | os.PathLike[str],
     execution_id: str,
+    object_directory: str | os.PathLike[str] | None = None,
 ) -> SQLiteContextV2ReadOnlyJournal:
     """Open one existing SQLite execution for strict, side-effect-free reads."""
 
     return SQLiteContextV2ReadOnlyJournal(
         database_path=database_path,
         execution_id=execution_id,
+        object_directory=object_directory,
     )
 
 
