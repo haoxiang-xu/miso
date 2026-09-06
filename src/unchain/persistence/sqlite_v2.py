@@ -764,6 +764,10 @@ class SQLiteContextV2Store:
 
     @staticmethod
     def _fsync_directory(path: Path) -> None:
+        # Windows cannot open directories with os.open. Object contents are
+        # already fsynced before publication; directory fsync is POSIX-only.
+        if os.name == "nt":
+            return
         descriptor = os.open(path, os.O_RDONLY)
         try:
             os.fsync(descriptor)
