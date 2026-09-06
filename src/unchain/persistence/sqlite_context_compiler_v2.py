@@ -37,7 +37,7 @@ from unchain.journal import (
 )
 from unchain.journal.models import _required_text
 
-from .sqlite_v2 import SQLiteContextV2Store
+from .sqlite_v2 import SQLiteContextV2Store, serialized_context_v2_database_access
 
 
 _SCHEMA_VERSION = 1
@@ -195,125 +195,127 @@ class SQLiteContextCompilerV2Store:
 
     @contextmanager
     def _transaction(self, *, immediate: bool) -> Iterator[sqlite3.Connection]:
-        connection = self._connect()
-        try:
-            connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
-            yield connection
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+        with serialized_context_v2_database_access(self.database_path):
+            connection = self._connect()
+            try:
+                connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+                yield connection
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
 
     def _initialize(self) -> None:
-        connection = self._connect()
-        try:
-            mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
-            if str(mode).casefold() != "wal":
+        with serialized_context_v2_database_access(self.database_path):
+            connection = self._connect()
+            try:
+                mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+                if str(mode).casefold() != "wal":
+                    raise SQLiteContextCompilerV2IntegrityError(
+                        "SQLite refused WAL journal mode"
+                    )
+                connection.executescript(
+                    """
+                    BEGIN IMMEDIATE;
+
+                    CREATE TABLE IF NOT EXISTS context_compiler_v2_schema (
+                        version INTEGER PRIMARY KEY,
+                        applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    );
+                    INSERT OR IGNORE INTO context_compiler_v2_schema(version)
+                    VALUES (1);
+
+                    CREATE TABLE IF NOT EXISTS checkpoints (
+                        execution_id TEXT NOT NULL,
+                        checkpoint_id TEXT NOT NULL,
+                        revision INTEGER NOT NULL CHECK(revision = 1),
+                        preparation_id TEXT NOT NULL,
+                        operation_id TEXT NOT NULL,
+                        operation_payload_sha256 TEXT NOT NULL,
+                        semantic_json BLOB NOT NULL,
+                        semantic_sha256 TEXT NOT NULL,
+                        source_start_seq INTEGER NOT NULL CHECK(source_start_seq >= 1),
+                        source_start_event_id TEXT NOT NULL,
+                        source_end_seq INTEGER NOT NULL CHECK(source_end_seq >= source_start_seq),
+                        source_end_event_id TEXT NOT NULL,
+                        artifact_json BLOB NOT NULL,
+                        artifact_sha256 TEXT NOT NULL,
+                        status TEXT NOT NULL CHECK(status IN ('prepared', 'committed')),
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        committed_at TEXT,
+                        PRIMARY KEY (execution_id, checkpoint_id, revision),
+                        UNIQUE (execution_id, preparation_id),
+                        UNIQUE (execution_id, operation_id),
+                        FOREIGN KEY (execution_id)
+                            REFERENCES executions(execution_id),
+                        FOREIGN KEY (execution_id, operation_id)
+                            REFERENCES operations(execution_id, operation_id),
+                        FOREIGN KEY (execution_id, source_start_seq)
+                            REFERENCES events(execution_id, store_seq),
+                        FOREIGN KEY (execution_id, source_end_seq)
+                            REFERENCES events(execution_id, store_seq)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_checkpoints_source_range
+                    ON checkpoints(execution_id, source_start_seq, source_end_seq);
+
+                    CREATE TABLE IF NOT EXISTS context_builds (
+                        execution_id TEXT NOT NULL,
+                        build_id TEXT NOT NULL,
+                        generation_id TEXT NOT NULL,
+                        attempt_id TEXT NOT NULL,
+                        operation_id TEXT NOT NULL,
+                        operation_payload_sha256 TEXT NOT NULL,
+                        trigger_store_seq INTEGER NOT NULL CHECK(trigger_store_seq >= 1),
+                        trigger_event_id TEXT NOT NULL,
+                        semantic_sha256 TEXT NOT NULL,
+                        envelope_json BLOB NOT NULL,
+                        envelope_sha256 TEXT NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (execution_id, build_id),
+                        UNIQUE (execution_id, operation_id),
+                        UNIQUE (execution_id, trigger_store_seq, trigger_event_id),
+                        FOREIGN KEY (execution_id)
+                            REFERENCES executions(execution_id),
+                        FOREIGN KEY (execution_id, operation_id)
+                            REFERENCES operations(execution_id, operation_id),
+                        FOREIGN KEY (execution_id, trigger_store_seq)
+                            REFERENCES events(execution_id, store_seq)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_context_builds_latest
+                    ON context_builds(
+                        execution_id, generation_id, trigger_store_seq DESC, build_id
+                    );
+
+                    COMMIT;
+                    """
+                )
+                versions = {
+                    int(row[0])
+                    for row in connection.execute(
+                        "SELECT version FROM context_compiler_v2_schema"
+                    )
+                }
+                if versions != {_SCHEMA_VERSION}:
+                    raise SQLiteContextCompilerV2IntegrityError(
+                        "SQLite compiler-state schema version is unsupported"
+                    )
+                if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                    raise SQLiteContextCompilerV2IntegrityError(
+                        "SQLite compiler-state quick_check failed"
+                    )
+                connection.commit()
+            except sqlite3.Error as error:
+                connection.rollback()
                 raise SQLiteContextCompilerV2IntegrityError(
-                    "SQLite refused WAL journal mode"
-                )
-            connection.executescript(
-                """
-                BEGIN IMMEDIATE;
-
-                CREATE TABLE IF NOT EXISTS context_compiler_v2_schema (
-                    version INTEGER PRIMARY KEY,
-                    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                INSERT OR IGNORE INTO context_compiler_v2_schema(version)
-                VALUES (1);
-
-                CREATE TABLE IF NOT EXISTS checkpoints (
-                    execution_id TEXT NOT NULL,
-                    checkpoint_id TEXT NOT NULL,
-                    revision INTEGER NOT NULL CHECK(revision = 1),
-                    preparation_id TEXT NOT NULL,
-                    operation_id TEXT NOT NULL,
-                    operation_payload_sha256 TEXT NOT NULL,
-                    semantic_json BLOB NOT NULL,
-                    semantic_sha256 TEXT NOT NULL,
-                    source_start_seq INTEGER NOT NULL CHECK(source_start_seq >= 1),
-                    source_start_event_id TEXT NOT NULL,
-                    source_end_seq INTEGER NOT NULL CHECK(source_end_seq >= source_start_seq),
-                    source_end_event_id TEXT NOT NULL,
-                    artifact_json BLOB NOT NULL,
-                    artifact_sha256 TEXT NOT NULL,
-                    status TEXT NOT NULL CHECK(status IN ('prepared', 'committed')),
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    committed_at TEXT,
-                    PRIMARY KEY (execution_id, checkpoint_id, revision),
-                    UNIQUE (execution_id, preparation_id),
-                    UNIQUE (execution_id, operation_id),
-                    FOREIGN KEY (execution_id)
-                        REFERENCES executions(execution_id),
-                    FOREIGN KEY (execution_id, operation_id)
-                        REFERENCES operations(execution_id, operation_id),
-                    FOREIGN KEY (execution_id, source_start_seq)
-                        REFERENCES events(execution_id, store_seq),
-                    FOREIGN KEY (execution_id, source_end_seq)
-                        REFERENCES events(execution_id, store_seq)
-                );
-                CREATE INDEX IF NOT EXISTS idx_checkpoints_source_range
-                ON checkpoints(execution_id, source_start_seq, source_end_seq);
-
-                CREATE TABLE IF NOT EXISTS context_builds (
-                    execution_id TEXT NOT NULL,
-                    build_id TEXT NOT NULL,
-                    generation_id TEXT NOT NULL,
-                    attempt_id TEXT NOT NULL,
-                    operation_id TEXT NOT NULL,
-                    operation_payload_sha256 TEXT NOT NULL,
-                    trigger_store_seq INTEGER NOT NULL CHECK(trigger_store_seq >= 1),
-                    trigger_event_id TEXT NOT NULL,
-                    semantic_sha256 TEXT NOT NULL,
-                    envelope_json BLOB NOT NULL,
-                    envelope_sha256 TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (execution_id, build_id),
-                    UNIQUE (execution_id, operation_id),
-                    UNIQUE (execution_id, trigger_store_seq, trigger_event_id),
-                    FOREIGN KEY (execution_id)
-                        REFERENCES executions(execution_id),
-                    FOREIGN KEY (execution_id, operation_id)
-                        REFERENCES operations(execution_id, operation_id),
-                    FOREIGN KEY (execution_id, trigger_store_seq)
-                        REFERENCES events(execution_id, store_seq)
-                );
-                CREATE INDEX IF NOT EXISTS idx_context_builds_latest
-                ON context_builds(
-                    execution_id, generation_id, trigger_store_seq DESC, build_id
-                );
-
-                COMMIT;
-                """
-            )
-            versions = {
-                int(row[0])
-                for row in connection.execute(
-                    "SELECT version FROM context_compiler_v2_schema"
-                )
-            }
-            if versions != {_SCHEMA_VERSION}:
-                raise SQLiteContextCompilerV2IntegrityError(
-                    "SQLite compiler-state schema version is unsupported"
-                )
-            if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
-                raise SQLiteContextCompilerV2IntegrityError(
-                    "SQLite compiler-state quick_check failed"
-                )
-            connection.commit()
-        except sqlite3.Error as error:
-            connection.rollback()
-            raise SQLiteContextCompilerV2IntegrityError(
-                "SQLite compiler-state schema initialization failed"
-            ) from error
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+                    "SQLite compiler-state schema initialization failed"
+                ) from error
+            except BaseException:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
 
     def bind_execution(
         self,
