@@ -15,6 +15,7 @@ from unchain.journal import (
     EventRange,
     JournalAppendResult,
     JournalEvent,
+    JournalSnapshot,
     ResourceRef,
     SemanticEventDraft,
 )
@@ -740,6 +741,7 @@ def prove_graph_interaction_lineage(
     current_attempt_id: str,
     interaction_id: str,
     allow_resolved: bool = False,
+    snapshot: JournalSnapshot | None = None,
 ) -> GraphInteractionLineageProof:
     """Return canonical evidence for one pending graph interaction.
 
@@ -753,6 +755,13 @@ def prove_graph_interaction_lineage(
     still-unresolved state or that exact resolved-and-not-resumed state; the
     caller must still replay through canonical ingress to reject a competing
     response before mutating host state.
+
+    ``snapshot`` lets a caller that already holds an in-transaction
+    :class:`JournalSnapshot` (for example an
+    ``append_with_artifacts`` precondition) reuse it instead of capturing a
+    second, potentially different one. It must belong to ``journal``'s exact
+    execution; a snapshot from a different execution is rejected rather than
+    silently mixed with this call's identity.
     """
 
     if not isinstance(journal, BoundExecutionJournal):
@@ -778,7 +787,12 @@ def prove_graph_interaction_lineage(
         "interaction_id",
         identifier=True,
     )
-    snapshot = journal.capture_snapshot()
+    if snapshot is None:
+        snapshot = journal.capture_snapshot()
+    elif not isinstance(snapshot, JournalSnapshot):
+        raise TypeError("snapshot must be a JournalSnapshot")
+    elif snapshot.execution_id != journal.execution_id:
+        raise GraphCheckpointError("graph journal snapshot changed execution")
     plan = locate_graph_execution_plan(
         journal,
         generation_id=generation_id,

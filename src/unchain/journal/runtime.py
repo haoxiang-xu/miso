@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol
@@ -17,6 +17,7 @@ from .models import (
     JournalEvent,
     JournalPage,
     OperationRef,
+    PendingArtifact,
     ResourceRef,
     ToolExecutionReceiptLookup,
     _freeze_json,
@@ -25,6 +26,7 @@ from .models import (
     _thaw_json,
 )
 from .ports import BoundExecutionJournal, BoundToolReceiptIndex
+from .snapshot import JournalSnapshot
 from .resource_limits import JsonResourceLimits, validate_json_resource
 
 
@@ -155,6 +157,22 @@ class SemanticEventDraft:
             payload=self.payload,
             resource_refs=self.resource_refs,
         )
+
+
+@dataclass(frozen=True)
+class PreparedSemanticEvent:
+    """A draft plus the artifacts that must be claimed atomically with it."""
+
+    draft: SemanticEventDraft
+    artifacts: tuple[PendingArtifact, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.draft, SemanticEventDraft):
+            raise TypeError("draft must be a SemanticEventDraft")
+        artifacts = tuple(self.artifacts)
+        if any(not isinstance(item, PendingArtifact) for item in artifacts):
+            raise TypeError("artifacts must be PendingArtifact records")
+        object.__setattr__(self, "artifacts", artifacts)
 
 
 def _runtime_event_is_ephemeral(event: Mapping[str, Any]) -> bool:
@@ -376,6 +394,47 @@ class DurableEventSink:
             )
         request = draft.to_append_request()
         result = self._journal.append(request=request)
+        if not isinstance(result, JournalAppendResult):
+            raise DurableJournalIntegrityError(
+                "journal append did not return a JournalAppendResult"
+            )
+        if not _same_persisted_event(request, result.event):
+            raise DurableJournalIntegrityError(
+                "persisted event does not match the exact append request"
+            )
+        return result
+
+    def append_prepared(
+        self,
+        prepared: PreparedSemanticEvent,
+        *,
+        precondition: Callable[[JournalSnapshot], None] | None = None,
+    ) -> JournalAppendResult:
+        """Atomically claim ``prepared.artifacts`` and append its draft.
+
+        Falls back to :meth:`append_projected` semantics (no artifact claim,
+        no precondition) is not possible: a journal that cannot provide
+        ``append_with_artifacts`` raises rather than silently splitting the
+        claim and the append into two transactions.
+        """
+
+        if not isinstance(prepared, PreparedSemanticEvent):
+            raise TypeError("prepared must be a PreparedSemanticEvent")
+        draft = prepared.draft
+        if _runtime_event_is_ephemeral({"type": draft.event_type}):
+            raise DurableJournalIntegrityError(
+                "ephemeral events cannot be appended as projected drafts"
+            )
+        if draft.attempt != self._attempt:
+            raise DurableJournalScopeError(
+                "projected event attempt does not match the bound attempt"
+            )
+        request = draft.to_append_request()
+        result = self._journal.append_with_artifacts(
+            request=request,
+            artifacts=prepared.artifacts,
+            precondition=precondition,
+        )
         if not isinstance(result, JournalAppendResult):
             raise DurableJournalIntegrityError(
                 "journal append did not return a JournalAppendResult"
@@ -688,6 +747,7 @@ __all__ = [
     "DurableJournalError",
     "DurableJournalIntegrityError",
     "DurableJournalScopeError",
+    "PreparedSemanticEvent",
     "SemanticEventDraft",
     "SemanticEventProjector",
     "SideEffectRecoveryState",

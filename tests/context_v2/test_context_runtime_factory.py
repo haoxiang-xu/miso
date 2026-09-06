@@ -51,10 +51,11 @@ from unchain.tools.toolkit import Toolkit
 
 
 class _Journal(BoundToolReceiptIndex):
-    def __init__(self, execution_id):
+    def __init__(self, execution_id, *, artifacts=None):
         super().__init__(execution_id)
         self.events = []
         self.operations = {}
+        self._artifacts = artifacts
 
     def append(self, *, request):
         previous = self.operations.get(request.operation.operation_id)
@@ -82,6 +83,21 @@ class _Journal(BoundToolReceiptIndex):
             cursor=EventCursor(event.store_seq, event.event_id),
             event=event,
         )
+
+    def append_with_artifacts(self, *, request, artifacts, precondition=None):
+        previous = self.operations.get(request.operation.operation_id)
+        if previous is not None:
+            return self.append(request=request)
+        if precondition is not None:
+            precondition(self.capture_snapshot())
+        for pending in artifacts:
+            self._artifacts.put(
+                content=pending.content,
+                media_type=pending.media_type,
+                operation=pending.operation,
+                preview=pending.preview,
+            )
+        return self.append(request=request)
 
     def read(self, *, after=None, limit=100):
         start = after.store_seq if after is not None else 0
@@ -135,7 +151,7 @@ class _ArtifactRepository(BoundArtifactRepository):
             return artifact
         digest = hashlib.sha256(content).hexdigest()
         artifact = ArtifactRef(
-            ref=ResourceRef("artifact", f"object-{digest}", 1),
+            ref=ResourceRef("artifact", f"object-{operation.operation_id}", 1),
             media_type=media_type,
             byte_length=len(content),
             sha256=digest,
@@ -144,6 +160,9 @@ class _ArtifactRepository(BoundArtifactRepository):
         self.operations[operation.operation_id] = (operation, artifact)
         self.content[artifact.ref.resource_id] = content
         return artifact
+
+    def artifact_id_for(self, *, logical_kind, logical_key):
+        return f"object-{logical_key}"
 
     def read_verified(self, *, artifact, offset=0, limit=65_536):
         return self.content[artifact.ref.resource_id][offset : offset + limit]
@@ -181,9 +200,10 @@ class _BuildRepository:
 
 
 def _bundle(attempt, *, journal=None):
-    journal = journal or _Journal(attempt.generation.execution_id)
+    repository = _ArtifactRepository(attempt.generation.execution_id)
+    journal = journal or _Journal(attempt.generation.execution_id, artifacts=repository)
     artifacts = ArtifactService(
-        _ArtifactRepository(attempt.generation.execution_id),
+        repository,
         sanitizer=lambda content, media_type: content,
     )
     projector = CanonicalSemanticEventProjector(
