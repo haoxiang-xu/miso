@@ -224,6 +224,81 @@ def _runtime(
     )
 
 
+def test_terminal_http_diagnostic_survives_real_adapter_and_sqlite_reopen(tmp_path):
+    import httpx
+    from openai import BadRequestError
+    from unchain.providers.openai import OpenAIModelIO
+    from unchain.providers.exact_route_transport import OpenAIExactRouteTransport
+    from unchain.providers.durable_turn_runtime import DurableProviderTurnTerminalError
+
+    _, repository, authority = _authority(tmp_path)
+    secret = "PRIVATE_DIAGNOSTIC_SENTINEL"
+    calls = []
+
+    class Responses:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            raise BadRequestError(
+                secret,
+                response=httpx.Response(400, request=httpx.Request("POST", "https://example.invalid/v1/responses")),
+                body={"code": "invalid_function_parameters", "param": "tools[3].parameters", "message": secret},
+            )
+
+    class Client:
+        responses = Responses()
+
+    transport = OpenAIExactRouteTransport(
+        model_io=OpenAIModelIO(model="frontier-model", api_key=secret,
+            client_factory=lambda **kwargs: Client(), default_payloads={}, model_capabilities={}),
+        catalog=_catalog(),
+    )
+    with pytest.raises(DurableProviderTurnTerminalError) as first:
+        _runtime(repository, transport).execute(authority=authority, retry_config=RetryConfig(max_retries=0))
+    assert "HTTP 400" in str(first.value)
+    assert "invalid_function_parameters" in str(first.value)
+    assert "tools[3].parameters" in str(first.value)
+    assert secret not in str(first.value)
+    import traceback
+    assert secret not in "".join(traceback.format_exception(first.value))
+    assert len(calls) == 1
+    reopened = _store(tmp_path).bind_execution(ATTEMPT.generation.execution_id)
+    no_send = _Transport([])
+    with pytest.raises(DurableProviderTurnTerminalError) as recovered:
+        _runtime(reopened, no_send).execute(authority=authority, retry_config=RetryConfig(max_retries=0))
+    assert str(recovered.value) == str(first.value)
+    assert no_send.calls == []
+    assert secret.encode() not in (tmp_path / "memory_v2" / "context_v2.sqlite3").read_bytes()
+
+
+def test_diagnostic_lease_schema_keeps_legacy_bytes_and_rejects_corruption(tmp_path):
+    from unchain.providers.request_lease import ProviderRequestLease
+    from unchain.providers.failure_diagnostic import ProviderFailureDiagnostic
+    from dataclasses import replace
+
+    _, repository, authority = _authority(tmp_path)
+    subject = ProviderRequestSubject(ATTEMPT, ITERATION, authority.envelope.envelope_sha256, "primary", 0)
+    coordinator = ProviderRequestLeaseCoordinator(repository)
+    started = coordinator.claim_initial(attempt=ATTEMPT, iteration=ITERATION,
+        envelope_sha256=subject.envelope_sha256, route="primary",
+        route_sha256=authority.envelope.routes[0].route_sha256,
+        operation=_operation("diagnostic-legacy-claim", "6"))
+    old_bytes = json.dumps(started.to_dict(), sort_keys=True)
+    assert started.to_dict()["schema"] == "unchain.provider_request_lease.v2"
+    assert json.dumps(ProviderRequestLease.from_durable_dict(started.to_dict()).to_dict(), sort_keys=True) == old_bytes
+    failed = coordinator.record_failure(started, classification="non_retryable",
+        retryable=False, visible_output=False, operation=_operation("diagnostic-failure", "5"),
+        failure_diagnostic=ProviderFailureDiagnostic(401, "invalid_api_key"))
+    assert failed.to_dict()["schema"] == "unchain.provider_request_lease.v3"
+    assert ProviderRequestLease.from_durable_dict(failed.to_dict()) == failed
+    with pytest.raises(ValueError):
+        replace(started, failure_diagnostic=failed.failure_diagnostic)
+    for change in ({"failure_diagnostic": None}, {"unexpected": True}, {"schema": "unchain.provider_request_lease.v2"}):
+        value = failed.to_dict()
+        value.update(change)
+        with pytest.raises((TypeError, ValueError)):
+            ProviderRequestLease.from_durable_dict(value)
+
+
 @pytest.mark.parametrize(
     ("mode", "status"),
     (

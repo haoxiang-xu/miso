@@ -51,6 +51,7 @@ from .physical_send import (
     provider_physical_ordinal,
 )
 from .wire_envelope import ProviderWireEnvelope, ProviderWireRoute
+from .failure_diagnostic import ProviderFailureDiagnostic
 
 
 def _provider_attempt_completed_at() -> str:
@@ -93,10 +94,16 @@ class DurableProviderTurnTerminalError(DurableProviderTurnError):
 
     code = "durable_provider_turn_terminal_failed"
 
-    def __init__(self, classification: str) -> None:
+    def __init__(
+        self,
+        classification: str,
+        diagnostic: ProviderFailureDiagnostic | None = None,
+    ) -> None:
         self.classification = classification
+        self.diagnostic = diagnostic
         self.__suppress_context__ = True
-        super().__init__(f"{self.code}:{classification}")
+        detail = f"; {diagnostic.summary()}" if diagnostic is not None else ""
+        super().__init__(f"{self.code}:{classification}{detail}")
 
 
 class ExactProviderRouteFailureKind(StrEnum):
@@ -406,6 +413,7 @@ class DurableProviderTurnRuntime:
         *,
         classification: str,
         retryable: bool,
+        diagnostic: ProviderFailureDiagnostic | None = None,
     ) -> ProviderRequestLease:
         operation = _operation(
             subject=lease.subject,
@@ -414,6 +422,10 @@ class DurableProviderTurnRuntime:
                 "classification": classification,
                 "retryable": retryable,
                 "visible_output": False,
+                **(
+                    {"failure_diagnostic": diagnostic.to_dict()}
+                    if diagnostic is not None else {}
+                ),
             },
         )
         try:
@@ -423,6 +435,7 @@ class DurableProviderTurnRuntime:
                 retryable=retryable,
                 visible_output=False,
                 operation=operation,
+                failure_diagnostic=diagnostic,
             )
         except BaseException as exc:
             self._raise_durable(exc)
@@ -661,7 +674,7 @@ class DurableProviderTurnRuntime:
                     and lease.retryable
                     and not lease.visible_output
                 ):
-                    raise DurableProviderTurnTerminalError(lease.classification)
+                    raise DurableProviderTurnTerminalError(lease.classification, lease.failure_diagnostic)
                 previous = lease
                 ordinal += 1
                 if ordinal <= retry_config.max_retries:
@@ -728,14 +741,16 @@ class DurableProviderTurnRuntime:
                         build_run_receipt=build_run_receipt,
                         fallback_parent=failed,
                     )
+                diagnostic = ProviderFailureDiagnostic.from_exception(exc.original)
                 self._record_failure(
                     lease,
                     classification="non_retryable",
                     retryable=False,
+                    diagnostic=diagnostic,
                 )
                 raise DurableProviderTurnTerminalError(
-                    "non_retryable"
-                ) from exc.original
+                    "non_retryable", diagnostic
+                ) from None
             except BaseException as exc:
                 if after_send is not None:
                     after_send(

@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar
 
+from .failure_diagnostic import ProviderFailureDiagnostic
+
 from unchain.journal.models import (
     ArtifactRef,
     AttemptRef,
@@ -296,6 +298,7 @@ class ProviderRequestLease:
     """One revisioned durable state for a unique request subject."""
 
     SCHEMA: ClassVar[str] = "unchain.provider_request_lease.v2"
+    DIAGNOSTIC_SCHEMA: ClassVar[str] = "unchain.provider_request_lease.v3"
 
     subject: ProviderRequestSubject
     route_sha256: str
@@ -307,8 +310,15 @@ class ProviderRequestLease:
     operation: OperationRef
     result_binding: ProviderTurnResultBinding | None = None
     predecessor_sha256: str | None = None
+    failure_diagnostic: ProviderFailureDiagnostic | None = None
 
     def __post_init__(self) -> None:
+        diagnostic = self.failure_diagnostic
+        if type(diagnostic) is dict:
+            diagnostic = ProviderFailureDiagnostic.from_dict(diagnostic)
+        elif diagnostic is not None and type(diagnostic) is not ProviderFailureDiagnostic:
+            raise TypeError("failure diagnostic must be exact or null")
+        object.__setattr__(self, "failure_diagnostic", diagnostic)
         subject = self.subject
         if type(subject) is dict:
             subject = ProviderRequestSubject.from_dict(subject)
@@ -327,6 +337,8 @@ class ProviderRequestLease:
         except (TypeError, ValueError) as exc:
             raise ModelValidationError("status is unsupported") from exc
         object.__setattr__(self, "status", status)
+        if diagnostic is not None and status is not ProviderRequestStatus.FAILED:
+            raise ModelValidationError("only failed leases can contain failure diagnostics")
         object.__setattr__(self, "revision", _positive_revision(self.revision))
         if type(self.visible_output) is not bool:
             raise TypeError("visible_output must be an exact boolean")
@@ -427,7 +439,7 @@ class ProviderRequestLease:
         return _canonical_sha256(self.to_dict())
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        record = {
             "schema": self.SCHEMA,
             "subject": self.subject.to_dict(),
             "route_sha256": self.route_sha256,
@@ -442,6 +454,10 @@ class ProviderRequestLease:
             ),
             "predecessor_sha256": self.predecessor_sha256,
         }
+        if self.failure_diagnostic is not None:
+            record["schema"] = self.DIAGNOSTIC_SCHEMA
+            record["failure_diagnostic"] = self.failure_diagnostic.to_dict()
+        return record
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> ProviderRequestLease:
@@ -461,7 +477,14 @@ class ProviderRequestLease:
                 "predecessor_sha256",
             }
         )
-        raw = _record_data(value, schema=cls.SCHEMA, required=fields)
+        schema = value.get("schema")
+        if schema == cls.DIAGNOSTIC_SCHEMA:
+            fields = fields | {"failure_diagnostic"}
+            if type(value.get("failure_diagnostic")) is not dict:
+                raise ModelValidationError("v3 failure lease requires a diagnostic")
+        else:
+            schema = cls.SCHEMA
+        raw = _record_data(value, schema=schema, required=fields)
         return cls(**{field_name: raw[field_name] for field_name in fields})
 
     @classmethod
@@ -470,7 +493,7 @@ class ProviderRequestLease:
 
         if type(value) is not dict:
             raise TypeError("provider request lease must be an exact dict")
-        if value.get("schema") == cls.SCHEMA:
+        if value.get("schema") in {cls.SCHEMA, cls.DIAGNOSTIC_SCHEMA}:
             return cls.from_dict(value)
         legacy_schema = "unchain.provider_request_lease.v1"
         legacy_fields = frozenset(
@@ -645,6 +668,7 @@ class ProviderRequestLeaseCoordinator:
         retryable: bool,
         visible_output: bool,
         operation: OperationRef,
+        failure_diagnostic: ProviderFailureDiagnostic | None = None,
     ) -> ProviderRequestLease:
         current = self._current(lease)
         if current.status is not ProviderRequestStatus.STARTED:
@@ -666,6 +690,7 @@ class ProviderRequestLeaseCoordinator:
             retryable=retryable,
             classification=classification,
             operation=operation,
+            failure_diagnostic=failure_diagnostic,
         )
         return self._cas(
             expected_revision=current.revision,
