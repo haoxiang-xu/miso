@@ -15,10 +15,12 @@ import os
 import re
 import sqlite3
 import tempfile
+import threading
+import ctypes
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from unchain.context.ports import (
     BoundArtifactRepository,
@@ -37,6 +39,7 @@ from unchain.journal.models import (
     JournalEvent,
     JournalPage,
     OperationRef,
+    PendingArtifact,
     ResourceRef,
     ToolExecutionReceiptLookup,
     _required_text,
@@ -100,6 +103,9 @@ from unchain.run_bundle_ledger import (
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _MAX_RUN_BUNDLE_LEDGER_ROWS = 10_000
 _MAX_RUN_BUNDLE_PROJECTION_EVENT_ROWS = 50_000
+_WINDOWS_MUTEX_WAIT_MS = 30_000
+_WINDOWS_MUTEXES: dict[str, threading.RLock] = {}
+_WINDOWS_MUTEXES_GUARD = threading.Lock()
 
 
 class SQLiteContextV2StoreError(RuntimeError):
@@ -132,6 +138,119 @@ def _canonical_json_bytes(value: Any) -> bytes:
 
 def _sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+@contextmanager
+def serialized_context_v2_database_access(
+    database_path: str | os.PathLike[str],
+) -> Iterator[None]:
+    """Serialize every Context V2 connection lifecycle on one database.
+
+    WAL/SHM files are created by the first connection and deleted by the last
+    closing read-write connection.  Existing-only snapshots decide their
+    connection mode from those files, so the decision and the connection must
+    not interleave with any other open/close.  Every writer, plain reader,
+    initializer, checkpoint, and existing-only reader therefore holds this
+    mutex from open to close.  Never wait on another thread, the network, or a
+    provider while holding it.
+    """
+
+    resolved = str(Path(database_path).expanduser().resolve())
+    if os.name != "nt":
+        with _WINDOWS_MUTEXES_GUARD:
+            mutex = _WINDOWS_MUTEXES.setdefault(resolved, threading.RLock())
+        with mutex:
+            yield
+        return
+
+    mutex_name = "Local\\unchain-context-v2-" + _sha256(
+        resolved.casefold().encode("utf-8")
+    )
+    handle = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
+    if not handle:
+        raise SQLiteContextV2StoreError("Windows Context V2 mutex is unavailable")
+    acquired = False
+    try:
+        status = ctypes.windll.kernel32.WaitForSingleObject(
+            handle,
+            _WINDOWS_MUTEX_WAIT_MS,
+        )
+        if status not in {0, 0x80}:  # WAIT_OBJECT_0 / WAIT_ABANDONED
+            raise SQLiteContextV2StoreError("Windows Context V2 mutex timed out")
+        acquired = True
+        yield
+    finally:
+        if acquired:
+            ctypes.windll.kernel32.ReleaseMutex(handle)
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
+_serialized_context_v2_database_access = serialized_context_v2_database_access
+
+
+def _context_v2_wal_exists(database_path: Path) -> bool:
+    return database_path.with_name(f"{database_path.name}-wal").exists()
+
+
+def _context_v2_shm_exists(database_path: Path) -> bool:
+    return database_path.with_name(f"{database_path.name}-shm").exists()
+
+
+@contextmanager
+def existing_context_v2_readonly_connection(
+    database_path: str | os.PathLike[str],
+    *,
+    probe: Callable[[], bool] | None = None,
+) -> Iterator[sqlite3.Connection]:
+    """Open one existing Context V2 database for a side-effect-free snapshot.
+
+    The WAL probe, the connection mode decision, the read, and the close all
+    happen inside the database mutex, so no other lifecycle participant can
+    create or delete WAL/SHM files in between.  Without a WAL the database
+    file is complete and ``immutable=1`` reads it without creating files.
+    With a WAL and its SHM, ``mode=ro`` starts a normal point-in-time read
+    that also sees committed WAL pages.  A WAL without SHM is a crash
+    leftover: opening it read-only would create the SHM, so it is refused and
+    left to the writer's protected recovery.
+    """
+
+    resolved = Path(database_path).expanduser().resolve()
+    if not resolved.is_file():
+        raise SQLiteContextV2StoreError(
+            "SQLite Context V2 database is unavailable"
+        )
+    with serialized_context_v2_database_access(resolved):
+        has_wal = bool((probe or (lambda: _context_v2_wal_exists(resolved)))())
+        if has_wal and not _context_v2_shm_exists(resolved):
+            raise SQLiteContextV2StoreError(
+                "SQLite Context V2 journal needs recovery"
+            )
+        try:
+            connection = sqlite3.connect(
+                (
+                    f"{resolved.as_uri()}?mode=ro"
+                    if has_wal
+                    else f"{resolved.as_uri()}?mode=ro&immutable=1"
+                ),
+                uri=True,
+                timeout=30.0,
+                isolation_level=None,
+            )
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA query_only = ON")
+            if has_wal:
+                connection.execute("BEGIN")
+        except sqlite3.Error as exc:
+            raise SQLiteContextV2StoreError(
+                "SQLite Context V2 read-only connection is unavailable"
+            ) from exc
+        try:
+            yield connection
+        finally:
+            if has_wal:
+                connection.rollback()
+            connection.close()
 
 
 def _exact_non_negative_int(value: object, field_name: str) -> int:
@@ -397,345 +516,347 @@ class SQLiteContextV2Store:
             )
 
     def _initialize(self) -> None:
-        connection = self._connect()
-        try:
-            existing_versions = self._existing_schema_versions(connection)
-            if existing_versions not in (None, {1}, {1, 2}):
-                raise SQLiteContextV2StoreIntegrityError(
-                    "SQLite Context V2 schema version is unsupported"
-                )
-            mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
-            if str(mode).casefold() != "wal":
-                raise SQLiteContextV2StoreIntegrityError(
-                    "SQLite refused WAL journal mode"
-                )
-            connection.executescript(
-                """
-                BEGIN IMMEDIATE;
-                CREATE TABLE IF NOT EXISTS context_v2_schema (
-                    version INTEGER PRIMARY KEY,
-                    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                INSERT OR IGNORE INTO context_v2_schema(version) VALUES (1);
-                INSERT OR IGNORE INTO context_v2_schema(version) VALUES (2);
-
-                CREATE TABLE IF NOT EXISTS executions (
-                    execution_id TEXT PRIMARY KEY,
-                    next_store_seq INTEGER NOT NULL DEFAULT 1
-                        CHECK(next_store_seq >= 1)
-                );
-
-                CREATE TABLE IF NOT EXISTS operations (
-                    execution_id TEXT NOT NULL,
-                    operation_id TEXT NOT NULL,
-                    payload_sha256 TEXT NOT NULL,
-                    target_kind TEXT NOT NULL,
-                    target_key TEXT NOT NULL,
-                    PRIMARY KEY (execution_id, operation_id),
-                    FOREIGN KEY (execution_id)
-                        REFERENCES executions(execution_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS events (
-                    execution_id TEXT NOT NULL,
-                    store_seq INTEGER NOT NULL CHECK(store_seq >= 1),
-                    event_id TEXT NOT NULL,
-                    generation_id TEXT NOT NULL,
-                    attempt_id TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    operation_id TEXT NOT NULL,
-                    event_json BLOB NOT NULL,
-                    event_sha256 TEXT NOT NULL,
-                    PRIMARY KEY (execution_id, store_seq),
-                    UNIQUE (execution_id, event_id),
-                    UNIQUE (execution_id, operation_id),
-                    FOREIGN KEY (execution_id, operation_id)
-                        REFERENCES operations(execution_id, operation_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS event_receipts (
-                    execution_id TEXT NOT NULL,
-                    store_seq INTEGER NOT NULL,
-                    receipt_kind TEXT NOT NULL,
-                    generation_id TEXT NOT NULL,
-                    attempt_id TEXT NOT NULL,
-                    call_id TEXT,
-                    iteration INTEGER,
-                    PRIMARY KEY (execution_id, store_seq, receipt_kind),
-                    FOREIGN KEY (execution_id, store_seq)
-                        REFERENCES events(execution_id, store_seq)
-                        ON DELETE CASCADE,
-                    CHECK (
-                        (receipt_kind = 'tool_execution'
-                            AND call_id IS NOT NULL AND iteration IS NULL)
-                        OR
-                        (receipt_kind IN ('tool_catalog', 'provider_wire')
-                            AND call_id IS NULL AND iteration IS NOT NULL)
+        with serialized_context_v2_database_access(self.database_path):
+            connection = self._connect()
+            try:
+                existing_versions = self._existing_schema_versions(connection)
+                if existing_versions not in (None, {1}, {1, 2}):
+                    raise SQLiteContextV2StoreIntegrityError(
+                        "SQLite Context V2 schema version is unsupported"
                     )
-                );
-                CREATE INDEX IF NOT EXISTS idx_tool_execution_receipts
-                    ON event_receipts(
-                        execution_id,
-                        generation_id,
-                        attempt_id,
-                        receipt_kind,
-                        call_id,
-                        store_seq
+                mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+                if str(mode).casefold() != "wal":
+                    raise SQLiteContextV2StoreIntegrityError(
+                        "SQLite refused WAL journal mode"
+                    )
+                connection.executescript(
+                    """
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE IF NOT EXISTS context_v2_schema (
+                        version INTEGER PRIMARY KEY,
+                        applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                     );
-                CREATE INDEX IF NOT EXISTS idx_iteration_receipts
-                    ON event_receipts(
-                        execution_id,
-                        generation_id,
-                        attempt_id,
-                        receipt_kind,
-                        iteration,
-                        store_seq
-                    );
+                    INSERT OR IGNORE INTO context_v2_schema(version) VALUES (1);
+                    INSERT OR IGNORE INTO context_v2_schema(version) VALUES (2);
 
-                CREATE TABLE IF NOT EXISTS objects (
-                    sha256 TEXT PRIMARY KEY,
-                    byte_length INTEGER NOT NULL CHECK(byte_length >= 0)
-                );
-
-                CREATE TABLE IF NOT EXISTS artifacts (
-                    execution_id TEXT NOT NULL,
-                    artifact_id TEXT NOT NULL,
-                    revision INTEGER NOT NULL CHECK(revision >= 1),
-                    logical_kind TEXT NOT NULL,
-                    logical_key TEXT NOT NULL,
-                    object_sha256 TEXT NOT NULL,
-                    media_type TEXT NOT NULL,
-                    byte_length INTEGER NOT NULL CHECK(byte_length >= 0),
-                    preview TEXT NOT NULL,
-                    operation_id TEXT NOT NULL,
-                    artifact_json BLOB NOT NULL,
-                    artifact_record_sha256 TEXT NOT NULL,
-                    PRIMARY KEY (execution_id, artifact_id, revision),
-                    UNIQUE (execution_id, logical_kind, logical_key, revision),
-                    UNIQUE (execution_id, operation_id),
-                    FOREIGN KEY (execution_id)
-                        REFERENCES executions(execution_id),
-                    FOREIGN KEY (object_sha256)
-                        REFERENCES objects(sha256),
-                    FOREIGN KEY (execution_id, operation_id)
-                        REFERENCES operations(execution_id, operation_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS provider_request_lease_revisions (
-                    execution_id TEXT NOT NULL,
-                    generation_id TEXT NOT NULL,
-                    attempt_id TEXT NOT NULL,
-                    iteration INTEGER NOT NULL,
-                    envelope_sha256 TEXT NOT NULL,
-                    route TEXT NOT NULL,
-                    retry_ordinal INTEGER NOT NULL,
-                    revision INTEGER NOT NULL CHECK(revision >= 1),
-                    operation_id TEXT NOT NULL,
-                    lease_json BLOB NOT NULL,
-                    lease_sha256 TEXT NOT NULL,
-                    PRIMARY KEY (
-                        execution_id,
-                        generation_id,
-                        attempt_id,
-                        iteration,
-                        envelope_sha256,
-                        route,
-                        retry_ordinal,
-                        revision
-                    ),
-                    UNIQUE (execution_id, operation_id),
-                    FOREIGN KEY (execution_id, operation_id)
-                        REFERENCES operations(execution_id, operation_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS provider_request_lease_heads (
-                    execution_id TEXT NOT NULL,
-                    generation_id TEXT NOT NULL,
-                    attempt_id TEXT NOT NULL,
-                    iteration INTEGER NOT NULL,
-                    envelope_sha256 TEXT NOT NULL,
-                    route TEXT NOT NULL,
-                    retry_ordinal INTEGER NOT NULL,
-                    current_revision INTEGER NOT NULL CHECK(current_revision >= 1),
-                    PRIMARY KEY (
-                        execution_id,
-                        generation_id,
-                        attempt_id,
-                        iteration,
-                        envelope_sha256,
-                        route,
-                        retry_ordinal
-                    ),
-                    FOREIGN KEY (execution_id)
-                        REFERENCES executions(execution_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS provider_turn_result_receipts (
-                    execution_id TEXT NOT NULL,
-                    generation_id TEXT NOT NULL,
-                    attempt_id TEXT NOT NULL,
-                    iteration INTEGER NOT NULL,
-                    envelope_sha256 TEXT NOT NULL,
-                    route TEXT NOT NULL,
-                    retry_ordinal INTEGER NOT NULL,
-                    store_seq INTEGER NOT NULL,
-                    PRIMARY KEY (
-                        execution_id,
-                        generation_id,
-                        attempt_id,
-                        iteration,
-                        envelope_sha256,
-                        route,
-                        retry_ordinal
-                    ),
-                    UNIQUE (execution_id, store_seq),
-                    FOREIGN KEY (execution_id, store_seq)
-                        REFERENCES events(execution_id, store_seq)
-                        ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS run_bundle_receipts_v1 (
-                    execution_id TEXT NOT NULL,
-                    provider_call_id TEXT NOT NULL,
-                    attempt_id TEXT NOT NULL,
-                    root_run_id TEXT NOT NULL,
-                    owner_run_id TEXT NOT NULL,
-                    receipt_json BLOB NOT NULL,
-                    receipt_sha256 TEXT NOT NULL,
-                    PRIMARY KEY (execution_id, provider_call_id),
-                    FOREIGN KEY (execution_id)
-                        REFERENCES executions(execution_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_run_bundle_receipts_v1_root
-                    ON run_bundle_receipts_v1(
-                        execution_id,
-                        root_run_id,
-                        owner_run_id,
-                        attempt_id,
-                        provider_call_id
+                    CREATE TABLE IF NOT EXISTS executions (
+                        execution_id TEXT PRIMARY KEY,
+                        next_store_seq INTEGER NOT NULL DEFAULT 1
+                            CHECK(next_store_seq >= 1)
                     );
 
-                CREATE TABLE IF NOT EXISTS run_bundle_projections_v1 (
-                    execution_id TEXT NOT NULL,
-                    bundle_id TEXT NOT NULL,
-                    revision INTEGER NOT NULL CHECK(revision >= 1),
-                    attempt_id TEXT NOT NULL,
-                    root_run_id TEXT NOT NULL,
-                    run_id TEXT NOT NULL,
-                    bundle_json BLOB NOT NULL,
-                    bundle_digest TEXT NOT NULL,
-                    PRIMARY KEY (execution_id, bundle_id, revision),
-                    FOREIGN KEY (execution_id)
-                        REFERENCES executions(execution_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_run_bundle_projections_v1_root
-                    ON run_bundle_projections_v1(
-                        execution_id,
-                        root_run_id,
-                        run_id,
-                        attempt_id,
-                        bundle_id,
-                        revision
+                    CREATE TABLE IF NOT EXISTS operations (
+                        execution_id TEXT NOT NULL,
+                        operation_id TEXT NOT NULL,
+                        payload_sha256 TEXT NOT NULL,
+                        target_kind TEXT NOT NULL,
+                        target_key TEXT NOT NULL,
+                        PRIMARY KEY (execution_id, operation_id),
+                        FOREIGN KEY (execution_id)
+                            REFERENCES executions(execution_id)
                     );
 
-                CREATE TABLE IF NOT EXISTS run_bundle_projection_details_v1 (
-                    execution_id TEXT NOT NULL,
-                    bundle_id TEXT NOT NULL,
-                    revision INTEGER NOT NULL CHECK(revision >= 1),
-                    projection_hash TEXT NOT NULL,
-                    metric_events_count INTEGER NOT NULL CHECK(metric_events_count >= 0),
-                    metric_events_json BLOB NOT NULL,
-                    metric_events_sha256 TEXT NOT NULL,
-                    PRIMARY KEY (execution_id, bundle_id, revision),
-                    FOREIGN KEY (execution_id)
-                        REFERENCES executions(execution_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_run_bundle_projection_details_v1_hash
-                    ON run_bundle_projection_details_v1(
-                        execution_id,
-                        projection_hash
+                    CREATE TABLE IF NOT EXISTS events (
+                        execution_id TEXT NOT NULL,
+                        store_seq INTEGER NOT NULL CHECK(store_seq >= 1),
+                        event_id TEXT NOT NULL,
+                        generation_id TEXT NOT NULL,
+                        attempt_id TEXT NOT NULL,
+                        event_type TEXT NOT NULL,
+                        operation_id TEXT NOT NULL,
+                        event_json BLOB NOT NULL,
+                        event_sha256 TEXT NOT NULL,
+                        PRIMARY KEY (execution_id, store_seq),
+                        UNIQUE (execution_id, event_id),
+                        UNIQUE (execution_id, operation_id),
+                        FOREIGN KEY (execution_id, operation_id)
+                            REFERENCES operations(execution_id, operation_id)
                     );
 
-                CREATE TABLE IF NOT EXISTS run_bundle_compact_v2 (
-                    execution_id TEXT NOT NULL,
-                    bundle_id TEXT NOT NULL,
-                    revision INTEGER NOT NULL CHECK(revision >= 1),
-                    attempt_id TEXT NOT NULL,
-                    root_run_id TEXT NOT NULL,
-                    run_id TEXT NOT NULL,
-                    bundle_json BLOB NOT NULL,
-                    bundle_digest TEXT NOT NULL,
-                    details_json BLOB NOT NULL,
-                    details_sha256 TEXT NOT NULL,
-                    PRIMARY KEY (execution_id, bundle_id, revision),
-                    FOREIGN KEY (execution_id)
-                        REFERENCES executions(execution_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_run_bundle_compact_v2_root
-                    ON run_bundle_compact_v2(
-                        execution_id,
-                        root_run_id,
-                        run_id,
-                        attempt_id,
-                        bundle_id,
-                        revision
+                    CREATE TABLE IF NOT EXISTS event_receipts (
+                        execution_id TEXT NOT NULL,
+                        store_seq INTEGER NOT NULL,
+                        receipt_kind TEXT NOT NULL,
+                        generation_id TEXT NOT NULL,
+                        attempt_id TEXT NOT NULL,
+                        call_id TEXT,
+                        iteration INTEGER,
+                        PRIMARY KEY (execution_id, store_seq, receipt_kind),
+                        FOREIGN KEY (execution_id, store_seq)
+                            REFERENCES events(execution_id, store_seq)
+                            ON DELETE CASCADE,
+                        CHECK (
+                            (receipt_kind = 'tool_execution'
+                                AND call_id IS NOT NULL AND iteration IS NULL)
+                            OR
+                            (receipt_kind IN ('tool_catalog', 'provider_wire')
+                                AND call_id IS NULL AND iteration IS NOT NULL)
+                        )
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_tool_execution_receipts
+                        ON event_receipts(
+                            execution_id,
+                            generation_id,
+                            attempt_id,
+                            receipt_kind,
+                            call_id,
+                            store_seq
+                        );
+                    CREATE INDEX IF NOT EXISTS idx_iteration_receipts
+                        ON event_receipts(
+                            execution_id,
+                            generation_id,
+                            attempt_id,
+                            receipt_kind,
+                            iteration,
+                            store_seq
+                        );
+
+                    CREATE TABLE IF NOT EXISTS objects (
+                        sha256 TEXT PRIMARY KEY,
+                        byte_length INTEGER NOT NULL CHECK(byte_length >= 0)
                     );
 
-                CREATE TABLE IF NOT EXISTS run_bundle_continuation_links_v1 (
-                    execution_id TEXT NOT NULL,
-                    successor_bundle_id TEXT NOT NULL,
-                    successor_run_id TEXT NOT NULL,
-                    successor_attempt_id TEXT NOT NULL,
-                    predecessor_bundle_id TEXT NOT NULL,
-                    predecessor_run_id TEXT NOT NULL,
-                    PRIMARY KEY (execution_id, successor_bundle_id),
-                    UNIQUE (execution_id, predecessor_bundle_id),
-                    FOREIGN KEY (execution_id)
-                        REFERENCES executions(execution_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_run_bundle_continuation_predecessor_v1
-                    ON run_bundle_continuation_links_v1(
-                        execution_id,
-                        predecessor_run_id,
-                        predecessor_bundle_id
+                    CREATE TABLE IF NOT EXISTS artifacts (
+                        execution_id TEXT NOT NULL,
+                        artifact_id TEXT NOT NULL,
+                        revision INTEGER NOT NULL CHECK(revision >= 1),
+                        logical_kind TEXT NOT NULL,
+                        logical_key TEXT NOT NULL,
+                        object_sha256 TEXT NOT NULL,
+                        media_type TEXT NOT NULL,
+                        byte_length INTEGER NOT NULL CHECK(byte_length >= 0),
+                        preview TEXT NOT NULL,
+                        operation_id TEXT NOT NULL,
+                        artifact_json BLOB NOT NULL,
+                        artifact_record_sha256 TEXT NOT NULL,
+                        PRIMARY KEY (execution_id, artifact_id, revision),
+                        UNIQUE (execution_id, logical_kind, logical_key, revision),
+                        UNIQUE (execution_id, operation_id),
+                        FOREIGN KEY (execution_id)
+                            REFERENCES executions(execution_id),
+                        FOREIGN KEY (object_sha256)
+                            REFERENCES objects(sha256),
+                        FOREIGN KEY (execution_id, operation_id)
+                            REFERENCES operations(execution_id, operation_id)
                     );
-                """
-            )
-            self._upgrade_provider_request_leases(connection)
-            self._validate_provider_request_lease_heads(connection)
-            self._validate_provider_request_evidence(connection)
-            versions = {
-                int(row[0])
-                for row in connection.execute("SELECT version FROM context_v2_schema")
-            }
-            if versions != {1, 2}:
-                raise SQLiteContextV2StoreIntegrityError(
-                    "SQLite Context V2 schema version is unsupported"
+
+                    CREATE TABLE IF NOT EXISTS provider_request_lease_revisions (
+                        execution_id TEXT NOT NULL,
+                        generation_id TEXT NOT NULL,
+                        attempt_id TEXT NOT NULL,
+                        iteration INTEGER NOT NULL,
+                        envelope_sha256 TEXT NOT NULL,
+                        route TEXT NOT NULL,
+                        retry_ordinal INTEGER NOT NULL,
+                        revision INTEGER NOT NULL CHECK(revision >= 1),
+                        operation_id TEXT NOT NULL,
+                        lease_json BLOB NOT NULL,
+                        lease_sha256 TEXT NOT NULL,
+                        PRIMARY KEY (
+                            execution_id,
+                            generation_id,
+                            attempt_id,
+                            iteration,
+                            envelope_sha256,
+                            route,
+                            retry_ordinal,
+                            revision
+                        ),
+                        UNIQUE (execution_id, operation_id),
+                        FOREIGN KEY (execution_id, operation_id)
+                            REFERENCES operations(execution_id, operation_id)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS provider_request_lease_heads (
+                        execution_id TEXT NOT NULL,
+                        generation_id TEXT NOT NULL,
+                        attempt_id TEXT NOT NULL,
+                        iteration INTEGER NOT NULL,
+                        envelope_sha256 TEXT NOT NULL,
+                        route TEXT NOT NULL,
+                        retry_ordinal INTEGER NOT NULL,
+                        current_revision INTEGER NOT NULL CHECK(current_revision >= 1),
+                        PRIMARY KEY (
+                            execution_id,
+                            generation_id,
+                            attempt_id,
+                            iteration,
+                            envelope_sha256,
+                            route,
+                            retry_ordinal
+                        ),
+                        FOREIGN KEY (execution_id)
+                            REFERENCES executions(execution_id)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS provider_turn_result_receipts (
+                        execution_id TEXT NOT NULL,
+                        generation_id TEXT NOT NULL,
+                        attempt_id TEXT NOT NULL,
+                        iteration INTEGER NOT NULL,
+                        envelope_sha256 TEXT NOT NULL,
+                        route TEXT NOT NULL,
+                        retry_ordinal INTEGER NOT NULL,
+                        store_seq INTEGER NOT NULL,
+                        PRIMARY KEY (
+                            execution_id,
+                            generation_id,
+                            attempt_id,
+                            iteration,
+                            envelope_sha256,
+                            route,
+                            retry_ordinal
+                        ),
+                        UNIQUE (execution_id, store_seq),
+                        FOREIGN KEY (execution_id, store_seq)
+                            REFERENCES events(execution_id, store_seq)
+                            ON DELETE CASCADE
+                    );
+
+                    CREATE TABLE IF NOT EXISTS run_bundle_receipts_v1 (
+                        execution_id TEXT NOT NULL,
+                        provider_call_id TEXT NOT NULL,
+                        attempt_id TEXT NOT NULL,
+                        root_run_id TEXT NOT NULL,
+                        owner_run_id TEXT NOT NULL,
+                        receipt_json BLOB NOT NULL,
+                        receipt_sha256 TEXT NOT NULL,
+                        PRIMARY KEY (execution_id, provider_call_id),
+                        FOREIGN KEY (execution_id)
+                            REFERENCES executions(execution_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_run_bundle_receipts_v1_root
+                        ON run_bundle_receipts_v1(
+                            execution_id,
+                            root_run_id,
+                            owner_run_id,
+                            attempt_id,
+                            provider_call_id
+                        );
+
+                    CREATE TABLE IF NOT EXISTS run_bundle_projections_v1 (
+                        execution_id TEXT NOT NULL,
+                        bundle_id TEXT NOT NULL,
+                        revision INTEGER NOT NULL CHECK(revision >= 1),
+                        attempt_id TEXT NOT NULL,
+                        root_run_id TEXT NOT NULL,
+                        run_id TEXT NOT NULL,
+                        bundle_json BLOB NOT NULL,
+                        bundle_digest TEXT NOT NULL,
+                        PRIMARY KEY (execution_id, bundle_id, revision),
+                        FOREIGN KEY (execution_id)
+                            REFERENCES executions(execution_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_run_bundle_projections_v1_root
+                        ON run_bundle_projections_v1(
+                            execution_id,
+                            root_run_id,
+                            run_id,
+                            attempt_id,
+                            bundle_id,
+                            revision
+                        );
+
+                    CREATE TABLE IF NOT EXISTS run_bundle_projection_details_v1 (
+                        execution_id TEXT NOT NULL,
+                        bundle_id TEXT NOT NULL,
+                        revision INTEGER NOT NULL CHECK(revision >= 1),
+                        projection_hash TEXT NOT NULL,
+                        metric_events_count INTEGER NOT NULL CHECK(metric_events_count >= 0),
+                        metric_events_json BLOB NOT NULL,
+                        metric_events_sha256 TEXT NOT NULL,
+                        PRIMARY KEY (execution_id, bundle_id, revision),
+                        FOREIGN KEY (execution_id)
+                            REFERENCES executions(execution_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_run_bundle_projection_details_v1_hash
+                        ON run_bundle_projection_details_v1(
+                            execution_id,
+                            projection_hash
+                        );
+
+                    CREATE TABLE IF NOT EXISTS run_bundle_compact_v2 (
+                        execution_id TEXT NOT NULL,
+                        bundle_id TEXT NOT NULL,
+                        revision INTEGER NOT NULL CHECK(revision >= 1),
+                        attempt_id TEXT NOT NULL,
+                        root_run_id TEXT NOT NULL,
+                        run_id TEXT NOT NULL,
+                        bundle_json BLOB NOT NULL,
+                        bundle_digest TEXT NOT NULL,
+                        details_json BLOB NOT NULL,
+                        details_sha256 TEXT NOT NULL,
+                        PRIMARY KEY (execution_id, bundle_id, revision),
+                        FOREIGN KEY (execution_id)
+                            REFERENCES executions(execution_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_run_bundle_compact_v2_root
+                        ON run_bundle_compact_v2(
+                            execution_id,
+                            root_run_id,
+                            run_id,
+                            attempt_id,
+                            bundle_id,
+                            revision
+                        );
+
+                    CREATE TABLE IF NOT EXISTS run_bundle_continuation_links_v1 (
+                        execution_id TEXT NOT NULL,
+                        successor_bundle_id TEXT NOT NULL,
+                        successor_run_id TEXT NOT NULL,
+                        successor_attempt_id TEXT NOT NULL,
+                        predecessor_bundle_id TEXT NOT NULL,
+                        predecessor_run_id TEXT NOT NULL,
+                        PRIMARY KEY (execution_id, successor_bundle_id),
+                        UNIQUE (execution_id, predecessor_bundle_id),
+                        FOREIGN KEY (execution_id)
+                            REFERENCES executions(execution_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_run_bundle_continuation_predecessor_v1
+                        ON run_bundle_continuation_links_v1(
+                            execution_id,
+                            predecessor_run_id,
+                            predecessor_bundle_id
+                        );
+                    """
                 )
-            check = connection.execute("PRAGMA quick_check").fetchone()[0]
-            if check != "ok":
-                raise SQLiteContextV2StoreIntegrityError(
-                    f"SQLite quick_check failed: {check}"
-                )
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+                self._upgrade_provider_request_leases(connection)
+                self._validate_provider_request_lease_heads(connection)
+                self._validate_provider_request_evidence(connection)
+                versions = {
+                    int(row[0])
+                    for row in connection.execute("SELECT version FROM context_v2_schema")
+                }
+                if versions != {1, 2}:
+                    raise SQLiteContextV2StoreIntegrityError(
+                        "SQLite Context V2 schema version is unsupported"
+                    )
+                check = connection.execute("PRAGMA quick_check").fetchone()[0]
+                if check != "ok":
+                    raise SQLiteContextV2StoreIntegrityError(
+                        f"SQLite quick_check failed: {check}"
+                    )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
 
     @contextmanager
     def _transaction(self, *, immediate: bool) -> Iterator[sqlite3.Connection]:
-        connection = self._connect()
-        try:
-            connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
-            yield connection
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+        with serialized_context_v2_database_access(self.database_path):
+            connection = self._connect()
+            try:
+                connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+                yield connection
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
 
     @staticmethod
     def _ensure_execution(
@@ -2109,6 +2230,152 @@ class _SQLiteBoundContextV2Repository(
             return "provider_wire", None, iteration
         return None
 
+    def _replayed_append(
+        self,
+        connection: sqlite3.Connection,
+        request: JournalAppendRequest,
+    ) -> JournalAppendResult | None:
+        previous = self._operation_row(
+            connection,
+            request.operation.operation_id,
+        )
+        if previous is None:
+            return None
+        if (
+            previous["payload_sha256"] != request.operation.payload_sha256
+            or previous["target_kind"] != "journal_event"
+            or previous["target_key"] != request.event_id
+        ):
+            raise JournalConflictError(
+                "operation payload or event target changed"
+            )
+        row = connection.execute(
+            """
+            SELECT * FROM events
+            WHERE execution_id = ? AND operation_id = ?
+            """,
+            (self.execution_id, request.operation.operation_id),
+        ).fetchone()
+        if row is None:
+            raise SQLiteContextV2StoreIntegrityError(
+                "journal operation has no event"
+            )
+        event = self._event_from_row(connection, row)
+        if not self._request_matches_event(request, event):
+            raise JournalConflictError(
+                "operation replay changed the event payload"
+            )
+        cursor = EventCursor(event.store_seq, event.event_id)
+        return JournalAppendResult(event, cursor, duplicate=True)
+
+    def _append_with_connection(
+        self,
+        connection: sqlite3.Connection,
+        request: JournalAppendRequest,
+    ) -> JournalAppendResult:
+        if (
+            connection.execute(
+                """
+            SELECT 1 FROM events
+            WHERE execution_id = ? AND event_id = ?
+            """,
+                (self.execution_id, request.event_id),
+            ).fetchone()
+            is not None
+        ):
+            raise JournalConflictError("event id belongs to another operation")
+        head = connection.execute(
+            """
+            SELECT next_store_seq FROM executions
+            WHERE execution_id = ?
+            """,
+            (self.execution_id,),
+        ).fetchone()
+        if head is None:
+            raise SQLiteContextV2StoreIntegrityError(
+                "execution journal head is missing"
+            )
+        store_seq = int(head["next_store_seq"])
+        event = JournalEvent(
+            event_id=request.event_id,
+            event_type=request.event_type,
+            attempt=request.attempt,
+            operation=request.operation,
+            store_seq=store_seq,
+            payload=request.payload,
+            resource_refs=request.resource_refs,
+        )
+        receipt = self._receipt_subject(event)
+        self._claim_operation(
+            connection,
+            operation=request.operation,
+            target_kind="journal_event",
+            target_key=request.event_id,
+            conflict_type=JournalConflictError,
+        )
+        event_json = _canonical_json_bytes(event.to_dict())
+        connection.execute(
+            """
+            INSERT INTO events(
+                execution_id,
+                store_seq,
+                event_id,
+                generation_id,
+                attempt_id,
+                event_type,
+                operation_id,
+                event_json,
+                event_sha256
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                self.execution_id,
+                store_seq,
+                event.event_id,
+                event.attempt.generation.generation_id,
+                event.attempt.attempt_id,
+                event.event_type,
+                event.operation.operation_id,
+                event_json,
+                _sha256(event_json),
+            ),
+        )
+        if receipt is not None:
+            kind, call_id, iteration = receipt
+            connection.execute(
+                """
+                INSERT INTO event_receipts(
+                    execution_id,
+                    store_seq,
+                    receipt_kind,
+                    generation_id,
+                    attempt_id,
+                    call_id,
+                    iteration
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self.execution_id,
+                    store_seq,
+                    kind,
+                    event.attempt.generation.generation_id,
+                    event.attempt.attempt_id,
+                    call_id,
+                    iteration,
+                ),
+            )
+        updated = connection.execute(
+            """
+            UPDATE executions SET next_store_seq = ?
+            WHERE execution_id = ? AND next_store_seq = ?
+            """,
+            (store_seq + 1, self.execution_id, store_seq),
+        )
+        if updated.rowcount != 1:
+            raise JournalConflictError("journal sequence allocation conflicted")
+        cursor = EventCursor(store_seq, event.event_id)
+        return JournalAppendResult(event, cursor, duplicate=False)
+
     def append(self, *, request: JournalAppendRequest) -> JournalAppendResult:
         if not isinstance(request, JournalAppendRequest):
             raise TypeError("request must be a JournalAppendRequest")
@@ -2116,140 +2383,74 @@ class _SQLiteBoundContextV2Repository(
         try:
             with self._store._transaction(immediate=True) as connection:
                 self._store._ensure_execution(connection, self.execution_id)
-                previous = self._operation_row(
-                    connection,
-                    request.operation.operation_id,
-                )
-                if previous is not None:
-                    if (
-                        previous["payload_sha256"] != request.operation.payload_sha256
-                        or previous["target_kind"] != "journal_event"
-                        or previous["target_key"] != request.event_id
-                    ):
-                        raise JournalConflictError(
-                            "operation payload or event target changed"
-                        )
-                    row = connection.execute(
-                        """
-                        SELECT * FROM events
-                        WHERE execution_id = ? AND operation_id = ?
-                        """,
-                        (self.execution_id, request.operation.operation_id),
-                    ).fetchone()
-                    if row is None:
-                        raise SQLiteContextV2StoreIntegrityError(
-                            "journal operation has no event"
-                        )
-                    event = self._event_from_row(connection, row)
-                    if not self._request_matches_event(request, event):
-                        raise JournalConflictError(
-                            "operation replay changed the event payload"
-                        )
-                    cursor = EventCursor(event.store_seq, event.event_id)
-                    return JournalAppendResult(event, cursor, duplicate=True)
+                replayed = self._replayed_append(connection, request)
+                if replayed is not None:
+                    return replayed
+                return self._append_with_connection(connection, request)
+        except sqlite3.IntegrityError as exc:
+            raise JournalConflictError("journal operation or event conflicted") from exc
+        except sqlite3.Error as exc:
+            raise JournalRepositoryError("SQLite journal append failed") from exc
 
-                if (
-                    connection.execute(
-                        """
-                    SELECT 1 FROM events
-                    WHERE execution_id = ? AND event_id = ?
-                    """,
-                        (self.execution_id, request.event_id),
-                    ).fetchone()
-                    is not None
-                ):
-                    raise JournalConflictError("event id belongs to another operation")
-                head = connection.execute(
-                    """
-                    SELECT next_store_seq FROM executions
-                    WHERE execution_id = ?
-                    """,
-                    (self.execution_id,),
-                ).fetchone()
-                if head is None:
-                    raise SQLiteContextV2StoreIntegrityError(
-                        "execution journal head is missing"
+    def _verify_pending_artifact_replay(
+        self,
+        connection: sqlite3.Connection,
+        artifact: PendingArtifact,
+    ) -> None:
+        previous = self._operation_row(connection, artifact.operation.operation_id)
+        if (
+            previous is None
+            or previous["payload_sha256"] != artifact.operation.payload_sha256
+        ):
+            raise SQLiteContextV2StoreIntegrityError(
+                "replayed event is missing its atomically claimed artifact"
+            )
+
+    def artifact_id_for(self, *, logical_kind: str, logical_key: str) -> str:
+        return self._artifact_id(
+            execution_id=self.execution_id,
+            logical_kind=_required_text(logical_kind, "logical_kind"),
+            logical_key=_required_text(logical_key, "logical_key"),
+        )
+
+    def append_with_artifacts(
+        self,
+        *,
+        request: JournalAppendRequest,
+        artifacts: tuple[PendingArtifact, ...],
+        precondition: Callable[[JournalSnapshot], None] | None = None,
+    ) -> JournalAppendResult:
+        if not isinstance(request, JournalAppendRequest):
+            raise TypeError("request must be a JournalAppendRequest")
+        artifacts = tuple(artifacts)
+        if any(not isinstance(item, PendingArtifact) for item in artifacts):
+            raise TypeError("artifacts must be PendingArtifact records")
+        if precondition is not None and not callable(precondition):
+            raise TypeError("precondition must be callable")
+        self._scope_attempt(request.attempt, error_type=JournalScopeError)
+        try:
+            with self._store._transaction(immediate=True) as connection:
+                self._store._ensure_execution(connection, self.execution_id)
+                replayed = self._replayed_append(connection, request)
+                if replayed is not None:
+                    for artifact in artifacts:
+                        self._verify_pending_artifact_replay(connection, artifact)
+                    return replayed
+                if precondition is not None:
+                    precondition(self._snapshot_with_connection(connection))
+                for artifact in artifacts:
+                    self._put_artifact_with_connection(
+                        connection,
+                        content=artifact.content,
+                        media_type=artifact.media_type,
+                        operation=artifact.operation,
+                        preview=artifact.preview,
+                        logical_kind="artifact",
+                        logical_key=artifact.operation.operation_id,
+                        expected_revision=0,
+                        conflict_type=ContextConflictError,
                     )
-                store_seq = int(head["next_store_seq"])
-                event = JournalEvent(
-                    event_id=request.event_id,
-                    event_type=request.event_type,
-                    attempt=request.attempt,
-                    operation=request.operation,
-                    store_seq=store_seq,
-                    payload=request.payload,
-                    resource_refs=request.resource_refs,
-                )
-                receipt = self._receipt_subject(event)
-                self._claim_operation(
-                    connection,
-                    operation=request.operation,
-                    target_kind="journal_event",
-                    target_key=request.event_id,
-                    conflict_type=JournalConflictError,
-                )
-                event_json = _canonical_json_bytes(event.to_dict())
-                connection.execute(
-                    """
-                    INSERT INTO events(
-                        execution_id,
-                        store_seq,
-                        event_id,
-                        generation_id,
-                        attempt_id,
-                        event_type,
-                        operation_id,
-                        event_json,
-                        event_sha256
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        self.execution_id,
-                        store_seq,
-                        event.event_id,
-                        event.attempt.generation.generation_id,
-                        event.attempt.attempt_id,
-                        event.event_type,
-                        event.operation.operation_id,
-                        event_json,
-                        _sha256(event_json),
-                    ),
-                )
-                if receipt is not None:
-                    kind, call_id, iteration = receipt
-                    connection.execute(
-                        """
-                        INSERT INTO event_receipts(
-                            execution_id,
-                            store_seq,
-                            receipt_kind,
-                            generation_id,
-                            attempt_id,
-                            call_id,
-                            iteration
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            self.execution_id,
-                            store_seq,
-                            kind,
-                            event.attempt.generation.generation_id,
-                            event.attempt.attempt_id,
-                            call_id,
-                            iteration,
-                        ),
-                    )
-                updated = connection.execute(
-                    """
-                    UPDATE executions SET next_store_seq = ?
-                    WHERE execution_id = ? AND next_store_seq = ?
-                    """,
-                    (store_seq + 1, self.execution_id, store_seq),
-                )
-                if updated.rowcount != 1:
-                    raise JournalConflictError("journal sequence allocation conflicted")
-                cursor = EventCursor(store_seq, event.event_id)
-                return JournalAppendResult(event, cursor, duplicate=False)
+                return self._append_with_connection(connection, request)
         except sqlite3.IntegrityError as exc:
             raise JournalConflictError("journal operation or event conflicted") from exc
         except sqlite3.Error as exc:
@@ -2317,38 +2518,51 @@ class _SQLiteBoundContextV2Repository(
         except sqlite3.Error as exc:
             raise JournalRepositoryError("SQLite journal read failed") from exc
 
-    def capture_snapshot(
+    def _snapshot_with_connection(
         self,
+        connection: sqlite3.Connection,
         *,
         max_events: int = 10_000,
         max_bytes: int = 32 * 1024 * 1024,
     ) -> JournalSnapshot:
         max_events = _exact_non_negative_int(max_events, "max_events")
         max_bytes = _exact_non_negative_int(max_bytes, "max_bytes")
+        rows = list(
+            connection.execute(
+                """
+                SELECT * FROM events
+                WHERE execution_id = ?
+                ORDER BY store_seq
+                LIMIT ?
+                """,
+                (self.execution_id, max_events + 1),
+            )
+        )
+        if len(rows) > max_events:
+            raise JournalRepositoryError(
+                "journal snapshot event limit exceeded"
+            )
+        events = tuple(self._event_from_row(connection, row) for row in rows)
+        encoded = _canonical_json_bytes([event.to_dict() for event in events])
+        if len(encoded) > max_bytes:
+            raise JournalRepositoryError("journal snapshot byte limit exceeded")
+        return capture_journal_snapshot(
+            execution_id=self.execution_id,
+            events=events,
+        )
+
+    def capture_snapshot(
+        self,
+        *,
+        max_events: int = 10_000,
+        max_bytes: int = 32 * 1024 * 1024,
+    ) -> JournalSnapshot:
         try:
             with self._store._transaction(immediate=False) as connection:
-                rows = list(
-                    connection.execute(
-                        """
-                        SELECT * FROM events
-                        WHERE execution_id = ?
-                        ORDER BY store_seq
-                        LIMIT ?
-                        """,
-                        (self.execution_id, max_events + 1),
-                    )
-                )
-                if len(rows) > max_events:
-                    raise JournalRepositoryError(
-                        "journal snapshot event limit exceeded"
-                    )
-                events = tuple(self._event_from_row(connection, row) for row in rows)
-                encoded = _canonical_json_bytes([event.to_dict() for event in events])
-                if len(encoded) > max_bytes:
-                    raise JournalRepositoryError("journal snapshot byte limit exceeded")
-                return capture_journal_snapshot(
-                    execution_id=self.execution_id,
-                    events=events,
+                return self._snapshot_with_connection(
+                    connection,
+                    max_events=max_events,
+                    max_bytes=max_bytes,
                 )
         except sqlite3.Error as exc:
             raise JournalRepositoryError("SQLite journal snapshot failed") from exc
@@ -2530,8 +2744,9 @@ class _SQLiteBoundContextV2Repository(
             )
         return self._artifact_from_row(row)
 
-    def _put_artifact(
+    def _put_artifact_with_connection(
         self,
+        connection: sqlite3.Connection,
         *,
         content: bytes,
         media_type: str,
@@ -2568,109 +2783,133 @@ class _SQLiteBoundContextV2Repository(
         )
         revision = 1
         target_key = f"{artifact_id}@{revision}"
+        self._store._ensure_execution(connection, self.execution_id)
+        previous = self._operation_row(
+            connection,
+            operation.operation_id,
+        )
+        if previous is not None:
+            if (
+                previous["payload_sha256"] != operation.payload_sha256
+                or previous["target_kind"] != logical_kind
+                or previous["target_key"] != target_key
+            ):
+                raise conflict_type(
+                    "artifact operation payload or target changed"
+                )
+            artifact = self._artifact_by_operation(
+                connection,
+                operation.operation_id,
+            )
+            if (
+                artifact.media_type != media_type
+                or artifact.byte_length != byte_length
+                or artifact.sha256 != digest
+                or artifact.preview != preview
+            ):
+                raise conflict_type("artifact operation replay changed content")
+            return artifact
+        if expected_revision != 0:
+            raise conflict_type("artifact CAS expected revision does not exist")
+        existing = connection.execute(
+            """
+            SELECT * FROM artifacts
+            WHERE execution_id = ?
+              AND logical_kind = ?
+              AND logical_key = ?
+              AND revision = 1
+            """,
+            (self.execution_id, logical_kind, logical_key),
+        ).fetchone()
+        if existing is not None:
+            raise conflict_type("artifact logical claim already exists")
+        resource = ResourceRef("artifact", artifact_id, revision)
+        artifact = ArtifactRef(
+            ref=resource,
+            media_type=media_type,
+            byte_length=byte_length,
+            sha256=digest,
+            preview=preview,
+        )
+        self._claim_operation(
+            connection,
+            operation=operation,
+            target_kind=logical_kind,
+            target_key=target_key,
+            conflict_type=conflict_type,
+        )
+        object_row = connection.execute(
+            "SELECT byte_length FROM objects WHERE sha256 = ?",
+            (digest,),
+        ).fetchone()
+        if object_row is not None and object_row["byte_length"] != byte_length:
+            raise SQLiteContextV2StoreIntegrityError(
+                "object metadata byte length changed"
+            )
+        connection.execute(
+            "INSERT OR IGNORE INTO objects(sha256, byte_length) VALUES (?, ?)",
+            (digest, byte_length),
+        )
+        artifact_json = _canonical_json_bytes(artifact.to_dict())
+        connection.execute(
+            """
+            INSERT INTO artifacts(
+                execution_id,
+                artifact_id,
+                revision,
+                logical_kind,
+                logical_key,
+                object_sha256,
+                media_type,
+                byte_length,
+                preview,
+                operation_id,
+                artifact_json,
+                artifact_record_sha256
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                self.execution_id,
+                artifact_id,
+                revision,
+                logical_kind,
+                logical_key,
+                digest,
+                media_type,
+                byte_length,
+                preview,
+                operation.operation_id,
+                artifact_json,
+                _sha256(artifact_json),
+            ),
+        )
+        return artifact
+
+    def _put_artifact(
+        self,
+        *,
+        content: bytes,
+        media_type: str,
+        operation: OperationRef,
+        preview: str,
+        logical_kind: str,
+        logical_key: str,
+        expected_revision: int,
+        conflict_type: type[Exception],
+    ) -> ArtifactRef:
         try:
             with self._store._transaction(immediate=True) as connection:
-                self._store._ensure_execution(connection, self.execution_id)
-                previous = self._operation_row(
+                return self._put_artifact_with_connection(
                     connection,
-                    operation.operation_id,
-                )
-                if previous is not None:
-                    if (
-                        previous["payload_sha256"] != operation.payload_sha256
-                        or previous["target_kind"] != logical_kind
-                        or previous["target_key"] != target_key
-                    ):
-                        raise conflict_type(
-                            "artifact operation payload or target changed"
-                        )
-                    artifact = self._artifact_by_operation(
-                        connection,
-                        operation.operation_id,
-                    )
-                    if (
-                        artifact.media_type != media_type
-                        or artifact.byte_length != byte_length
-                        or artifact.sha256 != digest
-                        or artifact.preview != preview
-                    ):
-                        raise conflict_type("artifact operation replay changed content")
-                    return artifact
-                if expected_revision != 0:
-                    raise conflict_type("artifact CAS expected revision does not exist")
-                existing = connection.execute(
-                    """
-                    SELECT * FROM artifacts
-                    WHERE execution_id = ?
-                      AND logical_kind = ?
-                      AND logical_key = ?
-                      AND revision = 1
-                    """,
-                    (self.execution_id, logical_kind, logical_key),
-                ).fetchone()
-                if existing is not None:
-                    raise conflict_type("artifact logical claim already exists")
-                resource = ResourceRef("artifact", artifact_id, revision)
-                artifact = ArtifactRef(
-                    ref=resource,
+                    content=content,
                     media_type=media_type,
-                    byte_length=byte_length,
-                    sha256=digest,
-                    preview=preview,
-                )
-                self._claim_operation(
-                    connection,
                     operation=operation,
-                    target_kind=logical_kind,
-                    target_key=target_key,
+                    preview=preview,
+                    logical_kind=logical_kind,
+                    logical_key=logical_key,
+                    expected_revision=expected_revision,
                     conflict_type=conflict_type,
                 )
-                object_row = connection.execute(
-                    "SELECT byte_length FROM objects WHERE sha256 = ?",
-                    (digest,),
-                ).fetchone()
-                if object_row is not None and object_row["byte_length"] != byte_length:
-                    raise SQLiteContextV2StoreIntegrityError(
-                        "object metadata byte length changed"
-                    )
-                connection.execute(
-                    "INSERT OR IGNORE INTO objects(sha256, byte_length) VALUES (?, ?)",
-                    (digest, byte_length),
-                )
-                artifact_json = _canonical_json_bytes(artifact.to_dict())
-                connection.execute(
-                    """
-                    INSERT INTO artifacts(
-                        execution_id,
-                        artifact_id,
-                        revision,
-                        logical_kind,
-                        logical_key,
-                        object_sha256,
-                        media_type,
-                        byte_length,
-                        preview,
-                        operation_id,
-                        artifact_json,
-                        artifact_record_sha256
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        self.execution_id,
-                        artifact_id,
-                        revision,
-                        logical_kind,
-                        logical_key,
-                        digest,
-                        media_type,
-                        byte_length,
-                        preview,
-                        operation.operation_id,
-                        artifact_json,
-                        _sha256(artifact_json),
-                    ),
-                )
-                return artifact
         except sqlite3.IntegrityError as exc:
             raise conflict_type("artifact operation or claim conflicted") from exc
         except sqlite3.Error as exc:
@@ -3471,8 +3710,299 @@ class _SQLiteBoundContextV2Repository(
             ) from exc
 
 
+class SQLiteContextV2ReadOnlyJournal(BoundExecutionJournal):
+    """Integrity-verified, existing-only SQLite journal capability.
+
+    This is deliberately narrower than :class:`SQLiteContextV2Store`: opening
+    it never creates the database, object directory, schema, or an execution
+    row.  It exists for preflight paths that must inspect an already-admitted
+    execution without making that execution appear to exist.
+    """
+
+    def __init__(
+        self,
+        *,
+        database_path: str | os.PathLike[str],
+        execution_id: str,
+        object_directory: str | os.PathLike[str] | None = None,
+    ) -> None:
+        super().__init__(execution_id)
+        self._database_path = Path(database_path).expanduser().resolve()
+        self._object_directory = (
+            Path(object_directory).expanduser().resolve()
+            if object_directory is not None
+            else None
+        )
+        if not self._database_path.is_file():
+            raise SQLiteContextV2StoreError(
+                "SQLite Context V2 database is unavailable"
+            )
+        try:
+            with self._connection() as connection:
+                row = connection.execute(
+                    "SELECT 1 FROM executions WHERE execution_id = ?",
+                    (self.execution_id,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise SQLiteContextV2StoreError(
+                "SQLite Context V2 existing execution is unavailable"
+            ) from exc
+        if row is None:
+            raise SQLiteContextV2StoreError(
+                "SQLite Context V2 execution is unavailable"
+            )
+
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        with existing_context_v2_readonly_connection(
+            self._database_path,
+            probe=self._wal_exists,
+        ) as connection:
+            yield connection
+
+    def _wal_exists(self) -> bool:
+        return _context_v2_wal_exists(self._database_path)
+
+    def _event_from_row(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+    ) -> JournalEvent:
+        raw = bytes(row["event_json"])
+        if _sha256(raw) != row["event_sha256"]:
+            raise SQLiteContextV2StoreIntegrityError(
+                "journal event digest changed on disk"
+            )
+        try:
+            decoded = json.loads(raw.decode("utf-8"))
+            event = JournalEvent.from_dict(decoded)
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise SQLiteContextV2StoreIntegrityError(
+                "journal event record is malformed"
+            ) from exc
+        if _canonical_json_bytes(event.to_dict()) != raw:
+            raise SQLiteContextV2StoreIntegrityError("journal event is not canonical")
+        if (
+            event.attempt.generation.execution_id != self.execution_id
+            or event.store_seq != row["store_seq"]
+            or event.event_id != row["event_id"]
+            or event.attempt.generation.generation_id != row["generation_id"]
+            or event.attempt.attempt_id != row["attempt_id"]
+            or event.event_type != row["event_type"]
+            or event.operation.operation_id != row["operation_id"]
+        ):
+            raise SQLiteContextV2StoreIntegrityError(
+                "journal event indexed fields changed"
+            )
+        operation = connection.execute(
+            """
+            SELECT payload_sha256, target_kind, target_key
+            FROM operations
+            WHERE execution_id = ? AND operation_id = ?
+            """,
+            (self.execution_id, event.operation.operation_id),
+        ).fetchone()
+        if (
+            operation is None
+            or operation["payload_sha256"] != event.operation.payload_sha256
+            or operation["target_kind"] != "journal_event"
+            or operation["target_key"] != event.event_id
+        ):
+            raise SQLiteContextV2StoreIntegrityError(
+                "journal operation payload or target changed"
+            )
+        return event
+
+    def append(self, *, request: JournalAppendRequest) -> JournalAppendResult:
+        raise JournalRepositoryError("read-only journal cannot append")
+
+    def read(
+        self,
+        *,
+        after: EventCursor | None = None,
+        limit: int = 100,
+    ) -> JournalPage:
+        limit = _exact_positive_int(limit, "limit")
+        if after is not None and not isinstance(after, EventCursor):
+            raise TypeError("after must be an EventCursor or None")
+        try:
+            with self._connection() as connection:
+                start = 0
+                if after is not None:
+                    row = connection.execute(
+                        """
+                        SELECT event_id FROM events
+                        WHERE execution_id = ? AND store_seq = ?
+                        """,
+                        (self.execution_id, after.store_seq),
+                    ).fetchone()
+                    if row is None or row["event_id"] != after.event_id:
+                        raise JournalScopeError(
+                            "cursor does not belong to this execution scope"
+                        )
+                    start = after.store_seq
+                rows = tuple(
+                    connection.execute(
+                        """
+                        SELECT * FROM events
+                        WHERE execution_id = ? AND store_seq > ?
+                        ORDER BY store_seq
+                        LIMIT ?
+                        """,
+                        (self.execution_id, start, limit + 1),
+                    )
+                )
+                events = tuple(
+                    self._event_from_row(connection, row) for row in rows[:limit]
+                )
+        except sqlite3.Error as exc:
+            raise JournalRepositoryError("SQLite journal read failed") from exc
+        next_cursor = (
+            EventCursor(events[-1].store_seq, events[-1].event_id)
+            if events
+            else after
+        )
+        return JournalPage(events, next_cursor, len(rows) > limit)
+
+    def capture_snapshot(
+        self,
+        *,
+        max_events: int = 10_000,
+        max_bytes: int = 32 * 1024 * 1024,
+    ) -> JournalSnapshot:
+        max_events = _exact_non_negative_int(max_events, "max_events")
+        max_bytes = _exact_non_negative_int(max_bytes, "max_bytes")
+        try:
+            with self._connection() as connection:
+                rows = tuple(
+                    connection.execute(
+                        """
+                        SELECT * FROM events
+                        WHERE execution_id = ?
+                        ORDER BY store_seq
+                        LIMIT ?
+                        """,
+                        (self.execution_id, max_events + 1),
+                    )
+                )
+                if len(rows) > max_events:
+                    raise JournalRepositoryError(
+                        "journal snapshot event limit exceeded"
+                    )
+                events = tuple(
+                    self._event_from_row(connection, row) for row in rows
+                )
+        except sqlite3.Error as exc:
+            raise JournalRepositoryError("SQLite journal snapshot failed") from exc
+        encoded = _canonical_json_bytes([event.to_dict() for event in events])
+        if len(encoded) > max_bytes:
+            raise JournalRepositoryError("journal snapshot byte limit exceeded")
+        return capture_journal_snapshot(
+            execution_id=self.execution_id,
+            events=events,
+        )
+
+    def read_artifact_full_verified(self, *, artifact: ArtifactRef) -> bytes:
+        """Verify and return one artifact's bytes without any write.
+
+        Requires ``object_directory`` to have been supplied at construction.
+        Verifies the artifact row against ``artifact`` exactly, then verifies
+        the object bytes against the row's digest and length before
+        returning them.
+        """
+
+        if self._object_directory is None:
+            raise SQLiteContextV2StoreError(
+                "read-only journal has no object directory"
+            )
+        if not isinstance(artifact, ArtifactRef):
+            raise TypeError("artifact must be an ArtifactRef")
+        try:
+            with self._connection() as connection:
+                row = connection.execute(
+                    """
+                    SELECT * FROM artifacts
+                    WHERE execution_id = ? AND artifact_id = ? AND revision = ?
+                    """,
+                    (
+                        self.execution_id,
+                        artifact.ref.resource_id,
+                        artifact.ref.revision,
+                    ),
+                ).fetchone()
+                if row is None:
+                    raise SQLiteContextV2StoreError(
+                        "artifact does not belong to the bound execution"
+                    )
+                raw = bytes(row["artifact_json"])
+                if _sha256(raw) != row["artifact_record_sha256"]:
+                    raise SQLiteContextV2StoreIntegrityError(
+                        "artifact descriptor digest changed"
+                    )
+                try:
+                    decoded = json.loads(raw.decode("utf-8"))
+                    stored = ArtifactRef.from_dict(decoded)
+                except (
+                    UnicodeDecodeError,
+                    json.JSONDecodeError,
+                    TypeError,
+                    ValueError,
+                ) as exc:
+                    raise SQLiteContextV2StoreIntegrityError(
+                        "artifact descriptor is malformed"
+                    ) from exc
+                if _canonical_json_bytes(stored.to_dict()) != raw or stored != artifact:
+                    raise SQLiteContextV2StoreIntegrityError(
+                        "artifact descriptor disagrees with durable metadata"
+                    )
+                object_row = connection.execute(
+                    "SELECT byte_length FROM objects WHERE sha256 = ?",
+                    (stored.sha256,),
+                ).fetchone()
+                if (
+                    object_row is None
+                    or object_row["byte_length"] != stored.byte_length
+                ):
+                    raise SQLiteContextV2StoreIntegrityError(
+                        "artifact object metadata is missing or changed"
+                    )
+        except sqlite3.Error as exc:
+            raise ContextRepositoryError("SQLite artifact read failed") from exc
+        object_path = self._object_directory / stored.sha256
+        try:
+            content = object_path.read_bytes()
+        except OSError as exc:
+            raise SQLiteContextV2StoreIntegrityError(
+                "artifact object is missing or unreadable"
+            ) from exc
+        if len(content) != stored.byte_length or _sha256(content) != stored.sha256:
+            raise SQLiteContextV2StoreIntegrityError(
+                "artifact object length or digest changed"
+            )
+        return content
+
+
+def open_existing_execution_journal_readonly(
+    *,
+    database_path: str | os.PathLike[str],
+    execution_id: str,
+    object_directory: str | os.PathLike[str] | None = None,
+) -> SQLiteContextV2ReadOnlyJournal:
+    """Open one existing SQLite execution for strict, side-effect-free reads."""
+
+    return SQLiteContextV2ReadOnlyJournal(
+        database_path=database_path,
+        execution_id=execution_id,
+        object_directory=object_directory,
+    )
+
+
 __all__ = [
+    "SQLiteContextV2ReadOnlyJournal",
     "SQLiteContextV2Store",
     "SQLiteContextV2StoreError",
     "SQLiteContextV2StoreIntegrityError",
+    "existing_context_v2_readonly_connection",
+    "open_existing_execution_journal_readonly",
+    "serialized_context_v2_database_access",
 ]

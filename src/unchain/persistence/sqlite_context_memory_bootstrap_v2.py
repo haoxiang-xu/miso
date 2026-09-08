@@ -14,7 +14,7 @@ from .sqlite_legacy_bootstrap_v2 import SQLiteLegacyBootstrapService
 from .sqlite_memory_host_v2 import initialize_sqlite_memory_host_v2_schema
 from .sqlite_memory_v2 import SQLiteMemoryV2Store
 from .sqlite_promotion_v2 import SQLitePromotionV2Store
-from .sqlite_v2 import SQLiteContextV2Store
+from .sqlite_v2 import SQLiteContextV2Store, serialized_context_v2_database_access
 
 
 class SQLiteContextMemoryBootstrapError(RuntimeError):
@@ -36,13 +36,14 @@ def _exact_paths(
 
 
 def _checkpoint(database_path: Path) -> None:
-    connection = sqlite3.connect(database_path, timeout=30.0, isolation_level=None)
-    try:
-        checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-        if checkpoint is None or int(checkpoint[0]) != 0:
-            raise SQLiteContextMemoryBootstrapError("SQLite checkpoint is unavailable")
-    finally:
-        connection.close()
+    with serialized_context_v2_database_access(database_path):
+        connection = sqlite3.connect(database_path, timeout=30.0, isolation_level=None)
+        try:
+            checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if checkpoint is None or int(checkpoint[0]) != 0:
+                raise SQLiteContextMemoryBootstrapError("SQLite checkpoint is unavailable")
+        finally:
+            connection.close()
 
 
 def bootstrap_empty_context_memory_v2_database(

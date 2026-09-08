@@ -1,0 +1,4 @@
+# Byte-frozen golden fixtures: their SHA-256 digests are asserted by
+# tests/context_v2/test_*golden*.py, so Git must never apply EOL conversion
+# (core.autocrlf=true on Windows turned them into CRLF and broke the digests).
+tests/context_v2/fixtures/** -text

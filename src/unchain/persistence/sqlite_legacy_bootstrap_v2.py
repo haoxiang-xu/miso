@@ -36,7 +36,10 @@ from unchain.journal.models import (
     _required_text,
     _sha256,
 )
-from unchain.persistence.sqlite_v2 import SQLiteContextV2Store
+from unchain.persistence.sqlite_v2 import (
+    SQLiteContextV2Store,
+    serialized_context_v2_database_access,
+)
 
 
 _MAX_LEGACY_MESSAGES = 10_000
@@ -481,16 +484,17 @@ class SQLiteLegacyBootstrapService:
 
     @contextmanager
     def _transaction(self, *, immediate: bool) -> Iterator[sqlite3.Connection]:
-        connection = self._connect()
-        try:
-            connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
-            yield connection
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+        with serialized_context_v2_database_access(self._store.database_path):
+            connection = self._connect()
+            try:
+                connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+                yield connection
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
 
     def _initialize(self) -> None:
         try:

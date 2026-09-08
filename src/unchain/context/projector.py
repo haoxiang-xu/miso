@@ -11,6 +11,7 @@ from unchain.journal import (
     ArtifactRef,
     AttemptRef,
     BoundToolReceiptIndex,
+    PreparedSemanticEvent,
     ResourceRef,
     SemanticEventDraft,
 )
@@ -673,13 +674,11 @@ class CanonicalSemanticEventProjector:
             resource_refs=(artifact.ref, *attachment_refs),
         )
 
-    def project_interaction_resolution(
+    def _interaction_resolution_identity(
         self,
-        *,
         interaction_id: str,
-        response: Any,
-        submitted_by: str = "user",
-    ) -> SemanticEventDraft:
+        submitted_by: str,
+    ) -> tuple[str, str, dict[str, Any]]:
         try:
             normalized_interaction_id = _required_text(
                 interaction_id,
@@ -699,27 +698,23 @@ class CanonicalSemanticEventProjector:
             "interaction.resolved",
             {"interaction_id": normalized_interaction_id},
         )
-        artifact, sanitized_resolution, content = self._artifacts._persist_json_value(
-            {
-                "interaction_id": normalized_interaction_id,
-                "response": copy.deepcopy(response),
-                "submitted_by": normalized_submitted_by,
-            },
-            operation_id=(
-                "artifact.interaction-resolution." + _stable_digest(identity)
-            ),
-            operation_binding={
-                "kind": "interaction_resolution",
-                "attempt": self._attempt.to_dict(),
-                "interaction_id": normalized_interaction_id,
-            },
-        )
+        return normalized_interaction_id, normalized_submitted_by, identity
+
+    def _interaction_resolution_draft(
+        self,
+        *,
+        identity: Mapping[str, Any],
+        artifact: ArtifactRef,
+        decoded: Any,
+        content: bytes,
+        normalized_interaction_id: str,
+        normalized_submitted_by: str,
+    ) -> SemanticEventDraft:
         if (
-            not isinstance(sanitized_resolution, dict)
-            or set(sanitized_resolution)
-            != {"interaction_id", "response", "submitted_by"}
-            or sanitized_resolution.get("interaction_id") != normalized_interaction_id
-            or sanitized_resolution.get("submitted_by") != normalized_submitted_by
+            not isinstance(decoded, dict)
+            or set(decoded) != {"interaction_id", "response", "submitted_by"}
+            or decoded.get("interaction_id") != normalized_interaction_id
+            or decoded.get("submitted_by") != normalized_submitted_by
         ):
             raise SemanticEventProjectionError(
                 "sanitized interaction resolution changed its identity"
@@ -752,6 +747,63 @@ class CanonicalSemanticEventProjector:
             payload=payload,
             resource_refs=(artifact.ref,),
         )
+
+    def prepare_interaction_resolution(
+        self,
+        *,
+        interaction_id: str,
+        response: Any,
+        submitted_by: str = "user",
+    ) -> PreparedSemanticEvent:
+        """Compute the resolution's draft and artifact claim without writing.
+
+        The caller commits both atomically through
+        :meth:`~unchain.journal.runtime.DurableEventSink.append_prepared`.
+        """
+
+        normalized_interaction_id, normalized_submitted_by, identity = (
+            self._interaction_resolution_identity(interaction_id, submitted_by)
+        )
+        prepared = self._artifacts.prepare_json_value(
+            {
+                "interaction_id": normalized_interaction_id,
+                "response": copy.deepcopy(response),
+                "submitted_by": normalized_submitted_by,
+            },
+            operation_id=(
+                "artifact.interaction-resolution." + _stable_digest(identity)
+            ),
+            operation_binding={
+                "kind": "interaction_resolution",
+                "attempt": self._attempt.to_dict(),
+                "interaction_id": normalized_interaction_id,
+            },
+        )
+        draft = self._interaction_resolution_draft(
+            identity=identity,
+            artifact=prepared.artifact,
+            decoded=prepared.decoded,
+            content=prepared.sanitized,
+            normalized_interaction_id=normalized_interaction_id,
+            normalized_submitted_by=normalized_submitted_by,
+        )
+        return PreparedSemanticEvent(draft=draft, artifacts=(prepared.pending,))
+
+    def project_interaction_resolution(
+        self,
+        *,
+        interaction_id: str,
+        response: Any,
+        submitted_by: str = "user",
+    ) -> SemanticEventDraft:
+        prepared = self.prepare_interaction_resolution(
+            interaction_id=interaction_id,
+            response=response,
+            submitted_by=submitted_by,
+        )
+        for pending in prepared.artifacts:
+            self._artifacts.persist_pending(pending)
+        return prepared.draft
 
     def _project_interaction_requested(
         self,

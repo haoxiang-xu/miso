@@ -21,7 +21,10 @@ from unchain.journal.models import (
     _bounded_int,
     _required_text,
 )
-from unchain.persistence.sqlite_v2 import SQLiteContextV2Store
+from unchain.persistence.sqlite_v2 import (
+    SQLiteContextV2Store,
+    serialized_context_v2_database_access,
+)
 
 
 class HostGenerationLifecycleError(RuntimeError):
@@ -311,152 +314,154 @@ class SQLiteHostGenerationLifecycleV2:
 
     @contextmanager
     def _transaction(self, *, immediate: bool) -> Iterator[sqlite3.Connection]:
-        connection = self._connect()
-        try:
-            connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
-            yield connection
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
-
-    def _initialize(self) -> None:
-        try:
+        with serialized_context_v2_database_access(self._store.database_path):
             connection = self._connect()
             try:
-                mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
-                if str(mode).casefold() != "wal":
-                    raise HostGenerationUnavailable(
-                        "host generation SQLite WAL mode is unavailable"
-                    )
+                connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+                yield connection
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
             finally:
                 connection.close()
-            with self._transaction(immediate=True) as connection:
-                connection.executescript(
-                    """
-                    CREATE TABLE IF NOT EXISTS host_generation_schema (
-                        version INTEGER PRIMARY KEY,
-                        applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                    );
-                    INSERT OR IGNORE INTO host_generation_schema(version) VALUES (1);
 
-                    CREATE TABLE IF NOT EXISTS host_generation_chat_bindings (
-                        owner_chat_id TEXT PRIMARY KEY,
-                        execution_id TEXT NOT NULL UNIQUE,
-                        session_id TEXT NOT NULL,
-                        UNIQUE(owner_chat_id, execution_id, session_id),
-                        FOREIGN KEY (execution_id)
-                            REFERENCES executions(execution_id)
-                    );
+    def _initialize(self) -> None:
+        with serialized_context_v2_database_access(self._store.database_path):
+            try:
+                connection = self._connect()
+                try:
+                    mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+                    if str(mode).casefold() != "wal":
+                        raise HostGenerationUnavailable(
+                            "host generation SQLite WAL mode is unavailable"
+                        )
+                finally:
+                    connection.close()
+                with self._transaction(immediate=True) as connection:
+                    connection.executescript(
+                        """
+                        CREATE TABLE IF NOT EXISTS host_generation_schema (
+                            version INTEGER PRIMARY KEY,
+                            applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        );
+                        INSERT OR IGNORE INTO host_generation_schema(version) VALUES (1);
 
-                    CREATE TABLE IF NOT EXISTS host_generation_records (
-                        owner_chat_id TEXT NOT NULL,
-                        execution_id TEXT NOT NULL,
-                        session_id TEXT NOT NULL,
-                        generation_id TEXT NOT NULL,
-                        transition_kind TEXT NOT NULL CHECK(
-                            transition_kind IN ('initial', 'edit', 'regenerate')
-                        ),
-                        previous_generation_id TEXT NOT NULL,
-                        revision INTEGER NOT NULL CHECK(revision >= 1),
-                        operation_id TEXT NOT NULL,
-                        payload_sha256 TEXT NOT NULL,
-                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                        PRIMARY KEY (owner_chat_id, generation_id),
-                        UNIQUE(execution_id, generation_id),
-                        UNIQUE(owner_chat_id, revision),
-                        FOREIGN KEY (owner_chat_id, execution_id, session_id)
-                            REFERENCES host_generation_chat_bindings(
-                                owner_chat_id,
-                                execution_id,
-                                session_id
-                            )
-                    );
+                        CREATE TABLE IF NOT EXISTS host_generation_chat_bindings (
+                            owner_chat_id TEXT PRIMARY KEY,
+                            execution_id TEXT NOT NULL UNIQUE,
+                            session_id TEXT NOT NULL,
+                            UNIQUE(owner_chat_id, execution_id, session_id),
+                            FOREIGN KEY (execution_id)
+                                REFERENCES executions(execution_id)
+                        );
 
-                    CREATE TABLE IF NOT EXISTS host_generation_heads (
-                        owner_chat_id TEXT PRIMARY KEY,
-                        execution_id TEXT NOT NULL,
-                        session_id TEXT NOT NULL,
-                        current_generation_id TEXT NOT NULL,
-                        revision INTEGER NOT NULL CHECK(revision >= 1),
-                        FOREIGN KEY (owner_chat_id, execution_id, session_id)
-                            REFERENCES host_generation_chat_bindings(
-                                owner_chat_id,
-                                execution_id,
-                                session_id
+                        CREATE TABLE IF NOT EXISTS host_generation_records (
+                            owner_chat_id TEXT NOT NULL,
+                            execution_id TEXT NOT NULL,
+                            session_id TEXT NOT NULL,
+                            generation_id TEXT NOT NULL,
+                            transition_kind TEXT NOT NULL CHECK(
+                                transition_kind IN ('initial', 'edit', 'regenerate')
                             ),
-                        FOREIGN KEY (owner_chat_id, current_generation_id)
-                            REFERENCES host_generation_records(
-                                owner_chat_id,
-                                generation_id
-                            )
-                    );
+                            previous_generation_id TEXT NOT NULL,
+                            revision INTEGER NOT NULL CHECK(revision >= 1),
+                            operation_id TEXT NOT NULL,
+                            payload_sha256 TEXT NOT NULL,
+                            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                            PRIMARY KEY (owner_chat_id, generation_id),
+                            UNIQUE(execution_id, generation_id),
+                            UNIQUE(owner_chat_id, revision),
+                            FOREIGN KEY (owner_chat_id, execution_id, session_id)
+                                REFERENCES host_generation_chat_bindings(
+                                    owner_chat_id,
+                                    execution_id,
+                                    session_id
+                                )
+                        );
 
-                    CREATE TABLE IF NOT EXISTS host_generation_operations (
-                        owner_chat_id TEXT NOT NULL,
-                        operation_id TEXT NOT NULL,
-                        payload_sha256 TEXT NOT NULL,
-                        mutation_kind TEXT NOT NULL,
-                        result_generation_id TEXT NOT NULL,
-                        result_revision INTEGER NOT NULL CHECK(result_revision >= 1),
-                        result_attempt_id TEXT NOT NULL DEFAULT '',
-                        PRIMARY KEY (owner_chat_id, operation_id),
-                        FOREIGN KEY (owner_chat_id, result_generation_id)
-                            REFERENCES host_generation_records(
-                                owner_chat_id,
-                                generation_id
-                            )
-                    );
+                        CREATE TABLE IF NOT EXISTS host_generation_heads (
+                            owner_chat_id TEXT PRIMARY KEY,
+                            execution_id TEXT NOT NULL,
+                            session_id TEXT NOT NULL,
+                            current_generation_id TEXT NOT NULL,
+                            revision INTEGER NOT NULL CHECK(revision >= 1),
+                            FOREIGN KEY (owner_chat_id, execution_id, session_id)
+                                REFERENCES host_generation_chat_bindings(
+                                    owner_chat_id,
+                                    execution_id,
+                                    session_id
+                                ),
+                            FOREIGN KEY (owner_chat_id, current_generation_id)
+                                REFERENCES host_generation_records(
+                                    owner_chat_id,
+                                    generation_id
+                                )
+                        );
 
-                    CREATE TABLE IF NOT EXISTS host_generation_attempt_bindings (
-                        owner_chat_id TEXT NOT NULL,
-                        execution_id TEXT NOT NULL,
-                        session_id TEXT NOT NULL,
-                        generation_id TEXT NOT NULL,
-                        attempt_id TEXT NOT NULL,
-                        head_revision INTEGER NOT NULL CHECK(head_revision >= 1),
-                        operation_id TEXT NOT NULL,
-                        payload_sha256 TEXT NOT NULL,
-                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                        PRIMARY KEY (execution_id, attempt_id),
-                        UNIQUE(owner_chat_id, operation_id),
-                        FOREIGN KEY (owner_chat_id, execution_id, session_id)
-                            REFERENCES host_generation_chat_bindings(
-                                owner_chat_id,
-                                execution_id,
-                                session_id
-                            ),
-                        FOREIGN KEY (owner_chat_id, generation_id)
-                            REFERENCES host_generation_records(
-                                owner_chat_id,
-                                generation_id
-                            ),
-                        FOREIGN KEY (owner_chat_id, operation_id)
-                            REFERENCES host_generation_operations(
-                                owner_chat_id,
-                                operation_id
-                            )
-                    );
-                    """
-                )
-                versions = {
-                    int(row[0])
-                    for row in connection.execute(
-                        "SELECT version FROM host_generation_schema"
+                        CREATE TABLE IF NOT EXISTS host_generation_operations (
+                            owner_chat_id TEXT NOT NULL,
+                            operation_id TEXT NOT NULL,
+                            payload_sha256 TEXT NOT NULL,
+                            mutation_kind TEXT NOT NULL,
+                            result_generation_id TEXT NOT NULL,
+                            result_revision INTEGER NOT NULL CHECK(result_revision >= 1),
+                            result_attempt_id TEXT NOT NULL DEFAULT '',
+                            PRIMARY KEY (owner_chat_id, operation_id),
+                            FOREIGN KEY (owner_chat_id, result_generation_id)
+                                REFERENCES host_generation_records(
+                                    owner_chat_id,
+                                    generation_id
+                                )
+                        );
+
+                        CREATE TABLE IF NOT EXISTS host_generation_attempt_bindings (
+                            owner_chat_id TEXT NOT NULL,
+                            execution_id TEXT NOT NULL,
+                            session_id TEXT NOT NULL,
+                            generation_id TEXT NOT NULL,
+                            attempt_id TEXT NOT NULL,
+                            head_revision INTEGER NOT NULL CHECK(head_revision >= 1),
+                            operation_id TEXT NOT NULL,
+                            payload_sha256 TEXT NOT NULL,
+                            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                            PRIMARY KEY (execution_id, attempt_id),
+                            UNIQUE(owner_chat_id, operation_id),
+                            FOREIGN KEY (owner_chat_id, execution_id, session_id)
+                                REFERENCES host_generation_chat_bindings(
+                                    owner_chat_id,
+                                    execution_id,
+                                    session_id
+                                ),
+                            FOREIGN KEY (owner_chat_id, generation_id)
+                                REFERENCES host_generation_records(
+                                    owner_chat_id,
+                                    generation_id
+                                ),
+                            FOREIGN KEY (owner_chat_id, operation_id)
+                                REFERENCES host_generation_operations(
+                                    owner_chat_id,
+                                    operation_id
+                                )
+                        );
+                        """
                     )
-                }
-                if versions != {self._SCHEMA_VERSION}:
-                    raise HostGenerationUnavailable(
-                        "host generation SQLite schema is unsupported"
-                    )
-        except HostGenerationLifecycleError:
-            raise
-        except sqlite3.Error as exc:
-            raise HostGenerationUnavailable(
-                "host generation SQLite schema initialization failed"
-            ) from exc
+                    versions = {
+                        int(row[0])
+                        for row in connection.execute(
+                            "SELECT version FROM host_generation_schema"
+                        )
+                    }
+                    if versions != {self._SCHEMA_VERSION}:
+                        raise HostGenerationUnavailable(
+                            "host generation SQLite schema is unsupported"
+                        )
+            except HostGenerationLifecycleError:
+                raise
+            except sqlite3.Error as exc:
+                raise HostGenerationUnavailable(
+                    "host generation SQLite schema initialization failed"
+                ) from exc
 
     @staticmethod
     def _head_from_row(row: sqlite3.Row) -> HostGenerationHead:

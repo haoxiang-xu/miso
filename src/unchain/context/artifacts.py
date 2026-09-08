@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 from unchain.journal.models import (
     ArtifactRef,
+    PendingArtifact,
     ResourceRef,
     _bounded_int,
     _freeze_json,
@@ -149,6 +150,16 @@ def _canonical_json_value(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+@dataclass(frozen=True)
+class PreparedJsonArtifact:
+    """A JSON artifact's would-be identity, computed without writing it."""
+
+    pending: PendingArtifact
+    artifact: ArtifactRef
+    decoded: Any
+    sanitized: bytes
+
+
 class ArtifactService:
     """Owns P0 object limits, hashing, preview reduction, and read budgets."""
 
@@ -238,6 +249,40 @@ class ArtifactService:
             raise ArtifactIntegrityError("artifact preview does not match content")
         return artifact
 
+    def persist_pending(self, pending: PendingArtifact) -> ArtifactRef:
+        """Eagerly persist a :class:`PendingArtifact` outside a write transaction.
+
+        This is the legacy, non-atomic path: it claims the artifact through
+        the same ``put()`` the atomic path uses, so a replay of either path
+        sees an identical operation/artifact identity. Prefer handing the
+        pending artifact to
+        :meth:`~unchain.journal.ports.BoundExecutionJournal.append_with_artifacts`
+        so the claim and its event commit together.
+        """
+
+        if not isinstance(pending, PendingArtifact):
+            raise TypeError("pending must be a PendingArtifact")
+        artifact = self._repository.put(
+            content=pending.content,
+            media_type=pending.media_type,
+            operation=pending.operation,
+            preview=pending.preview,
+        )
+        if not isinstance(artifact, ArtifactRef):
+            raise ArtifactIntegrityError(
+                "artifact repository did not return an ArtifactRef"
+            )
+        if (
+            artifact.media_type != pending.media_type
+            or artifact.byte_length != len(pending.content)
+            or artifact.sha256 != hashlib.sha256(pending.content).hexdigest()
+            or artifact.preview != pending.preview
+        ):
+            raise ArtifactIntegrityError(
+                "artifact repository did not return the pending artifact's content"
+            )
+        return artifact
+
     def persist(
         self,
         content: bytes,
@@ -304,6 +349,74 @@ class ArtifactService:
             operation_binding=operation_binding,
         )
         return artifact, decoded, sanitized
+
+    def prepare_json_value(
+        self,
+        value: Any,
+        *,
+        operation_id: object,
+        operation_binding: Mapping[str, Any] | None = None,
+    ) -> PreparedJsonArtifact:
+        """Compute a JSON artifact's identity without writing it.
+
+        The returned :class:`PendingArtifact` carries the exact same
+        operation identity and sanitized bytes that ``_persist_json_value``
+        would write; the caller decides when (or whether) it actually gets
+        claimed, typically by handing it to
+        :meth:`~unchain.journal.ports.BoundExecutionJournal.append_with_artifacts`.
+        """
+
+        media_type = "application/json"
+        canonical = _canonical_json_value(value)
+        sanitized = self._sanitize(canonical, media_type)
+        try:
+            decoded = json.loads(sanitized.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ArtifactIntegrityError(
+                "sanitized JSON artifact is not valid UTF-8 JSON"
+            ) from exc
+        normalized = _canonical_json_value(decoded)
+        if normalized != sanitized:
+            raise ArtifactIntegrityError(
+                "sanitized JSON artifact is not in canonical form"
+            )
+        digest = hashlib.sha256(sanitized).hexdigest()
+        preview = (
+            _bounded_utf8_preview(sanitized)
+            if _supports_text_preview(media_type)
+            else ""
+        )
+        operation = build_operation_ref(
+            operation_id,
+            domain="context.artifact.put",
+            payload={
+                "media_type": media_type,
+                "byte_length": len(sanitized),
+                "sha256": digest,
+                "preview": preview,
+                "binding": dict(operation_binding or {}),
+            },
+        )
+        artifact_id = self._repository.artifact_id_for(
+            logical_kind="artifact",
+            logical_key=operation.operation_id,
+        )
+        artifact = ArtifactRef(
+            ref=ResourceRef("artifact", artifact_id, 1),
+            media_type=media_type,
+            byte_length=len(sanitized),
+            sha256=digest,
+            preview=preview,
+        )
+        pending = PendingArtifact(
+            content=sanitized,
+            media_type=media_type,
+            operation=operation,
+            preview=preview,
+        )
+        return PreparedJsonArtifact(
+            pending=pending, artifact=artifact, decoded=decoded, sanitized=sanitized
+        )
 
     def artifactize_user_message(
         self,

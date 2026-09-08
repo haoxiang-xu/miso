@@ -78,6 +78,14 @@ def test_runtime_protocol_manifest_advertises_every_frozen_required_feature() ->
     assert "tool_output_management_v1" in protocols["context_memory"]
     assert "interaction_resolution_compat" in protocols["context_memory"]
     assert "expected_interaction_id_cas" in protocols["durable_interaction"]
+    assert (
+        "graph_interaction_lineage_preflight_v1"
+        in protocols["durable_interaction"]
+    )
+    assert (
+        "interaction_resolution_atomic_acceptance_v1"
+        in protocols["durable_interaction"]
+    )
     assert {
         "canonical_metrics",
         "completion_diagnostics_ref",

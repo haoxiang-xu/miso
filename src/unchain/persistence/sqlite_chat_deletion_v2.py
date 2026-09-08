@@ -16,6 +16,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
+from .sqlite_v2 import serialized_context_v2_database_access
+
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$")
 _SCOPE_SCHEMA = "unchain.chat_deletion_scope.v1"
@@ -856,139 +858,140 @@ class SQLiteChatDeletionV2Service:
         return tables
 
     def _initialize(self) -> None:
-        connection = _connect(self.database_path)
-        try:
-            mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
-            if str(mode).casefold() != "wal":
-                raise ChatDeletionUnavailable("SQLite WAL is unavailable")
-            existing_tables = self._validate_schema_closure(connection)
-            mutable_owner_guard_tables = set(self._owner_scoped_deletion_tables)
-            retained_owner_guard_tables = {
-                table_name
-                for table_name, columns in self._extension_retained_scope_tables.items()
-                if "owner_chat_id" in columns
-            }
-            if _OPTIONAL_TABLE_GROUPS["host_generation"].issubset(
-                existing_tables
-            ):
-                mutable_owner_guard_tables.add("host_generation_chat_bindings")
-            dynamic_guards = "".join(
-                _owner_guard_triggers(table_name)
-                for table_name in sorted(mutable_owner_guard_tables)
-            )
-            dynamic_guards += "".join(
-                _owner_guard_triggers(table_name, protect_delete=True)
-                for table_name in sorted(retained_owner_guard_tables)
-            )
-            dynamic_guards += "".join(
-                _retained_child_guard_triggers(
-                    child_table,
-                    parent_table,
-                    join_column,
+        with serialized_context_v2_database_access(self.database_path):
+            connection = _connect(self.database_path)
+            try:
+                mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+                if str(mode).casefold() != "wal":
+                    raise ChatDeletionUnavailable("SQLite WAL is unavailable")
+                existing_tables = self._validate_schema_closure(connection)
+                mutable_owner_guard_tables = set(self._owner_scoped_deletion_tables)
+                retained_owner_guard_tables = {
+                    table_name
+                    for table_name, columns in self._extension_retained_scope_tables.items()
+                    if "owner_chat_id" in columns
+                }
+                if _OPTIONAL_TABLE_GROUPS["host_generation"].issubset(
+                    existing_tables
+                ):
+                    mutable_owner_guard_tables.add("host_generation_chat_bindings")
+                dynamic_guards = "".join(
+                    _owner_guard_triggers(table_name)
+                    for table_name in sorted(mutable_owner_guard_tables)
                 )
-                for child_table, (
-                    parent_table,
-                    join_column,
-                ) in sorted(self._retained_owner_child_tables.items())
-            )
-            if _OPTIONAL_TABLE_GROUPS["vector_projection"].issubset(
-                existing_tables
-            ):
                 dynamic_guards += "".join(
-                    _space_guard_triggers(table_name)
-                    for table_name in sorted(
-                        _OPTIONAL_TABLE_GROUPS["vector_projection"]
+                    _owner_guard_triggers(table_name, protect_delete=True)
+                    for table_name in sorted(retained_owner_guard_tables)
+                )
+                dynamic_guards += "".join(
+                    _retained_child_guard_triggers(
+                        child_table,
+                        parent_table,
+                        join_column,
                     )
+                    for child_table, (
+                        parent_table,
+                        join_column,
+                    ) in sorted(self._retained_owner_child_tables.items())
                 )
-            stale_dynamic_guards = tuple(
-                str(row[0])
-                for row in connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+                if _OPTIONAL_TABLE_GROUPS["vector_projection"].issubset(
+                    existing_tables
+                ):
+                    dynamic_guards += "".join(
+                        _space_guard_triggers(table_name)
+                        for table_name in sorted(
+                            _OPTIONAL_TABLE_GROUPS["vector_projection"]
+                        )
+                    )
+                stale_dynamic_guards = tuple(
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+                    )
+                    if _DYNAMIC_GUARD_NAME_RE.fullmatch(str(row[0])) is not None
                 )
-                if _DYNAMIC_GUARD_NAME_RE.fullmatch(str(row[0])) is not None
-            )
-            reset_dynamic_guards = "".join(
-                f'DROP TRIGGER "{trigger_name}";'
-                for trigger_name in stale_dynamic_guards
-            )
-            connection.executescript(
-                """
-                BEGIN IMMEDIATE;
-                CREATE TABLE IF NOT EXISTS chat_deletion_v2_schema (
-                    version INTEGER PRIMARY KEY,
-                    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                INSERT OR IGNORE INTO chat_deletion_v2_schema(version) VALUES (1);
+                reset_dynamic_guards = "".join(
+                    f'DROP TRIGGER "{trigger_name}";'
+                    for trigger_name in stale_dynamic_guards
+                )
+                connection.executescript(
+                    """
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE IF NOT EXISTS chat_deletion_v2_schema (
+                        version INTEGER PRIMARY KEY,
+                        applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    );
+                    INSERT OR IGNORE INTO chat_deletion_v2_schema(version) VALUES (1);
 
-                CREATE TABLE IF NOT EXISTS chat_deletion_tombstones (
-                    owner_chat_id TEXT PRIMARY KEY,
-                    revision INTEGER NOT NULL CHECK(revision = 1),
-                    first_operation_id TEXT NOT NULL,
-                    scope_json BLOB NOT NULL,
-                    scope_sha256 TEXT NOT NULL,
-                    result_json BLOB NOT NULL,
-                    result_sha256 TEXT NOT NULL,
-                    deleted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS chat_deletion_execution_scopes (
-                    owner_chat_id TEXT NOT NULL,
-                    execution_id TEXT NOT NULL UNIQUE,
-                    PRIMARY KEY(owner_chat_id, execution_id),
-                    FOREIGN KEY(owner_chat_id)
-                        REFERENCES chat_deletion_tombstones(owner_chat_id)
-                );
-                CREATE TABLE IF NOT EXISTS chat_deletion_space_scopes (
-                    owner_chat_id TEXT NOT NULL,
-                    space_id TEXT NOT NULL UNIQUE,
-                    PRIMARY KEY(owner_chat_id, space_id),
-                    FOREIGN KEY(owner_chat_id)
-                        REFERENCES chat_deletion_tombstones(owner_chat_id)
-                );
-                CREATE TABLE IF NOT EXISTS chat_deletion_binding_scopes (
-                    owner_chat_id TEXT NOT NULL,
-                    binding_id TEXT NOT NULL UNIQUE,
-                    PRIMARY KEY(owner_chat_id, binding_id),
-                    FOREIGN KEY(owner_chat_id)
-                        REFERENCES chat_deletion_tombstones(owner_chat_id)
-                );
-                CREATE TABLE IF NOT EXISTS chat_deletion_operations (
-                    owner_chat_id TEXT NOT NULL,
-                    operation_id TEXT NOT NULL,
-                    payload_sha256 TEXT NOT NULL,
-                    result_sha256 TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY(owner_chat_id, operation_id),
-                    FOREIGN KEY(owner_chat_id)
-                        REFERENCES chat_deletion_tombstones(owner_chat_id)
-                );
-                """
-                + reset_dynamic_guards
-                + _GUARD_TRIGGERS
-                + dynamic_guards
-                + "COMMIT;"
-            )
-            versions = {
-                int(row[0])
-                for row in connection.execute(
-                    "SELECT version FROM chat_deletion_v2_schema"
+                    CREATE TABLE IF NOT EXISTS chat_deletion_tombstones (
+                        owner_chat_id TEXT PRIMARY KEY,
+                        revision INTEGER NOT NULL CHECK(revision = 1),
+                        first_operation_id TEXT NOT NULL,
+                        scope_json BLOB NOT NULL,
+                        scope_sha256 TEXT NOT NULL,
+                        result_json BLOB NOT NULL,
+                        result_sha256 TEXT NOT NULL,
+                        deleted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    );
+                    CREATE TABLE IF NOT EXISTS chat_deletion_execution_scopes (
+                        owner_chat_id TEXT NOT NULL,
+                        execution_id TEXT NOT NULL UNIQUE,
+                        PRIMARY KEY(owner_chat_id, execution_id),
+                        FOREIGN KEY(owner_chat_id)
+                            REFERENCES chat_deletion_tombstones(owner_chat_id)
+                    );
+                    CREATE TABLE IF NOT EXISTS chat_deletion_space_scopes (
+                        owner_chat_id TEXT NOT NULL,
+                        space_id TEXT NOT NULL UNIQUE,
+                        PRIMARY KEY(owner_chat_id, space_id),
+                        FOREIGN KEY(owner_chat_id)
+                            REFERENCES chat_deletion_tombstones(owner_chat_id)
+                    );
+                    CREATE TABLE IF NOT EXISTS chat_deletion_binding_scopes (
+                        owner_chat_id TEXT NOT NULL,
+                        binding_id TEXT NOT NULL UNIQUE,
+                        PRIMARY KEY(owner_chat_id, binding_id),
+                        FOREIGN KEY(owner_chat_id)
+                            REFERENCES chat_deletion_tombstones(owner_chat_id)
+                    );
+                    CREATE TABLE IF NOT EXISTS chat_deletion_operations (
+                        owner_chat_id TEXT NOT NULL,
+                        operation_id TEXT NOT NULL,
+                        payload_sha256 TEXT NOT NULL,
+                        result_sha256 TEXT NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY(owner_chat_id, operation_id),
+                        FOREIGN KEY(owner_chat_id)
+                            REFERENCES chat_deletion_tombstones(owner_chat_id)
+                    );
+                    """
+                    + reset_dynamic_guards
+                    + _GUARD_TRIGGERS
+                    + dynamic_guards
+                    + "COMMIT;"
                 )
-            }
-            if versions != {_SCHEMA_VERSION}:
+                versions = {
+                    int(row[0])
+                    for row in connection.execute(
+                        "SELECT version FROM chat_deletion_v2_schema"
+                    )
+                }
+                if versions != {_SCHEMA_VERSION}:
+                    raise ChatDeletionUnavailable(
+                        "chat deletion SQLite schema is unsupported"
+                    )
+                if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                    raise ChatDeletionUnavailable("chat deletion SQLite quick_check failed")
+            except ChatDeletionError:
+                connection.rollback()
+                raise
+            except sqlite3.Error as error:
+                connection.rollback()
                 raise ChatDeletionUnavailable(
-                    "chat deletion SQLite schema is unsupported"
-                )
-            if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
-                raise ChatDeletionUnavailable("chat deletion SQLite quick_check failed")
-        except ChatDeletionError:
-            connection.rollback()
-            raise
-        except sqlite3.Error as error:
-            connection.rollback()
-            raise ChatDeletionUnavailable(
-                "chat deletion SQLite schema initialization failed"
-            ) from error
-        finally:
-            connection.close()
+                    "chat deletion SQLite schema initialization failed"
+                ) from error
+            finally:
+                connection.close()
 
     def is_chat_tombstoned(self, owner_chat_id: str) -> bool:
         return is_chat_deletion_tombstoned(
@@ -1646,145 +1649,146 @@ class SQLiteChatDeletionV2Service:
         operation = _identifier(operation_id, "operation_id")
         scope_json = _canonical_json_bytes(scope.to_dict())
         scope_sha256 = _sha256(scope_json)
-        connection = _connect(self.database_path)
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            tables = self._validate_schema_closure(connection)
-            self._validate_retained_extension_scope(connection, scope)
-            tombstone = connection.execute(
-                "SELECT * FROM chat_deletion_tombstones WHERE owner_chat_id = ?",
-                (scope.owner_chat_id,),
-            ).fetchone()
-            if tombstone is not None:
-                if (
-                    bytes(tombstone["scope_json"]) != scope_json
-                    or tombstone["scope_sha256"] != scope_sha256
-                    or _sha256(bytes(tombstone["scope_json"])) != scope_sha256
-                ):
-                    raise ChatDeletionConflict("chat deletion scope payload changed")
-                self._verify_tombstone_evidence(
-                    connection,
-                    row=tombstone,
-                    scope=scope,
+        with serialized_context_v2_database_access(self.database_path):
+            connection = _connect(self.database_path)
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                tables = self._validate_schema_closure(connection)
+                self._validate_retained_extension_scope(connection, scope)
+                tombstone = connection.execute(
+                    "SELECT * FROM chat_deletion_tombstones WHERE owner_chat_id = ?",
+                    (scope.owner_chat_id,),
+                ).fetchone()
+                if tombstone is not None:
+                    if (
+                        bytes(tombstone["scope_json"]) != scope_json
+                        or tombstone["scope_sha256"] != scope_sha256
+                        or _sha256(bytes(tombstone["scope_json"])) != scope_sha256
+                    ):
+                        raise ChatDeletionConflict("chat deletion scope payload changed")
+                    self._verify_tombstone_evidence(
+                        connection,
+                        row=tombstone,
+                        scope=scope,
+                    )
+                    self._delete_owner_scoped_extensions(
+                        connection,
+                        scope.owner_chat_id,
+                        self._owner_scoped_deletion_tables,
+                    )
+                    existing_operation = connection.execute(
+                        "SELECT payload_sha256, result_sha256 "
+                        "FROM chat_deletion_operations "
+                        "WHERE owner_chat_id = ? AND operation_id = ?",
+                        (scope.owner_chat_id, operation),
+                    ).fetchone()
+                    if existing_operation is not None and (
+                        existing_operation["payload_sha256"] != scope_sha256
+                        or existing_operation["result_sha256"] != tombstone["result_sha256"]
+                    ):
+                        raise ChatDeletionConflict(
+                            "chat deletion operation payload changed"
+                        )
+                    if existing_operation is None:
+                        connection.execute(
+                            """
+                            INSERT INTO chat_deletion_operations(
+                                owner_chat_id, operation_id, payload_sha256, result_sha256
+                            ) VALUES (?, ?, ?, ?)
+                            """,
+                            (
+                                scope.owner_chat_id,
+                                operation,
+                                scope_sha256,
+                                tombstone["result_sha256"],
+                            ),
+                        )
+                    receipt = self._decode_receipt(
+                        tombstone,
+                        owner_chat_id=scope.owner_chat_id,
+                        replayed=True,
+                    )
+                    connection.commit()
+                    return receipt
+
+                self._validate_empty_scope_owner_evidence(connection, scope)
+                self._validate_scope(connection, scope, tables=tables)
+                connection.execute(
+                    """
+                    INSERT INTO chat_deletion_tombstones(
+                        owner_chat_id, revision, first_operation_id,
+                        scope_json, scope_sha256, result_json, result_sha256
+                    ) VALUES (?, 1, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        scope.owner_chat_id,
+                        operation,
+                        scope_json,
+                        scope_sha256,
+                        b"{}",
+                        _sha256(b"{}"),
+                    ),
                 )
-                self._delete_owner_scoped_extensions(
+                connection.executemany(
+                    "INSERT INTO chat_deletion_execution_scopes "
+                    "(owner_chat_id, execution_id) VALUES (?, ?)",
+                    ((scope.owner_chat_id, value) for value in scope.execution_ids),
+                )
+                connection.executemany(
+                    "INSERT INTO chat_deletion_space_scopes "
+                    "(owner_chat_id, space_id) VALUES (?, ?)",
+                    ((scope.owner_chat_id, value) for value in scope.space_ids),
+                )
+                connection.executemany(
+                    "INSERT INTO chat_deletion_binding_scopes "
+                    "(owner_chat_id, binding_id) VALUES (?, ?)",
+                    ((scope.owner_chat_id, value) for value in scope.binding_ids),
+                )
+                deleted_rows = self._delete_scoped_rows(
                     connection,
                     scope.owner_chat_id,
-                    self._owner_scoped_deletion_tables,
+                    tables=tables,
+                    owner_scoped_deletion_tables=self._owner_scoped_deletion_tables,
                 )
-                existing_operation = connection.execute(
-                    "SELECT payload_sha256, result_sha256 "
-                    "FROM chat_deletion_operations "
-                    "WHERE owner_chat_id = ? AND operation_id = ?",
-                    (scope.owner_chat_id, operation),
-                ).fetchone()
-                if existing_operation is not None and (
-                    existing_operation["payload_sha256"] != scope_sha256
-                    or existing_operation["result_sha256"] != tombstone["result_sha256"]
-                ):
-                    raise ChatDeletionConflict(
-                        "chat deletion operation payload changed"
-                    )
-                if existing_operation is None:
-                    connection.execute(
-                        """
-                        INSERT INTO chat_deletion_operations(
-                            owner_chat_id, operation_id, payload_sha256, result_sha256
-                        ) VALUES (?, ?, ?, ?)
-                        """,
-                        (
-                            scope.owner_chat_id,
-                            operation,
-                            scope_sha256,
-                            tombstone["result_sha256"],
-                        ),
-                    )
-                receipt = self._decode_receipt(
-                    tombstone,
+                receipt = ChatDeletionReceipt(
                     owner_chat_id=scope.owner_chat_id,
-                    replayed=True,
+                    tombstone_revision=1,
+                    deleted_rows=deleted_rows,
+                    pending_unreferenced_scan=True,
+                )
+                result_json = _canonical_json_bytes(receipt.to_dict())
+                result_sha256 = _sha256(result_json)
+                connection.execute(
+                    """
+                    UPDATE chat_deletion_tombstones
+                    SET result_json = ?, result_sha256 = ?
+                    WHERE owner_chat_id = ?
+                    """,
+                    (result_json, result_sha256, scope.owner_chat_id),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO chat_deletion_operations(
+                        owner_chat_id, operation_id, payload_sha256, result_sha256
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (scope.owner_chat_id, operation, scope_sha256, result_sha256),
                 )
                 connection.commit()
                 return receipt
-
-            self._validate_empty_scope_owner_evidence(connection, scope)
-            self._validate_scope(connection, scope, tables=tables)
-            connection.execute(
-                """
-                INSERT INTO chat_deletion_tombstones(
-                    owner_chat_id, revision, first_operation_id,
-                    scope_json, scope_sha256, result_json, result_sha256
-                ) VALUES (?, 1, ?, ?, ?, ?, ?)
-                """,
-                (
-                    scope.owner_chat_id,
-                    operation,
-                    scope_json,
-                    scope_sha256,
-                    b"{}",
-                    _sha256(b"{}"),
-                ),
-            )
-            connection.executemany(
-                "INSERT INTO chat_deletion_execution_scopes "
-                "(owner_chat_id, execution_id) VALUES (?, ?)",
-                ((scope.owner_chat_id, value) for value in scope.execution_ids),
-            )
-            connection.executemany(
-                "INSERT INTO chat_deletion_space_scopes "
-                "(owner_chat_id, space_id) VALUES (?, ?)",
-                ((scope.owner_chat_id, value) for value in scope.space_ids),
-            )
-            connection.executemany(
-                "INSERT INTO chat_deletion_binding_scopes "
-                "(owner_chat_id, binding_id) VALUES (?, ?)",
-                ((scope.owner_chat_id, value) for value in scope.binding_ids),
-            )
-            deleted_rows = self._delete_scoped_rows(
-                connection,
-                scope.owner_chat_id,
-                tables=tables,
-                owner_scoped_deletion_tables=self._owner_scoped_deletion_tables,
-            )
-            receipt = ChatDeletionReceipt(
-                owner_chat_id=scope.owner_chat_id,
-                tombstone_revision=1,
-                deleted_rows=deleted_rows,
-                pending_unreferenced_scan=True,
-            )
-            result_json = _canonical_json_bytes(receipt.to_dict())
-            result_sha256 = _sha256(result_json)
-            connection.execute(
-                """
-                UPDATE chat_deletion_tombstones
-                SET result_json = ?, result_sha256 = ?
-                WHERE owner_chat_id = ?
-                """,
-                (result_json, result_sha256, scope.owner_chat_id),
-            )
-            connection.execute(
-                """
-                INSERT INTO chat_deletion_operations(
-                    owner_chat_id, operation_id, payload_sha256, result_sha256
-                ) VALUES (?, ?, ?, ?)
-                """,
-                (scope.owner_chat_id, operation, scope_sha256, result_sha256),
-            )
-            connection.commit()
-            return receipt
-        except ChatDeletionError:
-            connection.rollback()
-            raise
-        except sqlite3.Error as error:
-            connection.rollback()
-            raise ChatDeletionUnavailable(
-                "chat deletion SQLite transaction failed"
-            ) from error
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+            except ChatDeletionError:
+                connection.rollback()
+                raise
+            except sqlite3.Error as error:
+                connection.rollback()
+                raise ChatDeletionUnavailable(
+                    "chat deletion SQLite transaction failed"
+                ) from error
+            except BaseException:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
 
 
 def read_chat_deletion_tombstone(
@@ -1798,78 +1802,79 @@ def read_chat_deletion_tombstone(
     path = Path(database_path)
     if not path.is_file():
         return None
-    connection = _connect(path)
-    try:
-        connection.execute("PRAGMA query_only = ON")
-        table = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
-            "AND name = 'chat_deletion_tombstones'"
-        ).fetchone()
-        if table is None:
-            return None
-        row = connection.execute(
-            "SELECT * FROM chat_deletion_tombstones WHERE owner_chat_id = ?",
-            (owner,),
-        ).fetchone()
-        if row is None:
-            return None
-        if int(row["revision"]) != 1:
-            raise ChatDeletionUnavailable("chat deletion tombstone revision changed")
-        scope_json = bytes(row["scope_json"])
-        if _sha256(scope_json) != row["scope_sha256"]:
-            raise ChatDeletionUnavailable("chat deletion scope digest changed")
+    with serialized_context_v2_database_access(path):
+        connection = _connect(path)
         try:
-            raw_scope = json.loads(scope_json.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise ChatDeletionUnavailable("chat deletion scope is malformed") from error
-        expected_scope_fields = {
-            "schema",
-            "owner_chat_id",
-            "execution_ids",
-            "space_ids",
-            "binding_ids",
-        }
-        if (
-            not isinstance(raw_scope, Mapping)
-            or set(raw_scope) != expected_scope_fields
-            or raw_scope.get("schema") != _SCOPE_SCHEMA
-        ):
-            raise ChatDeletionUnavailable("chat deletion scope shape changed")
-        try:
-            scope = ChatDeletionScope(
-                owner_chat_id=raw_scope["owner_chat_id"],
-                execution_ids=tuple(raw_scope["execution_ids"]),
-                space_ids=tuple(raw_scope["space_ids"]),
-                binding_ids=tuple(raw_scope["binding_ids"]),
+            connection.execute("PRAGMA query_only = ON")
+            table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'chat_deletion_tombstones'"
+            ).fetchone()
+            if table is None:
+                return None
+            row = connection.execute(
+                "SELECT * FROM chat_deletion_tombstones WHERE owner_chat_id = ?",
+                (owner,),
+            ).fetchone()
+            if row is None:
+                return None
+            if int(row["revision"]) != 1:
+                raise ChatDeletionUnavailable("chat deletion tombstone revision changed")
+            scope_json = bytes(row["scope_json"])
+            if _sha256(scope_json) != row["scope_sha256"]:
+                raise ChatDeletionUnavailable("chat deletion scope digest changed")
+            try:
+                raw_scope = json.loads(scope_json.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ChatDeletionUnavailable("chat deletion scope is malformed") from error
+            expected_scope_fields = {
+                "schema",
+                "owner_chat_id",
+                "execution_ids",
+                "space_ids",
+                "binding_ids",
+            }
+            if (
+                not isinstance(raw_scope, Mapping)
+                or set(raw_scope) != expected_scope_fields
+                or raw_scope.get("schema") != _SCOPE_SCHEMA
+            ):
+                raise ChatDeletionUnavailable("chat deletion scope shape changed")
+            try:
+                scope = ChatDeletionScope(
+                    owner_chat_id=raw_scope["owner_chat_id"],
+                    execution_ids=tuple(raw_scope["execution_ids"]),
+                    space_ids=tuple(raw_scope["space_ids"]),
+                    binding_ids=tuple(raw_scope["binding_ids"]),
+                )
+            except (TypeError, ValueError) as error:
+                raise ChatDeletionUnavailable("chat deletion scope is invalid") from error
+            if (
+                scope.owner_chat_id != owner
+                or _canonical_json_bytes(scope.to_dict()) != scope_json
+            ):
+                raise ChatDeletionUnavailable("chat deletion scope is not canonical")
+            receipt = SQLiteChatDeletionV2Service._decode_receipt(
+                row,
+                owner_chat_id=owner,
+                replayed=True,
             )
-        except (TypeError, ValueError) as error:
-            raise ChatDeletionUnavailable("chat deletion scope is invalid") from error
-        if (
-            scope.owner_chat_id != owner
-            or _canonical_json_bytes(scope.to_dict()) != scope_json
-        ):
-            raise ChatDeletionUnavailable("chat deletion scope is not canonical")
-        receipt = SQLiteChatDeletionV2Service._decode_receipt(
-            row,
-            owner_chat_id=owner,
-            replayed=True,
-        )
-        SQLiteChatDeletionV2Service._verify_tombstone_evidence(
-            connection,
-            row=row,
-            scope=scope,
-        )
-        return ChatDeletionTombstone(
-            scope=scope,
-            receipt=receipt,
-            first_operation_id=row["first_operation_id"],
-        )
-    except ChatDeletionError:
-        raise
-    except sqlite3.Error as error:
-        raise ChatDeletionUnavailable("chat deletion tombstone read failed") from error
-    finally:
-        connection.close()
+            SQLiteChatDeletionV2Service._verify_tombstone_evidence(
+                connection,
+                row=row,
+                scope=scope,
+            )
+            return ChatDeletionTombstone(
+                scope=scope,
+                receipt=receipt,
+                first_operation_id=row["first_operation_id"],
+            )
+        except ChatDeletionError:
+            raise
+        except sqlite3.Error as error:
+            raise ChatDeletionUnavailable("chat deletion tombstone read failed") from error
+        finally:
+            connection.close()
 
 
 def is_chat_deleted(

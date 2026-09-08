@@ -70,7 +70,7 @@ class _ArtifactRepository(BoundArtifactRepository):
             return artifact
         digest = hashlib.sha256(content).hexdigest()
         artifact = ArtifactRef(
-            ref=ResourceRef("artifact", f"object-{digest}", 1),
+            ref=ResourceRef("artifact", f"object-{operation.operation_id}", 1),
             media_type=media_type,
             byte_length=len(content),
             sha256=digest,
@@ -80,6 +80,9 @@ class _ArtifactRepository(BoundArtifactRepository):
         self.content[artifact.ref.resource_id] = content
         return artifact
 
+    def artifact_id_for(self, *, logical_kind, logical_key):
+        return f"object-{logical_key}"
+
     def read_verified(self, *, artifact, offset=0, limit=65_536):
         return self.content[artifact.ref.resource_id][offset : offset + limit]
 
@@ -88,12 +91,13 @@ class _ArtifactRepository(BoundArtifactRepository):
 
 
 class _Journal(BoundExecutionJournal):
-    def __init__(self, order: list[str]) -> None:
+    def __init__(self, order: list[str], *, artifacts: BoundArtifactRepository | None = None) -> None:
         super().__init__("execution-1")
         self.order = order
         self.events: list[JournalEvent] = []
         self.operations = {}
         self.capture_calls = 0
+        self._artifacts = artifacts
 
     def append(self, *, request):
         self.order.append("journal.append")
@@ -122,6 +126,21 @@ class _Journal(BoundExecutionJournal):
             event=event,
             cursor=EventCursor(event.store_seq, event.event_id),
         )
+
+    def append_with_artifacts(self, *, request, artifacts, precondition=None):
+        previous = self.operations.get(request.operation.operation_id)
+        if previous is not None:
+            return self.append(request=request)
+        if precondition is not None:
+            precondition(self.capture_snapshot())
+        for pending in artifacts:
+            self._artifacts.put(
+                content=pending.content,
+                media_type=pending.media_type,
+                operation=pending.operation,
+                preview=pending.preview,
+            )
+        return self.append(request=request)
 
     def read(self, *, after=None, limit=100):
         start = after.store_seq if after is not None else 0
@@ -170,8 +189,9 @@ def _attempt(attempt_id: str = "run-1") -> AttemptRef:
 def _bound(attempt: AttemptRef | None = None):
     bound_attempt = attempt or _attempt()
     order: list[str] = []
+    repository = _ArtifactRepository(order)
     artifacts = ArtifactService(
-        _ArtifactRepository(order),
+        repository,
         sanitizer=lambda content, media_type: content,
     )
     projector = CanonicalSemanticEventProjector(
@@ -179,7 +199,7 @@ def _bound(attempt: AttemptRef | None = None):
         artifacts=artifacts,
         payload_sanitizer=lambda event_type, payload: payload,
     )
-    journal = _Journal(order)
+    journal = _Journal(order, artifacts=repository)
     sink = DurableEventSink(journal, bound_attempt, projector)
     ingress = ContextInputIngress(
         attempt=bound_attempt,

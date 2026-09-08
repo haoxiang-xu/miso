@@ -48,7 +48,11 @@ from .sqlite_memory_v2 import (
     SQLiteMemoryV2Store,
     _SQLiteBoundMemoryWorkspaceRepository,
 )
-from .sqlite_v2 import SQLiteContextV2Store, _SQLiteBoundContextV2Repository
+from .sqlite_v2 import (
+    SQLiteContextV2Store,
+    _SQLiteBoundContextV2Repository,
+    serialized_context_v2_database_access,
+)
 
 
 _MAX_EXECUTIONS = 10_000
@@ -100,65 +104,66 @@ def read_sqlite_context_v2_store_status(
         path = Path(database_path).expanduser().resolve()
         if not path.is_file():
             raise SQLiteContextV2ReadError("Context V2 database is unavailable")
-        connection = sqlite3.connect(
-            f"{path.as_uri()}?mode=ro",
-            uri=True,
-            timeout=30.0,
-            isolation_level=None,
-        )
-        try:
-            connection.execute("PRAGMA query_only = ON")
-            if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
-                raise SQLiteContextV2ReadError("SQLite quick_check failed")
-            context_versions = {
-                int(row[0])
-                for row in connection.execute(
-                    "SELECT version FROM context_v2_schema ORDER BY version"
-                )
-            }
-            memory_versions = {
-                int(row[0])
-                for row in connection.execute(
-                    "SELECT version FROM memory_v2_schema ORDER BY version"
-                )
-            }
-            tables = {
-                str(row[0])
-                for row in connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
-                )
-            }
-            required = {
-                "executions",
-                "events",
-                "artifacts",
-                "spaces",
-                "entries",
-                "index_state",
-            }
-            if (
-                context_versions != {1, 2}
-                or memory_versions != {1}
-                or not required.issubset(tables)
-            ):
-                raise SQLiteContextV2ReadError(
-                    "Context V2 database schema is unsupported"
-                )
-            journal_mode = str(
-                connection.execute("PRAGMA journal_mode").fetchone()[0]
-            ).casefold()
-            if journal_mode != "wal":
-                raise SQLiteContextV2ReadError("Context V2 journal mode is unavailable")
-            fts_available = "workspace_entries_fts" in tables
-            if fts_available:
-                degraded = connection.execute(
-                    "SELECT 1 FROM index_state "
-                    "WHERE index_name = 'workspace_fts' AND status != 'ready' "
-                    "LIMIT 1"
-                ).fetchone()
-                fts_available = degraded is None
-        finally:
-            connection.close()
+        with serialized_context_v2_database_access(path):
+            connection = sqlite3.connect(
+                f"{path.as_uri()}?mode=ro",
+                uri=True,
+                timeout=30.0,
+                isolation_level=None,
+            )
+            try:
+                connection.execute("PRAGMA query_only = ON")
+                if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                    raise SQLiteContextV2ReadError("SQLite quick_check failed")
+                context_versions = {
+                    int(row[0])
+                    for row in connection.execute(
+                        "SELECT version FROM context_v2_schema ORDER BY version"
+                    )
+                }
+                memory_versions = {
+                    int(row[0])
+                    for row in connection.execute(
+                        "SELECT version FROM memory_v2_schema ORDER BY version"
+                    )
+                }
+                tables = {
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
+                    )
+                }
+                required = {
+                    "executions",
+                    "events",
+                    "artifacts",
+                    "spaces",
+                    "entries",
+                    "index_state",
+                }
+                if (
+                    context_versions != {1, 2}
+                    or memory_versions != {1}
+                    or not required.issubset(tables)
+                ):
+                    raise SQLiteContextV2ReadError(
+                        "Context V2 database schema is unsupported"
+                    )
+                journal_mode = str(
+                    connection.execute("PRAGMA journal_mode").fetchone()[0]
+                ).casefold()
+                if journal_mode != "wal":
+                    raise SQLiteContextV2ReadError("Context V2 journal mode is unavailable")
+                fts_available = "workspace_entries_fts" in tables
+                if fts_available:
+                    degraded = connection.execute(
+                        "SELECT 1 FROM index_state "
+                        "WHERE index_name = 'workspace_fts' AND status != 'ready' "
+                        "LIMIT 1"
+                    ).fetchone()
+                    fts_available = degraded is None
+            finally:
+                connection.close()
     except SQLiteContextV2ReadError:
         raise
     except (OSError, sqlite3.Error, TypeError, ValueError) as error:
@@ -322,20 +327,21 @@ class SQLiteContextV2ReadService:
 
     def _execution_exists(self, execution_id: str) -> bool:
         try:
-            connection = sqlite3.connect(
-                f"{self._database_path.as_uri()}?mode=ro",
-                uri=True,
-                timeout=30.0,
-                isolation_level=None,
-            )
-            try:
-                connection.execute("PRAGMA query_only = ON")
-                row = connection.execute(
-                    "SELECT 1 FROM executions WHERE execution_id = ?",
-                    (execution_id,),
-                ).fetchone()
-            finally:
-                connection.close()
+            with serialized_context_v2_database_access(self._database_path):
+                connection = sqlite3.connect(
+                    f"{self._database_path.as_uri()}?mode=ro",
+                    uri=True,
+                    timeout=30.0,
+                    isolation_level=None,
+                )
+                try:
+                    connection.execute("PRAGMA query_only = ON")
+                    row = connection.execute(
+                        "SELECT 1 FROM executions WHERE execution_id = ?",
+                        (execution_id,),
+                    ).fetchone()
+                finally:
+                    connection.close()
         except sqlite3.Error as error:
             raise SQLiteContextV2ReadError(
                 "durable execution scope is unavailable"
@@ -445,23 +451,24 @@ class BoundSQLiteContextV2ReadService:
 
     def status(self) -> SQLiteContextV2ReadStatus:
         try:
-            connection = sqlite3.connect(
-                f"{self._database_path.as_uri()}?mode=ro",
-                uri=True,
-                timeout=30.0,
-                isolation_level=None,
-            )
-            try:
-                connection.execute("PRAGMA query_only = ON")
-                if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
-                    raise SQLiteContextV2ReadError("SQLite quick_check failed")
-                row = connection.execute(
-                    "SELECT status FROM index_state "
-                    "WHERE index_name = 'workspace_fts' AND scope_id = ?",
-                    (self._scope.space_id,),
-                ).fetchone()
-            finally:
-                connection.close()
+            with serialized_context_v2_database_access(self._database_path):
+                connection = sqlite3.connect(
+                    f"{self._database_path.as_uri()}?mode=ro",
+                    uri=True,
+                    timeout=30.0,
+                    isolation_level=None,
+                )
+                try:
+                    connection.execute("PRAGMA query_only = ON")
+                    if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                        raise SQLiteContextV2ReadError("SQLite quick_check failed")
+                    row = connection.execute(
+                        "SELECT status FROM index_state "
+                        "WHERE index_name = 'workspace_fts' AND scope_id = ?",
+                        (self._scope.space_id,),
+                    ).fetchone()
+                finally:
+                    connection.close()
         except sqlite3.Error as error:
             raise SQLiteContextV2ReadError("read status is unavailable") from error
         search = "ready" if row is not None and row[0] == "ready" else "fallback"
@@ -575,29 +582,30 @@ class BoundSQLiteContextV2ReadService:
     ):
         placeholders = ",".join("?" for _ in self._scope.execution_ids)
         try:
-            connection = sqlite3.connect(
-                f"{self._database_path.as_uri()}?mode=ro",
-                uri=True,
-                timeout=30.0,
-                isolation_level=None,
-            )
-            connection.row_factory = sqlite3.Row
-            try:
-                connection.execute("PRAGMA query_only = ON")
-                rows = list(
-                    connection.execute(
-                        f"SELECT * FROM {table} WHERE {identifier_field} = ? "
-                        f"AND revision = ? AND execution_id IN ({placeholders}) "
-                        "LIMIT 2",
-                        (
-                            identifier,
-                            revision,
-                            *self._scope.execution_ids,
-                        ),
-                    )
+            with serialized_context_v2_database_access(self._database_path):
+                connection = sqlite3.connect(
+                    f"{self._database_path.as_uri()}?mode=ro",
+                    uri=True,
+                    timeout=30.0,
+                    isolation_level=None,
                 )
-            finally:
-                connection.close()
+                connection.row_factory = sqlite3.Row
+                try:
+                    connection.execute("PRAGMA query_only = ON")
+                    rows = list(
+                        connection.execute(
+                            f"SELECT * FROM {table} WHERE {identifier_field} = ? "
+                            f"AND revision = ? AND execution_id IN ({placeholders}) "
+                            "LIMIT 2",
+                            (
+                                identifier,
+                                revision,
+                                *self._scope.execution_ids,
+                            ),
+                        )
+                    )
+                finally:
+                    connection.close()
         except sqlite3.Error as error:
             raise SQLiteContextV2ReadError(
                 f"durable {kind} descriptor is unavailable"
@@ -707,33 +715,34 @@ class BoundSQLiteContextV2ReadService:
             )
         placeholders = ",".join("?" for _ in self._scope.execution_ids)
         try:
-            connection = sqlite3.connect(
-                f"{self._database_path.as_uri()}?mode=ro",
-                uri=True,
-                timeout=30.0,
-                isolation_level=None,
-            )
-            connection.row_factory = sqlite3.Row
-            try:
-                connection.execute("PRAGMA query_only = ON")
-                rows = list(
-                    connection.execute(
-                        "SELECT * FROM events WHERE event_id = ? "
-                        f"AND execution_id IN ({placeholders}) LIMIT 2",
-                        (ref.resource_id, *self._scope.execution_ids),
-                    )
+            with serialized_context_v2_database_access(self._database_path):
+                connection = sqlite3.connect(
+                    f"{self._database_path.as_uri()}?mode=ro",
+                    uri=True,
+                    timeout=30.0,
+                    isolation_level=None,
                 )
-                if len(rows) != 1:
-                    raise SQLiteContextV2ReadScopeError(
-                        "context event is absent or ambiguous in the bound scope"
+                connection.row_factory = sqlite3.Row
+                try:
+                    connection.execute("PRAGMA query_only = ON")
+                    rows = list(
+                        connection.execute(
+                            "SELECT * FROM events WHERE event_id = ? "
+                            f"AND execution_id IN ({placeholders}) LIMIT 2",
+                            (ref.resource_id, *self._scope.execution_ids),
+                        )
                     )
-                execution_id = str(rows[0]["execution_id"])
-                event = self._journal(execution_id)._event_from_row(
-                    connection,
-                    rows[0],
-                )
-            finally:
-                connection.close()
+                    if len(rows) != 1:
+                        raise SQLiteContextV2ReadScopeError(
+                            "context event is absent or ambiguous in the bound scope"
+                        )
+                    execution_id = str(rows[0]["execution_id"])
+                    event = self._journal(execution_id)._event_from_row(
+                        connection,
+                        rows[0],
+                    )
+                finally:
+                    connection.close()
         except SQLiteContextV2ReadScopeError:
             raise
         except sqlite3.Error as error:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -8,9 +8,11 @@ from unchain.journal import (
     AttemptRef,
     DurableEventSink,
     JournalAppendResult,
+    PreparedSemanticEvent,
     ResourceRef,
 )
 from unchain.journal.models import _freeze_json, _required_text, _thaw_json
+from unchain.journal.snapshot import JournalSnapshot
 
 from .attachments import (
     HostResolvedAttachment,
@@ -210,6 +212,8 @@ class ContextInputIngress:
     def persist(
         self,
         current_input: HostResolvedCurrentInput | HostResolvedInteractionInput,
+        *,
+        precondition: Callable[[JournalSnapshot], None] | None = None,
     ) -> JournalAppendResult:
         if not isinstance(
             current_input,
@@ -222,7 +226,14 @@ class ContextInputIngress:
             raise ContextInputIngressError(
                 "current input does not match the bound attempt"
             )
+        if precondition is not None and not callable(precondition):
+            raise TypeError("precondition must be callable")
+        prepared: PreparedSemanticEvent | None = None
         if isinstance(current_input, HostResolvedCurrentInput):
+            if precondition is not None:
+                raise ContextInputIngressError(
+                    "user messages do not take an acceptance precondition"
+                )
             message = {"role": "user", "content": current_input.content}
             if current_input.attachments:
                 draft = self._projector.project_user_message(
@@ -237,11 +248,12 @@ class ContextInputIngress:
                 )
             expected_event_type = "message.user"
         else:
-            draft = self._projector.project_interaction_resolution(
+            prepared = self._projector.prepare_interaction_resolution(
                 interaction_id=current_input.interaction_id,
                 response=_thaw_json(current_input.response),
                 submitted_by=current_input.submitted_by,
             )
+            draft = prepared.draft
             expected_event_type = "interaction.resolved"
         if draft.attempt != self._attempt or draft.event_type != expected_event_type:
             raise ContextInputIngressError(
@@ -264,7 +276,10 @@ class ContextInputIngress:
                 raise ContextInputIngressError(
                     "projected current-input attachment references changed"
                 )
-        result = self._sink.append_projected(draft)
+        if prepared is not None:
+            result = self._sink.append_prepared(prepared, precondition=precondition)
+        else:
+            result = self._sink.append_projected(draft)
         if not isinstance(result, JournalAppendResult):
             raise ContextInputIngressError(
                 "durable sink did not return an append receipt"

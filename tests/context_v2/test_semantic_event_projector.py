@@ -65,7 +65,7 @@ class _ArtifactRepository(BoundArtifactRepository):
             return artifact
         digest = hashlib.sha256(content).hexdigest()
         artifact = ArtifactRef(
-            ref=ResourceRef("artifact", f"object-{digest}", 1),
+            ref=ResourceRef("artifact", f"object-{operation.operation_id}", 1),
             media_type=media_type,
             byte_length=len(content),
             sha256=digest,
@@ -74,6 +74,9 @@ class _ArtifactRepository(BoundArtifactRepository):
         self.by_operation[operation.operation_id] = (operation, artifact)
         self.content[artifact.ref.resource_id] = content
         return artifact
+
+    def artifact_id_for(self, *, logical_kind, logical_key):
+        return f"object-{logical_key}"
 
     def read_verified(self, *, artifact, offset=0, limit=65_536):
         return self.content[artifact.ref.resource_id][offset : offset + limit]

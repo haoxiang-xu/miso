@@ -68,6 +68,19 @@ class BoundArtifactRepository(_ExecutionBoundPort):
     def read_full_verified(self, *, artifact: ArtifactRef) -> bytes:
         """Scope-authorize and return one fully verified immutable object."""
 
+    def artifact_id_for(self, *, logical_kind: str, logical_key: str) -> str:
+        """Return the deterministic artifact id a claim would receive.
+
+        Lets a caller compute the identity an artifact will get from
+        ``put()`` before it is actually written, so it can be referenced from
+        an event drafted in the same transaction. A repository that cannot
+        compute this ahead of a real write raises rather than guessing.
+        """
+
+        raise NotImplementedError(
+            "artifact repository cannot pre-compute artifact ids"
+        )
+
 
 class CheckpointWriteStatus(StrEnum):
     PREPARED = "prepared"

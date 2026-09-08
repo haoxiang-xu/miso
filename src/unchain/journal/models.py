@@ -600,6 +600,37 @@ class OperationRef:
 
 
 @dataclass(frozen=True)
+class PendingArtifact:
+    """One content-addressed artifact claimed in the same transaction as an event.
+
+    The artifact keeps ``put()`` semantics (``logical_kind="artifact"``,
+    ``logical_key=operation.operation_id``, revision 1) but is only written
+    once the journal has re-validated the event inside its own write
+    transaction.
+    """
+
+    content: bytes
+    media_type: str
+    operation: OperationRef
+    preview: str = ""
+
+    def __post_init__(self) -> None:
+        if type(self.content) is not bytes:
+            raise TypeError("artifact content must be exact bytes")
+        object.__setattr__(
+            self,
+            "media_type",
+            _required_text(self.media_type, "media_type", maximum=255),
+        )
+        if not isinstance(self.operation, OperationRef):
+            object.__setattr__(
+                self, "operation", OperationRef.from_dict(self.operation)
+            )
+        if not isinstance(self.preview, str):
+            raise TypeError("artifact preview must be text")
+
+
+@dataclass(frozen=True)
 class JournalAppendRequest:
     SCHEMA: ClassVar[str] = "unchain.journal_append_request.v1"
 
