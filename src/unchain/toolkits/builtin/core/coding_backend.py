@@ -280,7 +280,7 @@ class CoreCodingBackend:
             root_path = Path(current_root)
             for filename in filenames:
                 results.append(root_path / filename)
-        return results
+        return sorted(results, key=lambda item: self._relative_path(item).replace("\\", "/"))
 
     def _relative_path(self, target: Path) -> str:
         for root in self.workspace_roots:
