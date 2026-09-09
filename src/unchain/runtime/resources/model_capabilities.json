@@ -431,7 +431,7 @@
     "supports_response_format": true,
     "supports_previous_response_id": true,
     "supports_reasoning": true,
-    "reasoning_efforts": ["minimal", "low", "medium", "high"],
+    "reasoning_efforts": ["low", "medium", "high", "xhigh"],
     "default_reasoning_effort": "medium",
     "input_modalities": ["text", "image"],
     "input_source_types": {
