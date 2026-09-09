@@ -1,0 +1,224 @@
+{
+  "schema": "unchain.context_v2.fixture.v1",
+  "case": "tool_and_pinned",
+  "source_contracts": [
+    {
+      "path": "unchain_runtime/server/memory_v2_context.py",
+      "symbol": "persist_memory_v2_semantic_event"
+    },
+    {
+      "path": "unchain_runtime/server/memory_v2_context.py",
+      "symbol": "compile_context_envelope"
+    },
+    {
+      "path": "unchain_runtime/server/tests/test_memory_v2_context.py",
+      "symbol": "test_tool_result_is_artifact_first_and_request_snapshot_is_compact"
+    },
+    {
+      "path": "unchain_runtime/server/tests/test_memory_v2_context.py",
+      "symbol": "test_pinned_v2_includes_uncovered_inputs_without_duplicating_current_user"
+    }
+  ],
+  "input": {
+    "schema": "unchain.context_v2.request.v1",
+    "case": "tool_and_pinned",
+    "source_messages": [
+      {
+        "role": "user",
+        "content": "current native request",
+        "stable_id": "msg-current"
+      }
+    ],
+    "semantic_events": [
+      {
+        "type": "tool_call",
+        "event_id": "evt-call-closed-001",
+        "run_id": "run-tool",
+        "call_id": "call-closed-001",
+        "tool_name": "lookup",
+        "arguments": {
+          "query": "synthetic closed query"
+        }
+      },
+      {
+        "type": "tool_result",
+        "event_id": "evt-result-closed-001",
+        "run_id": "run-tool",
+        "call_id": "call-closed-001",
+        "tool_name": "lookup",
+        "synthetic_result": {
+          "field": "text",
+          "fill": "x",
+          "char_count": 20000
+        }
+      },
+      {
+        "type": "tool_call",
+        "event_id": "evt-call-open-001",
+        "run_id": "run-tool",
+        "call_id": "call-open-001",
+        "tool_name": "lookup",
+        "arguments": {
+          "query": "synthetic open query"
+        }
+      },
+      {
+        "type": "interaction_requested",
+        "event_id": "evt-interaction-001",
+        "content_ref": {
+          "kind": "artifact",
+          "id": "interaction-001",
+          "revision": 1
+        },
+        "interaction_request": {
+          "interaction_id": "interaction-001",
+          "kind": "tool_approval",
+          "payload": {
+            "call_id": "call-open-001"
+          }
+        }
+      }
+    ],
+    "task_state": {
+      "stable_id": "task-state-001",
+      "objective": "Finish the synthetic export",
+      "status": "in_progress",
+      "revision": 3
+    },
+    "pending_task_inputs": [
+      {
+        "event_id": "pending-decision-001",
+        "store_seq": 8,
+        "type": "message.user",
+        "preview": "earlier uncovered decision",
+        "content_ref": {
+          "kind": "context_event",
+          "id": "pending-decision-001",
+          "revision": 1
+        }
+      },
+      {
+        "event_id": "pending-current-001",
+        "store_seq": 9,
+        "type": "message.user",
+        "preview": "current native request",
+        "content_ref": {
+          "kind": "context_event",
+          "id": "pending-current-001",
+          "revision": 1
+        }
+      }
+    ]
+  },
+  "expected": {
+    "schema": "unchain.context_v2.comparable.v1",
+    "compression_applied": false,
+    "closed_tool_exchanges": [
+      {
+        "call_id": "call-closed-001",
+        "tool_name": "lookup",
+        "result": {
+          "preview": "{\"text\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "full_output_ref": {
+            "kind": "artifact",
+            "id": "call-closed-001",
+            "revision": 1
+          },
+          "content_bytes": 20011,
+          "content_sha256": "cdf2f2c69126e8e2bc716e8661fd595b257feef6c48cced72ad86f2922591a69"
+        },
+        "result_bytes": 20011,
+        "result_sha256": "cdf2f2c69126e8e2bc716e8661fd595b257feef6c48cced72ad86f2922591a69",
+        "full_output_ref": {
+          "kind": "artifact",
+          "id": "call-closed-001",
+          "revision": 1
+        }
+      }
+    ],
+    "open_tool_calls": [
+      {
+        "call_id": "call-open-001",
+        "tool_name": "lookup",
+        "arguments": {
+          "query": "synthetic open query"
+        }
+      }
+    ],
+    "atomic_call_ids": [
+      "call-open-001"
+    ],
+    "pinned_task_state": {
+      "stable_id": "task-state-001",
+      "objective": "Finish the synthetic export",
+      "status": "in_progress",
+      "revision": 3
+    },
+    "pending_task_inputs": [
+      {
+        "event_id": "pending-decision-001",
+        "store_seq": 8,
+        "type": "message.user",
+        "preview": "earlier uncovered decision",
+        "preview_truncated": false,
+        "content_ref": {
+          "kind": "context_event",
+          "id": "pending-decision-001",
+          "revision": 1
+        },
+        "content_bytes": 26,
+        "content_sha256": "bc1389f6449e760d4d49590ce2327e53d8784b19af776b731b6a1e56fda48385",
+        "inline": false
+      },
+      {
+        "event_id": "pending-current-001",
+        "store_seq": 9,
+        "type": "message.user",
+        "content_ref": {
+          "kind": "context_event",
+          "id": "pending-current-001",
+          "revision": 1
+        },
+        "content_bytes": 22,
+        "content_sha256": "aaff61405b8700ac7f322f45f97cb72d5fc307143350329d6e5d3b1c60027263",
+        "inline": false,
+        "delivered_as_native_current_user": true
+      }
+    ],
+    "pending_interaction": {
+      "trust": "UNTRUSTED_DATA",
+      "request": {
+        "type": "interaction_requested",
+        "event_id": "evt-interaction-001",
+        "content_ref": {
+          "kind": "artifact",
+          "id": "interaction-001",
+          "revision": 1
+        },
+        "interaction_request": {
+          "interaction_id": "interaction-001",
+          "kind": "tool_approval",
+          "payload": {
+            "call_id": "call-open-001"
+          }
+        }
+      },
+      "content_bytes": 235,
+      "content_sha256": "02347628dd284ca7781a9fce4ecf9575ea2dd6155fd3ee72614ff3f307c62c09",
+      "durable_refs": [
+        {
+          "kind": "artifact",
+          "id": "interaction-001",
+          "revision": 1
+        }
+      ]
+    },
+    "mandatory_ids": [
+      "call-open-001",
+      "pending-decision-001",
+      "pending-current-001",
+      "interaction-001",
+      "task-state-001"
+    ]
+  }
+}

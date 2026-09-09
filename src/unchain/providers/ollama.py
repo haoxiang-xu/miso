@@ -8,7 +8,7 @@ from typing import Any, Callable
 import httpx
 
 from .base import ModelTurnRequest
-from .native import _NativeModelIOBase
+from .native import _NativeModelIOBase, _translate_content_blocks_for_ollama
 from ..kernel.provider_replay import (
     redact_provider_replay_secrets,
     strict_json_copy,
@@ -16,6 +16,8 @@ from ..kernel.provider_replay import (
     tool_schema_manifest,
 )
 from ..kernel.types import ModelTurnResult, ToolCall
+from ..run_bundle import ProviderCallUsage
+from .canonical_hash import canonical_json_sha256
 
 
 class OllamaModelIO(_NativeModelIOBase):
@@ -43,9 +45,11 @@ class OllamaModelIO(_NativeModelIOBase):
         self._stream_factory = stream_factory
 
     def fetch_turn(self, request: ModelTurnRequest) -> ModelTurnResult:
+        messages = copy.deepcopy(request.messages)
+        _translate_content_blocks_for_ollama(messages)
         request_body: dict[str, Any] = {
             "model": self.model,
-            "messages": copy.deepcopy(request.messages),
+            "messages": messages,
             "stream": True,
         }
 
@@ -75,10 +79,18 @@ class OllamaModelIO(_NativeModelIOBase):
             tool_names=self._tool_names_for_trace(tools),
         )
 
+        return self._fetch_turn_streaming(request_body, request)
+
+    def _fetch_turn_streaming(
+        self,
+        request_body: dict[str, Any],
+        request: ModelTurnRequest,
+    ) -> ModelTurnResult:
         collected_chunks: list[str] = []
         reasoning_chunks: list[str] = []
         latest_prompt_eval_count = 0
         latest_eval_count = 0
+        observed_usage: dict[str, Any] = {}
 
         with self._stream_factory(
             "POST",
@@ -106,8 +118,18 @@ class OllamaModelIO(_NativeModelIOBase):
                     raise ValueError(f"error: {data['error']} ( kernel.model_io -> OllamaModelIO.fetch_turn )")
                 if isinstance(data.get("prompt_eval_count"), int):
                     latest_prompt_eval_count = data["prompt_eval_count"]
+                    observed_usage["prompt_eval_count"] = data["prompt_eval_count"]
                 if isinstance(data.get("eval_count"), int):
                     latest_eval_count = data["eval_count"]
+                    observed_usage["eval_count"] = data["eval_count"]
+                for reasoning_count_key in (
+                    "thinking_eval_count",
+                    "reasoning_eval_count",
+                ):
+                    if reasoning_count_key in data:
+                        observed_usage[reasoning_count_key] = data[
+                            reasoning_count_key
+                        ]
 
                 message = data.get("message") or {}
                 content_delta = message.get("content", "") or ""
@@ -158,7 +180,10 @@ class OllamaModelIO(_NativeModelIOBase):
                         "format": "ollama.chat.v1",
                         "complete": True,
                         "items": strict_json_copy(
-                            [*copy.deepcopy(request.messages), assistant_message]
+                            [
+                                *copy.deepcopy(request_body["messages"]),
+                                assistant_message,
+                            ]
                         ),
                         "mode": "replace",
                         "source": "ollama_chat_message",
@@ -188,6 +213,15 @@ class OllamaModelIO(_NativeModelIOBase):
                         input_tokens=latest_prompt_eval_count,
                         output_tokens=latest_eval_count,
                         provider_replay_frame=provider_replay_frame,
+                        provider_call_usage=ProviderCallUsage.from_ollama_usage(
+                            observed_usage,
+                            reasoning_present=bool(reasoning_chunks),
+                        ),
+                        provider_raw_usage_sha256=(
+                            canonical_json_sha256(observed_usage)
+                            if observed_usage
+                            else None
+                        ),
                     )
 
                 if data.get("done", False):
@@ -207,11 +241,23 @@ class OllamaModelIO(_NativeModelIOBase):
                         consumed_tokens=latest_prompt_eval_count + latest_eval_count,
                         input_tokens=latest_prompt_eval_count,
                         output_tokens=latest_eval_count,
+                        provider_call_usage=ProviderCallUsage.from_ollama_usage(
+                            observed_usage,
+                            reasoning_present=bool(reasoning_chunks),
+                        ),
+                        provider_raw_usage_sha256=(
+                            canonical_json_sha256(observed_usage)
+                            if observed_usage
+                            else None
+                        ),
                         provider_replay_frame={
                             "format": "ollama.chat.v1",
                             "complete": True,
                             "items": strict_json_copy(
-                                [*copy.deepcopy(request.messages), raw_assistant_message]
+                                [
+                                    *copy.deepcopy(request_body["messages"]),
+                                    raw_assistant_message,
+                                ]
                             ),
                             "mode": "replace",
                             "source": "ollama_chat_message",

@@ -334,6 +334,7 @@ def test_previous_response_request_keeps_delta_and_builds_complete_local_fallbac
 
     request = build_model_turn_request(state)
 
+    assert request.context_mode == "remote_continuation"
     assert request.previous_response_id == "resp_1"
     assert request.messages == [tool_output]
     assert request.fallback_messages is not None
@@ -1325,3 +1326,38 @@ def test_provider_model_turn_runtime_builds_request_and_applies_turn_state():
     assert state.token_state.last_turn_output_tokens == 3
     assert state.token_state.last_turn_cache_read_input_tokens == 2
     assert state.token_state.last_turn_cache_creation_input_tokens == 1
+
+
+def test_fetch_built_model_turn_consumes_the_exact_prebuilt_request_once():
+    from unchain.providers import model_turn_runtime
+
+    assert hasattr(model_turn_runtime, "fetch_built_model_turn")
+
+    turn = ModelTurnResult(
+        assistant_messages=[{"role": "assistant", "content": "done"}],
+        tool_calls=[],
+        final_text="done",
+    )
+    model_io = _RecordingModelIO(turn)
+    state = RunState()
+    state.seed_messages([{"role": "user", "content": "original"}])
+    state.provider_state.provider = "openai"
+    request = model_turn_runtime.build_model_turn_request(
+        state,
+        payload={"temperature": 0.2},
+        run_id="prebuilt-run",
+    )
+    attempts = []
+
+    fetched = model_turn_runtime.fetch_built_model_turn(
+        model_io=model_io,
+        retry_config=RetryConfig(max_retries=0),
+        state=state,
+        request=request,
+        before_attempt=attempts.append,
+    )
+
+    assert fetched.final_text == "done"
+    assert model_io.requests == [request]
+    assert model_io.requests[0] is request
+    assert attempts == [0]

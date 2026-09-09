@@ -8,6 +8,7 @@ import socket
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -547,9 +548,16 @@ def run_extract_model(
     content: str,
     prompt: str,
     extract_model_config: dict[str, Any],
+    execution_context: Any = None,
 ) -> str:
     from ....agent.model_io import ModelIOFactoryRegistry
     from ....kernel.model_io import ModelTurnRequest
+    from ....kernel.run_ledger import (
+        provider_call_route,
+        record_model_turn,
+        record_unobserved_model_attempt,
+        request_sha256,
+    )
     from ....tools.toolkit import Toolkit
 
     provider = str(extract_model_config.get("provider") or "").strip().lower()
@@ -586,25 +594,115 @@ def run_extract_model(
 
     registry = ModelIOFactoryRegistry()
     model_io = registry.create(provider=provider, model=model, api_key=api_key if isinstance(api_key, str) else None)
-    turn = model_io.fetch_turn(
-        ModelTurnRequest(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Extract only the information requested from the provided web page content.",
-                },
-                {
-                    "role": "user",
-                    "content": user_prompt,
-                },
-            ],
-            payload=request_payload,
-            toolkit=Toolkit(),
-            emit_stream=False,
-            run_id="web_fetch_extract",
-            iteration=0,
-        )
+    request = ModelTurnRequest(
+        messages=[
+            {
+                "role": "system",
+                "content": "Extract only the information requested from the provided web page content.",
+            },
+            {
+                "role": "user",
+                "content": user_prompt,
+            },
+        ],
+        payload=request_payload,
+        toolkit=Toolkit(),
+        emit_stream=False,
+        run_id="web_fetch_extract",
+        iteration=0,
     )
+    run_state = getattr(execution_context, "run_state", None)
+    iteration = max(0, int(getattr(execution_context, "iteration", 0) or 0))
+    request_digest = request_sha256(
+        state=run_state,
+        payload=request.payload,
+        toolkit=request.toolkit,
+        response_format=request.response_format,
+        openai_text_format=request.openai_text_format,
+        provider=provider,
+        model=model,
+        messages=request.messages,
+    )
+    provider_turn_ownership = getattr(
+        getattr(run_state, "run_ledger", None),
+        "provider_turn_ownership",
+        None,
+    )
+    if provider_turn_ownership is not None:
+        call_id = str(getattr(execution_context, "call_id", "") or "")
+        if not call_id:
+            raise RuntimeError(
+                "durable web extract requires its stable tool call_id"
+            )
+        from ....retry import RetryConfig
+
+        turn = provider_turn_ownership.fetch_turn(
+            state=run_state,
+            model_io=model_io,
+            request=request,
+            occurrence_id=f"web_extract:{call_id}",
+            purpose="web_extract",
+            iteration=iteration,
+            request_sha256=request_digest,
+            retry_config=RetryConfig(),
+            provider=provider,
+            model=model,
+        )
+        if turn.tool_calls:
+            raise RuntimeError("extract model attempted to call tools")
+        result = (turn.final_text or _last_assistant_text(turn.assistant_messages)).strip()
+        if not result:
+            raise RuntimeError("extract model returned empty output")
+        return result
+    occurred_at = (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+    try:
+        turn = model_io.fetch_turn(request)
+    except Exception:
+        completed_at = (
+            datetime.now(timezone.utc)
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z")
+        )
+        if run_state is not None:
+            record_unobserved_model_attempt(
+                run_state,
+                iteration=iteration,
+                retry_ordinal=0,
+                purpose="web_extract",
+                request_digest=request_digest,
+                payload=request_payload,
+                started_at=occurred_at,
+                completed_at=completed_at,
+                route=provider_call_route(provider),
+                status="uncertain",
+                provider=provider,
+                model=model,
+            )
+        raise
+    if run_state is not None:
+        completed_at = (
+            datetime.now(timezone.utc)
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z")
+        )
+        record_model_turn(
+            run_state,
+            turn,
+            iteration=iteration,
+            retry_ordinal=0,
+            purpose="web_extract",
+            request_digest=request_digest,
+            payload=request_payload,
+            started_at=occurred_at,
+            completed_at=completed_at,
+            route=provider_call_route(provider),
+            provider=provider,
+            model=model,
+        )
     if turn.tool_calls:
         raise RuntimeError("extract model attempted to call tools")
     result = (turn.final_text or _last_assistant_text(turn.assistant_messages)).strip()

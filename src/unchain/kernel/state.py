@@ -16,6 +16,7 @@ from ..subagents.types import SubagentState
 from ..tools.types import ToolBatchState
 from .types import ModelTurnResult, ToolCall
 from .versioning import MessageVersionGraph
+from .run_ledger import RunLedger
 
 
 def _deepcopy_messages(messages: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -83,6 +84,7 @@ class RunState:
     workspace_change_state: dict[str, Any] = field(default_factory=dict)
     optimizer_state: dict[str, dict[str, Any]] = field(default_factory=dict)
     subagent_state: SubagentState = field(default_factory=SubagentState)
+    run_ledger: RunLedger = field(default_factory=RunLedger)
     component_state: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 

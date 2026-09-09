@@ -3,8 +3,10 @@ from __future__ import annotations
 import copy
 import json
 from dataclasses import dataclass
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Callable
 
+from ..durability import is_durable_persistence_failure
 from ..execution import ExecutionLeaseError
 from ..kernel.model_io import ModelTurnRequest
 from ..kernel.types import TokenUsage
@@ -93,6 +95,12 @@ class ToolObservationRunner:
         payload: dict[str, Any],
         iteration: int = 0,
         provider: str | None = None,
+        on_model_turn: Callable[[Any, ModelTurnRequest, str], None] | None = None,
+        on_model_failure: Callable[
+            [BaseException, ModelTurnRequest, str], None
+        ]
+        | None = None,
+        fetch_model_turn: Callable[[ModelTurnRequest], Any] | None = None,
     ) -> tuple[str, TokenUsage]:
         if self.model_io is None:
             return "", TokenUsage()
@@ -109,25 +117,41 @@ class ToolObservationRunner:
             payload or {},
             provider=provider or _infer_provider(self.model_io),
         )
+        request = ModelTurnRequest(
+            messages=observe_messages,
+            payload=observe_payload,
+            response_format=None,
+            callback=None,
+            verbose=False,
+            run_id="observe",
+            iteration=iteration,
+            toolkit=Toolkit(),
+            emit_stream=False,
+            previous_response_id=None,
+        )
+        occurred_at = (
+            datetime.now(timezone.utc)
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z")
+        )
         try:
-            turn = self.model_io.fetch_turn(
-                ModelTurnRequest(
-                    messages=observe_messages,
-                    payload=observe_payload,
-                    response_format=None,
-                    callback=None,
-                    verbose=False,
-                    run_id="observe",
-                    iteration=iteration,
-                    toolkit=Toolkit(),
-                    emit_stream=False,
-                    previous_response_id=None,
-                )
+            turn = (
+                fetch_model_turn(request)
+                if fetch_model_turn is not None
+                else self.model_io.fetch_turn(request)
             )
-        except ExecutionLeaseError:
+        except ExecutionLeaseError as exc:
+            if on_model_failure is not None:
+                on_model_failure(exc, request, occurred_at)
             raise
-        except Exception:
+        except Exception as exc:
+            if on_model_failure is not None:
+                on_model_failure(exc, request, occurred_at)
+            if is_durable_persistence_failure(exc):
+                raise
             return "", TokenUsage()
+        if on_model_turn is not None:
+            on_model_turn(turn, request, occurred_at)
         observation = (turn.final_text or _last_assistant_text(turn.assistant_messages)).strip()
         return observation, TokenUsage(
             consumed_tokens=int(turn.consumed_tokens or 0),

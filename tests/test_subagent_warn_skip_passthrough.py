@@ -21,7 +21,7 @@ class SubagentForkPassesWarnSkipTest(unittest.TestCase):
             task="do thing",
             instructions="",
             expected_output="",
-            memory_policy="ephemeral",
+            disabled_module_keys=("memory",),
             allowed_tools=template.allowed_tools,
             missing_tool_policy="warn_skip",
         )

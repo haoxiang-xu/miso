@@ -1,0 +1,45 @@
+{
+  "expected_result_json": "{\"checkpoint_requests\":[],\"diagnostics\":{\"after_estimated_tokens\":0,\"atomic_call_ids\":[],\"before_estimated_tokens\":0,\"budget\":{\"available_input_tokens\":5632,\"context_window_tokens\":8192,\"output_reserve_tokens\":2048,\"pressure_threshold_tokens\":5068,\"schema\":\"unchain.context_budget.v1\",\"transport_margin_tokens\":512},\"capture_quality\":\"unavailable\",\"compacted\":false,\"compacted_tool_result_count\":0,\"consumed_semantic_event_indexes\":[],\"dropped_turn_count\":0,\"fixed_overhead_tokens\":0,\"included_source_indexes\":[],\"model\":\"synthetic\",\"omitted_source_indexes\":[],\"provider\":\"openai\",\"semantic_event_count\":0,\"source_message_count\":1,\"status\":\"task_state_unavailable\",\"task_state_unavailable\":{\"content_bytes\":345678,\"item_count\":257,\"reason\":\"task_state_limits_exceeded\",\"schema\":\"unchain.context_task_state_unavailable.v1\",\"state_ref\":{\"fragment\":\"\",\"id\":\"task-state-legacy\",\"kind\":\"task_state\",\"revision\":7,\"schema\":\"unchain.resource_ref.v1\"}},\"transformed_source_indexes\":[]},\"envelope\":{\"artifact_refs\":[],\"attempt_id\":\"attempt-1\",\"budget\":{\"available_input_tokens\":5632,\"context_window_tokens\":8192,\"output_reserve_tokens\":2048,\"pressure_threshold_tokens\":5068,\"schema\":\"unchain.context_budget.v1\",\"transport_margin_tokens\":512},\"build_id\":\"build-task-state-7\",\"checkpoint_refs\":[],\"estimated_input_tokens\":0,\"execution_id\":\"execution-1\",\"generation_id\":\"generation-1\",\"included_ranges\":[],\"model\":\"synthetic\",\"provider\":\"openai\",\"schema\":\"unchain.context_build_envelope.v1\",\"source_range\":null,\"status\":\"unavailable\",\"transformed_ranges\":[]},\"messages\":[],\"projections\":{\"unchain.context_v2.comparable.v1\":{\"capture_quality\":\"unavailable\",\"compression_applied\":false,\"promotion_allowed\":false,\"schema\":\"unchain.context_v2.comparable.v1\",\"task_state_unavailable\":{\"content_bytes\":345678,\"item_count\":257,\"reason\":\"task_state_limits_exceeded\",\"schema\":\"unchain.context_task_state_unavailable.v1\",\"state_ref\":{\"fragment\":\"\",\"id\":\"task-state-legacy\",\"kind\":\"task_state\",\"revision\":7,\"schema\":\"unchain.resource_ref.v1\"}}}},\"schema\":\"unchain.context_compile_result.v1\"}",
+  "expected_sha256": "0bca4962eb651471123b3ffa05f28b2b9b8f90b557abda7862817517618853bc",
+  "forbidden_content": "classified objective",
+  "input": {
+    "attempt_id": "attempt-1",
+    "budget": {
+      "available_input_tokens": 5632,
+      "context_window_tokens": 8192,
+      "output_reserve_tokens": 2048,
+      "pressure_threshold_tokens": 5068,
+      "schema": "unchain.context_budget.v1",
+      "transport_margin_tokens": 512
+    },
+    "build_id": "build-task-state-7",
+    "capture_quality": "unavailable",
+    "case": "legacy-task-state-overflow-golden",
+    "current_generation": "generation-1",
+    "execution_id": "execution-1",
+    "generation_id": "generation-1",
+    "model": "synthetic",
+    "provider": "openai",
+    "schema": "unchain.context_v2.request.v1",
+    "source_messages": [
+      {
+        "content": "continue",
+        "role": "user"
+      }
+    ],
+    "task_state_unavailable": {
+      "content_bytes": 345678,
+      "item_count": 257,
+      "reason": "task_state_limits_exceeded",
+      "schema": "unchain.context_task_state_unavailable.v1",
+      "state_ref": {
+        "fragment": "",
+        "id": "task-state-legacy",
+        "kind": "task_state",
+        "revision": 7,
+        "schema": "unchain.resource_ref.v1"
+      }
+    }
+  },
+  "schema": "unchain.context_task_state_golden.v1"
+}

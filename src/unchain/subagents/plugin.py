@@ -5,20 +5,25 @@ import inspect
 import json
 import math
 import re
+import threading
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from ..durability import is_durable_persistence_failure
 from ..execution import ExecutionGuard, _borrow_execution_guard
+from ..runtime.module_context import AgentRuntimeContext, ExecutionIdentity
 from ..tools.common import emit_loop_event
 from ..tools.runtime import ToolRuntimeOutcome, ToolRuntimePlugin
 from ..kernel.types import ToolCall
+from ..kernel.run_ledger import child_run_identity
 from .communication import AgentCommunicationRuntime, AgentThreadRecord
 from .executor import SubagentExecutor
 from .types import SubagentPolicy, SubagentResult, SubagentState, SubagentTemplate
 
 if TYPE_CHECKING:
     from ..agent.agent import Agent as KernelAgent
+    from ..run_bundle import RunIdentity
 
 
 _SUBAGENT_TOOL_NAMES = {"delegate_to_subagent", "handoff_to_subagent", "spawn_worker_batch"}
@@ -51,6 +56,95 @@ class _ChildRunError(RuntimeError):
         super().__init__(str(original))
         self.original = original
         self.subagent_state = copy.deepcopy(subagent_state)
+
+
+class SubagentRuntimeContextError(RuntimeError):
+    """A child run could not preserve its generic runtime binding."""
+
+
+class _BatchSiblingAborted(RuntimeError):
+    code = "subagent_batch_durable_failure"
+
+    def __init__(self) -> None:
+        super().__init__(self.code)
+
+
+def _assert_batch_active(failure_event: threading.Event | None) -> None:
+    if failure_event is not None and failure_event.is_set():
+        raise _BatchSiblingAborted()
+
+
+class _BatchExecutionGuard(ExecutionGuard):
+    """Cooperative stop view checked at the kernel's model/tool effect gates."""
+
+    def __init__(self, delegate: ExecutionGuard, failure_event: threading.Event) -> None:
+        self._delegate = delegate
+        self._failure_event = failure_event
+
+    @property
+    def lease(self):
+        _assert_batch_active(self._failure_event)
+        return self._delegate.lease
+
+    @property
+    def fence(self):
+        _assert_batch_active(self._failure_event)
+        return self._delegate.fence
+
+    def assert_active(self):
+        _assert_batch_active(self._failure_event)
+        lease = self._delegate.assert_active()
+        _assert_batch_active(self._failure_event)
+        return lease
+
+    def renew(self):
+        _assert_batch_active(self._failure_event)
+        lease = self._delegate.renew()
+        _assert_batch_active(self._failure_event)
+        return lease
+
+    def release(self) -> None:
+        self._delegate.release()
+
+    def release_for_wait(self) -> None:
+        _assert_batch_active(self._failure_event)
+        self._delegate.release_for_wait()
+
+    def reacquire(self, *, expected_revision: int | None = None):
+        _assert_batch_active(self._failure_event)
+        lease = self._delegate.reacquire(expected_revision=expected_revision)
+        _assert_batch_active(self._failure_event)
+        return lease
+
+    def guard_model_io(self, delegate: Any, operation: str) -> Any:
+        if not callable(getattr(delegate, "fetch_turn", None)):
+            raise TypeError("delegate must define fetch_turn(request)")
+        return _BatchGuardedModelIO(self, delegate, operation)
+
+
+class _BatchGuardedModelIO:
+    def __init__(
+        self,
+        guard: _BatchExecutionGuard,
+        delegate: Any,
+        operation: str,
+    ) -> None:
+        self._guard = guard
+        self._delegate = delegate
+        self.operation = operation
+
+    @property
+    def provider(self) -> Any:
+        return getattr(self._delegate, "provider", None)
+
+    def fetch_turn(self, request: Any) -> Any:
+        self._guard.renew()
+        result = self._delegate.fetch_turn(request)
+        self._guard.assert_active()
+        return result
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
 
 
 def _slug(value: str) -> str:
@@ -224,6 +318,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
     templates: tuple[SubagentTemplate, ...]
     policy: SubagentPolicy
     executor: SubagentExecutor
+    runtime_context: AgentRuntimeContext | None = None
 
     @property
     def template_map(self) -> dict[str, SubagentTemplate]:
@@ -240,6 +335,49 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         if toolkit is None or not hasattr(toolkit, "get"):
             return False
         return toolkit.get(tool_call.name) is not None
+
+    def durable_runtime_manifest(
+        self, *, tool_call: ToolCall, context
+    ) -> dict[str, Any]:
+        del context
+        tool_name = str(tool_call.name or "").strip()
+        if tool_name not in _SUBAGENT_TOOL_NAMES | _COMMUNICATION_TOOL_NAMES:
+            raise ValueError("subagent durable manifest requires a supported tool")
+        if tool_name == "handoff_to_subagent":
+            completion_contract = {
+                "schema": "unchain.tool_completion_contract.v1",
+                "state_transition_variants": [
+                    {
+                        "state_transition": "subagent_snapshot.v1",
+                        "allowed_state_keys": ["subagent_state"],
+                    },
+                    {
+                        "state_transition": "subagent_terminal_handoff.v1",
+                        "allowed_state_keys": [
+                            "subagent_state",
+                            "transcript",
+                            "run_status",
+                            "pending_tool_calls",
+                            "tool_batch_state",
+                            "last_continuation",
+                            "next_model_input",
+                        ],
+                    },
+                ],
+            }
+        else:
+            completion_contract = {
+                "schema": "unchain.tool_completion_contract.v1",
+                "state_transition": "subagent_snapshot.v1",
+                "allowed_state_keys": ["subagent_state"],
+            }
+        return {
+            "schema": "unchain.subagent_tool_runtime.v1",
+            "handler": "subagent_tool_plugin",
+            "tool_name": tool_name,
+            "terminal_handler": True,
+            "completion_contract": completion_contract,
+        }
 
     def execute(self, *, tool_call: ToolCall, context) -> ToolRuntimeOutcome:
         try:
@@ -267,6 +405,8 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 return self._return_to_parent(tool_call=tool_call, context=context)
             return ToolRuntimeOutcome(handled=False)
         except Exception as exc:
+            if is_durable_persistence_failure(exc):
+                raise
             return ToolRuntimeOutcome(
                 handled=True,
                 tool_result={
@@ -340,6 +480,9 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         expected_output: str,
     ) -> tuple["KernelAgent", str, str | None]:
         memory_policy = template.memory_policy if template is not None else ("ephemeral" if mode != "handoff" else "scoped_persistent")
+        disabled_module_keys = (
+            ("memory",) if memory_policy == "ephemeral" else ()
+        )
         if template is not None:
             base_agent = template.agent or self.parent_agent
             child = base_agent.fork_for_subagent(
@@ -350,10 +493,15 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 task=task,
                 instructions=instructions,
                 expected_output=expected_output,
-                memory_policy=memory_policy,
+                disabled_module_keys=disabled_module_keys,
                 model=template.model,
                 allowed_tools=template.allowed_tools,
                 missing_tool_policy="warn_skip",
+            )
+            child = self._resolve_child_modules(
+                child,
+                template_name=template.name,
+                disabled_module_keys=disabled_module_keys,
             )
             return child, memory_policy, template.name
         if mode == "handoff" and self.policy.handoff_requires_template:
@@ -370,18 +518,113 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             task=task,
             instructions=instructions,
             expected_output=expected_output,
-            memory_policy=memory_policy,
+            disabled_module_keys=disabled_module_keys,
             missing_tool_policy="warn_skip",
+        )
+        child = self._resolve_child_modules(
+            child,
+            template_name=None,
+            disabled_module_keys=disabled_module_keys,
         )
         return child, memory_policy, None
 
-    def _build_child_run_id(self, *, session_id: str, child_id: str) -> str:
-        return f"{session_id}:{child_id}:{uuid.uuid4()}"
+    def _resolve_child_modules(
+        self,
+        child: "KernelAgent",
+        *,
+        template_name: str | None,
+        disabled_module_keys: tuple[str, ...],
+    ) -> "KernelAgent":
+        from ..agent.modules.propagation import (
+            ChildModuleRequest,
+            resolve_child_modules,
+        )
+
+        parent_spec = getattr(self.parent_agent, "spec", None)
+        parent_modules = tuple(getattr(parent_spec, "modules", ()) or ())
+        child_modules = tuple(getattr(child.spec, "modules", ()) or ())
+        resolved_modules = resolve_child_modules(
+            parent_modules=parent_modules,
+            child_modules=child_modules,
+            request=ChildModuleRequest(
+                parent_agent_name=self.parent_agent.name,
+                child_agent_name=child.name,
+                template_name=template_name,
+                disabled_module_keys=frozenset(disabled_module_keys),
+            ),
+        )
+        if resolved_modules == child_modules:
+            return child
+        return child.clone(modules=resolved_modules)
+
+    def _subagent_completion_sink(self, context, tool_call: ToolCall):
+        parent_spec = getattr(self.parent_agent, "spec", None)
+        parent_modules = tuple(getattr(parent_spec, "modules", ()) or ())
+        providers = tuple(
+            module
+            for module in parent_modules
+            if callable(getattr(module, "prepare_subagent_completion_sink", None))
+            and bool(
+                getattr(module, "subagent_completion_provider_enabled", True)
+            )
+        )
+        if not providers:
+            return None
+        if len(providers) != 1:
+            raise ValueError(
+                "parent must define exactly one subagent completion provider"
+            )
+        harness_context = getattr(context, "harness_context", None)
+        if harness_context is None:
+            return None
+        return providers[0].prepare_subagent_completion_sink(
+            harness_context,
+            call_id=tool_call.call_id,
+        )
+
+    def _build_child_run_id(
+        self,
+        *,
+        session_id: str,
+        child_id: str,
+        parent_run_id: str = "",
+        call_id: str = "",
+    ) -> str:
+        durable_identity = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            "\x1f".join(
+                (
+                    "unchain:subagent:v1",
+                    session_id,
+                    parent_run_id,
+                    call_id,
+                    child_id,
+                )
+            ),
+        )
+        return f"{session_id}:{child_id}:{durable_identity}"
 
     def _merge_result_subagent_state(self, state: SubagentState, result: SubagentResult) -> SubagentState:
-        if not result.subagent_state:
-            return state
-        return state.merged(result.subagent_state)
+        merged = state.merged(result.subagent_state) if result.subagent_state else state
+        if result.run_bundle is None:
+            return merged
+        bundle_id = str(result.run_bundle.get("bundle_id") or "")
+        if not bundle_id:
+            raise SubagentRuntimeContextError("child run bundle has no bundle_id")
+        return merged.merged({"run_bundles": {bundle_id: result.run_bundle}})
+
+    @staticmethod
+    def _parent_run_bundle_identity(context) -> "RunIdentity | None":
+        from ..run_bundle import RunIdentity
+
+        ledger = getattr(getattr(context, "state", None), "run_ledger", None)
+        identity = getattr(ledger, "identity", None)
+        return identity if type(identity) is RunIdentity else None
+
+    @staticmethod
+    def _parent_provider_turn_ownership_factory(context):
+        ledger = getattr(getattr(context, "state", None), "run_ledger", None)
+        return getattr(ledger, "provider_turn_ownership_factory", None)
 
     def _subagent_state_from_child_exception(self, exc: Exception) -> dict[str, Any]:
         if isinstance(exc, _ChildRunError):
@@ -403,6 +646,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         lineage: list[str],
         template_name: str | None,
         session_id: str,
+        parent_context_v2_execution_id: str = "",
         memory_namespace: str,
         input_messages: str | list[dict[str, Any]],
         max_iterations: int,
@@ -412,16 +656,105 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         on_human_input: Any = None,
         on_max_iterations: Any = None,
         execution_guard: ExecutionGuard | None = None,
+        batch_failure_event: threading.Event | None = None,
+        completion_sink: Any = None,
+        parent_run_bundle_identity: "RunIdentity | None" = None,
+        provider_turn_ownership_factory: Any = None,
     ) -> SubagentResult:
+        _assert_batch_active(batch_failure_event)
+        child_modules = tuple(
+            getattr(getattr(agent, "spec", None), "modules", ()) or ()
+        )
+        runtime_context_required = any(
+            bool(getattr(module, "requires_runtime_context", False))
+            for module in child_modules
+        )
+        parent_runtime_context = self.runtime_context
+        if runtime_context_required and parent_runtime_context is None:
+            raise SubagentRuntimeContextError(
+                "child modules require an explicit parent runtime context"
+            )
         if not child_run_id:
             child_run_id = self._build_child_run_id(
                 session_id=session_id,
                 child_id=child_id,
             )
+        normalized_parent_context_v2_execution_id = str(
+            parent_context_v2_execution_id or ""
+        ).strip()
+        effective_session_id = session_id
+        prepare_input = getattr(completion_sink, "prepare_input", None)
+        if callable(prepare_input):
+            preparation = prepare_input(
+                child_run_id=child_run_id,
+                child_id=child_id,
+                mode=mode,
+                lineage=lineage,
+                template_name=template_name,
+                input_messages=input_messages,
+            )
+            prepared_execution_id = str(
+                getattr(preparation, "execution_id", "") or ""
+            ).strip()
+            if not prepared_execution_id:
+                raise SubagentRuntimeContextError(
+                    "durable subagent input returned no execution identity"
+                )
+            if (
+                parent_runtime_context is not None
+                and prepared_execution_id
+                != parent_runtime_context.identity.execution_id
+            ):
+                raise SubagentRuntimeContextError(
+                    "durable subagent input changed its parent Context V2 "
+                    "execution identity"
+                )
+            effective_session_id = prepared_execution_id
+            recovered_result = getattr(preparation, "recovered_result", None)
+            if recovered_result is not None:
+                if type(recovered_result) is not SubagentResult:
+                    raise SubagentRuntimeContextError(
+                        "durable subagent input returned an invalid completion"
+                    )
+                return recovered_result
+        if (
+            parent_runtime_context is not None
+            and normalized_parent_context_v2_execution_id
+            and normalized_parent_context_v2_execution_id
+            != parent_runtime_context.identity.execution_id
+        ):
+            raise SubagentRuntimeContextError(
+                "caller changed the parent runtime execution identity"
+            )
+        child_runtime_context = None
+        if parent_runtime_context is not None:
+            template = (
+                self.template_map.get(template_name)
+                if isinstance(template_name, str) and template_name
+                else None
+            )
+            requested_capabilities = (
+                template.requested_module_capabilities()
+                if template is not None and template.module_capabilities
+                else None
+            )
+            child_runtime_context = parent_runtime_context.delegated_to(
+                ExecutionIdentity(
+                    execution_id=effective_session_id,
+                    attempt_id=child_run_id,
+                    run_id=child_run_id,
+                    run_lineage=(
+                        *parent_runtime_context.identity.run_lineage,
+                        child_run_id,
+                    ),
+                ),
+                requested_capabilities=requested_capabilities,
+            )
         captured_state = SubagentState()
         captured_item_ids: set[str] = set()
 
         def _child_callback(event: dict[str, Any]) -> None:
+            _assert_batch_active(batch_failure_event)
             if execution_guard is not None:
                 execution_guard.assert_active()
             if isinstance(event, dict):
@@ -450,6 +783,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             return {"blackboards": copy.deepcopy(captured_state.blackboards)} if captured_state.blackboards else {}
 
         def _stop_child_at_max_iterations(_decision: Any) -> dict[str, Any]:
+            _assert_batch_active(batch_failure_event)
             # The parent's continuation callback is bound to the root run's
             # durable interaction.  A child reaching its own budget must
             # return that status to the parent instead of borrowing the root
@@ -459,35 +793,89 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 "reason": "subagent_max_iterations_reached",
             }
 
-        child_execution_guard = (
-            _borrow_execution_guard(execution_guard, session_id=session_id)
+        child_execution_guard: ExecutionGuard | None = (
+            _borrow_execution_guard(
+                execution_guard,
+                session_id=effective_session_id,
+            )
             if execution_guard is not None
             else None
         )
+        if child_execution_guard is not None and batch_failure_event is not None:
+            child_execution_guard = _BatchExecutionGuard(
+                child_execution_guard,
+                batch_failure_event,
+            )
+
+        child_bundle_identity = None
+        if parent_run_bundle_identity is not None:
+            child_bundle_identity = child_run_identity(
+                parent=parent_run_bundle_identity,
+                child_run_id=child_run_id,
+                child_attempt_id=(
+                    child_runtime_context.identity.attempt_id
+                    if child_runtime_context is not None
+                    else child_run_id
+                ),
+            )
+
+        guarded_on_tool_confirm = on_tool_confirm
+        if callable(on_tool_confirm) and batch_failure_event is not None:
+            def guarded_on_tool_confirm(*args: Any, **kwargs: Any) -> Any:
+                _assert_batch_active(batch_failure_event)
+                return on_tool_confirm(*args, **kwargs)
+
         guarded_run_kwargs: dict[str, Any] = {}
-        if child_execution_guard is not None:
-            try:
-                run_parameters = inspect.signature(agent.run).parameters.values()
-            except (TypeError, ValueError):
-                run_parameters = ()
-            if any(
-                (
-                    parameter.name == "_execution_guard"
-                    and parameter.kind != inspect.Parameter.POSITIONAL_ONLY
-                )
-                or parameter.kind == inspect.Parameter.VAR_KEYWORD
+        try:
+            run_parameters = tuple(inspect.signature(agent.run).parameters.values())
+        except (TypeError, ValueError):
+            run_parameters = ()
+
+        accepts_var_keywords = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in run_parameters
+        )
+
+        def accepts_keyword(name: str) -> bool:
+            return accepts_var_keywords or any(
+                parameter.name == name
+                and parameter.kind != inspect.Parameter.POSITIONAL_ONLY
                 for parameter in run_parameters
-            ):
+            )
+
+        if accepts_keyword("execution_owner_id"):
+            guarded_run_kwargs["execution_owner_id"] = child_run_id
+        if child_runtime_context is not None:
+            if not accepts_keyword("runtime_context"):
+                if runtime_context_required:
+                    raise SubagentRuntimeContextError(
+                        "child run signature cannot carry its runtime context"
+                    )
+            else:
+                guarded_run_kwargs["runtime_context"] = child_runtime_context
+        if child_bundle_identity is not None and accepts_keyword(
+            "_run_bundle_identity"
+        ):
+            guarded_run_kwargs["_run_bundle_identity"] = child_bundle_identity
+        if (
+            provider_turn_ownership_factory is not None
+            and accepts_keyword("_provider_turn_ownership_factory")
+        ):
+            guarded_run_kwargs["_provider_turn_ownership_factory"] = (
+                provider_turn_ownership_factory
+            )
+        if child_execution_guard is not None:
+            if accepts_keyword("_execution_guard"):
                 guarded_run_kwargs["_execution_guard"] = child_execution_guard
             child_execution_guard.assert_active()
         try:
             result = agent.run(
                 input_messages,
-                session_id=session_id,
+                session_id=effective_session_id,
                 memory_namespace=memory_namespace,
                 max_iterations=max_iterations,
                 callback=_child_callback,
-                on_tool_confirm=on_tool_confirm,
+                on_tool_confirm=guarded_on_tool_confirm,
                 # A child cannot safely own the parent's blocking UI callback.
                 # Let the child suspend so its clarification request can be
                 # returned to the parent as a structured SubagentResult.
@@ -496,6 +884,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 run_id=child_run_id,
                 **guarded_run_kwargs,
             )
+            _assert_batch_active(batch_failure_event)
             if child_execution_guard is not None:
                 if (
                     result.status in _WAITING_RUN_STATUSES
@@ -505,11 +894,23 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 else:
                     child_execution_guard.assert_active()
         except Exception as exc:
-            raise _ChildRunError(exc, _captured_delta()) from exc
+            if is_durable_persistence_failure(exc):
+                raise
+            captured_delta = _captured_delta()
+            from ..kernel.failure import kernel_run_failure_from_exception
+
+            failure = kernel_run_failure_from_exception(exc)
+            if failure is not None:
+                failed_bundle = failure.run_bundle.to_dict()
+                captured_delta.setdefault("run_bundles", {})[
+                    failure.run_bundle.bundle_id
+                ] = failed_bundle
+            raise _ChildRunError(exc, captured_delta) from exc
+        _assert_batch_active(batch_failure_event)
         output = _last_assistant_text(result.messages)
         captured_delta = _captured_delta()
         if result.status == "awaiting_human_input":
-            return SubagentResult(
+            completed = SubagentResult(
                 mode=mode,
                 agent_name=agent.name,
                 template_name=template_name,
@@ -520,18 +921,27 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 lineage=lineage,
                 clarification_request=copy.deepcopy(result.human_input_request),
                 subagent_state=captured_delta,
+                run_bundle=copy.deepcopy(getattr(result, "run_bundle", None)),
             )
-        return SubagentResult(
-            mode=mode,
-            agent_name=agent.name,
-            template_name=template_name,
-            status=result.status,
-            output=output,
-            summary=output,
-            messages=copy.deepcopy(result.messages),
-            lineage=lineage,
-            subagent_state=captured_delta,
-        )
+        else:
+            completed = SubagentResult(
+                mode=mode,
+                agent_name=agent.name,
+                template_name=template_name,
+                status=result.status,
+                output=output,
+                summary=output,
+                messages=copy.deepcopy(result.messages),
+                lineage=lineage,
+                subagent_state=captured_delta,
+                run_bundle=copy.deepcopy(getattr(result, "run_bundle", None)),
+            )
+        if completion_sink is not None:
+            record = getattr(completion_sink, "record", None)
+            if not callable(record):
+                raise TypeError("subagent completion sink must provide record")
+            record(child_run_id=child_run_id, result=completed)
+        return completed
 
     def _render_result(
         self,
@@ -678,6 +1088,9 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 lineage=lineage,
                 template_name=template_name,
                 session_id=session_id,
+                parent_context_v2_execution_id=(
+                    context.session_id or context.run_id
+                ),
                 memory_namespace=scoped_memory_namespace,
                 input_messages=task,
                 max_iterations=int(context.event.get("max_iterations") or 6),
@@ -687,8 +1100,18 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 on_human_input=context.event.get("on_human_input"),
                 on_max_iterations=context.event.get("on_max_iterations"),
                 execution_guard=getattr(context, "execution_guard", None),
+                completion_sink=self._subagent_completion_sink(
+                    context,
+                    tool_call,
+                ),
+                parent_run_bundle_identity=self._parent_run_bundle_identity(context),
+                provider_turn_ownership_factory=(
+                    self._parent_provider_turn_ownership_factory(context)
+                ),
             )
         except Exception as exc:
+            if is_durable_persistence_failure(exc):
+                raise
             failed_record = AgentThreadRecord(
                 thread_id=child_id,
                 agent_id=child_id,
@@ -908,6 +1331,9 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 lineage=lineage,
                 template_name=template_name,
                 session_id=record.session_id,
+                parent_context_v2_execution_id=(
+                    context.session_id or context.run_id
+                ),
                 memory_namespace=record.memory_namespace if memory_policy == "scoped_persistent" else "",
                 input_messages=content,
                 max_iterations=int(event.get("max_iterations") or 6),
@@ -917,8 +1343,18 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 on_human_input=event.get("on_human_input"),
                 on_max_iterations=event.get("on_max_iterations"),
                 execution_guard=getattr(context, "execution_guard", None),
+                completion_sink=self._subagent_completion_sink(
+                    context,
+                    tool_call,
+                ),
+                parent_run_bundle_identity=self._parent_run_bundle_identity(context),
+                provider_turn_ownership_factory=(
+                    self._parent_provider_turn_ownership_factory(context)
+                ),
             )
         except Exception as exc:
+            if is_durable_persistence_failure(exc):
+                raise
             failed_record = AgentThreadRecord(
                 thread_id=record.thread_id,
                 agent_id=record.agent_id,
@@ -1477,6 +1913,9 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 lineage=lineage,
                 template_name=template_name,
                 session_id=session_id,
+                parent_context_v2_execution_id=(
+                    context.session_id or context.run_id
+                ),
                 memory_namespace=memory_namespace if memory_policy == "scoped_persistent" else "",
                 input_messages=input_messages,
                 max_iterations=int(context.event.get("max_iterations") or 6),
@@ -1486,8 +1925,18 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 on_human_input=context.event.get("on_human_input"),
                 on_max_iterations=context.event.get("on_max_iterations"),
                 execution_guard=getattr(context, "execution_guard", None),
+                completion_sink=self._subagent_completion_sink(
+                    context,
+                    tool_call,
+                ),
+                parent_run_bundle_identity=self._parent_run_bundle_identity(context),
+                provider_turn_ownership_factory=(
+                    self._parent_provider_turn_ownership_factory(context)
+                ),
             )
         except Exception as exc:
+            if is_durable_persistence_failure(exc):
+                raise
             failed_state = self._merge_child_exception_subagent_state(running_state, exc)
             failed_state.return_handoff_stack = [
                 item
@@ -1627,6 +2076,8 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         child_run_id = self._build_child_run_id(
             session_id=context.session_id or context.run_id,
             child_id=child_id,
+            parent_run_id=context.run_id,
+            call_id=tool_call.call_id,
         )
         self._emit_subagent_event(context, "subagent_spawned", subagent_id=child_id, parent_id=parent_id, mode="delegate", template=template_name, lineage=lineage, child_run_id=child_run_id)
         self._emit_subagent_event(context, "subagent_started", subagent_id=child_id, parent_id=parent_id, mode="delegate", template=template_name, lineage=lineage, child_run_id=child_run_id)
@@ -1638,6 +2089,9 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 lineage=lineage,
                 template_name=template_name,
                 session_id=session_id,
+                parent_context_v2_execution_id=(
+                    context.session_id or context.run_id
+                ),
                 memory_namespace=memory_namespace if memory_policy == "scoped_persistent" else "",
                 input_messages=task,
                 max_iterations=int(context.event.get("max_iterations") or 6),
@@ -1647,8 +2101,18 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 on_human_input=context.event.get("on_human_input"),
                 on_max_iterations=context.event.get("on_max_iterations"),
                 execution_guard=getattr(context, "execution_guard", None),
+                completion_sink=self._subagent_completion_sink(
+                    context,
+                    tool_call,
+                ),
+                parent_run_bundle_identity=self._parent_run_bundle_identity(context),
+                provider_turn_ownership_factory=(
+                    self._parent_provider_turn_ownership_factory(context)
+                ),
             )
         except Exception as exc:
+            if is_durable_persistence_failure(exc):
+                raise
             failed_state = self._merge_child_exception_subagent_state(next_state, exc)
             self._emit_subagent_event(
                 context,
@@ -1747,6 +2211,8 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         child_run_id = self._build_child_run_id(
             session_id=context.session_id or context.run_id,
             child_id=child_id,
+            parent_run_id=context.run_id,
+            call_id=tool_call.call_id,
         )
         self._emit_subagent_event(context, "subagent_spawned", subagent_id=child_id, parent_id=parent_id, mode="handoff", template=template_name, lineage=lineage, child_run_id=child_run_id)
         self._emit_subagent_event(context, "subagent_handoff", subagent_id=child_id, parent_id=parent_id, mode="handoff", template=template_name, lineage=lineage, reason=reason, child_run_id=child_run_id)
@@ -1755,7 +2221,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             context.latest_messages(),
             tool_call=tool_call,
         )
-        if carry_context:
+        if carry_context and sanitized_messages:
             input_messages: str | list[dict[str, Any]] = sanitized_messages
         else:
             input_messages = reason or "Continue the task."
@@ -1767,6 +2233,9 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 lineage=lineage,
                 template_name=template_name,
                 session_id=session_id,
+                parent_context_v2_execution_id=(
+                    context.session_id or context.run_id
+                ),
                 memory_namespace=memory_namespace if memory_policy == "scoped_persistent" else "",
                 input_messages=input_messages,
                 max_iterations=int(context.event.get("max_iterations") or 6),
@@ -1776,8 +2245,18 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 on_human_input=context.event.get("on_human_input"),
                 on_max_iterations=context.event.get("on_max_iterations"),
                 execution_guard=getattr(context, "execution_guard", None),
+                completion_sink=self._subagent_completion_sink(
+                    context,
+                    tool_call,
+                ),
+                parent_run_bundle_identity=self._parent_run_bundle_identity(context),
+                provider_turn_ownership_factory=(
+                    self._parent_provider_turn_ownership_factory(context)
+                ),
             )
         except Exception as exc:
+            if is_durable_persistence_failure(exc):
+                raise
             failed_state = self._merge_child_exception_subagent_state(next_state, exc)
             self._emit_subagent_event(
                 context,
@@ -1834,6 +2313,28 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 tool_result=result.to_dict(),
                 state_updates={"subagent_state": blocked_state},
             )
+        if result.status != "completed":
+            self._emit_subagent_event(
+                context,
+                "subagent_failed",
+                subagent_id=child_id,
+                parent_id=parent_id,
+                mode="handoff",
+                template=template_name,
+                lineage=lineage,
+                child_run_id=child_run_id,
+                status=result.status,
+                code=f"subagent_{result.status or 'unknown'}",
+                message=(
+                    result.error
+                    or f"Subagent handoff stopped with status {result.status or 'unknown'}"
+                ),
+            )
+            return ToolRuntimeOutcome(
+                handled=True,
+                tool_result=result.to_dict(),
+                state_updates={"subagent_state": result_state},
+            )
         handoff_state = result_state.merged(
             {
                 "active_agent_id": child_id,
@@ -1886,6 +2387,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
         state = self._ensure_state(context)
         parent_id = state.active_agent_id or self.parent_agent.name
         batch_id = str(uuid.uuid4())
+        batch_failure_event = threading.Event()
         next_state = state.copy()
         next_state.running_batches[batch_id] = {
             "status": "running",
@@ -1981,6 +2483,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             )
 
         def _run_item(index: int, item: dict[str, Any]) -> SubagentResult:
+            _assert_batch_active(batch_failure_event)
             if item.get("type") == "prebuilt":
                 return copy.deepcopy(item["result"])
             task = str(item.get("task") or "").strip()
@@ -1989,7 +2492,9 @@ class SubagentToolPlugin(ToolRuntimePlugin):
             lineage = list(item["lineage"])
             template_name = item.get("template_name")
             output_mode = str(item.get("output_mode") or "summary")
+            _assert_batch_active(batch_failure_event)
             self._emit_subagent_event(context, "subagent_spawned", subagent_id=child_id, parent_id=parent_id, mode="worker", template=template_name, lineage=lineage, batch_id=batch_id, child_run_id=child_run_id)
+            _assert_batch_active(batch_failure_event)
             self._emit_subagent_event(context, "subagent_started", subagent_id=child_id, parent_id=parent_id, mode="worker", template=template_name, lineage=lineage, batch_id=batch_id, child_run_id=child_run_id)
             try:
                 result = self._run_child(
@@ -1999,6 +2504,9 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                     lineage=lineage,
                     template_name=template_name,
                     session_id=str(item["session_id"]),
+                    parent_context_v2_execution_id=(
+                        context.session_id or context.run_id
+                    ),
                     memory_namespace=str(item["memory_namespace"]),
                     child_run_id=child_run_id,
                     input_messages=task,
@@ -2008,10 +2516,25 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                     on_human_input=context.event.get("on_human_input"),
                     on_max_iterations=context.event.get("on_max_iterations"),
                     execution_guard=getattr(context, "execution_guard", None),
+                    batch_failure_event=batch_failure_event,
+                    completion_sink=self._subagent_completion_sink(
+                        context,
+                        tool_call,
+                    ),
+                    parent_run_bundle_identity=self._parent_run_bundle_identity(context),
+                    provider_turn_ownership_factory=(
+                        self._parent_provider_turn_ownership_factory(context)
+                    ),
                 )
+                _assert_batch_active(batch_failure_event)
                 rendered = self._render_result(result=result, output_mode=output_mode, template_name=template_name)
-                result = SubagentResult(**rendered)
+                result = SubagentResult(
+                    **rendered,
+                    run_bundle=copy.deepcopy(result.run_bundle),
+                )
             except Exception as exc:
+                if is_durable_persistence_failure(exc):
+                    raise
                 result = SubagentResult(
                     mode="worker",
                     agent_name=child_id,
@@ -2021,6 +2544,7 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                     lineage=lineage,
                     subagent_state=self._subagent_state_from_child_exception(exc),
                 )
+            _assert_batch_active(batch_failure_event)
             event_type = "subagent_completed" if not result.error else "subagent_failed"
             self._emit_subagent_event(
                 context,
@@ -2049,7 +2573,11 @@ class SubagentToolPlugin(ToolRuntimePlugin):
                 )
             return result
 
-        results = self.executor.execute_batch(items=prepared_items, run_item=_run_item)
+        results = self.executor.execute_batch(
+            items=prepared_items,
+            run_item=_run_item,
+            failure_event=batch_failure_event,
+        )
         final_state = allocation_state.copy()
         final_state.running_batches.pop(batch_id, None)
         for result in results:

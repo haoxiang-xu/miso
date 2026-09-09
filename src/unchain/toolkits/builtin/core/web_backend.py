@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 from collections.abc import Callable
 from typing import Any
 
@@ -15,10 +16,12 @@ class CoreWebBackend:
         self,
         *,
         runtime_config_provider: Callable[[str], dict[str, Any]] | None = None,
+        execution_context_provider: Callable[[], Any] | None = None,
         web_fetch_service: WebFetchService | None = None,
         extract_model_runner: Callable[..., str] = run_extract_model,
     ) -> None:
         self._runtime_config_provider = runtime_config_provider
+        self._execution_context_provider = execution_context_provider
         self._web_fetch_service = web_fetch_service or WebFetchService()
         self._extract_model_runner = extract_model_runner
 
@@ -84,11 +87,31 @@ class CoreWebBackend:
             )
             return result
         try:
+            runner_arguments: dict[str, Any] = {
+                "url": str(result.get("final_url") or result.get("url") or url),
+                "content": page_content,
+                "prompt": prompt,
+                "extract_model_config": extract_model,
+            }
+            execution_context = (
+                self._execution_context_provider()
+                if self._execution_context_provider is not None
+                else None
+            )
+            try:
+                runner_parameters = inspect.signature(
+                    self._extract_model_runner
+                ).parameters.values()
+            except (TypeError, ValueError):
+                runner_parameters = ()
+            if execution_context is not None and any(
+                parameter.name == "execution_context"
+                or parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in runner_parameters
+            ):
+                runner_arguments["execution_context"] = execution_context
             extract_output = self._extract_model_runner(
-                url=str(result.get("final_url") or result.get("url") or url),
-                content=page_content,
-                prompt=prompt,
-                extract_model_config=extract_model,
+                **runner_arguments,
             )
         except Exception as exc:
             result["ok"] = False

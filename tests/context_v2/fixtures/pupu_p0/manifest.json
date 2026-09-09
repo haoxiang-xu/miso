@@ -1,0 +1,36 @@
+{
+  "schema": "unchain.context_v2.golden.v1",
+  "exporter_version": 1,
+  "memory_schema_version": 4,
+  "source": {
+    "repository": "PuPu",
+    "head_sha": "d8dc590b34b21ad97ce6cc118493f7ebfd6104ae",
+    "dirty": true,
+    "files": [
+      "unchain_runtime/server/memory_v2_context.py",
+      "unchain_runtime/server/memory_v2_curator.py",
+      "unchain_runtime/server/memory_v2_legacy_adapter.py",
+      "unchain_runtime/server/memory_v2_rollout.py",
+      "unchain_runtime/server/memory_v2_sanitizer.py",
+      "unchain_runtime/server/memory_v2_toolkit.py"
+    ],
+    "sha256": "d4493a5ca99fb2f06cbc101b516e580f980feed6f94a466b5c30d6868c9c5c82"
+  },
+  "fixtures": [
+    {
+      "case": "below_pressure",
+      "file": "below_pressure.json",
+      "sha256": "e8120b60d87ff7ae47f257aef54f55215a5603ffdf5250e25a08ee78839d263e"
+    },
+    {
+      "case": "legacy_partial",
+      "file": "legacy_partial.json",
+      "sha256": "2be07e6d86f8483f43b56a19c494b8684903b7dcb4d95ec6cc8b4f35292e738e"
+    },
+    {
+      "case": "tool_and_pinned",
+      "file": "tool_and_pinned.json",
+      "sha256": "8c7f0355eff099584cfa5a9ecb84438e7360a385f3f5a61caabfd60ad0018328"
+    }
+  ]
+}

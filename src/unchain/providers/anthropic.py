@@ -16,6 +16,8 @@ from ..kernel.provider_replay import (
     tool_schema_manifest,
 )
 from ..kernel.types import ModelTurnResult, ToolCall
+from ..run_bundle import ProviderCallUsage
+from .canonical_hash import canonical_json_sha256
 
 
 class AnthropicModelIO(_NativeModelIOBase):
@@ -152,16 +154,46 @@ class AnthropicModelIO(_NativeModelIOBase):
                 "selection dropped the active turn before provider call."
             )
 
+        return self._fetch_turn_streaming(client, request, request_kwargs)
+
+    def _fetch_turn_streaming(
+        self,
+        client: Any,
+        request: ModelTurnRequest,
+        request_kwargs: dict[str, Any],
+    ) -> ModelTurnResult:
         collected_chunks: list[str] = []
         input_tokens = 0
         output_tokens = 0
         cache_read_input_tokens = 0
         cache_creation_input_tokens = 0
+        observed_usage: dict[str, Any] = {}
         blocks_by_index: dict[int, dict[str, Any]] = {}
         tool_json_parts: dict[int, list[str]] = {}
         active_index: int | None = None
         next_fallback_index = 0
         final_message = None
+
+        def observe_usage(value: dict[str, Any]) -> None:
+            for key, observed in value.items():
+                if key in {"cache_creation", "output_tokens_details"} and isinstance(
+                    observed, dict
+                ):
+                    prior = observed_usage.get(key)
+                    merged = dict(prior) if isinstance(prior, dict) else {}
+                    merged.update(copy.deepcopy(observed))
+                    observed_usage[key] = merged
+                    continue
+                prior = observed_usage.get(key)
+                if (
+                    type(prior) is int
+                    and type(observed) is int
+                    and prior >= 0
+                    and observed >= 0
+                ):
+                    observed_usage[key] = max(prior, observed)
+                else:
+                    observed_usage[key] = copy.deepcopy(observed)
 
         def resolve_index(event: Any, *, block_type: str) -> int:
             nonlocal next_fallback_index, active_index
@@ -305,6 +337,7 @@ class AnthropicModelIO(_NativeModelIOBase):
                 if event_type == "message_delta":
                     usage_dict = self._as_dict(getattr(event, "usage", None))
                     if usage_dict:
+                        observe_usage(usage_dict)
                         input_tokens = max(input_tokens, self._coerce_token_count(usage_dict.get("input_tokens")))
                         output_tokens = max(output_tokens, self._coerce_token_count(usage_dict.get("output_tokens")))
                         cache_read_input_tokens = max(cache_read_input_tokens, self._coerce_token_count(usage_dict.get("cache_read_input_tokens")))
@@ -315,6 +348,8 @@ class AnthropicModelIO(_NativeModelIOBase):
                     msg_dict = self._as_dict(getattr(event, "message", None))
                     usage_dict = msg_dict.get("usage", {}) if isinstance(msg_dict, dict) else {}
                     if isinstance(usage_dict, dict):
+                        if usage_dict:
+                            observe_usage(usage_dict)
                         input_tokens = max(input_tokens, self._coerce_token_count(usage_dict.get("input_tokens")))
                         output_tokens = max(output_tokens, self._coerce_token_count(usage_dict.get("output_tokens")))
                         cache_read_input_tokens = max(cache_read_input_tokens, self._coerce_token_count(usage_dict.get("cache_read_input_tokens")))
@@ -326,8 +361,12 @@ class AnthropicModelIO(_NativeModelIOBase):
                 final_message = get_final_message()
 
         raw_blocks: list[dict[str, Any]] = []
+        response_id = None
         if final_message is not None:
             final_dict = self._as_dict(final_message)
+            raw_response_id = final_dict.get("id")
+            if isinstance(raw_response_id, str) and raw_response_id:
+                response_id = raw_response_id
             raw_content = final_dict.get("content")
             if isinstance(raw_content, list):
                 raw_blocks = strict_json_copy(
@@ -440,11 +479,18 @@ class AnthropicModelIO(_NativeModelIOBase):
             + cache_creation_input_tokens
             + output_tokens
         )
+        provider_call_usage = ProviderCallUsage.from_anthropic_usage(
+            observed_usage,
+            reasoning_present=any(
+                block.get("type") in {"thinking", "redacted_thinking"}
+                for block in raw_blocks
+            ),
+        )
         return ModelTurnResult(
             assistant_messages=assistant_messages,
             tool_calls=tool_calls,
             final_text=full_text,
-            response_id=None,
+            response_id=response_id,
             reasoning_items=reasoning_items or None,
             consumed_tokens=total_consumed,
             input_tokens=token_usage.input_tokens,
@@ -452,6 +498,10 @@ class AnthropicModelIO(_NativeModelIOBase):
             cache_read_input_tokens=cache_read_input_tokens,
             cache_creation_input_tokens=cache_creation_input_tokens,
             provider_replay_frame=provider_replay_frame,
+            provider_call_usage=provider_call_usage,
+            provider_raw_usage_sha256=(
+                canonical_json_sha256(observed_usage) if observed_usage else None
+            ),
         )
 
 

@@ -1,0 +1,41 @@
+{
+  "schema": "unchain.context_v2.compiler_fixture.v1",
+  "case": "core_over_pressure",
+  "input": {
+    "schema": "unchain.context_v2.request.v1",
+    "case": "core_over_pressure",
+    "source_messages": [
+      {"content": "current policy", "role": "system"},
+      {
+        "content": [
+          {"image_ref": "opaque-image", "media_type": "image/png", "type": "image"}
+        ],
+        "role": "user"
+      },
+      {"content": "current request", "role": "user"}
+    ],
+    "budget": {
+      "schema": "unchain.context_budget.v1",
+      "context_window_tokens": 4096,
+      "output_reserve_tokens": 2048,
+      "transport_margin_tokens": 512,
+      "available_input_tokens": 1536,
+      "pressure_threshold_tokens": 1382
+    },
+    "source_message_cursors": [
+      {
+        "schema": "unchain.source_message_cursor.v1",
+        "message_index": 1,
+        "event_id": "event-image",
+        "store_seq": 20
+      }
+    ],
+    "provider": "openai",
+    "model": "gpt-test",
+    "build_id": "build-over",
+    "execution_id": "execution-1",
+    "generation_id": "generation-1",
+    "attempt_id": "attempt-1"
+  },
+  "expected_messages_diagnostics_json": "{\"diagnostics\":{\"after_estimated_tokens\":0,\"atomic_call_ids\":[],\"before_estimated_tokens\":2095,\"budget\":{\"available_input_tokens\":1536,\"context_window_tokens\":4096,\"output_reserve_tokens\":2048,\"pressure_threshold_tokens\":1382,\"schema\":\"unchain.context_budget.v1\",\"transport_margin_tokens\":512},\"compacted\":false,\"compacted_tool_result_count\":0,\"consumed_semantic_event_indexes\":[],\"dropped_turn_count\":1,\"fixed_overhead_tokens\":0,\"included_source_indexes\":[],\"message_budget_tokens\":1382,\"model\":\"gpt-test\",\"multimodal_image_count\":1,\"multimodal_pdf_page_count\":0,\"multimodal_provisional_token_charge\":2048,\"omitted_source_indexes\":[1],\"provider\":\"openai\",\"semantic_event_count\":0,\"source_message_count\":3,\"status\":\"checkpoint_required\",\"text_estimated_tokens\":47,\"transformed_source_indexes\":[]},\"messages\":[]}"
+}

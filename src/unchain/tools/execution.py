@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from ..capabilities import CapabilityOutcome, CreateArtifactOp, RunDelta
@@ -33,7 +34,18 @@ from ..toolkits.base import BuiltinToolkit
 from ..workspace_changes import WorkspaceChangeTracker
 from .toolkit import Toolkit
 from ..kernel.delta import HarnessDelta
+from ..kernel.run_ledger import (
+    provider_call_route,
+    record_model_turn,
+    record_unobserved_model_attempt,
+    request_sha256,
+)
 from ..kernel.types import ToolCall
+from ..run_bundle import (
+    RunMetricEvidenceRef,
+    canonical_sha256,
+    opaque_metric_evidence_ref,
+)
 from .base import BaseToolHarness, ToolContext
 from .common import append_executed_call_id, copy_messages, emit_loop_event
 from .confirmation import execute_confirmable_tool_call, prepare_tool_confirmation
@@ -200,6 +212,74 @@ class ToolExecutionHarness(BaseToolHarness):
     phases: tuple[str, ...] = ("after_model", "on_tool_call", "after_tool_batch")
     order: int = 100
 
+    @staticmethod
+    def _record_tool_result_metric(
+        context: ToolContext,
+        tool_call: ToolCall,
+        result: Any,
+        artifacts: list[dict] | None = None,
+    ) -> None:
+        if getattr(context.state.run_ledger, "identity", None) is None:
+            return
+        failed = isinstance(result, dict) and is_failed_tool_result(result)
+        refs: dict[str, RunMetricEvidenceRef] = {}
+        for artifact in artifacts or []:
+            if not isinstance(artifact, dict):
+                continue
+            ref_id = str(
+                artifact.get("artifact_id")
+                or artifact.get("id")
+                or artifact.get("logical_key")
+                or ""
+            ).strip()
+            if ref_id:
+                revision = artifact.get("revision")
+                logical_occurrence = (
+                    f"{ref_id}:revision:{revision}"
+                    if isinstance(revision, int) and not isinstance(revision, bool)
+                    else ref_id
+                )
+                ref = opaque_metric_evidence_ref(
+                    kind="artifact",
+                    source_id=logical_occurrence,
+                )
+                refs[ref.ref_id] = ref
+        ordered_refs = tuple(refs[key] for key in sorted(refs))
+        for ref in ordered_refs:
+            context.state.run_ledger.record_metric_event(
+                kind="artifact",
+                subject_id=ref.ref_id,
+                outcome="completed",
+                evidence_refs=(ref,),
+            )
+        manifest_ref = (
+            opaque_metric_evidence_ref(
+                kind="artifact",
+                source_id=(
+                    "manifest:"
+                    + canonical_sha256([ref.ref_id for ref in ordered_refs])
+                ),
+            )
+            if ordered_refs
+            else None
+        )
+        context.state.run_ledger.record_metric_event(
+            kind="tool_result",
+            subject_id=tool_call.call_id,
+            outcome="failed" if failed else "completed",
+            error_category="tool" if failed else None,
+            error_code="tool_result_failed" if failed else None,
+            evidence_refs=(manifest_ref,) if manifest_ref is not None else (),
+        )
+        if failed:
+            context.state.run_ledger.record_metric_event(
+                kind="error",
+                subject_id=f"tool-result:{tool_call.call_id}",
+                outcome="failed",
+                error_category="tool",
+                error_code="tool_result_failed",
+            )
+
     def build_tool_delta(self, context: ToolContext) -> HarnessDelta | None:
         if context.phase == "after_model":
             return self._after_model(context)
@@ -213,6 +293,12 @@ class ToolExecutionHarness(BaseToolHarness):
         tool_calls = list(context.state.pending_tool_calls)
         if not tool_calls:
             return None
+        if getattr(context.state.run_ledger, "identity", None) is not None:
+            for tool_call in tool_calls:
+                context.state.run_ledger.record_metric_event(
+                    kind="tool_call",
+                    subject_id=tool_call.call_id,
+                )
 
         includes_human_input = any(is_human_input_tool_name(tool_call.name) for tool_call in tool_calls)
         includes_handoff = any(tool_call.name == "handoff_to_subagent" for tool_call in tool_calls)
@@ -226,6 +312,12 @@ class ToolExecutionHarness(BaseToolHarness):
                 )
                 for tool_call in tool_calls
             ]
+            for tool_call in tool_calls:
+                self._record_tool_result_metric(
+                    context,
+                    tool_call,
+                    {"error": error_text, "tool": tool_call.name},
+                )
             return HarnessDelta(
                 created_by=self.created_by,
                 state_updates={
@@ -254,6 +346,12 @@ class ToolExecutionHarness(BaseToolHarness):
                 )
                 for tool_call in tool_calls
             ]
+            for tool_call in tool_calls:
+                self._record_tool_result_metric(
+                    context,
+                    tool_call,
+                    {"error": error_text, "tool": tool_call.name},
+                )
             return HarnessDelta(
                 created_by=self.created_by,
                 state_updates={
@@ -329,6 +427,7 @@ class ToolExecutionHarness(BaseToolHarness):
             call_id=tool_call.call_id,
             turn_id=f"{context.run_id}:turn-{context.iteration}",
             workspace_changes=workspace_change_tracker,
+            run_state=context.state,
         )
         confirmation_preparation = prepare_tool_confirmation(
             toolkit=toolkit,
@@ -416,6 +515,7 @@ class ToolExecutionHarness(BaseToolHarness):
                     )
                 )
 
+        nested_confirmation_policy = None
         if (
             not stored_request_bound
             and context.session_id
@@ -438,6 +538,11 @@ class ToolExecutionHarness(BaseToolHarness):
                 if not isinstance(nested, dict):
                     break
                 nested_preparation = nested.get("preparation")
+                nested_confirmation_policy = getattr(
+                    nested_preparation,
+                    "confirmation_policy",
+                    None,
+                )
                 nested_request = getattr(nested_preparation, "request", None)
                 if not bool(
                     getattr(
@@ -560,11 +665,21 @@ class ToolExecutionHarness(BaseToolHarness):
                 )
             emitted_artifacts: list[dict] = []
             if isinstance(visible_tool_result, dict):
+                # Plugin execution still runs under the confirmation the
+                # user approved: the nested preparation's policy when the
+                # plugin routed one, else the outer preparation's. Dropping
+                # it here silently lost every code_diff-derived file_diff
+                # artifact on the plugin path.
                 emitted_artifacts = _canonical_artifacts_for_tool_result(
                     context,
                     tool_call,
                     visible_tool_result,
                     authored_artifacts,
+                    confirmation_policy=(
+                        nested_confirmation_policy
+                        if nested_confirmation_policy is not None
+                        else confirmation_preparation.confirmation_policy
+                    ),
                 )
                 emit_loop_event(
                     context.loop,
@@ -576,6 +691,12 @@ class ToolExecutionHarness(BaseToolHarness):
                     call_id=tool_call.call_id,
                     result=copy.deepcopy(visible_tool_result),
                 )
+            self._record_tool_result_metric(
+                context,
+                tool_call,
+                visible_tool_result,
+                emitted_artifacts,
+            )
             artifact_ops = _create_artifact_ops(
                 emitted_artifacts,
                 reason="tool_runtime_plugin_artifact",
@@ -638,6 +759,11 @@ class ToolExecutionHarness(BaseToolHarness):
                     tool_name=tool_call.name,
                     call_id=tool_call.call_id,
                     result=tool_result,
+                )
+                self._record_tool_result_metric(
+                    context,
+                    tool_call,
+                    tool_result,
                 )
                 return HarnessDelta(
                     created_by=self.created_by,
@@ -727,6 +853,12 @@ class ToolExecutionHarness(BaseToolHarness):
             tool_name=tool_call.name,
             call_id=tool_call.call_id,
             result=copy.deepcopy(visible_tool_result),
+        )
+        self._record_tool_result_metric(
+            context,
+            tool_call,
+            visible_tool_result,
+            emitted_artifacts,
         )
         artifact_ops = _create_artifact_ops(
             emitted_artifacts,
@@ -851,11 +983,117 @@ class ToolExecutionHarness(BaseToolHarness):
         if batch_state.should_observe and result_messages:
             observation = ""
             observation_model_io = context.model_io
-            if context.execution_guard is not None and observation_model_io is not None:
+            provider_turn_ownership = (
+                context.state.run_ledger.provider_turn_ownership
+            )
+            if (
+                provider_turn_ownership is None
+                and context.execution_guard is not None
+                and observation_model_io is not None
+            ):
                 observation_model_io = context.execution_guard.guard_model_io(
                     observation_model_io,
                     "model.tool_observation",
                 )
+
+            def observation_request_digest(request: Any) -> str:
+                return request_sha256(
+                    state=context.state,
+                    payload=request.payload,
+                    toolkit=request.toolkit,
+                    response_format=request.response_format,
+                    openai_text_format=request.openai_text_format,
+                    provider=str(context.state.provider_state.provider or "unknown"),
+                    model=str(
+                        context.state.provider_state.model or "unknown-model"
+                    ),
+                    messages=request.messages,
+                )
+
+            def record_observation_turn(
+                turn: Any,
+                request: Any,
+                occurred_at: str,
+            ) -> None:
+                record_model_turn(
+                    context.state,
+                    turn,
+                    iteration=context.iteration,
+                    retry_ordinal=0,
+                    purpose="tool_observation",
+                    request_digest=observation_request_digest(request),
+                    payload=request.payload,
+                    started_at=occurred_at,
+                    completed_at=(
+                        datetime.now(timezone.utc)
+                        .isoformat(timespec="microseconds")
+                        .replace("+00:00", "Z")
+                    ),
+                    route=provider_call_route(
+                        str(context.state.provider_state.provider or "unknown")
+                    ),
+                )
+
+            def record_observation_failure(
+                _error: BaseException,
+                request: Any,
+                occurred_at: str,
+            ) -> None:
+                record_unobserved_model_attempt(
+                    context.state,
+                    iteration=context.iteration,
+                    retry_ordinal=0,
+                    purpose="tool_observation",
+                    request_digest=observation_request_digest(request),
+                    payload=request.payload,
+                    started_at=occurred_at,
+                    completed_at=(
+                        datetime.now(timezone.utc)
+                        .isoformat(timespec="microseconds")
+                        .replace("+00:00", "Z")
+                    ),
+                    route=provider_call_route(
+                        str(context.state.provider_state.provider or "unknown")
+                    ),
+                    status="uncertain",
+                )
+
+            fetch_observation_turn = None
+            if provider_turn_ownership is not None:
+                observation_occurrence_id = (
+                    "tool_observation:"
+                    + canonical_sha256(
+                        {
+                            "iteration": max(0, int(context.iteration)),
+                            "call_ids": list(batch_state.executed_call_ids),
+                        }
+                    )
+                )
+
+                def fetch_observation_turn(request):
+                    raw_digest = observation_request_digest(request)
+                    return provider_turn_ownership.fetch_turn(
+                        state=context.state,
+                        model_io=observation_model_io,
+                        request=request,
+                        occurrence_id=observation_occurrence_id,
+                        purpose="tool_observation",
+                        iteration=context.iteration,
+                        request_sha256=raw_digest,
+                        retry_config=context.loop.retry_config,
+                        before_attempt=(
+                            (lambda _attempt: context.execution_guard.renew())
+                            if context.execution_guard is not None
+                            else None
+                        ),
+                        provider=str(
+                            context.state.provider_state.provider or "unknown"
+                        ),
+                        model=str(
+                            context.state.provider_state.model or "unknown-model"
+                        ),
+                    )
+
             observation, observe_usage = ToolObservationRunner(
                 model_io=observation_model_io,
             ).observe_tool_batch(
@@ -864,6 +1102,17 @@ class ToolExecutionHarness(BaseToolHarness):
                 payload=payload,
                 iteration=context.iteration,
                 provider=context.provider,
+                on_model_turn=(
+                    None
+                    if provider_turn_ownership is not None
+                    else record_observation_turn
+                ),
+                on_model_failure=(
+                    None
+                    if provider_turn_ownership is not None
+                    else record_observation_failure
+                ),
+                fetch_model_turn=fetch_observation_turn,
             )
             if context.execution_guard is not None:
                 context.execution_guard.assert_active()
@@ -891,21 +1140,23 @@ class ToolExecutionHarness(BaseToolHarness):
             if isinstance(tool_runtime_config, dict)
             else None
         )
-        budget_config = ToolResultBudgetConfig.from_raw(raw_budget_config)
-        budget_outcome = ToolResultBudgetController(budget_config).budget_messages(
-            provider=context.provider,
-            toolkit=context.toolkit,
-            tool_calls=list(context.event.get("tool_calls") or []),
-            result_messages=result_messages,
-            session_id=context.session_id,
-            latest_messages=context.state.transcript,
-        )
-        result_messages = budget_outcome.messages
+        output_manager = context.output_manager
+        if output_manager.legacy_budget_enabled:
+            budget_config = ToolResultBudgetConfig.from_raw(raw_budget_config)
+            budget_outcome = ToolResultBudgetController(budget_config).budget_messages(
+                provider=context.provider,
+                toolkit=context.toolkit,
+                tool_calls=list(context.event.get("tool_calls") or []),
+                result_messages=result_messages,
+                session_id=context.session_id,
+                latest_messages=context.state.transcript,
+            )
+            result_messages = budget_outcome.messages
+            budget_stats = budget_outcome.stats.to_dict()
         result_messages = coalesce_provider_tool_result_messages(
             context.provider,
             result_messages,
         )
-        budget_stats = budget_outcome.stats.to_dict()
 
         if not result_messages:
             return HarnessDelta(
@@ -954,6 +1205,7 @@ class ToolExecutionHarness(BaseToolHarness):
             trace={
                 "result_message_count": len(result_messages),
                 "observed": bool(batch_state.should_observe),
+                "tool_output_projection": output_manager.active,
                 **({"tool_result_budget": budget_stats} if budget_stats is not None else {}),
             },
         )

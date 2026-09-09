@@ -15,6 +15,27 @@ def test_gpt_55_runtime_resources_are_registered():
     assert payloads["gpt-5.5"]["reasoning"]["effort"] == "medium"
 
 
+def test_gpt_6_astra_runtime_resources_are_registered():
+    capabilities = load_model_capabilities()
+    payloads = load_default_payloads()
+
+    astra = capabilities["gpt-6-astra"]
+    assert astra["provider"] == "openai"
+    assert astra["max_context_window_tokens"] == 1050000
+    assert astra["supports_tools"] is True
+    assert astra["supports_response_format"] is True
+    assert astra["supports_previous_response_id"] is True
+    assert astra["supports_reasoning"] is True
+    assert astra["reasoning_efforts"] == ["low", "medium", "high", "xhigh", "max"]
+    assert "none" not in astra["reasoning_efforts"]
+    assert astra["default_reasoning_effort"] == "medium"
+    assert astra["input_modalities"] == ["text", "image"]
+    assert astra["input_source_types"]["image"] == ["url", "base64"]
+    assert "reasoning" in astra["allowed_payload_keys"]
+    assert payloads["gpt-6-astra"]["max_output_tokens"] == 128000
+    assert payloads["gpt-6-astra"]["reasoning"]["effort"] == "medium"
+
+
 def test_claude_opus_48_runtime_resources_are_registered():
     capabilities = load_model_capabilities()
     payloads = load_default_payloads()
@@ -61,6 +82,32 @@ def test_claude_fable_5_runtime_resources_are_registered():
         "fallbacks",
     ]
     assert payloads["claude-fable-5"]["max_tokens"] == 128000
+
+
+def test_claude_fable_5_1_runtime_resources_are_registered():
+    capabilities = load_model_capabilities()
+    payloads = load_default_payloads()
+
+    fable_5_1 = capabilities["claude-fable-5-1"]
+    assert fable_5_1["provider"] == "anthropic"
+    assert fable_5_1["max_context_window_tokens"] == 1000000
+    assert fable_5_1["max_output_tokens"] == 128000
+    assert fable_5_1["supports_tools"] is True
+    assert fable_5_1["supports_response_format"] is False
+    assert fable_5_1["supports_previous_response_id"] is False
+    assert fable_5_1["supports_reasoning"] is True
+    assert fable_5_1["reasoning_efforts"] == ["low", "medium", "high", "xhigh", "max"]
+    assert fable_5_1["default_reasoning_effort"] == "high"
+    assert fable_5_1["input_modalities"] == ["text", "image", "pdf"]
+    assert fable_5_1["input_source_types"]["image"] == ["url", "base64"]
+    assert fable_5_1["input_source_types"]["pdf"] == ["url", "base64"]
+    assert fable_5_1["allowed_payload_keys"] == [
+        "max_tokens",
+        "thinking",
+        "output_config",
+        "fallbacks",
+    ]
+    assert payloads["claude-fable-5-1"]["max_tokens"] == 128000
 
 
 def test_claude_haiku_35_runtime_resources_are_removed():

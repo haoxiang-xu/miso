@@ -5,6 +5,8 @@ from typing import Optional
 
 import httpx
 
+from ..durability import is_durable_persistence_failure
+
 RETRYABLE_STATUS_CODES: frozenset[int] = frozenset(
     {408, 409, 429, 529} | set(range(500, 600))
 )
@@ -12,6 +14,9 @@ RETRYABLE_STATUS_CODES: frozenset[int] = frozenset(
 
 def is_retryable(error: BaseException) -> bool:
     """Return True if the error is a transient network / server failure."""
+
+    if is_durable_persistence_failure(error):
+        return False
 
     if isinstance(
         error,

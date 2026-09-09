@@ -55,6 +55,7 @@ class Toolkit:
         parameters: list[ToolParameter | dict[str, Any]] | None = None,
         history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
         history_result_optimizer: HistoryPayloadOptimizer | None = None,
+        output_policy: str | None = None,
         always_load: bool | None = None,
         defer_by_default: bool | None = None,
         search_hint: str | None = None,
@@ -80,6 +81,8 @@ class Toolkit:
                 tool_obj.history_arguments_optimizer = history_arguments_optimizer
             if history_result_optimizer is not None:
                 tool_obj.history_result_optimizer = history_result_optimizer
+            if output_policy is not None:
+                tool_obj.output_policy = tool_obj._construct_output_policy(output_policy)
             if always_load is not None:
                 tool_obj.always_load = bool(always_load)
             if defer_by_default is not None:
@@ -102,6 +105,7 @@ class Toolkit:
                 prompt_spec=prompt_spec,
                 history_arguments_optimizer=history_arguments_optimizer,
                 history_result_optimizer=history_result_optimizer,
+                output_policy=output_policy or "default",
                 always_load=bool(always_load),
                 defer_by_default=bool(defer_by_default),
                 search_hint=str(search_hint or ""),
@@ -133,6 +137,7 @@ class Toolkit:
         parameters: list[ToolParameter | dict[str, Any]] | None = None,
         history_arguments_optimizer: HistoryPayloadOptimizer | None = None,
         history_result_optimizer: HistoryPayloadOptimizer | None = None,
+        output_policy: str = "default",
         always_load: bool = False,
         defer_by_default: bool = False,
         search_hint: str = "",
@@ -149,6 +154,7 @@ class Toolkit:
                 parameters=parameters,
                 history_arguments_optimizer=history_arguments_optimizer,
                 history_result_optimizer=history_result_optimizer,
+                output_policy=output_policy,
                 always_load=always_load,
                 defer_by_default=defer_by_default,
                 search_hint=search_hint,
@@ -166,6 +172,7 @@ class Toolkit:
                 parameters=parameters,
                 history_arguments_optimizer=history_arguments_optimizer,
                 history_result_optimizer=history_result_optimizer,
+                output_policy=output_policy,
                 always_load=always_load,
                 defer_by_default=defer_by_default,
                 search_hint=search_hint,

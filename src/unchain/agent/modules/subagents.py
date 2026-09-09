@@ -37,6 +37,7 @@ class SubagentModule(BaseAgentModule):
                 max_parallel_workers=int(self.policy.max_parallel_workers),
                 worker_timeout_seconds=float(self.policy.worker_timeout_seconds),
             ),
+            runtime_context=builder.call_context.runtime_context,
         )
         builder.add_tool(build_delegate_to_subagent_tool())
         builder.add_tool(build_handoff_to_subagent_tool())

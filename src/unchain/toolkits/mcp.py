@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 import threading
 from typing import Any
 
@@ -119,6 +120,10 @@ class MCPToolkit(Toolkit):
         self._stop_event: asyncio.Event | None = None
         self._error: BaseException | None = None
         self._connected = False
+        # stdio only: the server's stderr. Without capturing it, a server that
+        # dies during startup surfaces as a bare "Connection closed" with no
+        # trace of why — the traceback it printed goes nowhere.
+        self._stderr_file = None
 
     # ── public lifecycle ───────────────────────────────────────────────────
 
@@ -144,7 +149,11 @@ class MCPToolkit(Toolkit):
         self._ready.wait()
         if self._error is not None:
             self._cleanup_thread()
-            raise RuntimeError(f"mcp: failed to connect — {self._error}") from self._error
+            detail = self._drain_stderr()
+            message = f"mcp: failed to connect — {self._error}"
+            if detail:
+                message = f"{message}; server stderr: {detail}"
+            raise RuntimeError(message) from self._error
 
         # Fetch tools into the toolkit.
         self._populate_tools()
@@ -246,6 +255,25 @@ class MCPToolkit(Toolkit):
                 # Keep the session alive until disconnect() sets the stop event.
                 await self._stop_event.wait()
 
+    def _drain_stderr(self, limit: int = 2000) -> str:
+        """Read and close whatever the stdio server wrote to stderr."""
+        handle, self._stderr_file = self._stderr_file, None
+        if handle is None:
+            return ""
+        try:
+            handle.seek(0)
+            text = handle.read().strip()
+        except Exception:
+            return ""
+        finally:
+            try:
+                handle.close()
+            except Exception:
+                pass
+        if len(text) > limit:
+            text = f"…{text[-limit:]}"
+        return " ".join(text.split())
+
     def _create_transport(self):
         """Return the appropriate async context manager for the configured transport."""
         if self._transport == "stdio":
@@ -255,7 +283,10 @@ class MCPToolkit(Toolkit):
                 env=self._env,
                 cwd=self._cwd,
             )
-            return stdio_client(server_params)
+            self._stderr_file = tempfile.TemporaryFile(
+                mode="w+", encoding="utf-8", errors="replace"
+            )
+            return stdio_client(server_params, errlog=self._stderr_file)
 
         if self._transport == "sse":
             kwargs: dict[str, Any] = {"url": self._url}

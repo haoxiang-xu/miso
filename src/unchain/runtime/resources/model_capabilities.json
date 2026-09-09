@@ -48,6 +48,8 @@
     "supports_response_format": true,
     "supports_previous_response_id": true,
     "supports_reasoning": true,
+    "reasoning_efforts": ["minimal", "low", "medium", "high"],
+    "default_reasoning_effort": "medium",
     "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
       "image": ["url", "base64"],
@@ -70,6 +72,8 @@
     "supports_response_format": true,
     "supports_previous_response_id": true,
     "supports_reasoning": true,
+    "reasoning_efforts": ["minimal", "low", "medium", "high"],
+    "default_reasoning_effort": "medium",
     "input_modalities": ["text", "image"],
     "input_source_types": {
       "image": ["url", "base64"]
@@ -91,6 +95,8 @@
     "supports_response_format": true,
     "supports_previous_response_id": true,
     "supports_reasoning": true,
+    "reasoning_efforts": ["minimal", "low", "medium", "high"],
+    "default_reasoning_effort": "medium",
     "input_modalities": ["text", "image"],
     "input_source_types": {
       "image": ["url", "base64"]
@@ -112,6 +118,8 @@
     "supports_response_format": true,
     "supports_previous_response_id": true,
     "supports_reasoning": true,
+    "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+    "default_reasoning_effort": "medium",
     "input_modalities": ["text", "image"],
     "input_source_types": {
       "image": ["url", "base64"]
@@ -133,6 +141,8 @@
     "supports_response_format": true,
     "supports_previous_response_id": true,
     "supports_reasoning": true,
+    "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+    "default_reasoning_effort": "medium",
     "input_modalities": ["text", "image"],
     "input_source_types": {
       "image": ["url", "base64"]
@@ -154,6 +164,8 @@
     "supports_response_format": true,
     "supports_previous_response_id": true,
     "supports_reasoning": true,
+    "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+    "default_reasoning_effort": "medium",
     "input_modalities": ["text", "image"],
     "input_source_types": {
       "image": ["url", "base64"]
@@ -168,17 +180,18 @@
       "tool_choice"
     ]
   },
-  "gpt-5-codex": {
+  "gpt-6-astra": {
     "provider": "openai",
-    "max_context_window_tokens": 1047576,
+    "max_context_window_tokens": 1050000,
     "supports_tools": true,
     "supports_response_format": true,
     "supports_previous_response_id": true,
     "supports_reasoning": true,
-    "input_modalities": ["text", "image", "pdf"],
+    "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+    "default_reasoning_effort": "medium",
+    "input_modalities": ["text", "image"],
     "input_source_types": {
-      "image": ["url", "base64"],
-      "pdf": ["url", "base64"]
+      "image": ["url", "base64"]
     },
     "allowed_payload_keys": [
       "instructions",
@@ -224,13 +237,15 @@
     "supports_tools": true,
     "supports_response_format": false,
     "supports_previous_response_id": false,
-    "supports_reasoning": false,
+    "supports_reasoning": true,
+    "reasoning_efforts": ["low", "medium", "high", "max"],
+    "default_reasoning_effort": "high",
     "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
       "image": ["url", "base64"],
       "pdf": ["url", "base64"]
     },
-    "allowed_payload_keys": ["max_tokens", "top_k"]
+    "allowed_payload_keys": ["max_tokens", "top_k", "output_config"]
   },
   "claude-opus-4-6": {
     "provider": "anthropic",
@@ -239,13 +254,15 @@
     "supports_tools": true,
     "supports_response_format": false,
     "supports_previous_response_id": false,
-    "supports_reasoning": false,
+    "supports_reasoning": true,
+    "reasoning_efforts": ["low", "medium", "high", "max"],
+    "default_reasoning_effort": "high",
     "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
       "image": ["url", "base64"],
       "pdf": ["url", "base64"]
     },
-    "allowed_payload_keys": ["max_tokens", "top_k"]
+    "allowed_payload_keys": ["max_tokens", "top_k", "output_config"]
   },
   "claude-opus-4-7": {
     "provider": "anthropic",
@@ -254,13 +271,15 @@
     "supports_tools": true,
     "supports_response_format": false,
     "supports_previous_response_id": false,
-    "supports_reasoning": false,
+    "supports_reasoning": true,
+    "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+    "default_reasoning_effort": "high",
     "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
       "image": ["url", "base64"],
       "pdf": ["url", "base64"]
     },
-    "allowed_payload_keys": ["max_tokens", "top_k"]
+    "allowed_payload_keys": ["max_tokens", "top_k", "output_config"]
   },
   "claude-opus-4-8": {
     "provider": "anthropic",
@@ -270,6 +289,8 @@
     "supports_response_format": false,
     "supports_previous_response_id": false,
     "supports_reasoning": true,
+    "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+    "default_reasoning_effort": "high",
     "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
       "image": ["url", "base64"],
@@ -290,6 +311,30 @@
     "supports_response_format": false,
     "supports_previous_response_id": false,
     "supports_reasoning": true,
+    "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+    "default_reasoning_effort": "high",
+    "input_modalities": ["text", "image", "pdf"],
+    "input_source_types": {
+      "image": ["url", "base64"],
+      "pdf": ["url", "base64"]
+    },
+    "allowed_payload_keys": [
+      "max_tokens",
+      "thinking",
+      "output_config",
+      "fallbacks"
+    ]
+  },
+  "claude-fable-5-1": {
+    "provider": "anthropic",
+    "max_context_window_tokens": 1000000,
+    "max_output_tokens": 128000,
+    "supports_tools": true,
+    "supports_response_format": false,
+    "supports_previous_response_id": false,
+    "supports_reasoning": true,
+    "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+    "default_reasoning_effort": "high",
     "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
       "image": ["url", "base64"],
@@ -379,13 +424,15 @@
     },
     "allowed_payload_keys": ["max_tokens", "top_k", "top_p"]
   },
-  "gpt-5.2-codex": {
+  "gpt-5.3-codex": {
     "provider": "openai",
     "max_context_window_tokens": 400000,
     "supports_tools": true,
     "supports_response_format": true,
     "supports_previous_response_id": true,
     "supports_reasoning": true,
+    "reasoning_efforts": ["minimal", "low", "medium", "high"],
+    "default_reasoning_effort": "medium",
     "input_modalities": ["text", "image"],
     "input_source_types": {
       "image": ["url", "base64"]
@@ -421,6 +468,7 @@
     "supports_response_format": true,
     "supports_previous_response_id": false,
     "supports_reasoning": true,
+    "reasoning_efforts": ["low", "medium", "high"],
     "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
       "image": ["url", "base64"],
@@ -440,6 +488,7 @@
     "supports_response_format": true,
     "supports_previous_response_id": false,
     "supports_reasoning": true,
+    "reasoning_efforts": ["low", "medium", "high"],
     "input_modalities": ["text", "image", "pdf"],
     "input_source_types": {
       "image": ["url", "base64"],

@@ -201,6 +201,9 @@ class ToolExecutionContext:
     call_id: str = ""
     turn_id: str = ""
     workspace_changes: Any = None
+    # Internal-only owner state for nested provider-call accounting. It is
+    # never projected into tool arguments or model-visible tool results.
+    run_state: Any = None
 
 
 @dataclass(frozen=True)

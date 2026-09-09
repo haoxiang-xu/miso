@@ -1,0 +1,37 @@
+{
+  "schema": "unchain.context_v2.host_boundary_partition.v1",
+  "source_manifest": "../pupu_p0/manifest.json",
+  "cases": {
+    "below_pressure": {
+      "source_fixture_sha256": "e8120b60d87ff7ae47f257aef54f55215a5603ffdf5250e25a08ee78839d263e",
+      "compiler_owned_expected_fields": "*",
+      "host_owned_expected_fields": []
+    },
+    "legacy_partial": {
+      "source_fixture_sha256": "2be07e6d86f8483f43b56a19c494b8684903b7dcb4d95ec6cc8b4f35292e738e",
+      "compiler_owned_expected_fields": [
+        "schema",
+        "compression_applied",
+        "capture_quality",
+        "canonical_tool_events",
+        "promotion_allowed"
+      ],
+      "host_owned_expected_fields": [
+        "legacy_references",
+        "legacy_backend",
+        "inherited_context",
+        "curator"
+      ]
+    },
+    "tool_and_pinned": {
+      "source_fixture_sha256": "8c7f0355eff099584cfa5a9ecb84438e7360a385f3f5a61caabfd60ad0018328",
+      "compiler_owned_expected_fields": "*",
+      "host_owned_expected_fields": [],
+      "host_materialized_input": {
+        "semantic_event_id": "evt-interaction-001",
+        "content_bytes": 235,
+        "content_sha256": "02347628dd284ca7781a9fce4ecf9575ea2dd6155fd3ee72614ff3f307c62c09"
+      }
+    }
+  }
+}

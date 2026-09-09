@@ -30,6 +30,29 @@ def _contains_tools_block(messages):
     )
 
 
+def test_kernel_run_with_large_user_input_is_not_blocked_by_request_digest():
+    model_io = _QueueModelIO(
+        [
+            ModelTurnResult(
+                assistant_messages=[{"role": "assistant", "content": "done"}],
+                tool_calls=[],
+                final_text="done",
+                response_id="resp_large",
+            )
+        ]
+    )
+
+    result = build_runtime_loop(model_io=model_io).run(
+        [{"role": "user", "content": "x" * 2_500_000}],
+        provider="openai",
+        model="gpt-4.1",
+        max_iterations=1,
+    )
+
+    assert result.status == "completed"
+    assert model_io.requests[0].messages[0]["content"].count("x") == 2_500_000
+
+
 def test_kernel_run_executes_openai_tool_and_continues_with_previous_response_chain():
     model_io = _QueueModelIO([
         ModelTurnResult(
@@ -128,6 +151,64 @@ def test_kernel_run_budgets_large_tool_result_before_next_openai_turn():
     assert payload["call_id"] == "call_large"
     assert payload["original_chars"] > payload["budgeted_chars"]
     assert model_io.requests[1].previous_response_id == "resp_1"
+    assert model_io.requests[1].messages == [tool_message]
+
+
+def test_kernel_run_active_projection_skips_legacy_tool_result_budget():
+    from unchain.tools.output_management import ToolOutputManager
+
+    model_io = _QueueModelIO([
+        ModelTurnResult(
+            assistant_messages=[
+                {
+                    "type": "function_call",
+                    "call_id": "call_projection",
+                    "name": "large_tool",
+                    "arguments": "{}",
+                }
+            ],
+            tool_calls=[
+                KernelToolCall(
+                    call_id="call_projection", name="large_tool", arguments={}
+                )
+            ],
+            response_id="resp_1",
+        ),
+        ModelTurnResult(
+            assistant_messages=[{"role": "assistant", "content": "done"}],
+            tool_calls=[],
+            final_text="done",
+            response_id="resp_2",
+        ),
+    ])
+    toolkit = Toolkit()
+    toolkit.register(lambda: {"blob": "X" * 1000}, name="large_tool")
+    loop = build_runtime_loop(model_io=model_io)
+
+    result = loop.run(
+        [{"role": "user", "content": "start"}],
+        provider="openai",
+        model="gpt-4.1",
+        toolkit=toolkit,
+        max_iterations=3,
+        tool_runtime_config={
+            "tool_result_budget": {
+                "max_result_chars": 180,
+                "max_batch_chars": 1000,
+                "preview_chars": 24,
+                "min_chars_to_budget": 40,
+            },
+            "tool_output_management": ToolOutputManager.active_default().runtime_snapshot(),
+        },
+    )
+
+    assert result.status == "completed"
+    tool_message = next(
+        message
+        for message in result.messages
+        if message.get("type") == "function_call_output"
+    )
+    assert json.loads(tool_message["output"]) == {"blob": "X" * 1000}
     assert model_io.requests[1].messages == [tool_message]
 
 

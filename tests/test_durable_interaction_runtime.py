@@ -9,6 +9,7 @@ from unchain.interaction.durable import (
     INTERACTION_KIND_HUMAN_INPUT,
     INTERACTION_KIND_MAX_BUDGET,
     INTERACTION_KIND_TOOL_APPROVAL,
+    InteractionNotPendingError,
     InteractionReceiptConflictError,
     build_interaction_request,
     mark_interaction_applied,
@@ -19,6 +20,7 @@ from unchain.interaction.runtime import (
     DurableInteractionRuntime,
     response_contract_for_kind,
 )
+from unchain.execution import ExecutionRuntime
 from unchain.kernel import RunState
 from unchain.memory import InMemorySessionStore, KernelMemoryRuntime
 from unchain.memory.checkpoint_state import (
@@ -238,9 +240,25 @@ def test_cancel_pending_atomically_terminalizes_journal_and_checkpoint() -> None
     )
     runtime = DurableInteractionRuntime(memory, clock_ms=lambda: 321)
 
+    before_conflict = memory.load_session_snapshot(session_id)
+    with pytest.raises(
+        InteractionNotPendingError,
+        match="different interaction",
+    ):
+        runtime.cancel_pending(
+            session_id,
+            source_run_id=run_id,
+            expected_interaction_id="stale-interaction-id",
+            reason="user_stop",
+        )
+    after_conflict = memory.load_session_snapshot(session_id)
+    assert after_conflict.revision == before_conflict.revision
+    assert after_conflict.state == before_conflict.state
+
     cancelled = runtime.cancel_pending(
         session_id,
         source_run_id=run_id,
+        expected_interaction_id=request.interaction_id,
         reason="user_stop",
     )
 
@@ -252,6 +270,172 @@ def test_cancel_pending_atomically_terminalizes_journal_and_checkpoint() -> None
     assert EXECUTION_CHECKPOINT_DOMAIN_KEY not in persisted
     journal = persisted[INTERACTION_JOURNAL_KEY]
     assert journal["active_id"] is None
+
+
+def test_cancel_pending_claim_is_allowed_under_its_checkpoint_owner_lease() -> None:
+    session_id = "session-cancel-owned-lease"
+    source_run_id = "attempt-a"
+    owner_id = "attempt-b"
+    store = InMemorySessionStore()
+    memory = KernelMemoryRuntime.from_config(store=store)
+    guard = ExecutionRuntime(store).acquire(session_id, owner_id=owner_id)
+    state = RunState()
+    state.seed_messages([{"role": "user", "content": "cancel me"}])
+    state.session_state.session_id = session_id
+    state.provider_state.provider = "ollama"
+    state.provider_state.model = "fake"
+    state.memory_state["session_revision"] = 0
+    state.iteration = 1
+    state.last_continuation = {
+        "type": "durable_interaction",
+        "occurrence": "cancel-owned",
+    }
+    request = build_interaction_request(
+        session_id=session_id,
+        kind=INTERACTION_KIND_TOOL_APPROVAL,
+        source_run_id=source_run_id,
+        occurrence="cancel-owned",
+        payload={"tool_name": "write_file", "call_id": "cancel-owned"},
+        response_contract=response_contract_for_kind(
+            INTERACTION_KIND_TOOL_APPROVAL
+        ),
+        created_revision=0,
+        subject={"provider": "ollama", "model": "fake"},
+    )
+    state.suspend_state.payload = {"interaction_request": request.to_dict()}
+    checkpoint = build_execution_checkpoint(
+        state,
+        status="awaiting_interaction",
+        run_id=source_run_id,
+    )
+    memory.save_execution_checkpoint_snapshot(
+        session_id,
+        checkpoint,
+        interaction_request=request.to_dict(),
+        expected_revision=0,
+        execution_fence=guard.fence,
+    )
+
+    cancelled = DurableInteractionRuntime(
+        memory,
+        clock_ms=lambda: 321,
+    ).cancel_pending(
+        session_id,
+        source_run_id=source_run_id,
+        expected_interaction_id=request.interaction_id,
+        reason="user_stop",
+    )
+
+    assert cancelled is not None
+    assert cancelled.application["receipt_id"] == cancelled.receipt.receipt_id
+    assert cancelled.application["applied_checkpoint_id"] == (
+        f"cancelled:{cancelled.checkpoint_id}"
+    )
+    assert guard.assert_active().owner_id == owner_id
+
+
+def test_cancel_pending_rejects_normal_application_winner() -> None:
+    session_id = "session-cancel-application-race"
+    source_run_id = "attempt-race"
+    memory = KernelMemoryRuntime.from_config(store=InMemorySessionStore())
+    state = RunState()
+    state.seed_messages([{"role": "user", "content": "cancel me"}])
+    state.session_state.session_id = session_id
+    state.provider_state.provider = "ollama"
+    state.provider_state.model = "fake"
+    state.memory_state["session_revision"] = 0
+    state.iteration = 1
+    state.last_continuation = {
+        "type": "durable_interaction",
+        "occurrence": "cancel-race",
+    }
+    request = build_interaction_request(
+        session_id=session_id,
+        kind=INTERACTION_KIND_TOOL_APPROVAL,
+        source_run_id=source_run_id,
+        occurrence="cancel-race",
+        payload={"tool_name": "write_file", "call_id": "cancel-race"},
+        response_contract=response_contract_for_kind(
+            INTERACTION_KIND_TOOL_APPROVAL
+        ),
+        created_revision=0,
+        subject={"provider": "ollama", "model": "fake"},
+    )
+    state.suspend_state.payload = {"interaction_request": request.to_dict()}
+    checkpoint = build_execution_checkpoint(
+        state,
+        status="awaiting_interaction",
+        run_id=source_run_id,
+    )
+    _, pending = memory.save_execution_checkpoint_snapshot(
+        session_id,
+        checkpoint,
+        interaction_request=request.to_dict(),
+        expected_revision=0,
+    )
+    runtime = DurableInteractionRuntime(memory, clock_ms=lambda: 321)
+    receipt = runtime.record_receipt(
+        request.session_id,
+        interaction_id=request.interaction_id,
+        response=True,
+        expected_revision=pending.revision,
+    )
+    original_save = memory.save_session_state
+    injected_winner = False
+
+    def save_after_normal_application(
+        session_id,
+        state,
+        *,
+        expected_revision=None,
+        execution_fence=None,
+    ):
+        nonlocal injected_winner
+        if not injected_winner:
+            injected_winner = True
+            winner_state = copy.deepcopy(
+                memory.load_session_snapshot(session_id).state
+            )
+            winner_state[INTERACTION_JOURNAL_KEY] = mark_interaction_applied(
+                winner_state[INTERACTION_JOURNAL_KEY],
+                interaction_id=request.interaction_id,
+                receipt_id=receipt.receipt.receipt_id,
+                applied_checkpoint_id="checkpoint-normal-resume",
+            )
+            original_save(
+                session_id,
+                winner_state,
+                expected_revision=expected_revision,
+            )
+        return original_save(
+            session_id,
+            state,
+            expected_revision=expected_revision,
+            execution_fence=execution_fence,
+        )
+
+    memory.save_session_state = save_after_normal_application
+
+    with pytest.raises(
+        InteractionNotPendingError,
+        match="already applied without cancellation",
+    ):
+        runtime.cancel_pending(
+            request.session_id,
+            source_run_id=request.source_run_id,
+            expected_interaction_id=request.interaction_id,
+            reason="late_stop",
+        )
+
+    assert injected_winner is True
+    winner = runtime.load(
+        request.session_id,
+        interaction_id=request.interaction_id,
+        require_active=False,
+    )
+    assert winner.application["applied_checkpoint_id"] == (
+        "checkpoint-normal-resume"
+    )
 
 
 def test_same_receipt_retry_succeeds_after_application() -> None:

@@ -18,6 +18,7 @@ from .payloads import (
     load_model_capabilities,
 )
 from .workspace_artifacts import WorkspaceChangeArtifactHarness
+from .module_context import AgentRuntimeContext, ExecutionIdentity, ModuleGrant
 from ..execution import (
     ActiveExecutionLeaseError,
     ExecutionCancellation,
@@ -40,6 +41,7 @@ from ..execution import (
 
 __all__ = [
     "ActiveExecutionLeaseError",
+    "AgentRuntimeContext",
     "DEFAULT_PAYLOADS_RESOURCE",
     "MODEL_CAPABILITIES_RESOURCE",
     "CompletionEvaluation",
@@ -60,6 +62,8 @@ __all__ = [
     "ExecutionLeaseNotOwnedError",
     "ExecutionLeaseStore",
     "ExecutionRuntime",
+    "ExecutionIdentity",
+    "ModuleGrant",
     "WorkspaceChangeArtifactHarness",
     "StaleExecutionLeaseError",
     "attach_default_runtime_components",

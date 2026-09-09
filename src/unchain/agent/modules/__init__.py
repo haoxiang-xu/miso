@@ -1,4 +1,10 @@
 from .base import AgentModule, BaseAgentModule
+from .context import ContextModule, ContextShadowModule
+from .context_composition import (
+    ContextCompositionBootstrapModule,
+    ContextCompositionBootstrapModuleError,
+)
+from .durability import DurabilityModule
 from .interaction import InteractionModule
 from .jobs import JobsModule
 from .memory import MemoryModule
@@ -13,6 +19,11 @@ __all__ = [
     "AgentModule",
     "BaseAgentModule",
     "CharacterModule",
+    "ContextModule",
+    "ContextCompositionBootstrapModule",
+    "ContextCompositionBootstrapModuleError",
+    "ContextShadowModule",
+    "DurabilityModule",
     "InteractionModule",
     "JobsModule",
     "MemoryModule",

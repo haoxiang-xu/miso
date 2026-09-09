@@ -431,19 +431,32 @@ class DurableInteractionRuntime:
         session_id: str,
         *,
         source_run_id: str,
+        expected_interaction_id: str | None = None,
         reason: str = "execution_cancelled",
         submitted_by: str = "runtime:cancel_execution",
     ) -> DurableInteractionSnapshot | None:
         """Atomically abandon one source run's checkpoint and active interaction.
 
-        The execution lease must be revoked before calling this method.  The
-        exact ``source_run_id`` binding prevents a late stop for an older run
-        from consuming a newer run's interaction.
+        Legacy source-only callers must revoke the execution lease first.  A
+        host that supplies ``expected_interaction_id`` may use this CAS as the
+        durable cancellation claim before revoking the lease; a mismatch then
+        leaves both the checkpoint and newer interaction untouched.  The exact
+        source and interaction bindings prevent a late stop for an older wait
+        from consuming a newer interaction.
         """
 
         normalized_source_run_id = str(source_run_id or "").strip()
         if not normalized_source_run_id:
             raise ValueError("source_run_id must be a non-empty string")
+        normalized_interaction_id: str | None = None
+        if expected_interaction_id is not None:
+            if not isinstance(expected_interaction_id, str):
+                raise ValueError("expected_interaction_id must be a string")
+            normalized_interaction_id = expected_interaction_id.strip()
+            if not normalized_interaction_id:
+                raise ValueError(
+                    "expected_interaction_id must be a non-empty string"
+                )
         if not isinstance(reason, str):
             raise ValueError("reason must be a string")
         current = self._load(
@@ -454,6 +467,13 @@ class DurableInteractionRuntime:
         if current.request.source_run_id != normalized_source_run_id:
             raise InteractionNotPendingError(
                 "active interaction belongs to a different source run"
+            )
+        if (
+            normalized_interaction_id is not None
+            and current.request.interaction_id != normalized_interaction_id
+        ):
+            raise InteractionNotPendingError(
+                "active interaction is a different interaction"
             )
 
         state = copy.deepcopy(current.session_snapshot.state)
@@ -504,10 +524,13 @@ class DurableInteractionRuntime:
         state.pop(EXECUTION_CHECKPOINT_KEY, None)
         state.pop(EXECUTION_CHECKPOINT_DOMAIN_KEY, None)
         try:
-            self.memory_runtime.save_session_state(
+            self.memory_runtime.save_interaction_session_state(
                 session_id,
                 state,
+                checkpoint_id=current.checkpoint_id,
+                session_snapshot=current.session_snapshot,
                 expected_revision=current.session_snapshot.revision,
+                execution_fence=None,
             )
         except SessionRevisionConflictError:
             winner = self._load(
@@ -517,7 +540,13 @@ class DurableInteractionRuntime:
                 reconcile_cancelled=False,
             )
             if winner.application is not None:
-                return winner
+                if winner.application.get("applied_checkpoint_id") == (
+                    f"cancelled:{current.checkpoint_id}"
+                ):
+                    return winner
+                raise InteractionNotPendingError(
+                    "interaction was already applied without cancellation"
+                )
             raise
 
         cancelled = self._load(
@@ -529,6 +558,12 @@ class DurableInteractionRuntime:
         if cancelled.application is None:
             raise InteractionIntegrityError(
                 "cancelled interaction was not terminalized"
+            )
+        if cancelled.application.get("applied_checkpoint_id") != (
+            f"cancelled:{current.checkpoint_id}"
+        ):
+            raise InteractionIntegrityError(
+                "cancelled interaction has a foreign application"
             )
         return cancelled
 

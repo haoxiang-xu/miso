@@ -254,13 +254,18 @@ def _intent_digest(*, argv: list[str], cwd: str, timeout_ms: int) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _supervisor(base_dir: str | Path) -> ProcessJobSupervisor:
+def _supervisor(
+    base_dir: str | Path,
+    *,
+    environment: JobEnvironmentProfile | None = None,
+) -> ProcessJobSupervisor:
     return ProcessJobSupervisor(
         JsonFileJobStore(base_dir),
         heartbeat_stale_ms=1_000,
         launch_grace_ms=1_000,
         poll_interval_s=0.01,
         default_max_log_bytes=100_000,
+        environment=environment,
     )
 
 
@@ -273,8 +278,9 @@ def _concurrent_start_owner(
     start: Any,
     ready: Any,
     results: Any,
+    environment: JobEnvironmentProfile,
 ) -> None:
-    supervisor = _supervisor(base_dir)
+    supervisor = _supervisor(base_dir, environment=environment)
     ready.put(os.getpid())
     if not start.wait(timeout=15):
         results.put(("owner_timeout", ""))
@@ -401,6 +407,7 @@ def test_same_intent_concurrent_and_repeated_start_spawns_once(
     start = context.Event()
     owners_ready = context.Queue()
     results = context.Queue()
+    environment = JobEnvironmentProfile.capture()
     owners = [
         context.Process(
             target=_concurrent_start_owner,
@@ -413,6 +420,7 @@ def test_same_intent_concurrent_and_repeated_start_spawns_once(
                 start,
                 owners_ready,
                 results,
+                environment,
             ),
         )
         for _ in range(2)
@@ -436,7 +444,7 @@ def test_same_intent_concurrent_and_repeated_start_spawns_once(
         )
         assert [event["event"] for event in _marker_events(marker)] == ["START"]
 
-        supervisor = _supervisor(state_dir)
+        supervisor = _supervisor(state_dir, environment=environment)
         repeated = supervisor.start(
             execution_id=execution_id,
             idempotency_key=idempotency_key,
@@ -476,7 +484,7 @@ def test_same_intent_concurrent_and_repeated_start_spawns_once(
                 owner.terminate()
                 owner.join(timeout=5)
         if supervisor is None:
-            supervisor = _supervisor(state_dir)
+            supervisor = _supervisor(state_dir, environment=environment)
         try:
             supervisor.cancel(job_id, execution_id=execution_id, wait_timeout_ms=5_000)
         except Exception:

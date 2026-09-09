@@ -26,6 +26,7 @@ class CoreToolkit(BuiltinToolkit):
         )
         self._web_backend = CoreWebBackend(
             runtime_config_provider=self._tool_runtime_config_for,
+            execution_context_provider=lambda: self.current_execution_context,
         )
         self._register_tools()
 
@@ -51,6 +52,7 @@ class CoreToolkit(BuiltinToolkit):
             description="Read a UTF-8 text file by absolute path with line-numbered output and optional line slicing.",
             history_arguments_optimizer=self._compact_read_args,
             history_result_optimizer=self._compact_read_result,
+            output_policy="head_tail",
         )
         self.register(
             self.write,
@@ -59,6 +61,7 @@ class CoreToolkit(BuiltinToolkit):
             confirmation_resolver=self._resolve_write_confirmation,
             history_arguments_optimizer=self._compact_write_args,
             history_result_optimizer=self._compact_mutation_result,
+            output_policy="default",
         )
         self.register(
             self.edit,
@@ -67,16 +70,19 @@ class CoreToolkit(BuiltinToolkit):
             confirmation_resolver=self._resolve_edit_confirmation,
             history_arguments_optimizer=self._compact_edit_args,
             history_result_optimizer=self._compact_mutation_result,
+            output_policy="default",
         )
         self.register(
             self.glob,
             description="List files matching a glob pattern inside the workspace, sorted by most recently modified first.",
             history_result_optimizer=self._compact_glob_result,
+            output_policy="head_tail",
         )
         self.register(
             self.grep,
             description="Search UTF-8 text files inside the workspace with regex, optional glob filters, and paginated result modes.",
             history_result_optimizer=self._compact_grep_result,
+            output_policy="head_tail",
         )
         self.register(
             self.web_fetch,
@@ -85,6 +91,7 @@ class CoreToolkit(BuiltinToolkit):
             requires_confirmation=True,
             history_arguments_optimizer=self._compact_web_fetch_args,
             history_result_optimizer=self._compact_web_fetch_result,
+            output_policy="head_tail",
         )
         self.register(
             self.shell,
@@ -93,12 +100,14 @@ class CoreToolkit(BuiltinToolkit):
             confirmation_resolver=self._resolve_shell_confirmation,
             history_arguments_optimizer=self._compact_shell_args,
             history_result_optimizer=self._compact_shell_result,
+            output_policy="head_tail",
         )
         self.register(
             self.lsp,
             description="Query a language server for definitions, references, hover text, and symbols for Python or TS/JS files.",
             history_arguments_optimizer=self._compact_lsp_args,
             history_result_optimizer=self._compact_lsp_result,
+            output_policy="head_tail",
         )
 
     def read(self, path: str, offset: int = 0, limit: int | None = None) -> dict[str, Any]:

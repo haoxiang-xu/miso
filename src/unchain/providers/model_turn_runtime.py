@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from dataclasses import replace
 from typing import Any, Callable
 
@@ -19,6 +20,24 @@ from ..retry import RetryConfig, RetryContext, fetch_turn_with_retry
 from ..tools.toolkit import Toolkit
 from .base import ModelIO, ModelTurnRequest
 from .context_assembler import ProviderContextAssembler
+
+
+_logger = logging.getLogger(__name__)
+
+
+def _log_context_composition_projection_failure(exc: Exception) -> None:
+    """Content-free diagnostic for a downgraded (optional) composition build.
+
+    Only the exception's type name is logged — never its message or any
+    argument — because this projection sits directly beside all user and
+    provider content and must stay content-free even when it fails, the same
+    guarantee the composition module itself carries.
+    """
+
+    _logger.warning(
+        "context composition projection failed, downgraded to no attribution: %s",
+        type(exc).__name__,
+    )
 
 
 _REPLAY_FORMATS = {
@@ -257,6 +276,52 @@ def build_model_turn_request(
         state,
         toolkit=resolved_toolkit,
     )
+    from ..context.composition import (
+        build_internal_context_composition,
+        freeze_internal_context_composition,
+    )
+
+    try:
+        provider = str(state.provider_state.provider or "").strip().lower()
+        response_schema_surface = None
+        if response_format is not None or openai_text_format is not None:
+            response_schema_surface = (
+                "messages"
+                if provider in {"anthropic", "hyperspace"}
+                else "response_schema"
+            )
+        # The exact wire-shaped tool schema list — providers call this same
+        # to_provider_json(provider) verbatim to build the outgoing request,
+        # so measuring it here tracks precisely what the provider is billed
+        # for, the same guarantee _measured_message_contributions gives for
+        # messages.
+        tool_schemas = (
+            resolved_toolkit.to_provider_json(provider)
+            if resolved_toolkit.tools
+            else None
+        )
+        # "Nothing to attribute" is a normal outcome, not a failure: the builder
+        # returns None and freeze() rejects None. Routing that through the
+        # except block below meant every ordinary turn raised and swallowed a
+        # contract error, which also made a genuine bug here indistinguishable
+        # from having no contributions.
+        built_context_composition = build_internal_context_composition(
+            state,
+            assembly,
+            tool_schemas=tool_schemas,
+            response_schema_surface=response_schema_surface,
+        )
+        internal_context_composition = (
+            None
+            if built_context_composition is None
+            else freeze_internal_context_composition(built_context_composition)
+        )
+    except Exception as exc:
+        # Context composition is optional and the provider assembly above is
+        # already authoritative. Only failures from this isolated projection
+        # are downgraded; provider assembly and send failures still propagate.
+        _log_context_composition_projection_failure(exc)
+        internal_context_composition = None
     return ModelTurnRequest(
         messages=assembly.messages,
         payload=dict(payload or {}),
@@ -270,6 +335,41 @@ def build_model_turn_request(
         previous_response_id=assembly.previous_response_id,
         fallback_messages=assembly.fallback_messages,
         openai_text_format=openai_text_format,
+        context_mode=assembly.mode,
+        internal_context_composition_v1=internal_context_composition,
+    )
+
+
+def fetch_built_model_turn(
+    *,
+    model_io: ModelIO | None,
+    retry_config: RetryConfig,
+    state: RunState,
+    request: ModelTurnRequest,
+    before_attempt: Callable[[int], None] | None = None,
+    after_attempt: Callable[[int, str, str, str], None] | None = None,
+) -> ModelTurnResult:
+    if model_io is None:
+        raise RuntimeError("KernelLoop.model_io is not configured")
+    if type(request) is not ModelTurnRequest:
+        raise TypeError("request must be an exact ModelTurnRequest")
+    context = RetryContext(
+        run_id=request.run_id,
+        iteration=request.iteration,
+        is_background=(request.run_id == "observe"),
+    )
+    turn = fetch_turn_with_retry(
+        model_io=model_io,
+        request=request,
+        config=retry_config,
+        context=context,
+        before_attempt=before_attempt,
+        after_attempt=after_attempt,
+    )
+    return _with_fallback_replay_frame(
+        state=state,
+        request=request,
+        turn=turn,
     )
 
 
@@ -287,9 +387,8 @@ def fetch_model_turn(
     response_format: Any = None,
     openai_text_format: dict[str, Any] | None = None,
     before_attempt: Callable[[int], None] | None = None,
+    after_attempt: Callable[[int, str, str, str], None] | None = None,
 ) -> ModelTurnResult:
-    if model_io is None:
-        raise RuntimeError("KernelLoop.model_io is not configured")
     request = build_model_turn_request(
         state,
         payload=payload,
@@ -301,22 +400,13 @@ def fetch_model_turn(
         response_format=response_format,
         openai_text_format=openai_text_format,
     )
-    context = RetryContext(
-        run_id=run_id,
-        iteration=state.iteration,
-        is_background=(run_id == "observe"),
-    )
-    turn = fetch_turn_with_retry(
+    return fetch_built_model_turn(
         model_io=model_io,
-        request=request,
-        config=retry_config,
-        context=context,
-        before_attempt=before_attempt,
-    )
-    return _with_fallback_replay_frame(
+        retry_config=retry_config,
         state=state,
         request=request,
-        turn=turn,
+        before_attempt=before_attempt,
+        after_attempt=after_attempt,
     )
 
 

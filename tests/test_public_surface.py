@@ -1,6 +1,7 @@
 def test_agent_surface_exports_runtime_modules():
     from unchain.agent import (
         Agent,
+        DurabilityModule,
         MemoryModule,
         OptimizersModule,
         PoliciesModule,
@@ -9,6 +10,7 @@ def test_agent_surface_exports_runtime_modules():
     )
 
     assert Agent.__name__ == "Agent"
+    assert DurabilityModule.__name__ == "DurabilityModule"
     assert ToolsModule.__name__ == "ToolsModule"
     assert MemoryModule.__name__ == "MemoryModule"
     assert PoliciesModule.__name__ == "PoliciesModule"

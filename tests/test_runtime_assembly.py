@@ -81,6 +81,60 @@ def test_runtime_assembly_builds_kernel_loop_with_memory_runtime_components():
     }.issubset(names)
 
 
+def test_durability_only_memory_runtime_does_not_mount_context_memory_components():
+    from unchain.memory import (
+        InMemorySessionStore,
+        KernelMemoryRuntime,
+        MemoryRuntimeComponentMode,
+    )
+    from unchain.runtime import build_runtime_loop
+
+    store = InMemorySessionStore()
+    store.save(
+        "durability-session",
+        {
+            "messages": [
+                {"role": "user", "content": "must not be loaded"},
+            ],
+            "summary": "must not be loaded",
+        },
+    )
+    runtime = KernelMemoryRuntime.from_config(store=store)
+    loop = build_runtime_loop(
+        memory_runtime=runtime,
+        memory_runtime_component_mode=(
+            MemoryRuntimeComponentMode.DURABILITY_ONLY
+        ),
+    )
+    names = {harness.name for harness in loop.harnesses}
+
+    assert loop.interaction_runtime is not None
+    assert "memory_durability_checkpoint" in names
+    assert not {
+        "memory_bootstrap",
+        "memory_commit",
+        "memory_short_term_recall",
+        "memory_long_term_recall",
+        "last_n",
+        "sliding_window",
+        "llm_summary",
+        "tool_history_compaction",
+    }.intersection(names)
+
+    state = loop.seed_state(
+        [{"role": "user", "content": "current input"}],
+        session_id="durability-session",
+    )
+    loop.dispatch_phase(
+        state,
+        phase="bootstrap",
+        event={"run_id": "durability-run", "resume_mode": False},
+    )
+    assert state.transcript == [
+        {"role": "user", "content": "current input"},
+    ]
+
+
 def test_kernel_loop_does_not_own_default_runtime_assembly():
     import unchain.kernel.loop as kernel_loop_module
 

@@ -235,6 +235,7 @@ class DurableShellJobPlugin(ToolRuntimePlugin):
             tool_name=tool_call.name,
             call_id=tool_call.call_id,
             turn_id=f"{context.run_id}:turn-{context.iteration}",
+            run_state=getattr(context, "state", None),
         )
         preparation = prepare_tool_confirmation(
             toolkit=toolkit,

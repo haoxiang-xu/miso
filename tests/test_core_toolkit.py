@@ -1224,19 +1224,24 @@ def test_code_toolkit_shell_wait_returns_running_at_bounded_timeout():
         toolkit.execute("shell", {"action": "kill", "task_id": started["task_id"]})
 
 
-def test_shell_runtime_detect_executor_prefers_pwsh_and_env_shell(monkeypatch):
+def test_shell_runtime_detect_executor_prefers_pwsh_and_env_shell(
+    monkeypatch,
+    tmp_path,
+):
     monkeypatch.setattr("shutil.which", lambda name: "/opt/homebrew/bin/pwsh" if name == "pwsh" else None)
     windows_spec = ShellRuntime.detect_executor(platform_name="win32")
     assert windows_spec.family == "powershell"
     assert windows_spec.program == "/opt/homebrew/bin/pwsh"
 
+    shell_path = tmp_path / "zsh"
+    shell_path.touch()
     monkeypatch.setattr("shutil.which", lambda name: None)
     posix_spec = ShellRuntime.detect_executor(
         platform_name="linux",
-        env={"SHELL": "/bin/zsh"},
+        env={"SHELL": str(shell_path)},
     )
     assert posix_spec.family == "posix"
-    assert posix_spec.program == "/bin/zsh"
+    assert posix_spec.program == str(shell_path)
 
 
 def test_code_toolkit_lsp_python_operations_use_fake_server(monkeypatch):
